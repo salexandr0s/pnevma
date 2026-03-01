@@ -1,0 +1,27 @@
+[package]
+name = "pnevma-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+libc.workspace = true
+uuid.workspace = true
+pnevma-core = { path = "../pnevma-core" }
+pnevma-db = { path = "../pnevma-db" }
+pnevma-session = { path = "../pnevma-session" }
+pnevma-agents = { path = "../pnevma-agents" }
+pnevma-git = { path = "../pnevma-git" }
+pnevma-context = { path = "../pnevma-context" }

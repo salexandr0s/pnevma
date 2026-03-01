@@ -1,0 +1,26 @@
+[project]
+name = "pnevma"
+brief = "Terminal-first execution workspace for agent-driven delivery"
+
+[agents]
+default_provider = "claude-code"
+max_concurrent = 4
+
+[agents.claude-code]
+model = "claude-sonnet-4-6"
+token_budget = 80000
+timeout_minutes = 30
+
+[agents.codex]
+token_budget = 60000
+timeout_minutes = 20
+
+[branches]
+target = "main"
+naming = "pnevma/{task_id}/{slug}"
+
+[rules]
+paths = [".pnevma/rules/*.md"]
+
+[conventions]
+paths = [".pnevma/conventions/*.md"]
