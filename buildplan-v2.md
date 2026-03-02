@@ -988,3 +988,20 @@ The following are explicitly out of scope for v1. Documented to prevent scope cr
 - Auto-merge (always human-approved in v1).
 - Multi-repo projects (one project = one git repo in v1).
 - In-app browser pane and browser automation APIs (explicitly deferred; terminal/task execution loop stays primary in v1).
+
+---
+
+## 11. Potential Features (Optional Backlog)
+
+These are optional candidates identified from external implementation review and are **not** part of the locked v1 scope unless explicitly promoted into a phase.
+
+| Feature | Why It May Help | Suggested Timing |
+|---|---|---|
+| Control-plane auth hardening (constant-time password comparison) | Reduces timing side-channel risk in socket password mode; aligns with high-trust local automation surface | Phase 5 hardening follow-up |
+| Control-plane auth regression suite | Add explicit unauthorized/authorized route checks for local socket methods to prevent silent security regressions | Phase 5.12 extension |
+| Event-delta frontend updates (reduce full refresh fan-out) | Replace frequent full `refreshProjectData()` calls with targeted store updates for task/session/notification events to improve UI responsiveness under high event volume | Phase 5 performance pass |
+| Visibility-aware fallback polling with backoff | Keeps UI state fresh when event streams are interrupted while avoiding unnecessary polling when hidden/offline | Phase 5 reliability pass |
+| List/search/export limit-cap contract tests | Enforce bounded result sizes across command and control surfaces to prevent accidental unbounded queries and latency spikes | Phase 5.12 extension |
+| Machine-readable control API manifest + contract tests | Publish a generated method/params manifest for `pnevma ctl`; test that registered commands/methods stay in sync and documented | Phase 5 docs + quality |
+| IPC harness shared fixture helpers | Reusable test helpers for creating projects/tasks/sessions and cleanup to speed up integration coverage growth | Phase 5.12 extension |
+| Integration event sink (webhook-style export, local-first) | Optional structured event forwarding for partner analytics and incident tooling without changing core local-first execution loop | Post-beta |

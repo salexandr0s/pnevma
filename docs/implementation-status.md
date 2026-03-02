@@ -32,12 +32,103 @@
 - Optional local Unix socket control plane now runs inside the Tauri backend, with newline JSON envelopes and method routing for project/task/session/notification automation.
 - New `pnevma ctl` CLI binary now sends local automation requests over the control socket.
 - Task terminal-state transitions now automatically clean up linked worktrees and clear branch/worktree task links.
+- Dependency DAG validation now rejects invalid IDs, self-deps, missing deps, and cycles; dependency status refresh now reconciles from `task_dependencies` table and emits `TaskStatusChanged` events on auto-block/unblock.
+- Phase 3 persistence migration added for `check_runs`, `check_results`, `merge_queue`, `notifications`, and `secret_refs`.
+- Acceptance checks now run on agent completion; automated failures keep tasks `InProgress`, automated pass paths generate review packs and move tasks to `Review`.
+- Review pack generation now writes JSON and diff artifacts to `.pnevma/data/reviews/<task-id>/` and persists review metadata.
+- Review decisions now support approve/reject flows and merge queue enqueueing.
+- Merge execution command now performs rebase, post-rebase check reruns, conflict blocking, merge, and task/worktree finalization.
+- Merge queue now has explicit reorder support (`move_merge_queue_item`) and emits `merge_queue_updated` events.
+- Checkpoint create/list/restore commands are implemented with git tag snapshots.
+- Secrets references are persisted and backed by macOS Keychain (`security` CLI), with secret injection for agent env and redaction in notification/tool-output persistence paths.
+- Notifications are now persisted, support unread/read lifecycle commands, have a dedicated frontend pane, and now ingest OSC attention sequences (`9`/`99`/`777`) from both session and agent output streams.
+- Frontend review pane now supports task selection, check result display, review pack inspection, approve/reject actions, and merge trigger.
+- Frontend now includes a dedicated merge queue pane with queue ordering controls and merge execution action.
+- macOS build-script environment handling now sets temp-directory vars before Tauri build tooling to avoid `xcrun` temp-path warnings in constrained environments.
+- Redaction hardening expanded:
+  - append-only event payload redaction at write path
+  - automation control-plane audit redaction
+  - session stream redaction before scrollback persistence
+  - context markdown + manifest redaction before export
+  - review pack diff/check content redaction before persistence
+- Phase 4 backend command surface added:
+  - session replay timeline: `get_session_timeline`
+  - recovery workflow: `get_session_recovery_options`, `recover_session`
+  - daily brief: `get_daily_brief`
+  - task drafting: `draft_task_contract`
+- Control-plane methods now include:
+  - `session.timeline`
+  - `session.recovery.options`
+  - `session.recovery.execute`
+  - `project.daily_brief`
+  - `task.draft`
+  - `merge.queue.reorder`
+- Added tests for OSC parsing and redaction paths in `pnevma-app` and `pnevma-session`.
+- Phase 4 frontend surfaces are now implemented:
+  - replay timeline pane
+  - recovery action panel
+  - daily brief pane
+- Command palette now includes pane actions for replay and daily brief, and frontend includes “Draft Task From Text” flow with pre-save editable fields.
+- Task drafting now attempts provider-backed generation first and falls back to deterministic local drafting with warning metadata.
+- Added proxy latency benchmark script (`scripts/latency_proxy.sh`) and recorded proxy measurements in `spike/tauri-terminal/latency-notes.md`.
+- Pane layout templates are now persisted in project DB (`pane_layout_templates`) with built-in system templates:
+  - `solo-focus`
+  - `review-mode`
+  - `debug-mode`
+- New Tauri commands:
+  - `list_pane_layout_templates`
+  - `save_pane_layout_template`
+  - `apply_pane_layout_template`
+- Template apply is non-destructive by default: backend preflights replacement panes for unsaved state and returns warnings unless `force=true`.
+- Applying templates now emits both `pane_updated` and `project_refreshed` events for immediate frontend synchronization.
+- Command palette now includes:
+  - save current pane graph as a named template
+  - apply any available template (system or custom), with unsaved-replacement confirmation when required
+- Phase 5 workflow slices implemented:
+  - project-wide search command and pane (`search_project`) across tasks/events/artifacts/commits/scrollback
+  - file browser command/pane (`list_project_files`, `open_file_target`) with git-status indicators and preview/editor open actions
+  - dedicated diff viewer command/pane (`get_task_diff`) with inline and side-by-side rendering by file/hunk
+  - control-plane coverage for the above (`project.search`, `workspace.files`, `workspace.file.open`, `review.diff`)
+  - command palette pane actions for Search, Diff, and File Browser
+- Additional Phase 5 polish slices now implemented:
+  - rule/convention manager pane + control-plane methods + context inclusion usage tracking
+  - post-merge knowledge-capture flow with artifact persistence and merge-triggered prompt
+  - keybinding customization persisted in global config and consumed by command-palette/pane-focus shortcuts
+  - quick keyboard actions for high-frequency flow (`task.new`, `task.dispatch_next_ready`, `review.approve_next`)
+  - settings/rules UX hardening: inline forms with validation/status messages (no browser `prompt`/`alert`/`confirm` dependency)
+  - onboarding state API + frontend guided overlay + onboarding instrumentation events/telemetry
+  - telemetry management surface (opt-in, queue count, export, clear)
+  - design-partner instrumentation primitives (`submit_feedback`, expanded partner metrics report)
+  - macOS release scripts and runbook for signing/notarization/stapling (`scripts/release-macos-*.sh`, `docs/macos-release.md`)
+  - strict checks-only release preflight gate (`scripts/release-preflight.sh`)
+  - shared IPC harness helper + recovery smoke scenario (`scripts/ipc-common.sh`, `scripts/ipc-e2e-recovery.sh`)
+  - deeper Phase 5 testing:
+    - property-based dispatch queue ordering invariants
+    - property-based merge-queue FIFO + serialized merge lock coverage
+    - worktree lease stale/refresh invariants
+    - DB roundtrip tests for onboarding/rules usage/telemetry/feedback
+    - session fault-path tests for missing-session scrollback/input operations
+    - session fault-path tests for offset clamp, zero-limit reads, directory-path IO failures, invalid UTF-8 safety
+    - control-plane auth regression tests (missing/invalid/valid password + same-user mode)
+- First-launch bootstrap surface now implemented:
+  - backend readiness/init commands (`get_environment_readiness`, `initialize_global_config`, `initialize_project_scaffold`)
+  - command registry + control-plane routing for environment/project initialization and `task.create`
+  - frontend first-launch setup panel for path-based readiness/init/open flow
+- Updater rollout scaffolding now implemented:
+  - Tauri updater plugin wiring in app shell
+  - updater config stub in `tauri.conf.json` (endpoint/pubkey placeholders)
+  - helper scripts for updater key generation, runtime overlay config, artifact signing, and feed manifest generation
+- Documentation core set now added:
+  - getting started guide
+  - `pnevma.toml` reference
+  - keyboard shortcut reference
+  - architecture overview
+  - IPC harness usage + release checklist + design-partner readiness guide
+- Additional fault-path coverage now includes restored-session missing-scrollback IO failure handling in `pnevma-session`.
 
 ## Pending for full plan completion
 
-- Full task dependency DAG persistence + auto-block/unblock transitions across all dependency-edit and completion paths.
-- Acceptance checks, review packs, merge gating/conflict flows.
-- Keychain-backed secret manager and output redaction middleware.
-- Replay timeline, stuck detection, daily brief, AI task drafting.
-- Packaging/notarization, full keyboard audit, full-text search, onboarding.
-- Manual desktop latency measurement for the xterm UI spike remains pending in this headless environment.
+- Manual desktop latency verification for xterm split-pane perceived latency (`<50ms`) is still pending in this headless environment (proxy benchmark now recorded).
+- Updater production activation remains pending:
+  - replace updater endpoint/pubkey placeholders with production values
+  - publish first signed feed artifacts (`latest.json` + binaries + signatures)
