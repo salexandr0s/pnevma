@@ -687,8 +687,8 @@ fn scope_default_dir(scope: &str) -> &'static str {
     }
 }
 
-fn sanitize_file_stem(input: &str) -> String {
-    let mut out = String::new();
+fn slugify_with_fallback(input: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(input.len());
     let mut last_sep = false;
     for ch in input.chars() {
         if ch.is_ascii_alphanumeric() {
@@ -699,11 +699,11 @@ fn sanitize_file_stem(input: &str) -> String {
             last_sep = true;
         }
     }
-    let trimmed = out.trim_matches('-').to_string();
+    let trimmed = out.trim_matches('-');
     if trimmed.is_empty() {
-        "entry".to_string()
+        fallback.to_string()
     } else {
-        trimmed
+        trimmed.to_string()
     }
 }
 
@@ -945,8 +945,8 @@ fn summarize_match(text: &str, query: &str) -> String {
     let lower_text = text.to_ascii_lowercase();
     let lower_query = query.to_ascii_lowercase();
     let idx = lower_text.find(&lower_query).unwrap_or(0);
-    let start = idx.saturating_sub(80);
-    let end = (idx + lower_query.len() + 120).min(text.len());
+    let start = align_to_char_start(text, idx.saturating_sub(80));
+    let end = align_to_char_end(text, (idx + lower_query.len() + 120).min(text.len()));
     let mut snippet = text[start..end].replace('\n', " ");
     if start > 0 {
         snippet.insert_str(0, "...");
@@ -955,6 +955,24 @@ fn summarize_match(text: &str, query: &str) -> String {
         snippet.push_str("...");
     }
     snippet
+}
+
+/// Walk forward to the nearest valid UTF-8 char boundary.
+fn align_to_char_start(text: &str, pos: usize) -> usize {
+    let mut p = pos;
+    while p < text.len() && !text.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+/// Walk backward to the nearest valid UTF-8 char boundary.
+fn align_to_char_end(text: &str, pos: usize) -> usize {
+    let mut p = pos;
+    while p > 0 && !text.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
 }
 
 fn parse_porcelain_status_line(line: &str) -> Option<(String, String)> {
@@ -1166,28 +1184,6 @@ fn session_meta_from_row(row: &SessionRow, data_root: &Path) -> Option<SessionMe
     })
 }
 
-fn slugify(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut prev_dash = false;
-    for ch in input.chars() {
-        let c = ch.to_ascii_lowercase();
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-            prev_dash = false;
-            continue;
-        }
-        if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    let trimmed = out.trim_matches('-');
-    if trimmed.is_empty() {
-        "task".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
 
 fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
     let scope: Vec<String> = serde_json::from_str(&row.scope_json).map_err(|e| e.to_string())?;
@@ -1330,13 +1326,6 @@ async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
     out
 }
 
-async fn load_rule_texts(config: &ProjectConfig, project_path: &Path) -> Vec<String> {
-    load_texts(&config.rules.paths, project_path).await
-}
-
-async fn load_convention_texts(config: &ProjectConfig, project_path: &Path) -> Vec<String> {
-    load_texts(&config.conventions.paths, project_path).await
-}
 
 async fn load_recent_knowledge_summaries(
     db: &Db,
@@ -1808,20 +1797,7 @@ async fn resolve_secret_env(
     Ok((env, values))
 }
 
-async fn git_output(repo_root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = TokioCommand::new("git")
-        .args(args)
-        .current_dir(repo_root)
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-async fn git_output_in(dir: &Path, args: &[&str]) -> Result<String, String> {
+async fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = TokioCommand::new("git")
         .args(args)
         .current_dir(dir)
@@ -2028,11 +2004,11 @@ async fn generate_review_pack(
     let worktree_path = PathBuf::from(&worktree.path);
 
     let diff = redact_text(
-        &git_output_in(&worktree_path, &["diff", "--", "."]).await?,
+        &git_output(&worktree_path, &["diff", "--", "."]).await?,
         secrets,
     );
     let changed_files_raw =
-        git_output_in(&worktree_path, &["diff", "--name-only", "--", "."]).await?;
+        git_output(&worktree_path, &["diff", "--name-only", "--", "."]).await?;
     let changed_files = changed_files_raw
         .lines()
         .map(str::trim)
@@ -2632,7 +2608,8 @@ pub async fn open_project(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let path_buf = PathBuf::from(path.clone());
+    let path_buf = std::fs::canonicalize(PathBuf::from(path.clone()))
+        .map_err(|e| format!("failed to canonicalize project path: {e}"))?;
     let config_path = path_buf.join("pnevma.toml");
 
     // --- Workspace trust gate ---
@@ -2851,7 +2828,8 @@ pub async fn list_recent_projects(
 
 #[tauri::command]
 pub async fn trust_workspace(path: String) -> Result<(), String> {
-    let path_buf = PathBuf::from(&path);
+    let path_buf = std::fs::canonicalize(PathBuf::from(&path))
+        .map_err(|e| format!("failed to canonicalize path: {e}"))?;
     let config_path = path_buf.join("pnevma.toml");
     let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let fingerprint = sha256_hex(content.as_bytes());
@@ -2866,9 +2844,12 @@ pub async fn trust_workspace(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn revoke_workspace_trust(path: String) -> Result<(), String> {
+    let canonical = std::fs::canonicalize(PathBuf::from(&path))
+        .map_err(|e| format!("failed to canonicalize path: {e}"))?;
+    let canonical_str = canonical.to_string_lossy().to_string();
     let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
     global_db
-        .revoke_trust(&path)
+        .revoke_trust(&canonical_str)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -3997,11 +3978,11 @@ async fn upsert_scope_item(
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| e.to_string())?;
-        let mut candidate = dir.join(format!("{}.md", sanitize_file_stem(&row.name)));
+        let mut candidate = dir.join(format!("{}.md", slugify_with_fallback(&row.name, "entry")));
         if candidate.exists() {
             candidate = dir.join(format!(
                 "{}-{}.md",
-                sanitize_file_stem(&row.name),
+                slugify_with_fallback(&row.name, "entry"),
                 &row.id.chars().take(8).collect::<String>()
             ));
         }
@@ -4236,7 +4217,7 @@ pub async fn capture_knowledge(
         .map_err(|e| e.to_string())?;
     let filename = format!(
         "{}-{}.md",
-        sanitize_file_stem(&kind),
+        slugify_with_fallback(&kind, "entry"),
         now.format("%Y%m%d-%H%M%S")
     );
     let file_path = dir.join(filename);
@@ -4866,7 +4847,7 @@ pub async fn submit_feedback(
         .map_err(|e| e.to_string())?;
     let artifact_path = dir.join(format!(
         "{}-{}.md",
-        sanitize_file_stem(&input.category),
+        slugify_with_fallback(&input.category, "entry"),
         now.format("%Y%m%d-%H%M%S")
     ));
     let artifact_content = format!(
@@ -5201,6 +5182,15 @@ pub async fn recover_session(
             Ok(json!({"ok": true, "action": "reattach"}))
         }
         "checkpoint_restore" => {
+            // Guard: reject restore if any sessions are running
+            let all_sessions = db
+                .list_sessions(&project_id.to_string())
+                .await
+                .map_err(|e| e.to_string())?;
+            if all_sessions.iter().any(|s| s.status == "running") {
+                return Err("cannot restore checkpoint while sessions are running — stop all sessions first".to_string());
+            }
+
             let checkpoints = db
                 .list_checkpoints(&project_id.to_string())
                 .await
@@ -6138,6 +6128,17 @@ pub async fn merge_queue_execute(
         )
     };
     let target_branch = config.branches.target.clone();
+
+    // Acquire per-branch lock to prevent concurrent merge operations on the same branch
+    let branch_lock = {
+        let mut locks = state.merge_branch_locks.lock().await;
+        locks
+            .entry(target_branch.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _branch_guard = branch_lock.lock().await;
+
     let Some(mut queue_item) = db
         .get_merge_queue_item_by_task(&task_id)
         .await
@@ -6195,7 +6196,7 @@ pub async fn merge_queue_execute(
     )
     .await;
 
-    let dirty = git_output_in(&worktree_path, &["status", "--porcelain"]).await?;
+    let dirty = git_output(&worktree_path, &["status", "--porcelain"]).await?;
     if !dirty.trim().is_empty() {
         queue_item.status = "Blocked".to_string();
         queue_item.blocked_reason = Some("worktree has uncommitted changes".to_string());
@@ -6209,8 +6210,8 @@ pub async fn merge_queue_execute(
         return Err("merge blocked: worktree has uncommitted changes".to_string());
     }
 
-    if let Err(err) = git_output_in(&worktree_path, &["rebase", &target_branch]).await {
-        let conflicts = git_output_in(&worktree_path, &["diff", "--name-only", "--diff-filter=U"])
+    if let Err(err) = git_output(&worktree_path, &["rebase", &target_branch]).await {
+        let conflicts = git_output(&worktree_path, &["diff", "--name-only", "--diff-filter=U"])
             .await
             .unwrap_or_default();
         queue_item.status = "Blocked".to_string();
@@ -6332,7 +6333,7 @@ pub async fn list_conflicts(
     else {
         return Ok(Vec::new());
     };
-    let out = git_output_in(
+    let out = git_output(
         Path::new(&worktree.path),
         &["diff", "--name-only", "--diff-filter=U"],
     )
@@ -6574,6 +6575,16 @@ pub async fn checkpoint_restore(
             .ok_or_else(|| "no open project".to_string())?;
         (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
     };
+
+    // Guard: reject restore if any sessions are running
+    let sessions = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    if sessions.iter().any(|s| s.status == "running") {
+        return Err("cannot restore checkpoint while sessions are running — stop all sessions first".to_string());
+    }
+
     let row = db
         .get_checkpoint(&checkpoint_id)
         .await
@@ -7434,7 +7445,7 @@ pub async fn dispatch_task(
         .get(&provider)
         .ok_or_else(|| "no available agent adapters found".to_string())?;
 
-    let slug = slugify(&task.title);
+    let slug = slugify_with_fallback(&task.title, "task");
     let lease = git
         .create_worktree(task_id_uuid, &config.branches.target, &slug)
         .await
@@ -7474,12 +7485,12 @@ pub async fn dispatch_task(
     ensure_scope_rows_from_config(&db, project_id, &project_path, &config, "convention").await?;
     let mut rules = load_active_scope_texts(&db, project_id, &project_path, "rule").await?;
     if rules.is_empty() {
-        rules = load_rule_texts(&config, &project_path).await;
+        rules = load_texts(&config.rules.paths, &project_path).await;
     }
     let mut conventions =
         load_active_scope_texts(&db, project_id, &project_path, "convention").await?;
     if conventions.is_empty() {
-        conventions = load_convention_texts(&config, &project_path).await;
+        conventions = load_texts(&config.conventions.paths, &project_path).await;
     }
     let token_budget = match provider.as_str() {
         "codex" => config
@@ -8405,7 +8416,11 @@ pub async fn connect_ssh(profile_id: String, state: State<'_, AppState>) -> Resu
     };
 
     let ssh_args = pnevma_ssh::build_ssh_command(&ssh_profile);
-    let command = ssh_args.join(" ");
+    let command = ssh_args
+        .iter()
+        .map(|a| pnevma_ssh::shell_escape_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let session = ctx
         .sessions

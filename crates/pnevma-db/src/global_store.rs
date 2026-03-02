@@ -18,7 +18,8 @@ pub struct GlobalDb {
 
 impl GlobalDb {
     pub async fn open() -> Result<Self, DbError> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let home = std::env::var("HOME")
+            .map_err(|_| DbError::Config("HOME environment variable is not set".to_string()))?;
         let dir = std::path::PathBuf::from(home).join(".local/share/pnevma");
         tokio::fs::create_dir_all(&dir).await?;
         let db_path = dir.join("global.db");
@@ -85,8 +86,5 @@ impl GlobalDb {
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let result = hasher.finalize();
-    result.iter().map(|b| format!("{b:02x}")).collect()
+    format!("{:x}", Sha256::digest(data))
 }

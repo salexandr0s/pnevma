@@ -1,5 +1,16 @@
+use std::sync::OnceLock;
+
+use regex::Regex;
+
 use crate::error::SshError;
 use crate::profile::SshProfile;
+
+/// Validates Tailscale DNS names: only alphanumeric, dots, hyphens, underscores.
+fn is_valid_dns_name(name: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^[a-zA-Z0-9._-]+$").unwrap());
+    re.is_match(name)
+}
 
 pub async fn discover_tailscale_devices() -> Result<Vec<SshProfile>, SshError> {
     let output = match tokio::process::Command::new("tailscale")
@@ -42,6 +53,11 @@ pub async fn discover_tailscale_devices() -> Result<Vec<SshProfile>, SshError> {
                 .to_string();
 
             if dns_name.is_empty() {
+                continue;
+            }
+
+            if !is_valid_dns_name(&dns_name) {
+                tracing::warn!(dns_name = %dns_name, "skipping Tailscale peer with invalid DNS name");
                 continue;
             }
 

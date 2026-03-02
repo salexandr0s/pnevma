@@ -12,6 +12,19 @@ pub struct SshKeyInfo {
     pub fingerprint: String,
 }
 
+/// Validates that a key name does not contain path traversal characters.
+fn validate_key_name(name: &str) -> Result<(), SshError> {
+    if name.is_empty() {
+        return Err(SshError::Parse("key name must not be empty".to_string()));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
+        return Err(SshError::Parse(format!(
+            "invalid key name: must not contain '/', '\\', '\\0', or '..': {name}"
+        )));
+    }
+    Ok(())
+}
+
 pub fn list_ssh_keys(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
     let mut keys = vec![];
 
@@ -53,12 +66,34 @@ pub fn generate_key(
     key_type: &str,
     comment: &str,
 ) -> Result<SshKeyInfo, SshError> {
+    validate_key_name(name)?;
+
     let effective_type = if key_type.is_empty() {
         "ed25519"
     } else {
         key_type
     };
     let key_path = ssh_dir.join(name);
+
+    // Defense-in-depth: ensure the resolved path stays within ssh_dir
+    let canonical_ssh_dir = ssh_dir
+        .canonicalize()
+        .map_err(SshError::Io)?;
+    // The key_path may not exist yet, but its parent must be within ssh_dir.
+    // We check that the parent resolves inside ssh_dir.
+    let parent = key_path
+        .parent()
+        .ok_or_else(|| SshError::Parse("invalid key path".to_string()))?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(SshError::Io)?;
+    if !canonical_parent.starts_with(&canonical_ssh_dir) {
+        return Err(SshError::Parse(format!(
+            "key path escapes SSH directory: {}",
+            key_path.display()
+        )));
+    }
+
     let key_path_str = key_path.to_string_lossy().to_string();
 
     let output = std::process::Command::new("ssh-keygen")
@@ -121,4 +156,27 @@ fn parse_keygen_output(line: &str) -> Result<(String, String), SshError> {
         .to_string();
 
     Ok((key_type, fingerprint))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_path_traversal_names() {
+        assert!(validate_key_name("../etc/passwd").is_err());
+        assert!(validate_key_name("foo/bar").is_err());
+        assert!(validate_key_name("foo\\bar").is_err());
+        assert!(validate_key_name("foo\0bar").is_err());
+        assert!(validate_key_name("..").is_err());
+        assert!(validate_key_name("").is_err());
+    }
+
+    #[test]
+    fn accepts_valid_key_names() {
+        assert!(validate_key_name("id_ed25519").is_ok());
+        assert!(validate_key_name("my-key").is_ok());
+        assert!(validate_key_name("key_name.pem").is_ok());
+        assert!(validate_key_name("my_key_2024").is_ok());
+    }
 }

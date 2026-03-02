@@ -13,4 +13,7 @@ pub enum DbError {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("config error: {0}")]
+    Config(String),
 }
