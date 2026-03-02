@@ -3,6 +3,7 @@ pub mod error;
 pub mod events;
 pub mod orchestration;
 pub mod task;
+pub mod workflow;
 
 pub use config::{
     global_config_path, load_global_config, load_project_config, save_global_config, GlobalConfig,
@@ -17,6 +18,7 @@ pub use task::{
     Check, CheckType, ContextManifestItem, ContextPack, Priority, TaskContract, TaskStatus,
     TransitionError,
 };
+pub use workflow::{WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStep};
 
 pub type ProjectId = uuid::Uuid;
 pub type TaskId = uuid::Uuid;

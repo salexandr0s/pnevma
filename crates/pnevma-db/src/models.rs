@@ -253,3 +253,37 @@ pub struct FeedbackRow {
     pub artifact_path: Option<String>,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WorkflowInstanceRow {
+    pub id: String,
+    pub project_id: String,
+    pub workflow_name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WorkflowTaskRow {
+    pub workflow_id: String,
+    pub step_index: i64,
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SshProfileRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub host: String,
+    pub port: i64,
+    pub user: Option<String>,
+    pub identity_file: Option<String>,
+    pub proxy_jump: Option<String>,
+    pub tags_json: String,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

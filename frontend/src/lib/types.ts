@@ -46,7 +46,8 @@ export type PaneType =
   | "file-browser"
   | "rules-manager"
   | "settings"
-  | "notifications";
+  | "notifications"
+  | "ssh-manager";
 
 export type Pane = {
   id: string;
@@ -332,4 +333,56 @@ export type DraftTask = {
   priority: string;
   source: "provider" | "fallback";
   warnings: string[];
+};
+
+export type WorkflowDef = {
+  name: string;
+  description?: string | null;
+  steps: WorkflowStep[];
+};
+
+export type WorkflowStep = {
+  title: string;
+  goal: string;
+  scope: string[];
+  priority: string;
+  depends_on: number[];
+  auto_dispatch: boolean;
+};
+
+export type WorkflowInstance = {
+  id: string;
+  workflow_name: string;
+  description?: string | null;
+  status: string;
+  task_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type SshProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user?: string | null;
+  identity_file?: string | null;
+  proxy_jump?: string | null;
+  tags: string[];
+  source: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SshKeyInfo = {
+  name: string;
+  path: string;
+  key_type: string;
+  fingerprint: string;
+};
+
+export type TrustRecord = {
+  path: string;
+  trusted_at: string;
+  fingerprint: string;
 };

@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Terminal } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
-import "xterm/css/xterm.css";
-import { getScrollback, sendSessionInput } from "../../hooks/useTauri";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
+import { getScrollback, resizeSession, sendSessionInput } from "../../hooks/useTauri";
 
 type Props = {
   title: string;
@@ -81,11 +81,26 @@ export function TerminalPane({ title, sessionId, sessionStatus }: Props) {
       unlisten = fn;
     });
 
-    const resize = () => fit.fit();
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const resize = () => {
+      fit.fit();
+      if (sessionId) {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          void resizeSession(sessionId, term.cols, term.rows).catch(() => {});
+        }, 100);
+      }
+    };
     window.addEventListener("resize", resize);
+
+    // Also observe the container element for pane-level resizes (e.g. layout changes)
+    const observer = new ResizeObserver(() => resize());
+    observer.observe(ref.current);
 
     return () => {
       stop = true;
+      if (resizeTimer) clearTimeout(resizeTimer);
+      observer.disconnect();
       window.removeEventListener("resize", resize);
       onDataDispose.dispose();
       void listenPromise.then(() => {

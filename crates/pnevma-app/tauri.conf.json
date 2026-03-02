@@ -10,6 +10,9 @@
     "devUrl": "http://localhost:5173"
   },
   "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: https://tauri.localhost; img-src 'self' data:"
+    },
     "windows": [
       {
         "label": "main",

@@ -25,9 +25,14 @@ import type {
   RuleUsage,
   SearchResult,
   Session,
+  SshKeyInfo,
+  SshProfile,
   Task,
   TaskDiff,
   TaskCheckRun,
+  TrustRecord,
+  WorkflowDef,
+  WorkflowInstance,
   TelemetryStatus,
   TimelineEvent,
 } from "../lib/types";
@@ -42,6 +47,18 @@ type ScrollbackSlice = {
 
 export async function openProject(path: string): Promise<string> {
   return invoke("open_project", { path });
+}
+
+export async function trustWorkspace(path: string): Promise<void> {
+  return invoke("trust_workspace", { path });
+}
+
+export async function revokeWorkspaceTrust(path: string): Promise<void> {
+  return invoke("revoke_workspace_trust", { path });
+}
+
+export async function listTrustedWorkspaces(): Promise<TrustRecord[]> {
+  return invoke("list_trusted_workspaces");
 }
 
 export async function getEnvironmentReadiness(
@@ -87,6 +104,10 @@ export async function restartSession(sessionId: string): Promise<string> {
 
 export async function sendSessionInput(sessionId: string, input: string): Promise<void> {
   return invoke("send_session_input", { session_id: sessionId, input });
+}
+
+export async function resizeSession(sessionId: string, cols: number, rows: number): Promise<void> {
+  return invoke("resize_session", { session_id: sessionId, cols, rows });
 }
 
 export async function getScrollback(
@@ -423,4 +444,70 @@ export async function executeRegisteredCommand(
   args: Record<string, string>
 ): Promise<Record<string, unknown>> {
   return invoke("execute_registered_command", { input: { id, args } });
+}
+
+// ─── Workflows ──────────────────────────────────────────────────
+
+export async function listWorkflowDefs(): Promise<WorkflowDef[]> {
+  return invoke("list_workflow_defs");
+}
+
+export async function instantiateWorkflow(
+  workflowName: string
+): Promise<WorkflowInstance> {
+  return invoke("instantiate_workflow", {
+    input: { workflow_name: workflowName },
+  });
+}
+
+export async function listWorkflowInstances(): Promise<WorkflowInstance[]> {
+  return invoke("list_workflow_instances");
+}
+
+// ─── SSH ──────────────────────────────────────────────────
+
+export async function listSshProfiles(): Promise<SshProfile[]> {
+  return invoke("list_ssh_profiles");
+}
+
+export async function upsertSshProfile(input: {
+  id?: string;
+  name: string;
+  host: string;
+  port?: number;
+  user?: string;
+  identity_file?: string;
+  proxy_jump?: string;
+  tags?: string[];
+  source?: string;
+}): Promise<string> {
+  return invoke("upsert_ssh_profile", { input });
+}
+
+export async function deleteSshProfile(id: string): Promise<void> {
+  return invoke("delete_ssh_profile", { id });
+}
+
+export async function importSshConfig(): Promise<SshProfile[]> {
+  return invoke("import_ssh_config");
+}
+
+export async function discoverTailscale(): Promise<SshProfile[]> {
+  return invoke("discover_tailscale");
+}
+
+export async function connectSsh(profileId: string): Promise<string> {
+  return invoke("connect_ssh", { profile_id: profileId });
+}
+
+export async function listSshKeys(): Promise<SshKeyInfo[]> {
+  return invoke("list_ssh_keys");
+}
+
+export async function generateSshKey(input: {
+  name: string;
+  key_type?: string;
+  comment?: string;
+}): Promise<SshKeyInfo> {
+  return invoke("generate_ssh_key", { input });
 }

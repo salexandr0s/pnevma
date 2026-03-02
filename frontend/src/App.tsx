@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { CommandPalette } from "./components/CommandPalette";
+import {
+  DialogProvider,
+  alert as nativeAlert,
+  confirm as nativeConfirm,
+  prompt as nativePrompt,
+} from "./components/Dialog";
 import { FirstLaunchPanel } from "./components/FirstLaunchPanel";
 import {
   type KnowledgeCaptureRequest,
@@ -38,6 +44,7 @@ import {
   projectStatus,
   rejectReview,
   savePaneLayoutTemplate,
+  trustWorkspace,
 } from "./hooks/useTauri";
 import { matchesShortcut } from "./lib/keybinding";
 import type {
@@ -62,6 +69,7 @@ import { ReviewPane } from "./panes/review/ReviewPane";
 import { SearchPane } from "./panes/search/SearchPane";
 import { RulesManagerPane } from "./panes/settings/RulesManagerPane";
 import { SettingsPane } from "./panes/settings/SettingsPane";
+import { SshManagerPane } from "./panes/ssh/SshManagerPane";
 import { TaskBoardPane } from "./panes/task-board/TaskBoardPane";
 import { TerminalPane } from "./panes/terminal/TerminalPane";
 import { useAppStore } from "./stores/appStore";
@@ -189,6 +197,9 @@ function renderPane(
   if (pane.type === "settings") {
     return <SettingsPane />;
   }
+  if (pane.type === "ssh-manager") {
+    return <SshManagerPane />;
+  }
   return null;
 }
 
@@ -218,13 +229,23 @@ export function App() {
     setProjectName,
     setPanes,
     setTasks,
+    upsertTask,
+    removeTask,
     setSessions,
+    upsertSession,
+    removeSession,
     setNotifications,
+    upsertNotification,
+    removeNotification,
     setMergeQueue,
+    upsertMergeQueueItem,
+    removeMergeQueueItem,
     setLayoutTemplates,
     setDailyBrief,
     setProjectCost,
     focusPane,
+    removePane,
+    upsertPane: upsertPaneInStore,
   } = useAppStore();
 
   const refreshProjectData = useCallback(async () => {
@@ -350,6 +371,45 @@ export function App() {
       await refreshProjectData();
       await refreshKeybindings();
       await refreshOnboarding();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("workspace_not_trusted")) {
+        const confirmed = await nativeConfirm(
+          "This workspace has not been trusted yet. Trust and open?"
+        );
+        if (confirmed) {
+          await trustWorkspace(bootstrapPath.trim());
+          try {
+            await openProject(bootstrapPath.trim());
+            setBootstrapNotice(undefined);
+            await refreshProjectData();
+            await refreshKeybindings();
+            await refreshOnboarding();
+          } catch (retryErr: unknown) {
+            const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+            await nativeAlert(`Failed to open project: ${retryMsg}`);
+          }
+        }
+      } else if (message.includes("workspace_config_changed")) {
+        const confirmed = await nativeConfirm(
+          "Workspace configuration has changed since it was last trusted. Re-trust and open?"
+        );
+        if (confirmed) {
+          await trustWorkspace(bootstrapPath.trim());
+          try {
+            await openProject(bootstrapPath.trim());
+            setBootstrapNotice(undefined);
+            await refreshProjectData();
+            await refreshKeybindings();
+            await refreshOnboarding();
+          } catch (retryErr: unknown) {
+            const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+            await nativeAlert(`Failed to open project: ${retryMsg}`);
+          }
+        }
+      } else {
+        await nativeAlert(`Failed to open project: ${message}`);
+      }
     } finally {
       setBootstrapBusy(false);
     }
@@ -425,7 +485,7 @@ export function App() {
         const detail = preview.unsaved_replacements
           .map((item) => `- ${item.pane_label} (${item.pane_type}): ${item.reason}`)
           .join("\n");
-        const confirmed = confirm(
+        const confirmed = await nativeConfirm(
           `Applying "${templateName}" will replace panes with unsaved state:\n${detail}\n\nApply anyway?`
         );
         if (!confirmed) {
@@ -439,11 +499,11 @@ export function App() {
   );
 
   const saveCurrentLayoutTemplateFromPalette = useCallback(async () => {
-    const name = (prompt("Template name (slug)", "") ?? "").trim();
+    const name = ((await nativePrompt("Template name (slug)", "")) ?? "").trim();
     if (!name) {
       return;
     }
-    const displayName = (prompt("Template label", "") ?? "").trim();
+    const displayName = ((await nativePrompt("Template label", "")) ?? "").trim();
     await savePaneLayoutTemplate(name, displayName || undefined);
     await refreshProjectData();
   }, [refreshProjectData]);
@@ -519,15 +579,136 @@ export function App() {
     window.addEventListener("pnevma:keybindings-updated", onKeybindingsUpdated as EventListener);
     window.addEventListener("pnevma:onboarding-reset", onOnboardingReset as EventListener);
 
+    const refreshCost = async () => {
+      try { setProjectCost(await getProjectCost("")); } catch { /* noop */ }
+    };
+    const refreshBrief = async () => {
+      try { setDailyBrief(await getDailyBrief()); } catch { /* noop */ }
+    };
+
     const setup = async () => {
-      const refreshEvents = [
-        "task_updated", "cost_updated", "session_spawned", "session_heartbeat",
-        "session_exited", "notification_created", "notification_updated",
-        "project_refreshed", "merge_queue_updated", "pane_updated", "knowledge_captured",
-      ];
-      for (const event of refreshEvents) {
-        unlisteners.push(await listen(event, () => void refreshProjectData()));
-      }
+      // Task events: use delta payloads when available, fall back to full refresh
+      unlisteners.push(
+        await listen<Record<string, unknown>>("task_updated", (event) => {
+          const p = event.payload ?? {};
+          if (p.deleted === true && typeof p.task_id === "string") {
+            removeTask(p.task_id);
+          } else if (p.task && typeof p.task === "object") {
+            upsertTask(p.task as Task);
+          } else {
+            // Fallback: full refresh (e.g. workflow batch creates)
+            void listTasks().then(setTasks).catch(() => undefined);
+          }
+          void refreshCost();
+        })
+      );
+
+      unlisteners.push(
+        await listen("cost_updated", () => void refreshCost())
+      );
+
+      // Session events: use delta payloads when available
+      unlisteners.push(
+        await listen<Record<string, unknown>>("session_spawned", (event) => {
+          const p = event.payload ?? {};
+          if (p.session && typeof p.session === "object") {
+            upsertSession(p.session as Session);
+          } else {
+            void listSessions().then(setSessions).catch(() => undefined);
+          }
+        })
+      );
+      unlisteners.push(
+        await listen<Record<string, unknown>>("session_heartbeat", (event) => {
+          const p = event.payload ?? {};
+          if (p.session && typeof p.session === "object") {
+            upsertSession(p.session as Session);
+          } else {
+            void listSessions().then(setSessions).catch(() => undefined);
+          }
+        })
+      );
+      unlisteners.push(
+        await listen<Record<string, unknown>>("session_exited", (event) => {
+          const p = event.payload ?? {};
+          if (p.session && typeof p.session === "object") {
+            upsertSession(p.session as Session);
+          } else if (typeof p.session_id === "string") {
+            removeSession(p.session_id);
+          } else {
+            void listSessions().then(setSessions).catch(() => undefined);
+          }
+        })
+      );
+
+      // Notification events
+      unlisteners.push(
+        await listen<Record<string, unknown>>("notification_created", (event) => {
+          const p = event.payload ?? {};
+          if (p.id && typeof p.id === "string") {
+            upsertNotification(p as unknown as Notification);
+          } else {
+            void listNotifications(false).then(setNotifications).catch(() => undefined);
+          }
+        })
+      );
+      unlisteners.push(
+        await listen<Record<string, unknown>>("notification_updated", (event) => {
+          const p = event.payload ?? {};
+          if (p.id && typeof p.id === "string") {
+            // Partial update: merge with existing notification in store
+            const store = useAppStore.getState();
+            const existing = store.notifications.find((n) => n.id === p.id);
+            if (existing) {
+              upsertNotification({ ...existing, ...p } as Notification);
+            } else {
+              void listNotifications(false).then(setNotifications).catch(() => undefined);
+            }
+          } else {
+            void listNotifications(false).then(setNotifications).catch(() => undefined);
+          }
+        })
+      );
+      unlisteners.push(
+        await listen("notification_cleared", () => {
+          setNotifications([]);
+        })
+      );
+
+      // Merge queue events
+      unlisteners.push(
+        await listen<Record<string, unknown>>("merge_queue_updated", (event) => {
+          const p = event.payload ?? {};
+          if (p.item && typeof p.item === "object") {
+            upsertMergeQueueItem(p.item as MergeQueueItem);
+          } else {
+            void listMergeQueue().then(setMergeQueue).catch(() => undefined);
+          }
+        })
+      );
+
+      // Pane events
+      unlisteners.push(
+        await listen<Record<string, unknown>>("pane_updated", (event) => {
+          const p = event.payload ?? {};
+          if (p.action === "removed" && typeof p.pane_id === "string") {
+            removePane(p.pane_id);
+          } else if (p.pane && typeof p.pane === "object") {
+            upsertPaneInStore(p.pane as Pane);
+          } else {
+            void listPanes().then((rows) => { if (rows.length > 0) setPanes(rows); }).catch(() => undefined);
+          }
+        })
+      );
+
+      unlisteners.push(
+        await listen("knowledge_captured", () => void refreshBrief())
+      );
+
+      // Full refresh fallback for bulk operations
+      unlisteners.push(
+        await listen("project_refreshed", () => void refreshProjectData())
+      );
       unlisteners.push(
         await listen<Record<string, unknown>>("knowledge_capture_requested", (event) => {
           const payload = event.payload ?? {};
@@ -637,7 +818,7 @@ export function App() {
   }, [onboarding, projectName, tasks, updateOnboarding]);
 
   const resolveCommandArgs = useCallback(
-    (command: RegisteredCommand): Record<string, string> | null => {
+    async (command: RegisteredCommand): Promise<Record<string, string> | null> => {
       const args: Record<string, string> = {};
       const activePane = panes.find((pane) => pane.id === activePaneId) ?? panes[0];
       const activeSessionId = activePane?.session_id ?? undefined;
@@ -649,7 +830,7 @@ export function App() {
         } else if (arg.source === "active_session_id") {
           value = activeSessionId ?? "";
         } else {
-          const prompted = prompt(arg.label, arg.default_value ?? "") ?? "";
+          const prompted = (await nativePrompt(arg.label, arg.default_value ?? "")) ?? "";
           value = prompted.trim();
         }
 
@@ -671,7 +852,7 @@ export function App() {
         id: command.id,
         label: command.label,
         run: async () => {
-          const args = resolveCommandArgs(command);
+          const args = await resolveCommandArgs(command);
           if (!args) {
             return;
           }
@@ -683,36 +864,36 @@ export function App() {
         id: "task.draft_from_text",
         label: "Draft Task From Text",
         run: async () => {
-          const text = prompt("Describe the task to draft", "");
+          const text = await nativePrompt("Describe the task to draft", "");
           if (!text || !text.trim()) {
             return;
           }
           const draft = await draftTaskContract(text.trim());
           if (draft.warnings.length > 0) {
-            alert(`Draft warning: ${draft.warnings.join(" | ")}`);
+            await nativeAlert(`Draft warning: ${draft.warnings.join(" | ")}`);
           }
-          const title = (prompt("Title", draft.title) ?? draft.title).trim();
-          const goal = (prompt("Goal", draft.goal) ?? draft.goal).trim();
-          const scope = (prompt("Scope (comma-separated)", draft.scope.join(", ")) ?? "")
+          const title = ((await nativePrompt("Title", draft.title)) ?? draft.title).trim();
+          const goal = ((await nativePrompt("Goal", draft.goal)) ?? draft.goal).trim();
+          const scope = ((await nativePrompt("Scope (comma-separated)", draft.scope.join(", "))) ?? "")
             .split(",")
             .map((item) => item.trim())
             .filter(Boolean);
           const acceptanceCriteria = (
-            prompt(
+            (await nativePrompt(
               "Acceptance criteria (one per line)",
               draft.acceptance_criteria.join("\n")
-            ) ?? ""
+            )) ?? ""
           )
             .split("\n")
             .map((item) => item.trim())
             .filter(Boolean);
           const constraints = (
-            prompt("Constraints (one per line)", draft.constraints.join("\n")) ?? ""
+            (await nativePrompt("Constraints (one per line)", draft.constraints.join("\n"))) ?? ""
           )
             .split("\n")
             .map((item) => item.trim())
             .filter(Boolean);
-          const priority = (prompt("Priority (P0/P1/P2/P3)", draft.priority) ?? "P1").trim();
+          const priority = ((await nativePrompt("Priority (P0/P1/P2/P3)", draft.priority)) ?? "P1").trim();
           if (!title || !goal || acceptanceCriteria.length === 0) {
             return;
           }
@@ -736,7 +917,7 @@ export function App() {
             await saveCurrentLayoutTemplateFromPalette();
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            alert(`Failed to save layout template: ${message}`);
+            await nativeAlert(`Failed to save layout template: ${message}`);
           }
         },
       };
@@ -748,7 +929,7 @@ export function App() {
             await applyLayoutTemplateFromPalette(template.name);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            alert(`Failed to apply layout template: ${message}`);
+            await nativeAlert(`Failed to apply layout template: ${message}`);
           }
         },
       }));
@@ -888,6 +1069,7 @@ export function App() {
         onCapture={handleKnowledgeCapture}
         onClose={() => setKnowledgeRequest(null)}
       />
+      <DialogProvider />
     </div>
   );
 }

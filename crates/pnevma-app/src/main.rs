@@ -1,3 +1,4 @@
+use pnevma_app::auto_dispatch;
 use pnevma_app::commands::*;
 use pnevma_app::state::AppState;
 use tauri::{Emitter, Manager};
@@ -38,11 +39,15 @@ fn main() {
             open_project,
             close_project,
             list_recent_projects,
+            trust_workspace,
+            revoke_workspace_trust,
+            list_trusted_workspaces,
             create_session,
             list_sessions,
             reattach_session,
             restart_session,
             send_session_input,
+            resize_session,
             get_scrollback,
             restore_sessions,
             list_panes,
@@ -119,12 +124,24 @@ fn main() {
             submit_feedback,
             partner_metrics_report,
             pool_state,
+            list_workflow_defs,
+            instantiate_workflow,
+            list_workflow_instances,
             list_registered_commands,
-            execute_registered_command
+            execute_registered_command,
+            list_ssh_profiles,
+            upsert_ssh_profile,
+            delete_ssh_profile,
+            import_ssh_config,
+            discover_tailscale,
+            connect_ssh,
+            list_ssh_keys,
+            generate_ssh_key
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").expect("main window");
             window.emit("app_ready", serde_json::json!({ "ok": true }))?;
+            auto_dispatch::start_auto_dispatch(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

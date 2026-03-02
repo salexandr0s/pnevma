@@ -5,16 +5,18 @@ use chrono::{DateTime, Utc};
 use pnevma_agents::{AgentConfig, AgentEvent, DispatchPool, QueuedDispatch, TaskPayload};
 use pnevma_context::{
     ContextCompileInput, ContextCompileMode, ContextCompiler, ContextCompilerConfig,
+    DiscoveryConfig, FileDiscovery,
 };
 use pnevma_core::{
     global_config_path, load_global_config, load_project_config, save_global_config, Check,
-    CheckType, GlobalConfig, Priority, ProjectConfig, TaskContract, TaskStatus,
+    CheckType, GlobalConfig, Priority, ProjectConfig, TaskContract, TaskStatus, WorkflowDef,
 };
 use pnevma_db::{
-    ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostRow, Db,
-    EventQueryFilter, EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow,
-    OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SecretRefRow,
-    SessionRow, TaskRow, TelemetryEventRow, WorktreeRow,
+    sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow,
+    CostRow, Db, EventQueryFilter, EventRow, FeedbackRow, GlobalDb, MergeQueueRow, NewEvent,
+    NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow,
+    SecretRefRow, SessionRow, SshProfileRow, TaskRow, TelemetryEventRow, TrustRecord,
+    WorkflowInstanceRow, WorktreeRow,
 };
 use pnevma_git::GitService;
 use pnevma_session::{
@@ -1279,6 +1281,40 @@ fn task_row_to_view(row: TaskRow, cost_usd: Option<f64>) -> Result<TaskView, Str
     })
 }
 
+/// Emit a `task_updated` event with the full task view when possible.
+/// Falls back to just the task_id if fetching/converting the row fails.
+async fn emit_enriched_task_event(app: &AppHandle, db: &Db, task_id: &str) {
+    let view = async {
+        let row = db.get_task(task_id).await.ok()??;
+        let cost = db.task_cost_total(task_id).await.ok();
+        task_row_to_view(row, cost).ok()
+    }
+    .await;
+    match view {
+        Some(v) => {
+            let _ = app.emit("task_updated", json!({"task": v}));
+        }
+        None => {
+            let _ = app.emit("task_updated", json!({"task_id": task_id}));
+        }
+    }
+}
+
+/// Build a serializable session view from a SessionRow.
+fn session_row_to_event_payload(row: &SessionRow) -> serde_json::Value {
+    json!({
+        "id": row.id,
+        "project_id": row.project_id,
+        "name": row.name,
+        "status": row.status,
+        "pid": row.pid,
+        "cwd": row.cwd,
+        "command": row.command,
+        "started_at": row.started_at.to_rfc3339(),
+        "last_heartbeat": row.last_heartbeat.to_rfc3339(),
+    })
+}
+
 async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for path in paths {
@@ -1494,7 +1530,7 @@ async fn refresh_dependency_states(
         emit_task_status_changed(db, project_id, task.id, &prev, &task.status).await;
         emit_task_updated(db, project_id, task.id).await;
         if let Some(app) = app {
-            let _ = app.emit("task_updated", json!({"task_id": task.id.to_string()}));
+            emit_enriched_task_event(app, db, &task.id.to_string()).await;
         }
     }
     Ok(())
@@ -2213,7 +2249,7 @@ async fn cleanup_task_worktree(
             db.update_task(&row).await.map_err(|e| e.to_string())?;
             emit_task_updated(db, project_id, task_id).await;
             if let Some(app) = app {
-                let _ = app.emit("task_updated", json!({"task_id": task_id_str}));
+                emit_enriched_task_event(app, db, &task_id_str).await;
             }
         }
     }
@@ -2496,7 +2532,7 @@ fn spawn_session_bridge(app: AppHandle, db: Db, sessions: SessionSupervisor, pro
                     let _ = db.upsert_session(&row).await;
                     let _ = app.emit(
                         "session_spawned",
-                        json!({"session_id": meta.id, "name": meta.name}),
+                        json!({"session_id": meta.id, "name": meta.name, "session": session_row_to_event_payload(&row)}),
                     );
                     append_event(
                         &db,
@@ -2547,22 +2583,33 @@ fn spawn_session_bridge(app: AppHandle, db: Db, sessions: SessionSupervisor, pro
                     }
                 }
                 SessionEvent::Heartbeat { session_id, health } => {
-                    if let Some(meta) = sessions.get(session_id).await {
-                        let _ = db.upsert_session(&session_row_from_meta(&meta)).await;
+                    let session_payload = if let Some(meta) = sessions.get(session_id).await {
+                        let row = session_row_from_meta(&meta);
+                        let _ = db.upsert_session(&row).await;
+                        Some(session_row_to_event_payload(&row))
+                    } else {
+                        None
+                    };
+                    let mut payload =
+                        json!({"session_id": session_id, "health": format!("{:?}", health)});
+                    if let Some(s) = session_payload {
+                        payload["session"] = s;
                     }
-                    let _ = app.emit(
-                        "session_heartbeat",
-                        json!({"session_id": session_id, "health": format!("{:?}", health)}),
-                    );
+                    let _ = app.emit("session_heartbeat", payload);
                 }
                 SessionEvent::Exited { session_id, code } => {
-                    if let Some(meta) = sessions.get(session_id).await {
-                        let _ = db.upsert_session(&session_row_from_meta(&meta)).await;
+                    let session_payload = if let Some(meta) = sessions.get(session_id).await {
+                        let row = session_row_from_meta(&meta);
+                        let _ = db.upsert_session(&row).await;
+                        Some(session_row_to_event_payload(&row))
+                    } else {
+                        None
+                    };
+                    let mut payload = json!({"session_id": session_id, "code": code});
+                    if let Some(s) = session_payload {
+                        payload["session"] = s;
                     }
-                    let _ = app.emit(
-                        "session_exited",
-                        json!({"session_id": session_id, "code": code}),
-                    );
+                    let _ = app.emit("session_exited", payload);
                     append_event(
                         &db,
                         project_id,
@@ -2587,6 +2634,28 @@ pub async fn open_project(
 ) -> Result<String, String> {
     let path_buf = PathBuf::from(path.clone());
     let config_path = path_buf.join("pnevma.toml");
+
+    // --- Workspace trust gate ---
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let current_fingerprint = sha256_hex(config_content.as_bytes());
+    let path_str_for_trust = path_buf.to_string_lossy().to_string();
+    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    let trust = global_db
+        .is_path_trusted(&path_str_for_trust)
+        .await
+        .map_err(|e| e.to_string())?;
+    match trust {
+        Some(record) if record.fingerprint == current_fingerprint => {
+            // Trusted and unchanged — proceed
+        }
+        Some(_) => {
+            return Err("workspace_config_changed".to_string());
+        }
+        None => {
+            return Err("workspace_not_trusted".to_string());
+        }
+    }
+
     let cfg = load_project_config(&config_path).map_err(|e| e.to_string())?;
     let global_cfg = load_global_config().map_err(|e| e.to_string())?;
 
@@ -2781,6 +2850,40 @@ pub async fn list_recent_projects(
 }
 
 #[tauri::command]
+pub async fn trust_workspace(path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
+    let config_path = path_buf.join("pnevma.toml");
+    let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let fingerprint = sha256_hex(content.as_bytes());
+    let canonical = path_buf.to_string_lossy().to_string();
+    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    global_db
+        .trust_path(&canonical, &fingerprint)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn revoke_workspace_trust(path: String) -> Result<(), String> {
+    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    global_db
+        .revoke_trust(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_trusted_workspaces() -> Result<Vec<TrustRecord>, String> {
+    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    global_db
+        .list_trusted_paths()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn create_session(
     input: SessionInput,
     state: State<'_, AppState>,
@@ -2940,6 +3043,24 @@ pub async fn send_session_input(
     let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     ctx.sessions
         .send_input(session_id, &input)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn resize_session(
+    session_id: String,
+    cols: u16,
+    rows: u16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    ctx.sessions
+        .resize(session_id, cols, rows)
         .await
         .map_err(|e| e.to_string())
 }
@@ -3653,14 +3774,19 @@ pub async fn open_file_target(
         ctx.project_path.clone()
     };
     let rel = input.path.trim().trim_start_matches('/');
-    if rel.is_empty() || rel.contains("..") {
+    if rel.is_empty() {
         return Err("invalid path".to_string());
     }
     let abs = project_path.join(rel);
     if !abs.exists() {
         return Err(format!("file not found: {}", input.path));
     }
-    if !abs.is_file() {
+    let canonical = abs.canonicalize().map_err(|e| e.to_string())?;
+    let canonical_project = project_path.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&canonical_project) {
+        return Err("path escapes project directory".to_string());
+    }
+    if !canonical.is_file() {
         return Err("path is not a file".to_string());
     }
 
@@ -4662,17 +4788,27 @@ pub async fn export_telemetry_bundle(
         })
         .collect::<Vec<_>>();
 
+    let data_dir = project_path.join(".pnevma").join("data");
     let target = if let Some(path) = input.and_then(|v| v.path) {
-        PathBuf::from(path)
+        let requested = PathBuf::from(&path);
+        let canonical_data = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
+        let canonical_target = if requested.exists() {
+            requested.canonicalize().map_err(|e| e.to_string())?
+        } else if let Some(parent) = requested.parent() {
+            let canon_parent = parent.canonicalize().map_err(|e| e.to_string())?;
+            canon_parent.join(requested.file_name().unwrap_or_default())
+        } else {
+            return Err("invalid export path".to_string());
+        };
+        if !canonical_target.starts_with(&canonical_data) {
+            return Err("export path must be within .pnevma/data/".to_string());
+        }
+        canonical_target
     } else {
-        project_path
-            .join(".pnevma")
-            .join("data")
-            .join("telemetry")
-            .join(format!(
-                "telemetry-export-{}.json",
-                Utc::now().format("%Y%m%d-%H%M%S")
-            ))
+        data_dir.join("telemetry").join(format!(
+            "telemetry-export-{}.json",
+            Utc::now().format("%Y%m%d-%H%M%S")
+        ))
     };
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent)
@@ -5364,6 +5500,9 @@ async fn try_provider_task_draft(
             env,
             working_dir: project_path.to_string_lossy().to_string(),
             timeout_minutes,
+            auto_approve: false,
+            output_format: "stream-json".to_string(),
+            context_file: None,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -5832,7 +5971,7 @@ pub async fn approve_review(
         json!({"task_id": input.task_id, "note": input.note}),
     )
     .await;
-    let _ = app.emit("task_updated", json!({"task_id": input.task_id}));
+    emit_enriched_task_event(&app, &db, &input.task_id).await;
     let _ = app.emit("merge_queue_updated", json!({"task_id": input.task_id}));
     Ok(())
 }
@@ -5879,7 +6018,7 @@ pub async fn reject_review(
         json!({"task_id": input.task_id, "note": input.note}),
     )
     .await;
-    let _ = app.emit("task_updated", json!({"task_id": input.task_id}));
+    emit_enriched_task_event(&app, &db, &input.task_id).await;
     Ok(())
 }
 
@@ -6166,7 +6305,7 @@ pub async fn merge_queue_execute(
         json!({"task_id": task_id, "target_branch": target_branch}),
     )
     .await;
-    let _ = app.emit("task_updated", json!({"task_id": task_id}));
+    emit_enriched_task_event(&app, &db, &task_id).await;
     let _ = app.emit(
         "knowledge_capture_requested",
         json!({"task_id": task_id, "kinds": ["adr", "changelog", "convention-update"]}),
@@ -7036,7 +7175,7 @@ pub async fn create_task(
     )
     .await;
     refresh_dependency_states(&db, project_id, Some(&app)).await?;
-    let _ = app.emit("task_updated", json!({"task_id": id.to_string()}));
+    emit_enriched_task_event(&app, &db, &id.to_string()).await;
 
     Ok(id.to_string())
 }
@@ -7186,7 +7325,7 @@ pub async fn update_task(
     .map_err(|e| e.to_string())?;
     refresh_dependency_states(&db, project_id, Some(&app)).await?;
     emit_task_updated(&db, project_id, task.id).await;
-    let _ = app.emit("task_updated", json!({"task_id": row.id}));
+    emit_enriched_task_event(&app, &db, &row.id).await;
     if previous_status != task.status && is_terminal_task_status(&task.status) {
         cleanup_task_worktree(&db, &git, project_id, task.id, Some(&app)).await?;
     }
@@ -7321,7 +7460,7 @@ pub async fn dispatch_task(
     let task_row = task_contract_to_row(&task, &project_id.to_string())?;
     db.update_task(&task_row).await.map_err(|e| e.to_string())?;
     emit_task_updated(&db, project_id, task.id).await;
-    let _ = app.emit("task_updated", json!({"task_id": task.id}));
+    emit_enriched_task_event(&app, &db, &task.id.to_string()).await;
     append_telemetry_event(
         &db,
         project_id,
@@ -7363,6 +7502,11 @@ pub async fn dispatch_task(
         mode: ContextCompileMode::V2,
         token_budget,
     });
+    let discovery = FileDiscovery::new(DiscoveryConfig::default());
+    let relevant_file_contents = discovery
+        .discover(&task, &project_path, token_budget)
+        .await
+        .unwrap_or_default();
     let prior_task_summaries =
         load_recent_knowledge_summaries(&db, project_id, &project_path, 8).await;
     let ctx_result = compiler
@@ -7372,7 +7516,7 @@ pub async fn dispatch_task(
             architecture_notes: String::new(),
             conventions,
             rules: rules.clone(),
-            relevant_file_contents: Vec::new(),
+            relevant_file_contents,
             prior_task_summaries,
         })
         .map_err(|e| e.to_string())?;
@@ -7447,6 +7591,9 @@ pub async fn dispatch_task(
             env: secret_env,
             working_dir: lease.path.clone(),
             timeout_minutes,
+            auto_approve: true, // worktree isolation is the safety boundary
+            output_format: "stream-json".to_string(),
+            context_file: Some(context_path.to_string_lossy().to_string()),
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -7480,7 +7627,7 @@ pub async fn dispatch_task(
     db.upsert_pane(&pane).await.map_err(|e| e.to_string())?;
     let _ = app.emit(
         "session_spawned",
-        json!({"session_id": handle.id.to_string(), "name": agent_session_row.name}),
+        json!({"session_id": handle.id.to_string(), "name": agent_session_row.name, "session": session_row_to_event_payload(&agent_session_row)}),
     );
 
     adapter
@@ -7701,7 +7848,7 @@ pub async fn dispatch_task(
                 )
                 .await;
             }
-            let _ = app_for_task.emit("task_updated", json!({"task_id": row.id}));
+            emit_enriched_task_event(&app_for_task, &db_for_task, &row.id).await;
         }
         if failed {
             let _ = cleanup_task_worktree(
@@ -7816,6 +7963,222 @@ pub async fn get_project_cost(
         .map_err(|e| e.to_string())
 }
 
+// ─── Workflow commands ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowDefView {
+    pub name: String,
+    pub description: Option<String>,
+    pub steps: Vec<WorkflowStepView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStepView {
+    pub title: String,
+    pub goal: String,
+    pub scope: Vec<String>,
+    pub priority: String,
+    pub depends_on: Vec<usize>,
+    pub auto_dispatch: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowInstanceView {
+    pub id: String,
+    pub workflow_name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub task_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[tauri::command]
+pub async fn list_workflow_defs(
+    state: State<'_, AppState>,
+) -> Result<Vec<WorkflowDefView>, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let workflows_dir = ctx.project_path.join(".pnevma").join("workflows");
+    let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
+    Ok(defs
+        .into_iter()
+        .map(|d| WorkflowDefView {
+            name: d.name,
+            description: d.description,
+            steps: d
+                .steps
+                .into_iter()
+                .map(|s| WorkflowStepView {
+                    title: s.title,
+                    goal: s.goal,
+                    scope: s.scope,
+                    priority: s.priority,
+                    depends_on: s.depends_on,
+                    auto_dispatch: s.auto_dispatch,
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstantiateWorkflowInput {
+    pub workflow_name: String,
+}
+
+#[tauri::command]
+pub async fn instantiate_workflow(
+    input: InstantiateWorkflowInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WorkflowInstanceView, String> {
+    let (project_id, db, project_path) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (ctx.project_id, ctx.db.clone(), ctx.project_path.clone())
+    };
+
+    let workflows_dir = project_path.join(".pnevma").join("workflows");
+    let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
+    let def = defs
+        .into_iter()
+        .find(|d| d.name == input.workflow_name)
+        .ok_or_else(|| format!("workflow '{}' not found", input.workflow_name))?;
+
+    let workflow_id = Uuid::new_v4();
+    let now = Utc::now();
+
+    // Create the workflow instance row.
+    db.create_workflow_instance(&WorkflowInstanceRow {
+        id: workflow_id.to_string(),
+        project_id: project_id.to_string(),
+        workflow_name: def.name.clone(),
+        description: def.description.clone(),
+        status: "Running".to_string(),
+        created_at: now,
+        updated_at: now,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Create a task for each step, collecting IDs.
+    let mut task_ids: Vec<Uuid> = Vec::with_capacity(def.steps.len());
+
+    for (i, step) in def.steps.iter().enumerate() {
+        let task_id = Uuid::new_v4();
+        let deps_json: Vec<String> = step
+            .depends_on
+            .iter()
+            .filter_map(|&idx| task_ids.get(idx).map(|id| id.to_string()))
+            .collect();
+        let checks: Vec<serde_json::Value> = step
+            .acceptance_criteria
+            .iter()
+            .map(|desc| {
+                serde_json::json!({
+                    "description": desc,
+                    "check_type": "ManualApproval",
+                })
+            })
+            .collect();
+        let has_deps = !step.depends_on.is_empty();
+        let initial_status = if has_deps { "Blocked" } else { "Ready" };
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: step.title.clone(),
+            goal: step.goal.clone(),
+            scope_json: serde_json::to_string(&step.scope).unwrap_or_else(|_| "[]".to_string()),
+            dependencies_json: serde_json::to_string(&deps_json)
+                .unwrap_or_else(|_| "[]".to_string()),
+            acceptance_json: serde_json::to_string(&checks).unwrap_or_else(|_| "[]".to_string()),
+            constraints_json: serde_json::to_string(&step.constraints)
+                .unwrap_or_else(|_| "[]".to_string()),
+            priority: step.priority.clone(),
+            status: initial_status.to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        // Set task dependencies in the join table.
+        if !deps_json.is_empty() {
+            db.replace_task_dependencies(&task_id.to_string(), &deps_json)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Link task to workflow instance.
+        db.add_workflow_task(&workflow_id.to_string(), i as i64, &task_id.to_string())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        task_ids.push(task_id);
+    }
+
+    let _ = app.emit(
+        "task_updated",
+        serde_json::json!({"workflow_id": workflow_id.to_string()}),
+    );
+
+    Ok(WorkflowInstanceView {
+        id: workflow_id.to_string(),
+        workflow_name: def.name,
+        description: def.description,
+        status: "Running".to_string(),
+        task_ids: task_ids.iter().map(|id| id.to_string()).collect(),
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+#[tauri::command]
+pub async fn list_workflow_instances(
+    state: State<'_, AppState>,
+) -> Result<Vec<WorkflowInstanceView>, String> {
+    let (project_id, db) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (ctx.project_id, ctx.db.clone())
+    };
+
+    let instances = db
+        .list_workflow_instances(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut views = Vec::new();
+    for inst in instances {
+        let tasks = db
+            .list_workflow_tasks(&inst.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        views.push(WorkflowInstanceView {
+            id: inst.id,
+            workflow_name: inst.workflow_name,
+            description: inst.description,
+            status: inst.status,
+            task_ids: tasks.into_iter().map(|t| t.task_id).collect(),
+            created_at: inst.created_at,
+            updated_at: inst.updated_at,
+        });
+    }
+
+    Ok(views)
+}
+
 #[tauri::command]
 pub async fn pool_state(state: State<'_, AppState>) -> Result<(usize, usize, usize), String> {
     let current = state.current.lock().await;
@@ -7823,6 +8186,297 @@ pub async fn pool_state(state: State<'_, AppState>) -> Result<(usize, usize, usi
         .as_ref()
         .ok_or_else(|| "no open project".to_string())?;
     Ok(ctx.pool.state().await)
+}
+
+// ─── SSH ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshProfileInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub user: Option<String>,
+    pub identity_file: Option<String>,
+    pub proxy_jump: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub source: Option<String>,
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshProfileView {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: Option<String>,
+    pub identity_file: Option<String>,
+    pub proxy_jump: Option<String>,
+    pub tags: Vec<String>,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshKeyInfoView {
+    pub name: String,
+    pub path: String,
+    pub key_type: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateSshKeyInput {
+    pub name: String,
+    pub key_type: Option<String>,
+    pub comment: Option<String>,
+}
+
+fn ssh_profile_row_to_view(row: SshProfileRow) -> SshProfileView {
+    let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
+    SshProfileView {
+        id: row.id,
+        name: row.name,
+        host: row.host,
+        port: row.port as u16,
+        user: row.user,
+        identity_file: row.identity_file,
+        proxy_jump: row.proxy_jump,
+        tags,
+        source: row.source,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
+fn ssh_profile_to_row(profile: &pnevma_ssh::SshProfile, project_id: &str) -> SshProfileRow {
+    SshProfileRow {
+        id: profile.id.clone(),
+        project_id: project_id.to_string(),
+        name: profile.name.clone(),
+        host: profile.host.clone(),
+        port: profile.port as i64,
+        user: profile.user.clone(),
+        identity_file: profile.identity_file.clone(),
+        proxy_jump: profile.proxy_jump.clone(),
+        tags_json: serde_json::to_string(&profile.tags).unwrap_or_else(|_| "[]".to_string()),
+        source: profile.source.clone(),
+        created_at: profile.created_at,
+        updated_at: profile.updated_at,
+    }
+}
+
+#[tauri::command]
+pub async fn list_ssh_profiles(state: State<'_, AppState>) -> Result<Vec<SshProfileView>, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let rows = ctx
+        .db
+        .list_ssh_profiles(&ctx.project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(ssh_profile_row_to_view).collect())
+}
+
+#[tauri::command]
+pub async fn upsert_ssh_profile(
+    input: SshProfileInput,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let now = Utc::now();
+    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let tags_json = serde_json::to_string(&input.tags).unwrap_or_else(|_| "[]".to_string());
+    let row = SshProfileRow {
+        id: id.clone(),
+        project_id: ctx.project_id.to_string(),
+        name: input.name,
+        host: input.host,
+        port: input.port as i64,
+        user: input.user,
+        identity_file: input.identity_file,
+        proxy_jump: input.proxy_jump,
+        tags_json,
+        source: input.source.unwrap_or_else(|| "manual".to_string()),
+        created_at: now,
+        updated_at: now,
+    };
+    ctx.db
+        .upsert_ssh_profile(&row)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn delete_ssh_profile(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    ctx.db
+        .delete_ssh_profile(&id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn import_ssh_config(state: State<'_, AppState>) -> Result<Vec<SshProfileView>, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let ssh_config_path = PathBuf::from(&home).join(".ssh/config");
+    let profiles = pnevma_ssh::parse_ssh_config(&ssh_config_path).map_err(|e| e.to_string())?;
+    let project_id = ctx.project_id.to_string();
+    let mut views = Vec::new();
+    for profile in &profiles {
+        let row = ssh_profile_to_row(profile, &project_id);
+        ctx.db
+            .upsert_ssh_profile(&row)
+            .await
+            .map_err(|e| e.to_string())?;
+        views.push(ssh_profile_row_to_view(row));
+    }
+    Ok(views)
+}
+
+#[tauri::command]
+pub async fn discover_tailscale(state: State<'_, AppState>) -> Result<Vec<SshProfileView>, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let profiles = pnevma_ssh::discover_tailscale_devices()
+        .await
+        .map_err(|e| e.to_string())?;
+    let project_id = ctx.project_id.to_string();
+    let mut views = Vec::new();
+    for profile in &profiles {
+        let row = ssh_profile_to_row(profile, &project_id);
+        ctx.db
+            .upsert_ssh_profile(&row)
+            .await
+            .map_err(|e| e.to_string())?;
+        views.push(ssh_profile_row_to_view(row));
+    }
+    Ok(views)
+}
+
+#[tauri::command]
+pub async fn connect_ssh(profile_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let row = ctx
+        .db
+        .get_ssh_profile(&profile_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
+    let ssh_profile = pnevma_ssh::SshProfile {
+        id: row.id.clone(),
+        name: row.name.clone(),
+        host: row.host.clone(),
+        port: row.port as u16,
+        user: row.user.clone(),
+        identity_file: row.identity_file.clone(),
+        proxy_jump: row.proxy_jump.clone(),
+        tags,
+        source: row.source.clone(),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    };
+
+    let ssh_args = pnevma_ssh::build_ssh_command(&ssh_profile);
+    let command = ssh_args.join(" ");
+
+    let session = ctx
+        .sessions
+        .spawn_shell(
+            ctx.project_id,
+            format!("ssh-{}", row.name),
+            ".".to_string(),
+            command,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut session_row = session_row_from_meta(&session);
+    session_row.r#type = Some("ssh".to_string());
+    ctx.db
+        .upsert_session(&session_row)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let pane_row = PaneRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: ctx.project_id.to_string(),
+        session_id: Some(session.id.to_string()),
+        r#type: "terminal".to_string(),
+        position: "root".to_string(),
+        label: row.name.clone(),
+        metadata_json: None,
+    };
+    ctx.db
+        .upsert_pane(&pane_row)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(session.id.to_string())
+}
+
+#[tauri::command]
+pub async fn list_ssh_keys(state: State<'_, AppState>) -> Result<Vec<SshKeyInfoView>, String> {
+    let _current = state.current.lock().await;
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let ssh_dir = PathBuf::from(&home).join(".ssh");
+    let keys = pnevma_ssh::list_ssh_keys(&ssh_dir).map_err(|e| e.to_string())?;
+    Ok(keys
+        .into_iter()
+        .map(|k| SshKeyInfoView {
+            name: k.name,
+            path: k.path,
+            key_type: k.key_type,
+            fingerprint: k.fingerprint,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn generate_ssh_key(
+    input: GenerateSshKeyInput,
+    state: State<'_, AppState>,
+) -> Result<SshKeyInfoView, String> {
+    let _current = state.current.lock().await;
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let ssh_dir = PathBuf::from(&home).join(".ssh");
+    let key_type = input.key_type.as_deref().unwrap_or("ed25519");
+    let comment = input.comment.as_deref().unwrap_or("");
+    let key = pnevma_ssh::generate_key(&ssh_dir, &input.name, key_type, comment)
+        .map_err(|e| e.to_string())?;
+    Ok(SshKeyInfoView {
+        name: key.name,
+        path: key.path,
+        key_type: key.key_type,
+        fingerprint: key.fingerprint,
+    })
 }
 
 #[cfg(test)]

@@ -202,8 +202,16 @@ fn pane_cmd(id: &str, label: &str, description: &str) -> RegisteredCommand {
 
 fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
     for (id, label, desc) in [
-        ("pane.split_horizontal", "Split Pane Horizontal", "Duplicate the active pane in a horizontal split."),
-        ("pane.split_vertical", "Split Pane Vertical", "Duplicate the active pane in a vertical split."),
+        (
+            "pane.split_horizontal",
+            "Split Pane Horizontal",
+            "Duplicate the active pane in a horizontal split.",
+        ),
+        (
+            "pane.split_vertical",
+            "Split Pane Vertical",
+            "Duplicate the active pane in a vertical split.",
+        ),
     ] {
         registry = registry.register(pane_cmd(id, label, desc));
     }
@@ -221,16 +229,56 @@ fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
         )],
     });
     for (id, label, desc) in [
-        ("pane.open_review", "Open Review Pane", "Create a review pane next to the active pane."),
-        ("pane.open_notifications", "Open Notifications Pane", "Create a notifications pane next to the active pane."),
-        ("pane.open_merge_queue", "Open Merge Queue Pane", "Create a merge queue pane next to the active pane."),
-        ("pane.open_replay", "Open Replay Pane", "Create a replay pane next to the active pane."),
-        ("pane.open_daily_brief", "Open Daily Brief Pane", "Create a daily brief pane next to the active pane."),
-        ("pane.open_search", "Open Search Pane", "Create a project search pane next to the active pane."),
-        ("pane.open_diff", "Open Diff Pane", "Create a dedicated diff pane next to the active pane."),
-        ("pane.open_file_browser", "Open File Browser Pane", "Create a project file browser pane next to the active pane."),
-        ("pane.open_rules_manager", "Open Rules Pane", "Create a rules/conventions manager pane next to the active pane."),
-        ("pane.open_settings", "Open Settings Pane", "Create a settings pane next to the active pane."),
+        (
+            "pane.open_review",
+            "Open Review Pane",
+            "Create a review pane next to the active pane.",
+        ),
+        (
+            "pane.open_notifications",
+            "Open Notifications Pane",
+            "Create a notifications pane next to the active pane.",
+        ),
+        (
+            "pane.open_merge_queue",
+            "Open Merge Queue Pane",
+            "Create a merge queue pane next to the active pane.",
+        ),
+        (
+            "pane.open_replay",
+            "Open Replay Pane",
+            "Create a replay pane next to the active pane.",
+        ),
+        (
+            "pane.open_daily_brief",
+            "Open Daily Brief Pane",
+            "Create a daily brief pane next to the active pane.",
+        ),
+        (
+            "pane.open_search",
+            "Open Search Pane",
+            "Create a project search pane next to the active pane.",
+        ),
+        (
+            "pane.open_diff",
+            "Open Diff Pane",
+            "Create a dedicated diff pane next to the active pane.",
+        ),
+        (
+            "pane.open_file_browser",
+            "Open File Browser Pane",
+            "Create a project file browser pane next to the active pane.",
+        ),
+        (
+            "pane.open_rules_manager",
+            "Open Rules Pane",
+            "Create a rules/conventions manager pane next to the active pane.",
+        ),
+        (
+            "pane.open_settings",
+            "Open Settings Pane",
+            "Create a settings pane next to the active pane.",
+        ),
     ] {
         registry = registry.register(pane_cmd(id, label, desc));
     }

@@ -27,3 +27,5 @@ pnevma-session = { path = "../pnevma-session" }
 pnevma-agents = { path = "../pnevma-agents" }
 pnevma-git = { path = "../pnevma-git" }
 pnevma-context = { path = "../pnevma-context" }
+pnevma-ssh = { path = "../pnevma-ssh" }
+subtle.workspace = true

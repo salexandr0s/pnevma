@@ -3,7 +3,7 @@ use crate::models::{
     ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostRow,
     EventRow, FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
     PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow,
-    TaskRow, TelemetryEventRow, WorktreeRow,
+    SshProfileRow, TaskRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowTaskRow, WorktreeRow,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -1337,6 +1337,185 @@ impl Db {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    // ─── Workflow instances ──────────────────────────────────────────
+
+    pub async fn create_workflow_instance(
+        &self,
+        instance: &WorkflowInstanceRow,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO workflow_instances (id, project_id, workflow_name, description, status, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(&instance.id)
+        .bind(&instance.project_id)
+        .bind(&instance.workflow_name)
+        .bind(&instance.description)
+        .bind(&instance.status)
+        .bind(instance.created_at)
+        .bind(instance.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_workflow_instance_status(
+        &self,
+        workflow_id: &str,
+        status: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE workflow_instances SET status = ?1, updated_at = ?2 WHERE id = ?3
+            "#,
+        )
+        .bind(status)
+        .bind(Utc::now())
+        .bind(workflow_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_workflow_instance(
+        &self,
+        workflow_id: &str,
+    ) -> Result<Option<WorkflowInstanceRow>, DbError> {
+        let row = sqlx::query_as::<_, WorkflowInstanceRow>(
+            r#"
+            SELECT id, project_id, workflow_name, description, status, created_at, updated_at
+            FROM workflow_instances WHERE id = ?1
+            "#,
+        )
+        .bind(workflow_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_workflow_instances(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<WorkflowInstanceRow>, DbError> {
+        let rows = sqlx::query_as::<_, WorkflowInstanceRow>(
+            r#"
+            SELECT id, project_id, workflow_name, description, status, created_at, updated_at
+            FROM workflow_instances WHERE project_id = ?1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn add_workflow_task(
+        &self,
+        workflow_id: &str,
+        step_index: i64,
+        task_id: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO workflow_tasks (workflow_id, step_index, task_id)
+            VALUES (?1, ?2, ?3)
+            "#,
+        )
+        .bind(workflow_id)
+        .bind(step_index)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_workflow_tasks(
+        &self,
+        workflow_id: &str,
+    ) -> Result<Vec<WorkflowTaskRow>, DbError> {
+        let rows = sqlx::query_as::<_, WorkflowTaskRow>(
+            r#"
+            SELECT workflow_id, step_index, task_id
+            FROM workflow_tasks WHERE workflow_id = ?1
+            ORDER BY step_index ASC
+            "#,
+        )
+        .bind(workflow_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn find_workflow_by_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<WorkflowTaskRow>, DbError> {
+        let row = sqlx::query_as::<_, WorkflowTaskRow>(
+            r#"
+            SELECT workflow_id, step_index, task_id
+            FROM workflow_tasks WHERE task_id = ?1
+            "#,
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_ssh_profiles(&self, project_id: &str) -> Result<Vec<SshProfileRow>, DbError> {
+        let rows = sqlx::query_as::<_, SshProfileRow>(
+            "SELECT id, project_id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at FROM ssh_profiles WHERE project_id = ? ORDER BY name"
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_ssh_profile(&self, id: &str) -> Result<SshProfileRow, DbError> {
+        let row = sqlx::query_as::<_, SshProfileRow>(
+            "SELECT id, project_id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at FROM ssh_profiles WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn upsert_ssh_profile(&self, row: &SshProfileRow) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO ssh_profiles (id, project_id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, host=excluded.host, port=excluded.port, user=excluded.user, identity_file=excluded.identity_file, proxy_jump=excluded.proxy_jump, tags_json=excluded.tags_json, source=excluded.source, updated_at=excluded.updated_at"
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.name)
+        .bind(&row.host)
+        .bind(row.port)
+        .bind(&row.user)
+        .bind(&row.identity_file)
+        .bind(&row.proxy_jump)
+        .bind(&row.tags_json)
+        .bind(&row.source)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_ssh_profile(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM ssh_profiles WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

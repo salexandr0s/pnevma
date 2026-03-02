@@ -220,6 +220,8 @@ async fn handle_unix_client(
 
     verify_same_user_peer(&stream, &settings.auth_mode)?;
 
+    const MAX_LINE_BYTES: usize = 1024 * 1024; // 1 MB
+
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
@@ -231,6 +233,12 @@ async fn handle_unix_client(
             .map_err(|e| e.to_string())?;
         if bytes == 0 {
             break;
+        }
+        if line.len() > MAX_LINE_BYTES {
+            let _ = write_half
+                .write_all(b"{\"ok\":false,\"error\":{\"code\":\"payload_too_large\",\"message\":\"request exceeds 1 MB limit\"}}\n")
+                .await;
+            continue;
         }
         let raw = line.trim_end_matches(['\r', '\n']);
         if raw.is_empty() {
@@ -402,24 +410,18 @@ fn authorize_request(
                 .and_then(|auth| auth.password.as_ref())
                 .cloned()
                 .ok_or_else(|| "missing auth.password".to_string())?;
-            if constant_time_eq(supplied.as_bytes(), password.as_bytes()) {
+            use subtle::ConstantTimeEq;
+            let supplied_bytes = supplied.as_bytes();
+            let password_bytes = password.as_bytes();
+            if supplied_bytes.len() == password_bytes.len()
+                && supplied_bytes.ct_eq(password_bytes).into()
+            {
                 Ok(())
             } else {
                 Err("invalid password".to_string())
             }
         }
     }
-}
-
-fn constant_time_eq(lhs: &[u8], rhs: &[u8]) -> bool {
-    let max_len = lhs.len().max(rhs.len());
-    let mut diff = (lhs.len() ^ rhs.len()) as u8;
-    for idx in 0..max_len {
-        let a = lhs.get(idx).copied().unwrap_or_default();
-        let b = rhs.get(idx).copied().unwrap_or_default();
-        diff |= a ^ b;
-    }
-    diff == 0
 }
 
 async fn route_method(
@@ -541,6 +543,52 @@ async fn route_method(
                 json!({"dispatched": false})
             }
         }
+        "task.poll" => {
+            let tasks = commands::list_tasks(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            let ready: Vec<_> = tasks.into_iter().filter(|t| t.status == "Ready").collect();
+            let pool_state = commands::pool_state(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({
+                "ready_tasks": ready,
+                "pool": pool_state,
+            })
+        }
+        "task.claim" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let status = commands::dispatch_task(task_id, app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "status": status })
+        }
+        "workflow.list_defs" => serde_json::to_value(
+            commands::list_workflow_defs(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workflow.instantiate" => {
+            let workflow_name = parse_string_param(params, "workflow_name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let result = commands::instantiate_workflow(
+                commands::InstantiateWorkflowInput { workflow_name },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workflow.list_instances" => serde_json::to_value(
+            commands::list_workflow_instances(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "session.new" => {
             let name = parse_optional_string_param(params, "name")
                 .unwrap_or_else(|| "session".to_string());
@@ -1100,6 +1148,32 @@ async fn route_method(
             serde_json::to_value(report)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "ssh.list_profiles" => serde_json::to_value(
+            commands::list_ssh_profiles(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "ssh.connect" => {
+            let profile_id = parse_string_param(params, "profile_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let session_id = commands::connect_ssh(profile_id, app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"session_id": session_id})
+        }
+        "ssh.import_config" => serde_json::to_value(
+            commands::import_ssh_config(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "ssh.discover_tailscale" => serde_json::to_value(
+            commands::discover_tailscale(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         _ => {
             return Err((
                 "method_not_found".to_string(),
@@ -1192,14 +1266,6 @@ mod tests {
                 password: password.to_string(),
             },
         }
-    }
-
-    #[test]
-    fn constant_time_compare_requires_exact_match() {
-        assert!(constant_time_eq(b"abc123", b"abc123"));
-        assert!(!constant_time_eq(b"abc123", b"abc124"));
-        assert!(!constant_time_eq(b"abc123", b"abc1234"));
-        assert!(!constant_time_eq(b"", b"abc"));
     }
 
     #[test]

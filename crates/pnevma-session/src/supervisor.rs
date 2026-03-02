@@ -442,6 +442,42 @@ impl SessionSupervisor {
         });
     }
 
+    pub async fn resize(&self, session_id: Uuid, cols: u16, rows: u16) -> Result<(), SessionError> {
+        if !self.sessions.read().await.contains_key(&session_id) {
+            return Err(SessionError::NotFound(session_id.to_string()));
+        }
+
+        self.ensure_tmux_tmpdir().await?;
+        let name = tmux_name(session_id);
+
+        let out = self
+            .tmux_command()
+            .args([
+                "resize-window",
+                "-t",
+                &name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .output()
+            .await
+            .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if !stderr.contains("no current client") && !stderr.contains("can't find session") {
+                return Err(SessionError::SpawnFailed(format!(
+                    "tmux resize-window failed: {}",
+                    stderr.trim()
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn mark_activity(&self, session_id: Uuid) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
         let Some(meta) = sessions.get_mut(&session_id) else {

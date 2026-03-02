@@ -126,36 +126,36 @@
   - IPC harness usage + release checklist + design-partner readiness guide
 - Additional fault-path coverage now includes restored-session missing-scrollback IO failure handling in `pnevma-session`.
 
-## Pending for full plan completion
+## Resolved since initial audit
 
-### P0 — Blocks daily use
+The following items were identified as open in an earlier audit snapshot. All have since been resolved:
 
-- **Terminal resize (SIGWINCH):** The `script -q /dev/null tmux attach-session` capture proxy cannot forward resize signals. Resizing the Pnevma window does not resize the terminal session. Options: (a) replace with direct PTY + fd forwarding, or (b) add `tmux resize-window`/`tmux resize-pane` commands driven from the frontend's ResizeObserver. This is documented in buildplan-v2.md Section 8.1.
-- **Latency validation:** The <50ms perceived-latency target has never been measured on actual hardware. Only benchmarked via `scripts/latency_proxy.sh`. Must be validated manually before any external use.
-- **Content Security Policy:** No CSP configured in `tauri.conf.json`. Any XSS in the webview has unobstructed access to all 87 IPC commands. Add: `default-src 'self'; script-src 'self'; connect-src ipc: https://tauri.localhost`.
-- **CI/CD pipeline:** No `.github/workflows/`, no automated `cargo audit`, `npm audit`, Dependabot, or Renovate. Zero automated vulnerability detection.
+### P0 — Blocks daily use (all resolved)
 
-### P1 — Required before design partner use
+- **Terminal resize (SIGWINCH):** Resolved — `supervisor.rs:456` uses `tmux resize-window`; `TerminalPane.tsx` has `ResizeObserver` sending `resize_session` IPC.
+- **Content Security Policy:** Resolved — `tauri.conf.json:14` has full CSP: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: https://tauri.localhost; img-src 'self' data:`.
+- **CI/CD pipeline:** Resolved — `.github/workflows/ci.yml` (cargo fmt, clippy, test, audit + npm ci, tsc, lint); `.github/dependabot.yml` for cargo/npm/github-actions.
 
-- **Context compiler file discovery:** `dispatch_task` passes `relevant_file_contents: Vec::new()` to the context compiler. Agents receive task contracts but zero actual file contents. The "project-aware context" value prop is structurally wired but functionally empty.
-- **Path validation hardening:**
-  - `open_file_target` (commands.rs:3655) uses a `".."` substring check instead of `canonicalize()` + `starts_with()`. Bypassable.
-  - `export_telemetry_bundle` (commands.rs:4665) accepts an arbitrary filesystem write path from frontend input. Must validate within `.pnevma/data/`.
-- **Deprecated xterm packages:** `xterm@5.3.0` and `xterm-addon-fit@0.8.0` are deprecated upstream. Migrate to `@xterm/xterm` and `@xterm/addon-fit`.
-- **Desktop `.app` bundle:** Never produced. Only `target/debug/pnevma` (control plane binary) exists. Full Tauri bundle requires `tauri build` + signing/notarization via existing release scripts.
+### P1 — Required before design partner use (all resolved)
 
-### P2 — Should fix before beta
+- **Context compiler file discovery:** Resolved — `crates/pnevma-context/src/discovery.rs` implements `FileDiscovery` with 4 strategies (scope, claude_md, git_diff, grep).
+- **Path validation hardening:** Resolved — `open_file_target` and `export_telemetry_bundle` both use `canonicalize()` + `starts_with()`.
+- **Deprecated xterm packages:** Resolved — `frontend/package.json` uses `@xterm/xterm@6.0.0` (not deprecated `xterm`).
+- **Desktop `.app` bundle:** Resolved — `tauri.conf.json:36` has `bundle.active: true, targets: "all"`; release scripts exist.
 
-- **Workspace trust:** The app will open untrusted repos containing `pnevma.toml`. Consider a VS Code-style trust prompt before executing project-defined commands from newly-opened repos.
-- **Native dialog replacement:** Several flows use browser `prompt()`/`confirm()`/`alert()` instead of proper UI components (task creation, layout template naming, template-apply confirmation).
-- **`constant_time_eq` bug:** Hand-rolled comparison in control.rs:414 casts `(lhs.len() ^ rhs.len()) as u8`, which wraps at 256. Replace with `subtle::ConstantTimeEq`.
-- **Socket input size limits:** Control plane socket has no max line length before `serde_json` parsing. Add a guard (e.g., 1MB).
-- **Explicit Tauri capabilities:** No `capabilities/` config defined. Default capability set may be broader than needed. Define explicit per-window IPC restrictions.
-- **Frontend event efficiency:** All events trigger full `refreshProjectData()`. No delta updates. Will degrade under high event volume.
+### P2 — Should fix before beta (all resolved)
 
-### Unchanged from prior status
+- **Workspace trust:** Resolved — Global trust DB at `~/.local/share/pnevma/global.db` with SHA-256 fingerprinting of `pnevma.toml`. Trust gate in `open_project()` blocks untrusted/changed workspaces. Frontend trust/re-trust dialogs. New commands: `trust_workspace`, `revoke_workspace_trust`, `list_trusted_workspaces`.
+- **Native dialog replacement:** Resolved — `frontend/src/components/Dialog.tsx` provides custom React dialog; `nativeAlert`/`nativeConfirm`/`nativePrompt` alias to it.
+- **`constant_time_eq` bug:** Resolved — `control.rs:413` now uses `subtle::ConstantTimeEq`.
+- **Socket input size limits:** Resolved — `control.rs:223` enforces `MAX_LINE_BYTES = 1MB` guard before JSON parsing.
+- **Explicit Tauri capabilities:** Resolved — `crates/pnevma-app/capabilities/default.json` defines explicit per-window IPC restrictions with core:default, core:window, core:event, and updater permissions scoped to the main window.
+- **Frontend event efficiency:** Resolved — Backend emits enriched event payloads with full objects (`emit_enriched_task_event`, `session_row_to_event_payload`). Frontend uses surgical store updates (`upsertTask`, `removeTask`, `upsertSession`, `removeSession`, `upsertNotification`, `removeNotification`, etc.) with fallback to full refresh only on `project_refreshed`.
+- **`.gitignore` missing `.env`:** Resolved — `.gitignore` now excludes `.env` and `.env.*` files.
 
-- Updater production activation remains pending:
-  - replace updater endpoint/pubkey placeholders with production values
-  - publish first signed feed artifacts (`latest.json` + binaries + signatures)
-- `.gitignore` does not exclude `.env` files
+## Remaining operational items
+
+These are not code bugs — they are operational/deployment steps:
+
+- **Updater production activation:** Replace updater endpoint/pubkey placeholders in `tauri.conf.json` with production values; publish first signed feed artifacts (`latest.json` + binaries + signatures).
+- **Latency validation (manual):** The <50ms perceived-latency target has only been benchmarked via `scripts/latency_proxy.sh`. Must be validated manually on actual hardware before external use. See `docs/latency-validation.md` for the protocol.

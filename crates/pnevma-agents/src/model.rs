@@ -12,6 +12,19 @@ pub struct AgentConfig {
     pub env: Vec<(String, String)>,
     pub working_dir: String,
     pub timeout_minutes: u64,
+    /// Pass --dangerously-skip-permissions (worktree isolation is the safety boundary).
+    #[serde(default)]
+    pub auto_approve: bool,
+    /// Output format: "stream-json" for structured output, "text" for raw.
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+    /// Path to compiled task-context.md to inject as CLAUDE.md in worktree.
+    #[serde(default)]
+    pub context_file: Option<String>,
+}
+
+fn default_output_format() -> String {
+    "stream-json".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

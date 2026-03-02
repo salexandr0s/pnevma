@@ -45,6 +45,12 @@ pub struct AutomationSection {
     pub socket_path: String,
     #[serde(default = "default_socket_auth")]
     pub socket_auth: String,
+    /// Enable automatic dispatch of Ready tasks when pool has capacity.
+    #[serde(default)]
+    pub auto_dispatch: bool,
+    /// Interval in seconds between auto-dispatch checks.
+    #[serde(default = "default_auto_dispatch_interval")]
+    pub auto_dispatch_interval_seconds: u64,
 }
 
 impl Default for AutomationSection {
@@ -53,6 +59,8 @@ impl Default for AutomationSection {
             socket_enabled: default_socket_enabled(),
             socket_path: default_socket_path(),
             socket_auth: default_socket_auth(),
+            auto_dispatch: false,
+            auto_dispatch_interval_seconds: default_auto_dispatch_interval(),
         }
     }
 }
@@ -110,6 +118,10 @@ fn default_socket_enabled() -> bool {
 
 fn default_max_concurrent() -> usize {
     4
+}
+
+fn default_auto_dispatch_interval() -> u64 {
+    30
 }
 
 pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CoreError> {
