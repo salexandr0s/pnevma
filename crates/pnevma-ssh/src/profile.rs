@@ -40,33 +40,25 @@ impl SshProfile {
 }
 
 pub fn build_ssh_command(profile: &SshProfile) -> Vec<String> {
-    let mut args = vec!["ssh".to_string()];
-
-    args.push("-o".to_string());
-    args.push("ServerAliveInterval=30".to_string());
-    args.push("-o".to_string());
-    args.push("ServerAliveCountMax=3".to_string());
-
+    let mut args = vec![
+        "ssh".into(),
+        "-o".into(),
+        "ServerAliveInterval=30".into(),
+        "-o".into(),
+        "ServerAliveCountMax=3".into(),
+    ];
     if profile.port != 22 {
-        args.push("-p".to_string());
-        args.push(profile.port.to_string());
+        args.extend(["-p".to_string(), profile.port.to_string()]);
     }
-
     if let Some(ref identity_file) = profile.identity_file {
-        args.push("-i".to_string());
-        args.push(identity_file.clone());
+        args.extend(["-i".to_string(), identity_file.clone()]);
     }
-
     if let Some(ref proxy_jump) = profile.proxy_jump {
-        args.push("-J".to_string());
-        args.push(proxy_jump.clone());
+        args.extend(["-J".to_string(), proxy_jump.clone()]);
     }
-
-    let destination = match &profile.user {
-        Some(user) => format!("{}@{}", user, profile.host),
+    args.push(match &profile.user {
+        Some(user) => format!("{user}@{}", profile.host),
         None => profile.host.clone(),
-    };
-    args.push(destination);
-
+    });
     args
 }

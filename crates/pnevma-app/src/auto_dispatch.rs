@@ -27,7 +27,7 @@ async fn run_cycle(app: &AppHandle) -> u64 {
     let state = app.state::<AppState>();
 
     // Read config under the lock, then drop it before calling dispatch functions.
-    let (auto_dispatch_enabled, interval, available_slots) = {
+    let (interval, available_slots) = {
         let current = state.current.lock().await;
         let ctx = match current.as_ref() {
             Some(c) => c,
@@ -51,13 +51,8 @@ async fn run_cycle(app: &AppHandle) -> u64 {
             return interval;
         }
 
-        (true, interval, max - active)
+        (interval, max - active)
     };
-    // Lock is now dropped.
-
-    if !auto_dispatch_enabled {
-        return interval;
-    }
 
     // Fetch ready tasks — re-acquire state via app.state() for Tauri State wrapper.
     let tasks = match commands::list_tasks(app.state::<AppState>()).await {
