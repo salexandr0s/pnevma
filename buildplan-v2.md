@@ -929,28 +929,125 @@ This plan is structured for sequential execution. Each phase has explicit entry 
 
 ---
 
-## 8. Risks and Mitigations
+## 8. Implementation Reality Check (March 2026 Audit)
+
+This section documents the gap between what the buildplan describes and what actually exists, based on a comprehensive codebase audit. The codebase compiles clean (`cargo check`, `clippy -D warnings`, `cargo test`, `tsc --noEmit`, `eslint`, `vite build` all pass). The architecture is real and non-trivial. But several critical subsystems are incomplete or have structural limitations that prevent daily use.
+
+### 8.1 Terminal Architecture Gap
+
+**Plan says:** "xterm.js in webview, connected to Rust PTY via Tauri IPC."
+
+**Reality:** The terminal works, but uses a `script -q /dev/null tmux attach-session` capture proxy instead of a direct PTY connection. This has a fundamental limitation: **SIGWINCH (terminal resize) cannot be forwarded through the `script` proxy.** Resizing the Pnevma window does not resize the terminal session. For a tool positioning itself as a terminal replacement comparable to Ghostty or iTerm2, this is a dealbreaker for daily use.
+
+**What works:**
+- xterm.js renders in the WebView, wired to tmux sessions via Tauri IPC
+- Keystrokes flow: frontend → `sendSessionInput` → tmux
+- Scrollback capture with redaction, indexed for random-access reads
+- Session persistence across app restarts (tmux backend survives, reattach on relaunch)
+
+**What doesn't:**
+- No PTY resize (SIGWINCH) — terminal stays at initial dimensions
+- Latency target (<50ms perceived) has never been measured on actual hardware — only benchmarked via a proxy script (`scripts/latency_proxy.sh`)
+- No `.app` desktop bundle has been produced — only a debug binary exists (`target/debug/pnevma`)
+
+**Decision needed:** Either (a) replace the `script` proxy with a direct PTY approach that supports resize (e.g., `portable-pty` with raw fd forwarding), or (b) accept the tmux model and add explicit resize support via `tmux resize-window`/`tmux resize-pane` commands driven from the frontend's `ResizeObserver`.
+
+### 8.2 Context Compiler Gap
+
+**Plan says:** "V2 operates within a strict token budget per provider. Priority ordering... relevant file contents..."
+
+**Reality:** The context compiler mechanism is real (token budget enforcement, V1/V2 modes, manifest generation). But in `dispatch_task` (commands.rs ~line 7375), `relevant_file_contents` is passed as `Vec::new()`. Agents receive the task contract, rules, and conventions — but **zero actual file contents**. This means the core value proposition of "project-aware context" is structurally wired but functionally empty.
+
+**Fix required:** Implement file discovery — use task `scope` files, git-tracked files matching scope patterns, or a heuristic (recently changed files, files referenced in the task goal) to populate `relevant_file_contents` before compilation.
+
+### 8.3 Agent CLI Dependency
+
+**Plan says:** "Adapter registry detects which agent CLIs are available."
+
+**Reality:** Correct — `AdapterRegistry::detect()` runs `which claude` and `which codex`. But if neither is installed, dispatch fails with "no available agent adapters found." The entire task orchestration loop — the core product loop — is inert without an external CLI binary that the user must install separately. This is the intended design (agents are adapters), but it means first-run experience requires pre-installed agent CLIs with no fallback.
+
+### 8.4 Security Hardening Gaps
+
+Identified via OWASP Top 10 + ASVS L2 audit (March 2026):
+
+| ID | Severity | Gap | Location | Required Action |
+|---|---|---|---|---|
+| S-1 | HIGH | No Content Security Policy configured | `tauri.conf.json` | Add CSP: `default-src 'self'; script-src 'self'; connect-src ipc: https://tauri.localhost` |
+| S-2 | HIGH | No CI/CD pipeline — zero automated vulnerability scanning | `.github/` (missing) | Add GitHub Actions with `cargo audit`, `npm audit`, clippy, tests on push + weekly |
+| S-3 | MEDIUM | `open_file_target` path traversal uses substring `..` check instead of `canonicalize()` + `starts_with()` | `commands.rs:3655` | Use canonical path confinement |
+| S-4 | MEDIUM | `export_telemetry_bundle` writes to arbitrary filesystem path from frontend input | `commands.rs:4665` | Validate path within `.pnevma/data/` |
+| S-5 | MEDIUM | Hand-rolled `constant_time_eq` has u8 length-truncation bug (wraps at 256) | `control.rs:414` | Replace with `subtle::ConstantTimeEq` |
+| S-6 | MEDIUM | Control plane socket has no input size limits | `control.rs` | Add max line length before JSON parse |
+| S-7 | MEDIUM | Deprecated `xterm@5.3.0` and `xterm-addon-fit@0.8.0` — no future patches | `package.json` | Migrate to `@xterm/xterm` and `@xterm/addon-fit` |
+| S-8 | MEDIUM | No explicit Tauri capabilities configuration | `tauri.conf.json` | Define `capabilities/` restricting IPC per window |
+| S-9 | LOW | `.gitignore` does not exclude `.env` files | `.gitignore` | Add `.env` and `.env.*` |
+| S-10 | LOW | Updater pubkey is a placeholder string | `tauri.conf.json` | Add CI guard: fail build if pubkey contains "REPLACE_WITH" |
+
+**Workspace trust consideration:** Since Pnevma will open untrusted repos containing `pnevma.toml` files, consider a VS Code-style workspace trust prompt before executing any project-defined commands, agent dispatches, or TestCommand acceptance checks from a newly-opened project.
+
+**What's already solid:**
+- All SQL queries use parameterized binding (sqlx) — no injection
+- All git commands use array-arg pattern — no shell injection in arguments
+- Branch names sanitized through `slugify()` (ASCII alphanumeric only)
+- Secrets stored in macOS Keychain, never in DB or files
+- Two-layer redaction (pattern + value) covers scrollback, events, notifications, review packs, context
+- Single narrowly-scoped `unsafe` block (`libc::geteuid()`) — correct usage
+- No hardcoded secrets, no curl|bash in scripts, no git dependencies
+- Lockfiles committed and fully pinned (Cargo.lock + package-lock.json)
+
+### 8.5 Remaining UI Gaps
+
+- Several flows still use browser-native `prompt()`/`confirm()`/`alert()` dialogs (task creation, layout template naming, template-apply confirmation) instead of proper UI components. Noted in SESSION_HANDOFF.md.
+- No proper error boundary or crash recovery dialog in the frontend.
+- The frontend does a full `refreshProjectData()` on every event — no delta updates. This will degrade under high event volume.
+
+### 8.6 Summary: What Must Ship Before Daily Use
+
+| Priority | Gap | Effort Estimate |
+|---|---|---|
+| **P0** | Terminal resize (SIGWINCH forwarding or tmux resize) | Architecture decision + implementation |
+| **P0** | Latency validation on real hardware | Manual testing |
+| **P0** | CSP configuration | Config change |
+| **P0** | CI pipeline (cargo audit + npm audit + tests) | Half day |
+| **P1** | Context compiler file discovery (populate `relevant_file_contents`) | 1-2 days |
+| **P1** | Path validation hardening (S-3, S-4) | Small code changes |
+| **P1** | Migrate deprecated xterm packages | Dependency swap |
+| **P1** | Desktop `.app` bundle (first production build) | Follow existing release scripts |
+| **P2** | Replace native dialogs with UI components | Frontend work |
+| **P2** | Workspace trust prompt for untrusted repos | Design + implementation |
+| **P2** | Replace hand-rolled `constant_time_eq` | Small code change |
+| **P2** | Socket input size limits | Small code change |
+| **P2** | Explicit Tauri capabilities | Config work |
+
+---
+
+## 9. Risks and Mitigations
 
 | Risk | Why It Matters | Mitigation |
 |---|---|---|
 | xterm.js latency in webview | If typing feels sluggish, power users will reject Pnevma | Phase 0 spike with hard latency threshold (< 50ms). Fallback to native terminal widget if needed. |
+| **Terminal resize not working** | **`script` capture proxy cannot forward SIGWINCH. Unusable as a daily terminal without resize.** | **Resolve in 8.1: either direct PTY approach or tmux resize commands from frontend.** |
 | Tauri webview limitations | Platform webview inconsistencies, limited native access | macOS-first (WebKit is consistent). Defer Linux/Windows until Tauri 2.x stabilizes cross-platform. |
 | Scope creep | Too many pane types and workflows dilute the wedge | V1 scope frozen around execution loop. No new pane types without proven daily-use need. |
 | Provider churn | Agent CLIs change rapidly | Thin adapter trait. Minimize provider-specific assumptions. Pin CLI versions in tests. |
 | Merge chaos | Parallel agent work increases conflict risk | One-task-one-worktree. Serialized merge queue. Pre-merge rebase + re-check. |
 | Low trust in automation | Users abandon if outcomes feel unsafe | Human approval at every merge. Review packs. Checkpoints. Replay for auditability. |
 | Secret leakage | A single incident damages adoption permanently | macOS Keychain. Reference-only DB storage. Redaction middleware on all output paths. |
-| Context quality | Bad context packs produce bad agent work | Token-budgeted compiler (v2) with priority ordering. Visible manifest. User override. |
+| **Context compiler sends no files** | **Agents get task contracts but zero actual file contents — core value prop of "project-aware" context is hollow.** | **Implement file discovery in dispatch_task to populate relevant_file_contents (see 8.2).** |
 | Conflict recovery | Rebase conflicts block the workflow | Dedicated conflict resolution flow. Re-dispatch to agent with conflict context. |
 | Unbounded agent costs | Concurrent agents burn money without user awareness | Configurable pool limit (default 4). Per-task cost display. "Tracking unavailable" honesty. |
+| **No CSP configured** | **XSS in WebView has unobstructed access to all 87 IPC commands including shell-executing ones.** | **Add explicit CSP in tauri.conf.json (see S-1 in 8.4).** |
+| **No CI/CD pipeline** | **Zero automated vulnerability scanning. No cargo audit, npm audit, or Dependabot.** | **Add GitHub Actions on push + weekly schedule (see S-2 in 8.4).** |
 | Local control socket abuse | External automation API expands attack surface | Unix socket `0600`, peer UID validation, optional password mode, full request audit events, kill-switch in config. |
+| **Untrusted project configs** | **Opening third-party repos with malicious pnevma.toml could trigger unintended task dispatches or command execution.** | **Workspace trust prompt before executing project-defined commands from newly-opened repos (see 8.4).** |
 | Notification overload | Too many alerts create fatigue and are ignored | Scope notifications to agent attention events, unread queue, per-source mute controls, and keyboard triage flow. |
 | Local model support gap | Power users want offline/local agents | Adapter trait accommodates billing-less agents. Ollama adapter is post-v1. |
 | Frontend complexity | React panes (board, diff, review) become the majority of code | Keep panes independent. Each pane is a self-contained component with its own hooks. Don't share state between panes except through the backend. |
+| **Deprecated terminal dependencies** | **xterm@5.3.0 and xterm-addon-fit@0.8.0 are deprecated upstream — no future security patches.** | **Migrate to @xterm/xterm and @xterm/addon-fit (see S-7 in 8.4).** |
 
 ---
 
-## 9. Success Metrics
+## 10. Success Metrics
 
 ### Product Metrics
 
@@ -972,7 +1069,7 @@ This plan is structured for sequential execution. Each phase has explicit entry 
 
 ---
 
-## 10. Deferred Capabilities
+## 11. Deferred Capabilities
 
 The following are explicitly out of scope for v1. Documented to prevent scope creep.
 
@@ -991,7 +1088,7 @@ The following are explicitly out of scope for v1. Documented to prevent scope cr
 
 ---
 
-## 11. Potential Features (Optional Backlog)
+## 12. Potential Features (Optional Backlog)
 
 These are optional candidates identified from external implementation review and are **not** part of the locked v1 scope unless explicitly promoted into a phase.
 
