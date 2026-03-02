@@ -127,7 +127,17 @@ impl DispatchOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use uuid::Uuid;
+
+    fn priority_from_rank(rank: u8) -> Priority {
+        match rank {
+            0 => Priority::P0,
+            1 => Priority::P1,
+            2 => Priority::P2,
+            _ => Priority::P3,
+        }
+    }
 
     #[tokio::test]
     async fn queues_when_full() {
@@ -150,5 +160,50 @@ mod tests {
 
         let next = pool.complete_one().await;
         assert!(next.is_some());
+    }
+
+    proptest! {
+        #[test]
+        fn queued_dispatch_respects_priority_then_fifo(priority_ranks in prop::collection::vec(0u8..4, 1..40)) {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async move {
+                let pool = DispatchOrchestrator::new(1);
+                let first = pool
+                    .request_dispatch(DispatchRequest {
+                        task_id: Uuid::new_v4(),
+                        priority: Priority::P3,
+                    })
+                    .await;
+                assert!(matches!(first, DispatchResult::Started));
+
+                let mut expected = Vec::new();
+                for (seq, rank) in priority_ranks.iter().copied().enumerate() {
+                    let task_id = Uuid::from_u128((seq + 1) as u128);
+                    let priority = priority_from_rank(rank);
+                    let queued = pool
+                        .request_dispatch(DispatchRequest { task_id, priority })
+                        .await;
+                    assert!(matches!(queued, DispatchResult::Queued { .. }));
+                    expected.push((rank, seq, task_id));
+                }
+
+                expected.sort_by_key(|(rank, seq, _)| (*rank, *seq));
+
+                let mut actual = Vec::new();
+                while let Some(next) = pool.complete_one().await {
+                    actual.push(next.task_id);
+                }
+
+                let expected_ids = expected
+                    .iter()
+                    .map(|(_, _, task_id)| *task_id)
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected_ids);
+
+                let state = pool.state().await;
+                assert_eq!(state.active, 0);
+                assert_eq!(state.queued, 0);
+            });
+        }
     }
 }

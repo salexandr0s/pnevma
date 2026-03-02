@@ -66,19 +66,64 @@ fn arg(
 }
 
 fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
-    registry.register(RegisteredCommand {
-        id: "project.open".to_string(),
-        label: "Open Project".to_string(),
-        description: "Open a project by path.".to_string(),
-        args: vec![arg(
-            "path",
-            "Project Path",
-            true,
-            Some("."),
-            None,
-            Some("Absolute or relative path to a directory containing pnevma.toml."),
-        )],
-    })
+    registry
+        .register(RegisteredCommand {
+            id: "project.open".to_string(),
+            label: "Open Project".to_string(),
+            description: "Open a project by path.".to_string(),
+            args: vec![arg(
+                "path",
+                "Project Path",
+                true,
+                Some("."),
+                None,
+                Some("Absolute or relative path to a directory containing pnevma.toml."),
+            )],
+        })
+        .register(RegisteredCommand {
+            id: "environment.readiness".to_string(),
+            label: "Environment Readiness".to_string(),
+            description: "Check git/agent/global-config/project-init readiness.".to_string(),
+            args: vec![arg(
+                "path",
+                "Project Path",
+                false,
+                Some("."),
+                None,
+                Some("Optional path used for project scaffold readiness checks."),
+            )],
+        })
+        .register(RegisteredCommand {
+            id: "environment.init_global_config".to_string(),
+            label: "Initialize Global Config".to_string(),
+            description: "Create ~/.config/pnevma/config.toml if missing.".to_string(),
+            args: vec![arg(
+                "default_provider",
+                "Default Provider",
+                false,
+                Some("claude-code"),
+                None,
+                Some("Optional default provider written on first creation."),
+            )],
+        })
+        .register(RegisteredCommand {
+            id: "project.initialize_scaffold".to_string(),
+            label: "Initialize Project Scaffold".to_string(),
+            description: "Create pnevma.toml and .pnevma scaffold for a project path.".to_string(),
+            args: vec![
+                arg("path", "Project Path", true, Some("."), None, None),
+                arg("project_name", "Project Name", false, None, None, None),
+                arg("project_brief", "Project Brief", false, None, None, None),
+                arg(
+                    "default_provider",
+                    "Default Provider",
+                    false,
+                    Some("claude-code"),
+                    None,
+                    None,
+                ),
+            ],
+        })
 }
 
 fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
@@ -139,60 +184,57 @@ fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
         })
 }
 
-fn register_pane_commands(registry: CommandRegistry) -> CommandRegistry {
+fn pane_cmd(id: &str, label: &str, description: &str) -> RegisteredCommand {
+    RegisteredCommand {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        args: vec![arg(
+            "active_pane_id",
+            "Active Pane ID",
+            false,
+            None,
+            Some("active_pane_id"),
+            None,
+        )],
+    }
+}
+
+fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
+    for (id, label, desc) in [
+        ("pane.split_horizontal", "Split Pane Horizontal", "Duplicate the active pane in a horizontal split."),
+        ("pane.split_vertical", "Split Pane Vertical", "Duplicate the active pane in a vertical split."),
+    ] {
+        registry = registry.register(pane_cmd(id, label, desc));
+    }
+    registry = registry.register(RegisteredCommand {
+        id: "pane.close".to_string(),
+        label: "Close Pane".to_string(),
+        description: "Close the active pane if it is not the task board.".to_string(),
+        args: vec![arg(
+            "active_pane_id",
+            "Active Pane ID",
+            true,
+            None,
+            Some("active_pane_id"),
+            None,
+        )],
+    });
+    for (id, label, desc) in [
+        ("pane.open_review", "Open Review Pane", "Create a review pane next to the active pane."),
+        ("pane.open_notifications", "Open Notifications Pane", "Create a notifications pane next to the active pane."),
+        ("pane.open_merge_queue", "Open Merge Queue Pane", "Create a merge queue pane next to the active pane."),
+        ("pane.open_replay", "Open Replay Pane", "Create a replay pane next to the active pane."),
+        ("pane.open_daily_brief", "Open Daily Brief Pane", "Create a daily brief pane next to the active pane."),
+        ("pane.open_search", "Open Search Pane", "Create a project search pane next to the active pane."),
+        ("pane.open_diff", "Open Diff Pane", "Create a dedicated diff pane next to the active pane."),
+        ("pane.open_file_browser", "Open File Browser Pane", "Create a project file browser pane next to the active pane."),
+        ("pane.open_rules_manager", "Open Rules Pane", "Create a rules/conventions manager pane next to the active pane."),
+        ("pane.open_settings", "Open Settings Pane", "Create a settings pane next to the active pane."),
+    ] {
+        registry = registry.register(pane_cmd(id, label, desc));
+    }
     registry
-        .register(RegisteredCommand {
-            id: "pane.split_horizontal".to_string(),
-            label: "Split Pane Horizontal".to_string(),
-            description: "Duplicate the active pane in a horizontal split.".to_string(),
-            args: vec![arg(
-                "active_pane_id",
-                "Active Pane ID",
-                false,
-                None,
-                Some("active_pane_id"),
-                None,
-            )],
-        })
-        .register(RegisteredCommand {
-            id: "pane.split_vertical".to_string(),
-            label: "Split Pane Vertical".to_string(),
-            description: "Duplicate the active pane in a vertical split.".to_string(),
-            args: vec![arg(
-                "active_pane_id",
-                "Active Pane ID",
-                false,
-                None,
-                Some("active_pane_id"),
-                None,
-            )],
-        })
-        .register(RegisteredCommand {
-            id: "pane.close".to_string(),
-            label: "Close Pane".to_string(),
-            description: "Close the active pane if it is not the task board.".to_string(),
-            args: vec![arg(
-                "active_pane_id",
-                "Active Pane ID",
-                true,
-                None,
-                Some("active_pane_id"),
-                None,
-            )],
-        })
-        .register(RegisteredCommand {
-            id: "pane.open_review".to_string(),
-            label: "Open Review Pane".to_string(),
-            description: "Create a review pane next to the active pane.".to_string(),
-            args: vec![arg(
-                "active_pane_id",
-                "Active Pane ID",
-                false,
-                None,
-                Some("active_pane_id"),
-                None,
-            )],
-        })
 }
 
 fn register_task_commands(registry: CommandRegistry) -> CommandRegistry {
@@ -215,10 +257,56 @@ fn register_task_commands(registry: CommandRegistry) -> CommandRegistry {
             ],
         })
         .register(RegisteredCommand {
+            id: "task.dispatch_next_ready".to_string(),
+            label: "Dispatch Next Ready Task".to_string(),
+            description: "Dispatch the oldest task currently in Ready.".to_string(),
+            args: vec![],
+        })
+        .register(RegisteredCommand {
             id: "task.delete_ready".to_string(),
             label: "Delete Ready Task".to_string(),
             description: "Delete the first task in Ready status.".to_string(),
             args: vec![],
+        })
+        .register(RegisteredCommand {
+            id: "review.approve_next".to_string(),
+            label: "Approve Next Review Task".to_string(),
+            description: "Approve the oldest task currently in Review and enqueue merge."
+                .to_string(),
+            args: vec![],
+        })
+        .register(RegisteredCommand {
+            id: "review.approve_task".to_string(),
+            label: "Approve Review".to_string(),
+            description: "Approve a task review and enqueue merge.".to_string(),
+            args: vec![
+                arg("task_id", "Task ID", true, None, None, None),
+                arg("note", "Reviewer Note", false, None, None, None),
+            ],
+        })
+        .register(RegisteredCommand {
+            id: "review.reject_task".to_string(),
+            label: "Reject Review".to_string(),
+            description: "Reject a task review and return task to In Progress.".to_string(),
+            args: vec![
+                arg("task_id", "Task ID", true, None, None, None),
+                arg("note", "Reviewer Note", false, None, None, None),
+            ],
+        })
+        .register(RegisteredCommand {
+            id: "merge.execute_task".to_string(),
+            label: "Execute Merge".to_string(),
+            description: "Execute merge queue flow for a task.".to_string(),
+            args: vec![arg("task_id", "Task ID", true, None, None, None)],
+        })
+        .register(RegisteredCommand {
+            id: "checkpoint.create".to_string(),
+            label: "Create Checkpoint".to_string(),
+            description: "Create a git checkpoint snapshot.".to_string(),
+            args: vec![
+                arg("description", "Description", false, None, None, None),
+                arg("task_id", "Task ID", false, None, None, None),
+            ],
         })
 }
 

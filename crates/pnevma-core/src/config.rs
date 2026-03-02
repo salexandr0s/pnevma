@@ -1,5 +1,6 @@
 use crate::CoreError;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -87,6 +88,8 @@ pub struct GlobalConfig {
     pub socket_auth_mode: Option<String>,
     #[serde(default)]
     pub socket_password_file: Option<String>,
+    #[serde(default)]
+    pub keybindings: HashMap<String, String>,
 }
 
 fn default_branch() -> String {
@@ -149,10 +152,7 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CoreError> {
 }
 
 pub fn load_global_config() -> Result<GlobalConfig, CoreError> {
-    let base = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let path = base.join(".config/pnevma/config.toml");
+    let path = global_config_path();
 
     if !path.exists() {
         return Ok(GlobalConfig::default());
@@ -162,4 +162,22 @@ pub fn load_global_config() -> Result<GlobalConfig, CoreError> {
     let cfg: GlobalConfig = toml::from_str(&raw)
         .map_err(|e| CoreError::Serialization(format!("invalid global config TOML: {e}")))?;
     Ok(cfg)
+}
+
+pub fn global_config_path() -> PathBuf {
+    let base = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    base.join(".config/pnevma/config.toml")
+}
+
+pub fn save_global_config(config: &GlobalConfig) -> Result<(), CoreError> {
+    let path = global_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let encoded = toml::to_string_pretty(config)
+        .map_err(|e| CoreError::Serialization(format!("failed to encode global config: {e}")))?;
+    fs::write(path, encoded)?;
+    Ok(())
 }

@@ -40,6 +40,18 @@ pub struct PaneRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PaneLayoutTemplateRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub display_name: String,
+    pub pane_graph_json: String,
+    pub is_system: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct TaskRow {
     pub id: String,
     pub project_id: String,
@@ -96,4 +108,148 @@ pub struct WorktreeRow {
     pub lease_status: String,
     pub lease_started: DateTime<Utc>,
     pub last_active: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ArtifactRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub r#type: String,
+    pub path: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CheckRunRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CheckResultRow {
+    pub id: String,
+    pub check_run_id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub description: String,
+    pub check_type: String,
+    pub command: Option<String>,
+    pub passed: bool,
+    pub output: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ReviewRow {
+    pub id: String,
+    pub task_id: String,
+    pub status: String,
+    pub review_pack_path: String,
+    pub reviewer_notes: Option<String>,
+    pub approved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MergeQueueRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub status: String,
+    pub blocked_reason: Option<String>,
+    pub approved_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct NotificationRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub level: String,
+    pub unread: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SecretRefRow {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub scope: String,
+    pub name: String,
+    pub keychain_service: String,
+    pub keychain_account: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CheckpointRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub git_ref: String,
+    pub session_metadata_json: String,
+    pub created_at: DateTime<Utc>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct RuleRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub path: String,
+    pub scope: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ContextRuleUsageRow {
+    pub id: String,
+    pub project_id: String,
+    pub run_id: String,
+    pub rule_id: String,
+    pub included: bool,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct OnboardingStateRow {
+    pub project_id: String,
+    pub step: String,
+    pub completed: bool,
+    pub dismissed: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TelemetryEventRow {
+    pub id: String,
+    pub project_id: String,
+    pub event_type: String,
+    pub payload_json: String,
+    pub anonymized: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct FeedbackRow {
+    pub id: String,
+    pub project_id: String,
+    pub category: String,
+    pub body: String,
+    pub contact: Option<String>,
+    pub artifact_path: Option<String>,
+    pub created_at: DateTime<Utc>,
 }

@@ -1,13 +1,41 @@
 use crate::error::SessionError;
 use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
 use chrono::{Duration, Utc};
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use uuid::Uuid;
+
+fn redaction_authorization_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+")
+            .expect("authorization redaction regex must compile")
+    })
+}
+
+fn redaction_key_value_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)"#,
+        )
+        .expect("key-value redaction regex must compile")
+    })
+}
+
+fn redact_stream_chunk(input: &str) -> String {
+    let first = redaction_authorization_regex()
+        .replace_all(input, "$1[REDACTED]")
+        .to_string();
+    redaction_key_value_regex()
+        .replace_all(&first, "$1=[REDACTED]")
+        .to_string()
+}
 
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
@@ -344,22 +372,24 @@ impl SessionSupervisor {
                     Ok(n) => n,
                     Err(_) => break,
                 };
+                let raw_chunk = String::from_utf8_lossy(&buf[..read]).to_string();
+                let chunk = redact_stream_chunk(&raw_chunk);
+                let chunk_bytes = chunk.as_bytes();
 
                 {
                     let mut out = file.lock().await;
-                    if out.write_all(&buf[..read]).await.is_err() {
+                    if out.write_all(chunk_bytes).await.is_err() {
                         break;
                     }
                     let _ = out.flush().await;
                 }
-                total = total.saturating_add(read as u64);
+                total = total.saturating_add(chunk_bytes.len() as u64);
                 {
                     let mut idx = index.lock().await;
                     let _ = idx.write_all(format!("{total}\n").as_bytes()).await;
                     let _ = idx.flush().await;
                 }
 
-                let chunk = String::from_utf8_lossy(&buf[..read]).to_string();
                 {
                     let mut guard = sessions.write().await;
                     if let Some(meta) = guard.get_mut(&session_id) {
@@ -577,4 +607,246 @@ async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path) -> bool {
         .await
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_stream_chunk;
+    use super::SessionSupervisor;
+    use crate::error::SessionError;
+    use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    #[test]
+    fn redacts_stream_secrets_by_pattern() {
+        let input = "Authorization: Bearer abc123 password=swordfish";
+        let redacted = redact_stream_chunk(input);
+        assert!(!redacted.contains("abc123"));
+        assert!(!redacted.contains("swordfish"));
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_missing_session_is_not_found() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let err = supervisor
+            .read_scrollback(Uuid::new_v4(), 0, 128)
+            .await
+            .expect_err("missing session should error");
+        assert!(matches!(err, SessionError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn send_input_missing_session_is_not_found() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let err = supervisor
+            .send_input(Uuid::new_v4(), "echo test\n")
+            .await
+            .expect_err("missing session should error");
+        assert!(matches!(err, SessionError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_missing_file_returns_io_error() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let missing_path = root
+            .join("scrollback")
+            .join(format!("{session_id}.missing.log"));
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: missing_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let err = supervisor
+            .read_scrollback(session_id, 0, 128)
+            .await
+            .expect_err("missing scrollback file should error");
+        assert!(matches!(err, SessionError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_clamps_offset_beyond_total() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        tokio::fs::create_dir_all(scrollback_path.parent().expect("scrollback parent"))
+            .await
+            .expect("create scrollback dir");
+        tokio::fs::write(&scrollback_path, b"hello world")
+            .await
+            .expect("write scrollback");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let slice = supervisor
+            .read_scrollback(session_id, 10_000, 128)
+            .await
+            .expect("read scrollback should succeed");
+        assert_eq!(slice.start_offset, slice.total_bytes);
+        assert_eq!(slice.end_offset, slice.total_bytes);
+        assert!(slice.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_zero_limit_returns_empty_slice() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        tokio::fs::create_dir_all(scrollback_path.parent().expect("scrollback parent"))
+            .await
+            .expect("create scrollback dir");
+        tokio::fs::write(&scrollback_path, b"hello world")
+            .await
+            .expect("write scrollback");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let slice = supervisor
+            .read_scrollback(session_id, 0, 0)
+            .await
+            .expect("read scrollback should succeed");
+        assert_eq!(slice.start_offset, 0);
+        assert_eq!(slice.end_offset, 0);
+        assert!(slice.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_directory_path_returns_io_error() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let dir_path = root.join("scrollback").join(format!("{session_id}.log"));
+        tokio::fs::create_dir_all(&dir_path)
+            .await
+            .expect("create directory path");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: dir_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let err = supervisor
+            .read_scrollback(session_id, 0, 128)
+            .await
+            .expect_err("directory scrollback path should error");
+        assert!(matches!(err, SessionError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_invalid_utf8_is_lossy_but_safe() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        tokio::fs::create_dir_all(scrollback_path.parent().expect("scrollback parent"))
+            .await
+            .expect("create scrollback dir");
+        tokio::fs::write(&scrollback_path, [b'f', b'o', 0x80, b'o'])
+            .await
+            .expect("write invalid utf8");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let slice = supervisor
+            .read_scrollback(session_id, 0, 128)
+            .await
+            .expect("read scrollback should succeed");
+        assert!(slice.data.contains('\u{FFFD}'));
+    }
 }

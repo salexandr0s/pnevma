@@ -4,7 +4,10 @@ pub mod events;
 pub mod orchestration;
 pub mod task;
 
-pub use config::{load_global_config, load_project_config, GlobalConfig, ProjectConfig};
+pub use config::{
+    global_config_path, load_global_config, load_project_config, save_global_config, GlobalConfig,
+    ProjectConfig,
+};
 pub use error::CoreError;
 pub use events::{
     EventFilter, EventRecord, EventSource, EventStore, EventType, InMemoryEventStore,

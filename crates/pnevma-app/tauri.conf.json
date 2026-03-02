@@ -20,6 +20,16 @@
       }
     ]
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": [
+        "https://updates.example.com/pnevma/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "pubkey": "REPLACE_WITH_PNEVMA_UPDATER_PUBKEY"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all"

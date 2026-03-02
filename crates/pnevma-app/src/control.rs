@@ -294,6 +294,36 @@ fn parse_optional_string_param(params: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn parse_optional_bool_param(params: &Value, key: &str) -> Option<bool> {
+    params.get(key).and_then(Value::as_bool)
+}
+
+fn parse_optional_i64_param(params: &Value, key: &str) -> Option<i64> {
+    params.get(key).and_then(Value::as_i64)
+}
+
+fn parse_optional_string_list_param(params: &Value, key: &str) -> Option<Vec<String>> {
+    match params.get(key) {
+        Some(Value::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect(),
+        ),
+        Some(Value::String(raw)) => Some(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 async fn process_request(
     app: &AppHandle,
     settings: &ControlPlaneSettings,
@@ -372,7 +402,7 @@ fn authorize_request(
                 .and_then(|auth| auth.password.as_ref())
                 .cloned()
                 .ok_or_else(|| "missing auth.password".to_string())?;
-            if supplied == *password {
+            if constant_time_eq(supplied.as_bytes(), password.as_bytes()) {
                 Ok(())
             } else {
                 Err("invalid password".to_string())
@@ -381,18 +411,104 @@ fn authorize_request(
     }
 }
 
+fn constant_time_eq(lhs: &[u8], rhs: &[u8]) -> bool {
+    let max_len = lhs.len().max(rhs.len());
+    let mut diff = (lhs.len() ^ rhs.len()) as u8;
+    for idx in 0..max_len {
+        let a = lhs.get(idx).copied().unwrap_or_default();
+        let b = rhs.get(idx).copied().unwrap_or_default();
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
 async fn route_method(
     app: &AppHandle,
     method: &str,
     params: &Value,
 ) -> Result<Value, (String, String)> {
     let result = match method {
+        "environment.readiness" => {
+            let path = parse_optional_string_param(params, "path");
+            let readiness = commands::get_environment_readiness(
+                Some(commands::EnvironmentReadinessInput { path }),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(readiness)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "environment.init_global_config" => {
+            let default_provider = parse_optional_string_param(params, "default_provider");
+            let result = commands::initialize_global_config(
+                Some(commands::InitializeGlobalConfigInput { default_provider }),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.initialize_scaffold" => {
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let project_name = parse_optional_string_param(params, "project_name");
+            let project_brief = parse_optional_string_param(params, "project_brief");
+            let default_provider = parse_optional_string_param(params, "default_provider");
+            let result = commands::initialize_project_scaffold(
+                commands::InitializeProjectScaffoldInput {
+                    path,
+                    project_name,
+                    project_brief,
+                    default_provider,
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "project.status" => serde_json::to_value(
             commands::project_status(app.state::<AppState>())
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "task.create" => {
+            let title = parse_string_param(params, "title")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let goal = parse_string_param(params, "goal")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let priority =
+                parse_optional_string_param(params, "priority").unwrap_or_else(|| "P1".to_string());
+            let scope = parse_optional_string_list_param(params, "scope").unwrap_or_default();
+            let acceptance_criteria =
+                parse_optional_string_list_param(params, "acceptance_criteria")
+                    .filter(|items| !items.is_empty())
+                    .unwrap_or_else(|| vec!["manual review".to_string()]);
+            let constraints =
+                parse_optional_string_list_param(params, "constraints").unwrap_or_default();
+            let dependencies =
+                parse_optional_string_list_param(params, "dependencies").unwrap_or_default();
+            let id = commands::create_task(
+                commands::CreateTaskInput {
+                    title,
+                    goal,
+                    scope,
+                    acceptance_criteria,
+                    constraints,
+                    dependencies,
+                    priority,
+                },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "task_id": id })
+        }
         "task.list" => serde_json::to_value(
             commands::list_tasks(app.state::<AppState>())
                 .await
@@ -407,6 +523,44 @@ async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?;
             json!({ "status": status })
         }
+        "task.dispatch_next_ready" => {
+            let next = commands::list_tasks(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?
+                .into_iter()
+                .filter(|task| task.status == "Ready")
+                .min_by(|a, b| a.created_at.cmp(&b.created_at))
+                .map(|task| task.id);
+            if let Some(task_id) = next {
+                let status =
+                    commands::dispatch_task(task_id.clone(), app.clone(), app.state::<AppState>())
+                        .await
+                        .map_err(|e| ("internal_error".to_string(), e))?;
+                json!({"dispatched": true, "task_id": task_id, "status": status})
+            } else {
+                json!({"dispatched": false})
+            }
+        }
+        "session.new" => {
+            let name = parse_optional_string_param(params, "name")
+                .unwrap_or_else(|| "session".to_string());
+            let cwd = parse_optional_string_param(params, "cwd").unwrap_or_else(|| ".".to_string());
+            let command =
+                parse_optional_string_param(params, "command").unwrap_or_else(|| "zsh".to_string());
+            let session_id = commands::create_session(
+                commands::SessionInput { name, cwd, command },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"session_id": session_id})
+        }
+        "session.list" => serde_json::to_value(
+            commands::list_sessions(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "session.send_input" => {
             let session_id = parse_string_param(params, "session_id")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
@@ -417,6 +571,199 @@ async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?;
             json!({"ok": true})
         }
+        "session.timeline" => {
+            let session_id = parse_string_param(params, "session_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let limit = parse_optional_i64_param(params, "limit");
+            let timeline = commands::get_session_timeline(
+                commands::SessionTimelineInput { session_id, limit },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(timeline)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "session.recovery.options" => {
+            let session_id = parse_string_param(params, "session_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let options =
+                commands::get_session_recovery_options(session_id, app.state::<AppState>())
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(options)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "session.recovery.execute" => {
+            let session_id = parse_string_param(params, "session_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let action = parse_string_param(params, "action")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let result = commands::recover_session(
+                commands::SessionRecoveryInput { session_id, action },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            result
+        }
+        "project.daily_brief" => serde_json::to_value(
+            commands::get_daily_brief(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.search" => {
+            let query = parse_string_param(params, "query")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let limit = parse_optional_i64_param(params, "limit").map(|v| v.max(1) as usize);
+            let items = commands::search_project(
+                commands::SearchProjectInput { query, limit },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "rules.list" => serde_json::to_value(
+            commands::list_rules(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "rules.upsert" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let content = parse_string_param(params, "content")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let id = parse_optional_string_param(params, "id");
+            let active = parse_optional_bool_param(params, "active");
+            let row = commands::upsert_rule(
+                commands::RuleUpsertInput {
+                    id,
+                    name,
+                    content,
+                    scope: Some("rule".to_string()),
+                    active,
+                },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(row).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "rules.toggle" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let active = parse_optional_bool_param(params, "active")
+                .ok_or_else(|| ("invalid_params".to_string(), "missing active".to_string()))?;
+            let row = commands::toggle_rule(
+                commands::RuleToggleInput { id, active },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(row).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "rules.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_rule(id, app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "rules.usage" => {
+            let rule_id = parse_string_param(params, "rule_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let limit = parse_optional_i64_param(params, "limit");
+            let rows = commands::list_rule_usage(
+                commands::RuleUsageInput { rule_id, limit },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(rows).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "conventions.list" => serde_json::to_value(
+            commands::list_conventions(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "conventions.upsert" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let content = parse_string_param(params, "content")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let id = parse_optional_string_param(params, "id");
+            let active = parse_optional_bool_param(params, "active");
+            let row = commands::upsert_convention(
+                commands::RuleUpsertInput {
+                    id,
+                    name,
+                    content,
+                    scope: Some("convention".to_string()),
+                    active,
+                },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(row).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "conventions.toggle" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let active = parse_optional_bool_param(params, "active")
+                .ok_or_else(|| ("invalid_params".to_string(), "missing active".to_string()))?;
+            let row = commands::toggle_convention(
+                commands::RuleToggleInput { id, active },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(row).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "conventions.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_convention(id, app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "workspace.files" => {
+            let query = parse_optional_string_param(params, "query");
+            let limit = parse_optional_i64_param(params, "limit").map(|v| v.max(1) as usize);
+            let items = commands::list_project_files(
+                Some(commands::ListProjectFilesInput { query, limit }),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace.file.open" => {
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let mode = parse_optional_string_param(params, "mode");
+            let opened = commands::open_file_target(
+                commands::OpenFileTargetInput { path, mode },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(opened)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "notification.create" => {
             let title = parse_string_param(params, "title")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
@@ -424,13 +771,333 @@ async fn route_method(
                 .map_err(|e| ("invalid_params".to_string(), e))?;
             let level = parse_optional_string_param(params, "level");
             let notification = commands::create_notification(
-                commands::NotificationInput { title, body, level },
+                commands::NotificationInput {
+                    title,
+                    body,
+                    level,
+                    task_id: None,
+                    session_id: None,
+                },
                 app.clone(),
                 app.state::<AppState>(),
             )
             .await
             .map_err(|e| ("internal_error".to_string(), e))?;
             serde_json::to_value(notification)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "notification.list" => {
+            let unread_only = parse_optional_bool_param(params, "unread_only").unwrap_or(false);
+            let items = commands::list_notifications(
+                Some(commands::NotificationListInput { unread_only }),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "notification.mark_read" => {
+            let notification_id = parse_string_param(params, "notification_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::mark_notification_read(notification_id, app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "notification.clear" => {
+            commands::clear_notifications(app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "review.get_pack" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let review = commands::get_review_pack(task_id, app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(review)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "review.diff" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let diff = commands::get_task_diff(
+                commands::TaskDiffInput { task_id },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(diff).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "artifact.capture" => {
+            let kind = parse_string_param(params, "kind")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let content = parse_string_param(params, "content")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let task_id = parse_optional_string_param(params, "task_id");
+            let title = parse_optional_string_param(params, "title");
+            let artifact = commands::capture_knowledge(
+                commands::KnowledgeCaptureInput {
+                    task_id,
+                    kind,
+                    title,
+                    content,
+                },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(artifact)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "artifact.list" => serde_json::to_value(
+            commands::list_artifacts(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "review.approve" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let note = parse_optional_string_param(params, "note");
+            commands::approve_review(
+                commands::ReviewDecisionInput { task_id, note },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "review.approve_next" => {
+            let next = commands::list_tasks(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?
+                .into_iter()
+                .filter(|task| task.status == "Review")
+                .min_by(|a, b| a.created_at.cmp(&b.created_at))
+                .map(|task| task.id);
+            if let Some(task_id) = next {
+                commands::approve_review(
+                    commands::ReviewDecisionInput {
+                        task_id: task_id.clone(),
+                        note: Some("approved via quick action".to_string()),
+                    },
+                    app.clone(),
+                    app.state::<AppState>(),
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+                json!({"approved": true, "task_id": task_id})
+            } else {
+                json!({"approved": false})
+            }
+        }
+        "review.reject" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let note = parse_optional_string_param(params, "note");
+            commands::reject_review(
+                commands::ReviewDecisionInput { task_id, note },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "merge.queue.list" => {
+            let items = commands::list_merge_queue(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "merge.queue.execute" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::merge_queue_execute(task_id, app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "merge.queue.reorder" => {
+            let task_id = parse_string_param(params, "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let direction = parse_string_param(params, "direction")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let items = commands::move_merge_queue_item(
+                commands::MoveMergeQueueInput { task_id, direction },
+                app.clone(),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "checkpoint.create" => {
+            let description = parse_optional_string_param(params, "description");
+            let task_id = parse_optional_string_param(params, "task_id");
+            let checkpoint = commands::checkpoint_create(
+                commands::CheckpointInput {
+                    description,
+                    task_id,
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(checkpoint)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "checkpoint.list" => {
+            let checkpoints = commands::checkpoint_list(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(checkpoints)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "checkpoint.restore" => {
+            let checkpoint_id = parse_string_param(params, "checkpoint_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::checkpoint_restore(checkpoint_id, app.clone(), app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "task.draft" => {
+            let text = parse_string_param(params, "text")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let draft = commands::draft_task_contract(
+                commands::DraftTaskInput { text },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(draft)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "keybindings.list" => serde_json::to_value(
+            commands::list_keybindings(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "keybindings.set" => {
+            let action = parse_string_param(params, "action")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let shortcut = parse_string_param(params, "shortcut")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let rows = commands::set_keybinding(
+                commands::SetKeybindingInput { action, shortcut },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(rows).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "keybindings.reset" => serde_json::to_value(
+            commands::reset_keybindings(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "onboarding.state" => serde_json::to_value(
+            commands::get_onboarding_state(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "onboarding.advance" => {
+            let step = parse_string_param(params, "step")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let completed = parse_optional_bool_param(params, "completed");
+            let dismissed = parse_optional_bool_param(params, "dismissed");
+            let row = commands::advance_onboarding_step(
+                commands::AdvanceOnboardingInput {
+                    step,
+                    completed,
+                    dismissed,
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(row).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "onboarding.reset" => serde_json::to_value(
+            commands::reset_onboarding(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "telemetry.status" => serde_json::to_value(
+            commands::get_telemetry_status(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "telemetry.set" => {
+            let opted_in = parse_optional_bool_param(params, "opted_in")
+                .ok_or_else(|| ("invalid_params".to_string(), "missing opted_in".to_string()))?;
+            let status = commands::set_telemetry_opt_in(
+                commands::SetTelemetryInput { opted_in },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(status)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "telemetry.export" => {
+            let path = parse_optional_string_param(params, "path");
+            let limit = parse_optional_i64_param(params, "limit");
+            let output = commands::export_telemetry_bundle(
+                Some(commands::ExportTelemetryInput { path, limit }),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"path": output})
+        }
+        "telemetry.clear" => {
+            commands::clear_telemetry(app.state::<AppState>())
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "feedback.submit" => {
+            let category = parse_string_param(params, "category")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let body = parse_string_param(params, "body")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let contact = parse_optional_string_param(params, "contact");
+            let feedback = commands::submit_feedback(
+                commands::FeedbackInput {
+                    category,
+                    body,
+                    contact,
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(feedback)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "partner.metrics.report" => {
+            let days = parse_optional_i64_param(params, "days");
+            let report = commands::partner_metrics_report(
+                Some(commands::PartnerMetricsInput { days }),
+                app.state::<AppState>(),
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(report)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         _ => {
@@ -449,6 +1116,7 @@ async fn append_automation_audit(app: &AppHandle, event_type: &str, payload: Val
     let Some(ctx) = current.as_ref() else {
         return;
     };
+    let safe_payload = commands::redact_payload_for_log(payload);
     let _ = ctx
         .db
         .append_event(NewEvent {
@@ -459,7 +1127,7 @@ async fn append_automation_audit(app: &AppHandle, event_type: &str, payload: Val
             trace_id: Uuid::new_v4().to_string(),
             source: "automation".to_string(),
             event_type: event_type.to_string(),
-            payload,
+            payload: safe_payload,
         })
         .await;
 }
@@ -498,4 +1166,73 @@ pub async fn send_request(
     _request: &ControlRequest,
 ) -> Result<ControlResponse, String> {
     Err("unix sockets are not supported on this platform".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn request_with_password(password: Option<&str>) -> ControlRequest {
+        ControlRequest {
+            id: "req-1".to_string(),
+            method: "project.status".to_string(),
+            params: json!({}),
+            auth: password.map(|value| ControlAuthEnvelope {
+                password: Some(value.to_string()),
+            }),
+        }
+    }
+
+    fn password_settings(password: &str) -> ControlPlaneSettings {
+        ControlPlaneSettings {
+            enabled: true,
+            socket_path: PathBuf::from(".pnevma/run/control.sock"),
+            auth_mode: ControlAuthMode::Password {
+                password: password.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn constant_time_compare_requires_exact_match() {
+        assert!(constant_time_eq(b"abc123", b"abc123"));
+        assert!(!constant_time_eq(b"abc123", b"abc124"));
+        assert!(!constant_time_eq(b"abc123", b"abc1234"));
+        assert!(!constant_time_eq(b"", b"abc"));
+    }
+
+    #[test]
+    fn authorize_password_mode_requires_auth_password() {
+        let settings = password_settings("secret");
+        let request = request_with_password(None);
+        let err = authorize_request(&request, &settings).expect_err("missing password should fail");
+        assert_eq!(err, "missing auth.password");
+    }
+
+    #[test]
+    fn authorize_password_mode_rejects_wrong_password() {
+        let settings = password_settings("secret");
+        let request = request_with_password(Some("wrong"));
+        let err = authorize_request(&request, &settings).expect_err("wrong password should fail");
+        assert_eq!(err, "invalid password");
+    }
+
+    #[test]
+    fn authorize_password_mode_accepts_correct_password() {
+        let settings = password_settings("secret");
+        let request = request_with_password(Some("secret"));
+        authorize_request(&request, &settings).expect("correct password should pass");
+    }
+
+    #[test]
+    fn authorize_same_user_mode_skips_password_requirement() {
+        let settings = ControlPlaneSettings {
+            enabled: true,
+            socket_path: PathBuf::from(".pnevma/run/control.sock"),
+            auth_mode: ControlAuthMode::SameUser,
+        };
+        let request = request_with_password(None);
+        authorize_request(&request, &settings).expect("same-user mode should pass");
+    }
 }

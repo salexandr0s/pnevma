@@ -182,3 +182,66 @@ impl MergeQueue {
         self.queue.lock().await.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc as StdArc;
+
+    proptest! {
+        #[test]
+        fn merge_queue_is_fifo(task_ids in prop::collection::vec(any::<u128>(), 1..64)) {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async move {
+                let queue = MergeQueue::new();
+                let expected = task_ids
+                    .iter()
+                    .map(|raw| Uuid::from_u128(*raw))
+                    .collect::<Vec<_>>();
+
+                for task_id in &expected {
+                    queue.enqueue(*task_id).await;
+                }
+                assert_eq!(queue.size().await, expected.len());
+
+                let mut actual = Vec::new();
+                while let Some(next) = queue.next().await {
+                    actual.push(next);
+                }
+                assert_eq!(actual, expected);
+                assert_eq!(queue.size().await, 0);
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_lock_serializes_concurrent_sections() {
+        let queue = StdArc::new(MergeQueue::new());
+        let active = StdArc::new(AtomicUsize::new(0));
+        let max_seen = StdArc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8usize {
+            let queue_ref = queue.clone();
+            let active_ref = active.clone();
+            let max_ref = max_seen.clone();
+            handles.push(tokio::spawn(async move {
+                queue_ref
+                    .with_merge_lock(|| async {
+                        let now = active_ref.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _ = max_ref.fetch_max(now, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        active_ref.fetch_sub(1, Ordering::SeqCst);
+                    })
+                    .await;
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("join");
+        }
+
+        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    }
+}
