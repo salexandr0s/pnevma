@@ -1,5 +1,13 @@
 import { create } from "zustand";
-import type { Pane, Task, Session } from "../lib/types";
+import type {
+  DailyBrief,
+  MergeQueueItem,
+  Notification,
+  Pane,
+  PaneLayoutTemplate,
+  Session,
+  Task,
+} from "../lib/types";
 
 type AppStore = {
   projectId?: string;
@@ -8,6 +16,10 @@ type AppStore = {
   activePaneId?: string;
   tasks: Task[];
   sessions: Session[];
+  notifications: Notification[];
+  mergeQueue: MergeQueueItem[];
+  layoutTemplates: PaneLayoutTemplate[];
+  dailyBrief?: DailyBrief;
   projectCost: number;
   setProjectId: (id: string) => void;
   setProjectName: (name?: string) => void;
@@ -15,6 +27,10 @@ type AppStore = {
   removePane: (paneId: string) => void;
   setTasks: (tasks: Task[]) => void;
   setSessions: (sessions: Session[]) => void;
+  setNotifications: (notifications: Notification[]) => void;
+  setMergeQueue: (mergeQueue: MergeQueueItem[]) => void;
+  setLayoutTemplates: (templates: PaneLayoutTemplate[]) => void;
+  setDailyBrief: (brief?: DailyBrief) => void;
   setProjectCost: (cost: number) => void;
   addPane: (pane: Pane) => void;
   focusPane: (paneId: string) => void;
@@ -25,6 +41,10 @@ export const useAppStore = create<AppStore>((set) => ({
   activePaneId: "pane-board",
   tasks: [],
   sessions: [],
+  notifications: [],
+  mergeQueue: [],
+  layoutTemplates: [],
+  dailyBrief: undefined,
   projectCost: 0,
   setProjectId: (id) => set({ projectId: id }),
   setProjectName: (projectName) => set({ projectName }),
@@ -46,6 +66,10 @@ export const useAppStore = create<AppStore>((set) => ({
     }),
   setTasks: (tasks) => set({ tasks }),
   setSessions: (sessions) => set({ sessions }),
+  setNotifications: (notifications) => set({ notifications }),
+  setMergeQueue: (mergeQueue) => set({ mergeQueue }),
+  setLayoutTemplates: (layoutTemplates) => set({ layoutTemplates }),
+  setDailyBrief: (dailyBrief) => set({ dailyBrief }),
   setProjectCost: (projectCost) => set({ projectCost }),
   addPane: (pane) =>
     set((state) => ({
