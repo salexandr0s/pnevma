@@ -2,10 +2,26 @@
 /node_modules
 /frontend/node_modules
 /frontend/dist
-/.pnevma/data
-/.pnevma/pnevma.db
+/.pnevma
 /.DS_Store
 *.log
 .env
 .env.*
 !.env.example
+
+# Internal planning & session docs (keep local, not in public repo)
+buildplan-v1.md
+buildplan-v2.md
+SESSION_HANDOFF.md
+AGENTS.md
+
+# Spike / prototype explorations
+spike/
+
+# Internal-only docs
+docs/implementation-status.md
+docs/design-partner-readiness.md
+docs/keyboard-audit.md
+docs/latency-validation.md
+docs/ipc-harness.md
+docs/release-checklist.md
