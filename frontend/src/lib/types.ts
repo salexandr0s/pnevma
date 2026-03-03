@@ -47,7 +47,9 @@ export type PaneType =
   | "rules-manager"
   | "settings"
   | "notifications"
-  | "ssh-manager";
+  | "ssh-manager"
+  | "workflow"
+  | "analytics";
 
 export type Pane = {
   id: string;
@@ -109,6 +111,12 @@ export type EnvironmentReadiness = {
   project_path?: string | null;
   project_initialized: boolean;
   missing_steps: string[];
+};
+
+export type RecentProject = {
+  id: string;
+  name: string;
+  path: string;
 };
 
 export type InitGlobalConfigResult = {
@@ -360,6 +368,24 @@ export type WorkflowInstance = {
   updated_at: string;
 };
 
+export type Workflow = {
+  id: string;
+  name: string;
+  description?: string | null;
+  source: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FailurePolicy = "pause" | "retry_once" | "skip";
+
+export type StageResult = {
+  step_index: number;
+  task_id: string;
+  status: string;
+  completed_at?: string | null;
+};
+
 export type SshProfile = {
   id: string;
   name: string;
@@ -385,4 +411,109 @@ export type TrustRecord = {
   path: string;
   trusted_at: string;
   fingerprint: string;
+};
+
+export type UsageBreakdown = {
+  provider: string;
+  tokens_in: number;
+  tokens_out: number;
+  estimated_usd: number;
+  record_count: number;
+};
+
+export type UsageByModel = {
+  provider: string;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  estimated_usd: number;
+};
+
+export type UsageDailyTrend = {
+  date: string;
+  tokens_in: number;
+  tokens_out: number;
+  estimated_usd: number;
+};
+
+export type RiskLevel = "safe" | "caution" | "danger";
+
+export type ActionKind =
+  | "merge_to_target"
+  | "delete_worktree_with_changes"
+  | "force_push"
+  | "delete_task_with_active_session"
+  | "purge_scrollback"
+  | "restart_stuck_agent"
+  | "discard_review"
+  | "redispatch_failed_task"
+  | "bulk_delete_completed_tasks"
+  | "create_task"
+  | "dispatch_ready_task"
+  | "open_pane"
+  | "create_checkpoint";
+
+export type ActionRiskInfo = {
+  kind: ActionKind;
+  risk_level: RiskLevel;
+  description: string;
+  consequences: string[];
+  confirmation_phrase?: string | null;
+};
+
+export type ErrorSignature = {
+  id: string;
+  signature_hash: string;
+  canonical_message: string;
+  category: string;
+  first_seen: string;
+  last_seen: string;
+  total_count: number;
+  sample_output?: string | null;
+  remediation_hint?: string | null;
+};
+
+export type ErrorTrendPoint = {
+  date: string;
+  count: number;
+  signature_hash: string;
+  category: string;
+};
+
+export type TaskStory = {
+  id: string;
+  task_id: string;
+  sequence_number: number;
+  title: string;
+  status: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  output_summary?: string | null;
+};
+
+export type StoryProgress = {
+  total: number;
+  completed: number;
+  failed: number;
+  in_progress: number;
+};
+
+export type AgentProfile = {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  token_budget: number;
+  timeout_minutes: number;
+  max_concurrent: number;
+  stations: string[];
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DispatchRecommendation = {
+  profile_name: string;
+  score: number;
+  reason: string;
 };

@@ -1,4 +1,5 @@
 use pnevma_app::auto_dispatch;
+use pnevma_app::cost_aggregation;
 use pnevma_app::commands::*;
 use pnevma_app::state::AppState;
 use tauri::{Emitter, Manager};
@@ -34,6 +35,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             open_project,
@@ -127,6 +129,12 @@ fn main() {
             list_workflow_defs,
             instantiate_workflow,
             list_workflow_instances,
+            list_workflows,
+            get_workflow,
+            create_workflow,
+            update_workflow,
+            delete_workflow,
+            dispatch_workflow,
             list_registered_commands,
             execute_registered_command,
             list_ssh_profiles,
@@ -136,12 +144,28 @@ fn main() {
             discover_tailscale,
             connect_ssh,
             list_ssh_keys,
-            generate_ssh_key
+            generate_ssh_key,
+            get_usage_breakdown,
+            get_usage_by_model,
+            get_usage_daily_trend,
+            list_error_signatures,
+            get_error_signature,
+            get_error_trend,
+            check_action_risk,
+            list_task_stories,
+            create_stories_for_task,
+            update_story_status,
+            get_task_story_progress,
+            list_agent_profiles,
+            get_dispatch_recommendation,
+            override_task_profile,
+            get_agent_team
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").expect("main window");
             window.emit("app_ready", serde_json::json!({ "ok": true }))?;
             auto_dispatch::start_auto_dispatch(app.handle().clone());
+            cost_aggregation::start_cost_aggregation(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

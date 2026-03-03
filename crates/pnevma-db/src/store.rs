@@ -1,9 +1,11 @@
 use crate::error::DbError;
 use crate::models::{
-    ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostRow,
-    EventRow, FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
+    AgentProfileRow, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow,
+    CostDailyAggregateRow, CostRow, ErrorSignatureDailyRow,
+    ErrorSignatureRow, EventRow, FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
     PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow,
-    SshProfileRow, TaskRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowTaskRow, WorktreeRow,
+    SshProfileRow, StoryProgressRow, TaskRow, TaskStoryRow, TelemetryEventRow,
+    WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow, WorktreeRow,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -974,6 +976,177 @@ impl Db {
         Ok(total.unwrap_or(0.0))
     }
 
+    /// Aggregate raw costs into hourly buckets for a project.
+    ///
+    /// Groups costs by (provider, model, hour) and upserts into cost_hourly_aggregates,
+    /// overwriting existing sums on conflict to avoid double-counting.
+    pub async fn aggregate_costs_hourly(&self, project_id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO cost_hourly_aggregates
+                (id, project_id, provider, model, period_start, tokens_in, tokens_out, estimated_usd, record_count)
+            SELECT
+                lower(hex(randomblob(16))),
+                t.project_id,
+                c.provider,
+                COALESCE(c.model, ''),
+                strftime('%Y-%m-%dT%H:00:00', datetime(c.timestamp)) AS period_start,
+                SUM(c.tokens_in),
+                SUM(c.tokens_out),
+                SUM(c.estimated_usd),
+                COUNT(*)
+            FROM costs c
+            JOIN tasks t ON t.id = c.task_id
+            WHERE t.project_id = ?1
+            GROUP BY t.project_id, c.provider, COALESCE(c.model, ''), strftime('%Y-%m-%dT%H:00:00', datetime(c.timestamp))
+            ON CONFLICT(project_id, provider, model, period_start) DO UPDATE SET
+                tokens_in     = excluded.tokens_in,
+                tokens_out    = excluded.tokens_out,
+                estimated_usd = excluded.estimated_usd,
+                record_count  = excluded.record_count
+            "#,
+        )
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Aggregate raw costs into daily buckets for a project, joining tasks for completion count.
+    pub async fn aggregate_costs_daily(&self, project_id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO cost_daily_aggregates
+                (id, project_id, provider, model, period_date, tokens_in, tokens_out, estimated_usd, record_count, tasks_completed, files_changed)
+            SELECT
+                lower(hex(randomblob(16))),
+                t.project_id,
+                c.provider,
+                COALESCE(c.model, ''),
+                strftime('%Y-%m-%d', datetime(c.timestamp)) AS period_date,
+                SUM(c.tokens_in),
+                SUM(c.tokens_out),
+                SUM(c.estimated_usd),
+                COUNT(*),
+                COUNT(DISTINCT CASE WHEN t.status = 'Done' THEN t.id END),
+                0
+            FROM costs c
+            JOIN tasks t ON t.id = c.task_id
+            WHERE t.project_id = ?1
+            GROUP BY t.project_id, c.provider, COALESCE(c.model, ''), strftime('%Y-%m-%d', datetime(c.timestamp))
+            ON CONFLICT(project_id, provider, model, period_date) DO UPDATE SET
+                tokens_in       = excluded.tokens_in,
+                tokens_out      = excluded.tokens_out,
+                estimated_usd   = excluded.estimated_usd,
+                record_count    = excluded.record_count,
+                tasks_completed = excluded.tasks_completed
+            "#,
+        )
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Sum daily aggregates by provider over the given number of days.
+    pub async fn get_usage_breakdown(
+        &self,
+        project_id: &str,
+        days: i64,
+    ) -> Result<Vec<CostDailyAggregateRow>, DbError> {
+        let rows = sqlx::query_as::<_, CostDailyAggregateRow>(
+            r#"
+            SELECT
+                lower(hex(randomblob(16))) AS id,
+                project_id,
+                provider,
+                '' AS model,
+                '' AS period_date,
+                SUM(tokens_in) AS tokens_in,
+                SUM(tokens_out) AS tokens_out,
+                SUM(estimated_usd) AS estimated_usd,
+                SUM(record_count) AS record_count,
+                SUM(tasks_completed) AS tasks_completed,
+                SUM(files_changed) AS files_changed
+            FROM cost_daily_aggregates
+            WHERE project_id = ?1
+              AND period_date >= date('now', ?2)
+            GROUP BY project_id, provider
+            ORDER BY estimated_usd DESC
+            "#,
+        )
+        .bind(project_id)
+        .bind(format!("-{} days", days))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Sum all daily aggregates by model across all time.
+    pub async fn get_usage_by_model(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<CostDailyAggregateRow>, DbError> {
+        let rows = sqlx::query_as::<_, CostDailyAggregateRow>(
+            r#"
+            SELECT
+                lower(hex(randomblob(16))) AS id,
+                project_id,
+                provider,
+                model,
+                '' AS period_date,
+                SUM(tokens_in) AS tokens_in,
+                SUM(tokens_out) AS tokens_out,
+                SUM(estimated_usd) AS estimated_usd,
+                SUM(record_count) AS record_count,
+                SUM(tasks_completed) AS tasks_completed,
+                SUM(files_changed) AS files_changed
+            FROM cost_daily_aggregates
+            WHERE project_id = ?1
+            GROUP BY project_id, provider, model
+            ORDER BY estimated_usd DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Daily totals aggregated across all providers for a trend chart.
+    pub async fn get_usage_daily_trend(
+        &self,
+        project_id: &str,
+        days: i64,
+    ) -> Result<Vec<CostDailyAggregateRow>, DbError> {
+        let rows = sqlx::query_as::<_, CostDailyAggregateRow>(
+            r#"
+            SELECT
+                lower(hex(randomblob(16))) AS id,
+                project_id,
+                '' AS provider,
+                '' AS model,
+                period_date,
+                SUM(tokens_in) AS tokens_in,
+                SUM(tokens_out) AS tokens_out,
+                SUM(estimated_usd) AS estimated_usd,
+                SUM(record_count) AS record_count,
+                SUM(tasks_completed) AS tasks_completed,
+                SUM(files_changed) AS files_changed
+            FROM cost_daily_aggregates
+            WHERE project_id = ?1
+              AND period_date >= date('now', ?2)
+            GROUP BY project_id, period_date
+            ORDER BY period_date ASC
+            "#,
+        )
+        .bind(project_id)
+        .bind(format!("-{} days", days))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn create_check_run(&self, row: &CheckRunRow) -> Result<(), DbError> {
         sqlx::query(
             r#"
@@ -1347,8 +1520,8 @@ impl Db {
     ) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO workflow_instances (id, project_id, workflow_name, description, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO workflow_instances (id, project_id, workflow_name, description, status, created_at, updated_at, params_json, stage_results_json, expanded_steps_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
         )
         .bind(&instance.id)
@@ -1358,6 +1531,9 @@ impl Db {
         .bind(&instance.status)
         .bind(instance.created_at)
         .bind(instance.updated_at)
+        .bind(&instance.params_json)
+        .bind(&instance.stage_results_json)
+        .bind(&instance.expanded_steps_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1387,7 +1563,8 @@ impl Db {
     ) -> Result<Option<WorkflowInstanceRow>, DbError> {
         let row = sqlx::query_as::<_, WorkflowInstanceRow>(
             r#"
-            SELECT id, project_id, workflow_name, description, status, created_at, updated_at
+            SELECT id, project_id, workflow_name, description, status, created_at, updated_at,
+                   params_json, stage_results_json, expanded_steps_json
             FROM workflow_instances WHERE id = ?1
             "#,
         )
@@ -1403,7 +1580,8 @@ impl Db {
     ) -> Result<Vec<WorkflowInstanceRow>, DbError> {
         let rows = sqlx::query_as::<_, WorkflowInstanceRow>(
             r#"
-            SELECT id, project_id, workflow_name, description, status, created_at, updated_at
+            SELECT id, project_id, workflow_name, description, status, created_at, updated_at,
+                   params_json, stage_results_json, expanded_steps_json
             FROM workflow_instances WHERE project_id = ?1
             ORDER BY created_at DESC
             "#,
@@ -1515,6 +1693,484 @@ impl Db {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    // ── Error Signature methods ──────────────────────────────────────────────
+
+    pub async fn upsert_error_signature(&self, row: &ErrorSignatureRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO error_signatures
+                (id, project_id, signature_hash, canonical_message, category,
+                 first_seen, last_seen, total_count, sample_output, remediation_hint)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(project_id, signature_hash) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                total_count = total_count + 1,
+                sample_output = excluded.sample_output
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.signature_hash)
+        .bind(&row.canonical_message)
+        .bind(&row.category)
+        .bind(row.first_seen)
+        .bind(row.last_seen)
+        .bind(row.total_count)
+        .bind(&row.sample_output)
+        .bind(&row.remediation_hint)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn increment_error_signature_daily(
+        &self,
+        signature_id: &str,
+        date: &str,
+    ) -> Result<(), DbError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO error_signature_daily (id, signature_id, date, count)
+            VALUES (?1, ?2, ?3, 1)
+            ON CONFLICT(signature_id, date) DO UPDATE SET count = count + 1
+            "#,
+        )
+        .bind(&id)
+        .bind(signature_id)
+        .bind(date)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_error_signatures(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ErrorSignatureRow>, DbError> {
+        let rows = sqlx::query_as::<_, ErrorSignatureRow>(
+            r#"
+            SELECT id, project_id, signature_hash, canonical_message, category,
+                   first_seen, last_seen, total_count, sample_output, remediation_hint
+            FROM error_signatures
+            WHERE project_id = ?1
+            ORDER BY total_count DESC
+            LIMIT ?2
+            "#,
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_error_signature(
+        &self,
+        id: &str,
+    ) -> Result<Option<ErrorSignatureRow>, DbError> {
+        let row = sqlx::query_as::<_, ErrorSignatureRow>(
+            r#"
+            SELECT id, project_id, signature_hash, canonical_message, category,
+                   first_seen, last_seen, total_count, sample_output, remediation_hint
+            FROM error_signatures WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_error_trend(
+        &self,
+        project_id: &str,
+        days: i64,
+    ) -> Result<Vec<ErrorSignatureDailyRow>, DbError> {
+        let rows = sqlx::query_as::<_, ErrorSignatureDailyRow>(
+            r#"
+            SELECT esd.id, esd.signature_id, esd.date, esd.count,
+                   es.signature_hash, es.category
+            FROM error_signature_daily esd
+            JOIN error_signatures es ON es.id = esd.signature_id
+            WHERE es.project_id = ?1
+              AND esd.date >= date('now', '-' || ?2 || ' days')
+            ORDER BY esd.date ASC
+            "#,
+        )
+        .bind(project_id)
+        .bind(days)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    // ── Task story methods ──────────────────────────────────────────────────
+
+    pub async fn create_task_story(&self, row: &TaskStoryRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO task_stories (id, task_id, sequence_number, title, status, started_at, completed_at, output_summary)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.task_id)
+        .bind(row.sequence_number)
+        .bind(&row.title)
+        .bind(&row.status)
+        .bind(row.started_at)
+        .bind(row.completed_at)
+        .bind(&row.output_summary)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn create_stories_batch(&self, rows: &[TaskStoryRow]) -> Result<(), DbError> {
+        for row in rows {
+            self.create_task_story(row).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn list_task_stories(&self, task_id: &str) -> Result<Vec<TaskStoryRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskStoryRow>(
+            r#"
+            SELECT id, task_id, sequence_number, title, status, started_at, completed_at, output_summary
+            FROM task_stories
+            WHERE task_id = ?1
+            ORDER BY sequence_number ASC
+            "#,
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn update_story_status(&self, id: &str, status: &str, output_summary: Option<&str>) -> Result<(), DbError> {
+        let now = Utc::now();
+        let (started_at, completed_at) = match status {
+            "in_progress" => (Some(now), None),
+            "completed" | "failed" | "skipped" => (None::<DateTime<Utc>>, Some(now)),
+            _ => (None, None),
+        };
+        sqlx::query(
+            r#"
+            UPDATE task_stories
+            SET status = ?1,
+                output_summary = COALESCE(?2, output_summary),
+                started_at = CASE WHEN started_at IS NULL AND ?3 IS NOT NULL THEN ?3 ELSE started_at END,
+                completed_at = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE completed_at END
+            WHERE id = ?5
+            "#,
+        )
+        .bind(status)
+        .bind(output_summary)
+        .bind(started_at)
+        .bind(completed_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_story_progress(
+        &self,
+        task_id: &str,
+    ) -> Result<StoryProgressRow, DbError> {
+        let row = sqlx::query_as::<_, StoryProgressRow>(
+            r#"
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress
+            FROM task_stories
+            WHERE task_id = ?1
+            "#,
+        )
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    // ─── Workflow definitions ────────────────────────────────────────────────
+
+    pub async fn create_workflow(&self, row: &WorkflowRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO workflows (id, project_id, name, description, definition_yaml, source, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.name)
+        .bind(&row.description)
+        .bind(&row.definition_yaml)
+        .bind(&row.source)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_workflow(&self, id: &str) -> Result<Option<WorkflowRow>, DbError> {
+        let row = sqlx::query_as::<_, WorkflowRow>(
+            r#"
+            SELECT id, project_id, name, description, definition_yaml, source, created_at, updated_at
+            FROM workflows WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_workflow_by_name(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<Option<WorkflowRow>, DbError> {
+        let row = sqlx::query_as::<_, WorkflowRow>(
+            r#"
+            SELECT id, project_id, name, description, definition_yaml, source, created_at, updated_at
+            FROM workflows WHERE project_id = ?1 AND name = ?2
+            "#,
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_workflows(&self, project_id: &str) -> Result<Vec<WorkflowRow>, DbError> {
+        let rows = sqlx::query_as::<_, WorkflowRow>(
+            r#"
+            SELECT id, project_id, name, description, definition_yaml, source, created_at, updated_at
+            FROM workflows WHERE project_id = ?1
+            ORDER BY name ASC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn update_workflow(&self, row: &WorkflowRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE workflows
+            SET name = ?1, description = ?2, definition_yaml = ?3, source = ?4, updated_at = ?5
+            WHERE id = ?6
+            "#,
+        )
+        .bind(&row.name)
+        .bind(&row.description)
+        .bind(&row.definition_yaml)
+        .bind(&row.source)
+        .bind(row.updated_at)
+        .bind(&row.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_workflow(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM workflows WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_workflow_instance_results(
+        &self,
+        id: &str,
+        stage_results_json: &str,
+        status: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE workflow_instances
+            SET stage_results_json = ?1, status = ?2, updated_at = ?3
+            WHERE id = ?4
+            "#,
+        )
+        .bind(stage_results_json)
+        .bind(status)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ─── Agent Profile methods ───────────────────────────────────────────────
+
+    pub async fn create_agent_profile(&self, row: &AgentProfileRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO agent_profiles
+                (id, project_id, name, provider, model, token_budget, timeout_minutes,
+                 max_concurrent, stations_json, config_json, active, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.name)
+        .bind(&row.provider)
+        .bind(&row.model)
+        .bind(row.token_budget)
+        .bind(row.timeout_minutes)
+        .bind(row.max_concurrent)
+        .bind(&row.stations_json)
+        .bind(&row.config_json)
+        .bind(row.active)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_agent_profile(&self, id: &str) -> Result<Option<AgentProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, AgentProfileRow>(
+            r#"
+            SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at
+            FROM agent_profiles
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_agent_profile_by_name(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<Option<AgentProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, AgentProfileRow>(
+            r#"
+            SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at
+            FROM agent_profiles
+            WHERE project_id = ?1 AND name = ?2
+            "#,
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_agent_profiles(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<AgentProfileRow>, DbError> {
+        let rows = sqlx::query_as::<_, AgentProfileRow>(
+            r#"
+            SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at
+            FROM agent_profiles
+            WHERE project_id = ?1 AND active = 1
+            ORDER BY name
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn update_agent_profile(&self, row: &AgentProfileRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE agent_profiles
+            SET name = ?1, provider = ?2, model = ?3, token_budget = ?4,
+                timeout_minutes = ?5, max_concurrent = ?6, stations_json = ?7,
+                config_json = ?8, active = ?9, updated_at = ?10
+            WHERE id = ?11
+            "#,
+        )
+        .bind(&row.name)
+        .bind(&row.provider)
+        .bind(&row.model)
+        .bind(row.token_budget)
+        .bind(row.timeout_minutes)
+        .bind(row.max_concurrent)
+        .bind(&row.stations_json)
+        .bind(&row.config_json)
+        .bind(row.active)
+        .bind(row.updated_at)
+        .bind(&row.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_agent_profile(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM agent_profiles WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_workflow_instance_params(
+        &self,
+        id: &str,
+        params_json: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE workflow_instances
+            SET params_json = ?1, updated_at = ?2
+            WHERE id = ?3
+            "#,
+        )
+        .bind(params_json)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_workflow_instance_expanded(
+        &self,
+        id: &str,
+        expanded_steps_json: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE workflow_instances
+            SET expanded_steps_json = ?1, updated_at = ?2
+            WHERE id = ?3
+            "#,
+        )
+        .bind(expanded_steps_json)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

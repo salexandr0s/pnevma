@@ -1,7 +1,10 @@
 pub mod config;
 pub mod error;
+pub mod error_signatures;
 pub mod events;
 pub mod orchestration;
+pub mod protected_actions;
+pub mod stories;
 pub mod task;
 pub mod workflow;
 
@@ -18,7 +21,9 @@ pub use task::{
     Check, CheckType, ContextManifestItem, ContextPack, Priority, TaskContract, TaskStatus,
     TransitionError,
 };
-pub use workflow::{WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStep};
+pub use protected_actions::{ActionKind, ActionRiskInfo, RiskLevel};
+pub use stories::{DetectedStory, StoryDetector, StoryStatus};
+pub use workflow::{FailurePolicy, StageResult, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStep};
 
 pub type ProjectId = uuid::Uuid;
 pub type TaskId = uuid::Uuid;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { CommandPalette } from "./components/CommandPalette";
 import {
   DialogProvider,
@@ -35,6 +36,7 @@ import {
   listNotifications,
   listPaneLayoutTemplates,
   listPanes,
+  listRecentProjects,
   listRegisteredCommands,
   listSessions,
   listTasks,
@@ -55,10 +57,12 @@ import type {
   Notification,
   OnboardingState,
   Pane,
+  RecentProject,
   RegisteredCommand,
   Session,
   Task,
 } from "./lib/types";
+import { AnalyticsPane } from "./panes/analytics/AnalyticsPane";
 import { DailyBriefPane } from "./panes/brief/DailyBriefPane";
 import { DiffPane } from "./panes/diff/DiffPane";
 import { FileBrowserPane } from "./panes/files/FileBrowserPane";
@@ -71,6 +75,7 @@ import { RulesManagerPane } from "./panes/settings/RulesManagerPane";
 import { SettingsPane } from "./panes/settings/SettingsPane";
 import { SshManagerPane } from "./panes/ssh/SshManagerPane";
 import { TaskBoardPane } from "./panes/task-board/TaskBoardPane";
+import { WorkflowPane } from "./panes/workflow/WorkflowPane";
 import { TerminalPane } from "./panes/terminal/TerminalPane";
 import { useAppStore } from "./stores/appStore";
 
@@ -133,7 +138,8 @@ function renderPane(
   onRefreshBrief: () => Promise<void>,
   notifications: Notification[],
   onMarkNotificationRead: (notificationId: string) => Promise<void>,
-  onClearNotifications: () => Promise<void>
+  onClearNotifications: () => Promise<void>,
+  onUpsertTask: (task: Task) => void
 ) {
   if (pane.type === "terminal") {
     const session = sessions.find((item) => item.id === pane.session_id);
@@ -146,7 +152,16 @@ function renderPane(
     );
   }
   if (pane.type === "task-board") {
-    return <TaskBoardPane tasks={tasks} onDispatch={onDispatch} />;
+    return (
+      <TaskBoardPane
+        tasks={tasks}
+        onDispatch={onDispatch}
+        onOptimisticStatusChange={(taskId, newStatus) => {
+          const task = tasks.find((t) => t.id === taskId);
+          if (task) onUpsertTask({ ...task, status: newStatus });
+        }}
+      />
+    );
   }
   if (pane.type === "review") {
     return (
@@ -200,6 +215,12 @@ function renderPane(
   if (pane.type === "ssh-manager") {
     return <SshManagerPane />;
   }
+  if (pane.type === "workflow") {
+    return <WorkflowPane />;
+  }
+  if (pane.type === "analytics") {
+    return <AnalyticsPane />;
+  }
   return null;
 }
 
@@ -213,6 +234,7 @@ export function App() {
   const [readiness, setReadiness] = useState<EnvironmentReadiness | null>(null);
   const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [bootstrapNotice, setBootstrapNotice] = useState<string | undefined>();
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
   const {
     panes,
@@ -358,17 +380,19 @@ export function App() {
     }
   }, [bootstrapPath, refreshEnvironment]);
 
-  const openProjectFromPanel = useCallback(async () => {
-    if (!bootstrapPath.trim()) {
+  const openProjectByPath = useCallback(async (targetPath: string) => {
+    if (!targetPath.trim()) {
       return;
     }
+    const trimmed = targetPath.trim();
     setBootstrapBusy(true);
     try {
-      await openProject(bootstrapPath.trim());
+      await openProject(trimmed);
       setBootstrapNotice(undefined);
       await refreshProjectData();
       await refreshKeybindings();
       await refreshOnboarding();
+      void listRecentProjects().then(setRecentProjects).catch(() => {});
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("workspace_not_trusted")) {
@@ -376,13 +400,14 @@ export function App() {
           "This workspace has not been trusted yet. Trust and open?"
         );
         if (confirmed) {
-          await trustWorkspace(bootstrapPath.trim());
+          await trustWorkspace(trimmed);
           try {
-            await openProject(bootstrapPath.trim());
+            await openProject(trimmed);
             setBootstrapNotice(undefined);
             await refreshProjectData();
             await refreshKeybindings();
             await refreshOnboarding();
+            void listRecentProjects().then(setRecentProjects).catch(() => {});
           } catch (retryErr: unknown) {
             const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
             await nativeAlert(`Failed to open project: ${retryMsg}`);
@@ -393,13 +418,14 @@ export function App() {
           "Workspace configuration has changed since it was last trusted. Re-trust and open?"
         );
         if (confirmed) {
-          await trustWorkspace(bootstrapPath.trim());
+          await trustWorkspace(trimmed);
           try {
-            await openProject(bootstrapPath.trim());
+            await openProject(trimmed);
             setBootstrapNotice(undefined);
             await refreshProjectData();
             await refreshKeybindings();
             await refreshOnboarding();
+            void listRecentProjects().then(setRecentProjects).catch(() => {});
           } catch (retryErr: unknown) {
             const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
             await nativeAlert(`Failed to open project: ${retryMsg}`);
@@ -412,11 +438,28 @@ export function App() {
       setBootstrapBusy(false);
     }
   }, [
-    bootstrapPath,
     refreshKeybindings,
     refreshOnboarding,
     refreshProjectData,
   ]);
+
+  const openProjectFromPanel = useCallback(async () => {
+    await openProjectByPath(bootstrapPath);
+  }, [bootstrapPath, openProjectByPath]);
+
+  const selectRecentProject = useCallback(async (recentPath: string) => {
+    setBootstrapPath(recentPath);
+    await openProjectByPath(recentPath);
+  }, [openProjectByPath]);
+
+  const browseForProject = useCallback(async () => {
+    const selected = await open({ directory: true, multiple: false, title: "Select Project Folder" });
+    if (selected && typeof selected === "string") {
+      setBootstrapPath(selected);
+      setBootstrapNotice(undefined);
+      void refreshEnvironment(selected);
+    }
+  }, [refreshEnvironment]);
 
   const updateOnboarding = useCallback(async (step: string, completed?: boolean, dismissed?: boolean) => {
     const next = await advanceOnboardingStep({ step, completed, dismissed });
@@ -552,6 +595,7 @@ export function App() {
     void refreshKeybindings();
     void refreshOnboarding();
     void refreshEnvironment();
+    void listRecentProjects().then(setRecentProjects).catch(() => setRecentProjects([]));
   }, [refreshEnvironment, refreshKeybindings, refreshOnboarding, refreshProjectData]);
 
   useEffect(() => {
@@ -735,7 +779,26 @@ export function App() {
       window.removeEventListener("pnevma:keybindings-updated", onKeybindingsUpdated as EventListener);
       window.removeEventListener("pnevma:onboarding-reset", onOnboardingReset as EventListener);
     };
-  }, [refreshKeybindings, refreshOnboarding, refreshProjectData]);
+  }, [
+    refreshKeybindings,
+    refreshOnboarding,
+    refreshProjectData,
+    removePane,
+    removeSession,
+    removeTask,
+    setDailyBrief,
+    setMergeQueue,
+    setNotifications,
+    setPanes,
+    setProjectCost,
+    setSessions,
+    setTasks,
+    upsertMergeQueueItem,
+    upsertNotification,
+    upsertPaneInStore,
+    upsertSession,
+    upsertTask,
+  ]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -972,22 +1035,27 @@ export function App() {
       </header>
 
       {!projectName ? (
-        <FirstLaunchPanel
-          path={bootstrapPath}
-          readiness={readiness}
-          busy={bootstrapBusy}
-          notice={bootstrapNotice}
-          onPathChange={(value) => {
-            setBootstrapPath(value);
-            setBootstrapNotice(undefined);
-          }}
-          onRefresh={async () => {
-            await refreshEnvironment(bootstrapPath);
-          }}
-          onInitGlobalConfig={initializeGlobalFromPanel}
-          onInitProject={initializeProjectFromPanel}
-          onOpenProject={openProjectFromPanel}
-        />
+        <div className="flex flex-1 items-center justify-center">
+          <FirstLaunchPanel
+            path={bootstrapPath}
+            readiness={readiness}
+            busy={bootstrapBusy}
+            notice={bootstrapNotice}
+            recentProjects={recentProjects}
+            onPathChange={(value) => {
+              setBootstrapPath(value);
+              setBootstrapNotice(undefined);
+            }}
+            onRefresh={async () => {
+              await refreshEnvironment(bootstrapPath);
+            }}
+            onInitGlobalConfig={initializeGlobalFromPanel}
+            onInitProject={initializeProjectFromPanel}
+            onOpenProject={openProjectFromPanel}
+            onBrowse={browseForProject}
+            onSelectRecent={selectRecentProject}
+          />
+        </div>
       ) : null}
 
       <main className="grid flex-1 grid-cols-12 gap-3 p-3">
@@ -1040,7 +1108,8 @@ export function App() {
                     refreshProjectData,
                     notifications,
                     markNotificationAsRead,
-                    clearAllNotifications
+                    clearAllNotifications,
+                    upsertTask
                   )}
                 </div>
               </article>

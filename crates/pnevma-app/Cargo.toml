@@ -15,6 +15,7 @@ serde_json.workspace = true
 regex.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = { version = "2", features = [] }
+tauri-plugin-dialog = { version = "2", features = [] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

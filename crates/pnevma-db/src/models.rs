@@ -255,6 +255,18 @@ pub struct FeedbackRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WorkflowRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub definition_yaml: String,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct WorkflowInstanceRow {
     pub id: String,
     pub project_id: String,
@@ -263,6 +275,9 @@ pub struct WorkflowInstanceRow {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub params_json: Option<String>,
+    pub stage_results_json: Option<String>,
+    pub expanded_steps_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -284,6 +299,95 @@ pub struct SshProfileRow {
     pub proxy_jump: Option<String>,
     pub tags_json: String,
     pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CostHourlyAggregateRow {
+    pub id: String,
+    pub project_id: String,
+    pub provider: String,
+    pub model: String,
+    pub period_start: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub estimated_usd: f64,
+    pub record_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ErrorSignatureRow {
+    pub id: String,
+    pub project_id: String,
+    pub signature_hash: String,
+    pub canonical_message: String,
+    pub category: String,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub total_count: i64,
+    pub sample_output: Option<String>,
+    pub remediation_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ErrorSignatureDailyRow {
+    pub id: String,
+    pub signature_id: String,
+    pub date: String,
+    pub count: i64,
+    pub signature_hash: Option<String>,
+    pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CostDailyAggregateRow {
+    pub id: String,
+    pub project_id: String,
+    pub provider: String,
+    pub model: String,
+    pub period_date: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub estimated_usd: f64,
+    pub record_count: i64,
+    pub tasks_completed: i64,
+    pub files_changed: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TaskStoryRow {
+    pub id: String,
+    pub task_id: String,
+    pub sequence_number: i64,
+    pub title: String,
+    pub status: String,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub output_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct StoryProgressRow {
+    pub total: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub in_progress: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentProfileRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    pub token_budget: i64,
+    pub timeout_minutes: i64,
+    pub max_concurrent: i64,
+    pub stations_json: String,
+    pub config_json: String,
+    pub active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

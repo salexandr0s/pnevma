@@ -39,6 +39,15 @@ pub enum EventType {
     CheckpointRestored,
     ProjectOpened,
     ProjectClosed,
+    ProtectedActionApproved,
+    ProtectedActionRejected,
+    WorkflowDispatched,
+    WorkflowStageStarted,
+    WorkflowStageCompleted,
+    WorkflowStageFailed,
+    WorkflowStageSkipped,
+    WorkflowCompleted,
+    WorkflowFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

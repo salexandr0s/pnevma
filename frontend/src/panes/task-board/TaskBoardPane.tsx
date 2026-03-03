@@ -1,61 +1,106 @@
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  type DragEndEvent,
+  type DragStartEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { useState } from "react";
+import { updateTask } from "../../hooks/useTauri";
 import type { Task } from "../../lib/types";
+import { DragOverlayCard } from "./DragOverlayCard";
+import { KanbanColumn } from "./KanbanColumn";
 
 type Props = {
   tasks: Task[];
   onDispatch: (taskId: string) => Promise<void>;
+  onOptimisticStatusChange?: (taskId: string, newStatus: string) => void;
 };
 
-const COLUMNS = ["Planned", "Ready", "InProgress", "Review", "Done", "Failed", "Blocked"];
+const COLUMNS = ["Planned", "Ready", "InProgress", "Review", "Done", "Failed", "Blocked"] as const;
 
-export function TaskBoardPane({ tasks, onDispatch }: Props) {
+const VALID_TRANSITIONS: Record<string, readonly string[]> = {
+  Planned: ["Ready", "Blocked"],
+  Ready: ["InProgress", "Failed", "Blocked"],
+  InProgress: ["Review", "Failed"],
+  Review: ["Done", "Failed"],
+  Blocked: ["Planned"],
+};
+
+export function TaskBoardPane({ tasks, onDispatch, onOptimisticStatusChange }: Props) {
+  const [activeTask, setActiveTask] = useState<Task | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  function handleDragStart(event: DragStartEvent) {
+    const task = tasks.find((t) => t.id === event.active.id);
+    setActiveTask(task ?? null);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveTask(null);
+
+    const { active, over } = event;
+    if (!over) return;
+
+    const task = tasks.find((t) => t.id === active.id);
+    if (!task) return;
+
+    // over.id can be either a column status string or a task id in another column
+    // Resolve the target column: if over.id is a task id, look up its status
+    let targetStatus: string;
+    const overTask = tasks.find((t) => t.id === over.id);
+    if (overTask) {
+      targetStatus = overTask.status;
+    } else {
+      // over.id is a droppable column id (the status string)
+      targetStatus = over.id as string;
+    }
+
+    if (task.status === targetStatus) return;
+
+    const allowed = VALID_TRANSITIONS[task.status] ?? [];
+    if (!allowed.includes(targetStatus)) {
+      console.warn(
+        `[TaskBoard] Invalid transition: ${task.status} → ${targetStatus} for task ${task.id}`
+      );
+      return;
+    }
+
+    onOptimisticStatusChange?.(task.id, targetStatus);
+    void updateTask({ id: task.id, status: targetStatus });
+  }
+
+  const activeFromStatus = activeTask?.status ?? null;
+
   return (
-    <div className="grid h-full grid-cols-2 gap-3 overflow-auto xl:grid-cols-4 2xl:grid-cols-7">
-      {COLUMNS.map((status) => {
-        const items = tasks.filter((task) => task.status === status);
-        return (
-          <section key={status} className="rounded-lg border border-white/10 bg-slate-900/70 p-3">
-            <header className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-300">
-              {status} ({items.length})
-            </header>
-            <div className="space-y-2">
-              {items.map((task) => (
-                <article
-                  key={task.id}
-                  tabIndex={0}
-                  onKeyDown={(event) => {
-                    if ((event.key === "d" || event.key === "Enter") && status === "Ready") {
-                      event.preventDefault();
-                      void onDispatch(task.id);
-                    }
-                  }}
-                  className="rounded-md border border-white/10 bg-slate-950/80 p-2 outline-none focus:border-mint-400/70"
-                >
-                  <div className="text-sm font-medium">{task.title}</div>
-                  <div className="mt-1 line-clamp-3 text-xs text-slate-400">{task.goal}</div>
-                  <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-                    <span>{task.priority}</span>
-                    {status === "Ready" ? (
-                      <button
-                        className="rounded bg-mint-500 px-2 py-1 text-[11px] font-semibold text-slate-950"
-                        onClick={() => onDispatch(task.id)}
-                      >
-                        Dispatch
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-                    <span>
-                      Deps: {task.dependencies.length}
-                      {task.queued_position ? ` · Queue #${task.queued_position}` : ""}
-                    </span>
-                    <span>{typeof task.cost_usd === "number" ? `$${task.cost_usd.toFixed(2)}` : "No cost"}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-        );
-      })}
-    </div>
+    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      <div className="grid h-full grid-cols-2 gap-3 overflow-auto xl:grid-cols-4 2xl:grid-cols-7">
+        {COLUMNS.map((status) => {
+          const items = tasks.filter((task) => task.status === status);
+          const isValidTarget =
+            activeFromStatus !== null &&
+            (VALID_TRANSITIONS[activeFromStatus] ?? []).includes(status);
+
+          return (
+            <KanbanColumn
+              key={status}
+              status={status}
+              tasks={items}
+              onDispatch={onDispatch}
+              isValidTarget={isValidTarget}
+              isDragActive={activeTask !== null}
+            />
+          );
+        })}
+      </div>
+      <DragOverlayCard task={activeTask} />
+    </DndContext>
   );
 }

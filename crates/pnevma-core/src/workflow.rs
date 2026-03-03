@@ -4,6 +4,25 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use uuid::Uuid;
 
+/// Failure handling policy for a workflow step.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePolicy {
+    #[default]
+    Pause,
+    RetryOnce,
+    Skip,
+}
+
+/// Result of a completed workflow stage (step execution).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageResult {
+    pub step_index: usize,
+    pub task_id: String,
+    pub status: String,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
 /// A workflow definition, typically loaded from `.pnevma/workflows/*.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDef {
@@ -31,6 +50,9 @@ pub struct WorkflowStep {
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub constraints: Vec<String>,
+    /// What to do if this step fails.
+    #[serde(default)]
+    pub on_failure: FailurePolicy,
 }
 
 fn default_priority() -> String {

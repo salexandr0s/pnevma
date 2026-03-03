@@ -18,6 +18,7 @@ import type {
   PaneLayoutTemplate,
   Pane,
   ProjectStatus,
+  RecentProject,
   RegisteredCommand,
   RecoveryOption,
   ReviewPack,
@@ -31,10 +32,21 @@ import type {
   TaskDiff,
   TaskCheckRun,
   TrustRecord,
+  UsageBreakdown,
+  UsageByModel,
+  UsageDailyTrend,
+  ErrorSignature,
+  ErrorTrendPoint,
   WorkflowDef,
   WorkflowInstance,
+  Workflow,
   TelemetryStatus,
   TimelineEvent,
+  ActionRiskInfo,
+  TaskStory,
+  StoryProgress,
+  AgentProfile,
+  DispatchRecommendation,
 } from "../lib/types";
 
 type ScrollbackSlice = {
@@ -47,6 +59,14 @@ type ScrollbackSlice = {
 
 export async function openProject(path: string): Promise<string> {
   return invoke("open_project", { path });
+}
+
+export async function listRecentProjects(): Promise<RecentProject[]> {
+  return invoke("list_recent_projects");
+}
+
+export async function closeProject(): Promise<void> {
+  return invoke("close_project");
 }
 
 export async function trustWorkspace(path: string): Promise<void> {
@@ -464,6 +484,44 @@ export async function listWorkflowInstances(): Promise<WorkflowInstance[]> {
   return invoke("list_workflow_instances");
 }
 
+export async function listWorkflows(): Promise<Workflow[]> {
+  return invoke("list_workflows");
+}
+
+export async function getWorkflow(id: string): Promise<Workflow> {
+  return invoke("get_workflow", { id });
+}
+
+export async function createWorkflow(input: {
+  name: string;
+  description?: string;
+  definition_yaml: string;
+}): Promise<Workflow> {
+  return invoke("create_workflow", { input });
+}
+
+export async function updateWorkflow(input: {
+  id: string;
+  name?: string;
+  description?: string;
+  definition_yaml?: string;
+}): Promise<Workflow> {
+  return invoke("update_workflow", { input });
+}
+
+export async function deleteWorkflow(id: string): Promise<void> {
+  return invoke("delete_workflow", { id });
+}
+
+export async function dispatchWorkflow(
+  workflowName: string,
+  params?: Record<string, unknown>
+): Promise<WorkflowInstance> {
+  return invoke("dispatch_workflow", {
+    input: { workflow_name: workflowName, params },
+  });
+}
+
 // ─── SSH ──────────────────────────────────────────────────
 
 export async function listSshProfiles(): Promise<SshProfile[]> {
@@ -510,4 +568,70 @@ export async function generateSshKey(input: {
   comment?: string;
 }): Promise<SshKeyInfo> {
   return invoke("generate_ssh_key", { input });
+}
+
+// ─── Analytics / Cost Aggregation ──────────────────────────────────────────
+
+export async function getUsageBreakdown(days = 30): Promise<UsageBreakdown[]> {
+  return invoke("get_usage_breakdown", { days });
+}
+
+export async function getUsageByModel(): Promise<UsageByModel[]> {
+  return invoke("get_usage_by_model");
+}
+
+export async function getUsageDailyTrend(days = 30): Promise<UsageDailyTrend[]> {
+  return invoke("get_usage_daily_trend", { days });
+}
+
+export async function checkActionRisk(actionKind: string): Promise<ActionRiskInfo> {
+  return invoke("check_action_risk", { action_kind: actionKind });
+}
+
+export async function listErrorSignatures(
+  limit = 50,
+): Promise<ErrorSignature[]> {
+  return invoke("list_error_signatures", { limit });
+}
+
+export async function getErrorSignature(
+  id: string,
+): Promise<ErrorSignature | null> {
+  return invoke("get_error_signature", { id });
+}
+
+export async function getErrorTrend(days = 30): Promise<ErrorTrendPoint[]> {
+  return invoke("get_error_trend", { days });
+}
+
+export async function listTaskStories(taskId: string): Promise<TaskStory[]> {
+  return invoke("list_task_stories", { task_id: taskId });
+}
+
+export async function createStoriesForTask(taskId: string, stories: Array<{ title: string }>): Promise<TaskStory[]> {
+  return invoke("create_stories_for_task", { input: { task_id: taskId, stories } });
+}
+
+export async function updateStoryStatus(id: string, status: string, outputSummary?: string): Promise<void> {
+  return invoke("update_story_status", { input: { id, status, output_summary: outputSummary } });
+}
+
+export async function getTaskStoryProgress(taskId: string): Promise<StoryProgress> {
+  return invoke("get_task_story_progress", { task_id: taskId });
+}
+
+export async function listAgentProfiles(): Promise<AgentProfile[]> {
+  return invoke("list_agent_profiles");
+}
+
+export async function getDispatchRecommendation(taskId: string): Promise<DispatchRecommendation[]> {
+  return invoke("get_dispatch_recommendation", { task_id: taskId });
+}
+
+export async function overrideTaskProfile(taskId: string, profileName: string): Promise<string> {
+  return invoke("override_task_profile", { task_id: taskId, profile_name: profileName });
+}
+
+export async function getAgentTeam(): Promise<AgentProfile[]> {
+  return invoke("get_agent_team");
 }

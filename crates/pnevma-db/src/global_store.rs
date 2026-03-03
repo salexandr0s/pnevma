@@ -11,6 +11,14 @@ pub struct TrustRecord {
     pub fingerprint: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct RecentProjectRow {
+    pub path: String,
+    pub name: String,
+    pub project_id: String,
+    pub opened_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct GlobalDb {
     pool: SqlitePool,
@@ -34,6 +42,17 @@ impl GlobalDb {
                 path TEXT PRIMARY KEY,
                 trusted_at TEXT NOT NULL,
                 fingerprint TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS recent_projects (
+                path TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                opened_at TEXT NOT NULL
             )",
         )
         .execute(&pool)
@@ -82,6 +101,48 @@ impl GlobalDb {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    pub async fn add_recent_project(
+        &self,
+        path: &str,
+        name: &str,
+        project_id: &str,
+    ) -> Result<(), DbError> {
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO recent_projects (path, name, project_id, opened_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(path) DO UPDATE SET name = excluded.name, project_id = excluded.project_id, opened_at = excluded.opened_at",
+        )
+        .bind(path)
+        .bind(name)
+        .bind(project_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_recent_projects(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<RecentProjectRow>, DbError> {
+        let rows = sqlx::query_as::<_, RecentProjectRow>(
+            "SELECT path, name, project_id, opened_at FROM recent_projects ORDER BY opened_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn remove_recent_project(&self, path: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM recent_projects WHERE path = ?")
+            .bind(path)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

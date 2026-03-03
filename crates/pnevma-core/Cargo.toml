@@ -17,6 +17,8 @@ toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 indexmap.workspace = true
+sha2.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
