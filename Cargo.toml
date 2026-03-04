@@ -7,6 +7,7 @@ members = [
   "crates/pnevma-context",
   "crates/pnevma-db",
   "crates/pnevma-ssh",
+  "crates/pnevma-remote",
   "crates/pnevma-app",
 ]
 resolver = "2"
@@ -42,6 +43,17 @@ indexmap = "2"
 serde_yaml = "0.9"
 sha2 = "0.10"
 subtle = "2"
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tokio-rustls = "0.26"
+rustls = "0.23"
+rcgen = "0.13"
+governor = "0.8"
+dashmap = "6"
+rand = "0.8"
+hex = "0.4"
 
 [profile.dev]
 debug = true

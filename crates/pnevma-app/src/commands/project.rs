@@ -937,16 +937,31 @@ pub async fn search_project(
     let limit = input.limit.unwrap_or(120).clamp(1, 500);
     let mut hits = Vec::new();
 
-    let tasks = db
-        .list_tasks(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    for task in tasks {
-        let body = format!(
-            "{}\n{}\n{}\n{}\n{}",
-            task.title, task.goal, task.scope_json, task.constraints_json, task.acceptance_json
-        );
-        if contains_case_insensitive(&body, &query) {
+    // Use FTS5 for task search when available, falling back to in-memory scan.
+    // Wrap query in double-quotes for FTS5 phrase matching; inner quotes are
+    // escaped by doubling them per the FTS5 tokenizer grammar.
+    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+    let fts_result: Result<Vec<TaskRow>, _> = sqlx::query_as(
+        r#"SELECT t.id, t.project_id, t.title, t.goal, t.scope_json, t.dependencies_json,
+                  t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
+                  t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
+                  t.auto_dispatch, t.agent_profile_override
+           FROM tasks_fts f
+           JOIN tasks t ON t.rowid = f.rowid
+           WHERE tasks_fts MATCH ?1
+           ORDER BY rank
+           LIMIT ?2"#,
+    )
+    .bind(&fts_query)
+    .bind(limit as i64)
+    .fetch_all(db.pool())
+    .await;
+    let fts_available = fts_result.is_ok();
+    let fts_task_results: Vec<TaskRow> = fts_result.unwrap_or_default();
+
+    if fts_available {
+        for task in fts_task_results {
+            let body = format!("{}\n{}", task.title, task.goal);
             hits.push(SearchResultView {
                 id: format!("task:{}", task.id),
                 source: "task".to_string(),
@@ -957,22 +972,59 @@ pub async fn search_project(
                 session_id: None,
                 timestamp: Some(task.updated_at),
             });
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
         }
-        if hits.len() >= limit {
-            return Ok(hits);
+    } else {
+        // Fallback: in-memory scan if FTS table doesn't exist yet.
+        let tasks = db
+            .list_tasks(&project_id.to_string())
+            .await
+            .map_err(|e| e.to_string())?;
+        for task in tasks {
+            let body = format!(
+                "{}\n{}\n{}\n{}\n{}",
+                task.title, task.goal, task.scope_json, task.constraints_json, task.acceptance_json
+            );
+            if contains_case_insensitive(&body, &query) {
+                hits.push(SearchResultView {
+                    id: format!("task:{}", task.id),
+                    source: "task".to_string(),
+                    title: task.title.clone(),
+                    snippet: summarize_match(&body, &query),
+                    path: None,
+                    task_id: Some(task.id),
+                    session_id: None,
+                    timestamp: Some(task.updated_at),
+                });
+            }
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
         }
     }
 
-    let events = db
-        .list_recent_events(&project_id.to_string(), 4_000)
-        .await
-        .map_err(|e| e.to_string())?;
-    for event in events {
-        let body = format!(
-            "{}\n{}\n{}",
-            event.event_type, event.source, event.payload_json
-        );
-        if contains_case_insensitive(&body, &query) {
+    // Use FTS5 for event search when available, falling back to in-memory scan.
+    let fts_event_result: Result<Vec<EventRow>, _> = sqlx::query_as(
+        r#"SELECT e.id, e.project_id, e.task_id, e.session_id, e.trace_id,
+                  e.source, e.event_type, e.payload_json, e.timestamp
+           FROM events_fts f
+           JOIN events e ON e.rowid = f.rowid
+           WHERE events_fts MATCH ?1
+           ORDER BY rank
+           LIMIT ?2"#,
+    )
+    .bind(&fts_query)
+    .bind(limit as i64)
+    .fetch_all(db.pool())
+    .await;
+    let fts_events_available = fts_event_result.is_ok();
+    let fts_event_results: Vec<EventRow> = fts_event_result.unwrap_or_default();
+
+    if fts_events_available {
+        for event in fts_event_results {
+            let body = format!("{}\n{}\n{}", event.event_type, event.source, event.payload_json);
             hits.push(SearchResultView {
                 id: format!("event:{}", event.id),
                 source: "event".to_string(),
@@ -983,9 +1035,33 @@ pub async fn search_project(
                 session_id: event.session_id.clone(),
                 timestamp: Some(event.timestamp),
             });
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
         }
-        if hits.len() >= limit {
-            return Ok(hits);
+    } else {
+        // Fallback: in-memory scan.
+        let events = db
+            .list_recent_events(&project_id.to_string(), 4_000)
+            .await
+            .map_err(|e| e.to_string())?;
+        for event in events {
+            let body = format!("{}\n{}\n{}", event.event_type, event.source, event.payload_json);
+            if contains_case_insensitive(&body, &query) {
+                hits.push(SearchResultView {
+                    id: format!("event:{}", event.id),
+                    source: "event".to_string(),
+                    title: event.event_type.clone(),
+                    snippet: summarize_match(&body, &query),
+                    path: None,
+                    task_id: event.task_id.clone(),
+                    session_id: event.session_id.clone(),
+                    timestamp: Some(event.timestamp),
+                });
+            }
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
         }
     }
 
@@ -2644,6 +2720,91 @@ pub async fn get_daily_brief(state: State<'_, AppState>) -> Result<DailyBriefVie
         .into_iter()
         .map(timeline_view_from_event)
         .collect::<Vec<_>>();
+
+    // Extended intelligence: active sessions
+    let sessions = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let active_sessions = sessions.iter().filter(|s| s.status == "running").count();
+
+    // Cost in last 24h
+    let cost_last_24h_usd: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(c.estimated_usd), 0.0) FROM costs c JOIN tasks t ON c.task_id = t.id WHERE t.project_id = ?1 AND c.timestamp > datetime('now', '-24 hours')",
+    )
+    .bind(project_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .unwrap_or(0.0);
+
+    // Tasks completed/failed in last 24h (from events)
+    let tasks_completed_last_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events WHERE project_id = ?1 AND event_type = 'TaskStatusChanged' AND json_extract(payload_json, '$.to') = 'Done' AND timestamp > datetime('now', '-24 hours')",
+    )
+    .bind(project_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .unwrap_or(0);
+
+    let tasks_failed_last_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events WHERE project_id = ?1 AND event_type = 'TaskStatusChanged' AND json_extract(payload_json, '$.to') = 'Failed' AND timestamp > datetime('now', '-24 hours')",
+    )
+    .bind(project_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .unwrap_or(0);
+
+    // Stale ready: Ready for >24h without dispatch
+    let twenty_four_hours_ago = Utc::now() - chrono::Duration::hours(24);
+    let stale_ready_count = tasks
+        .iter()
+        .filter(|t| t.status == "Ready" && t.updated_at < twenty_four_hours_ago)
+        .count();
+
+    // Longest running task (InProgress, oldest created_at)
+    let longest_running_task = tasks
+        .iter()
+        .filter(|t| t.status == "InProgress")
+        .min_by_key(|t| t.created_at)
+        .map(|t| t.title.clone());
+
+    // Top 3 tasks by cost
+    #[derive(sqlx::FromRow)]
+    struct TaskCostRow {
+        task_id: String,
+        total_cost: f64,
+    }
+    let top_cost_rows: Vec<TaskCostRow> = sqlx::query_as(
+        "SELECT c.task_id, SUM(c.estimated_usd) as total_cost FROM costs c JOIN tasks t ON c.task_id = t.id WHERE t.project_id = ?1 AND c.task_id != '' GROUP BY c.task_id ORDER BY total_cost DESC LIMIT 3",
+    )
+    .bind(project_id.to_string())
+    .fetch_all(db.pool())
+    .await
+    .unwrap_or_default();
+
+    let mut top_cost_tasks = Vec::new();
+    for cr in top_cost_rows {
+        let title = tasks
+            .iter()
+            .find(|t| t.id == cr.task_id)
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| cr.task_id.clone());
+        top_cost_tasks.push(TaskCostEntry {
+            task_id: cr.task_id,
+            title,
+            cost_usd: cr.total_cost,
+        });
+    }
+
+    if stale_ready_count > 0 {
+        actions.push(format!(
+            "{stale_ready_count} task(s) have been Ready for >24h — consider dispatching"
+        ));
+    }
+    if let Some(ref lt) = longest_running_task {
+        actions.push(format!("Longest running task: \"{lt}\" — check for stalls"));
+    }
+
     let brief = DailyBriefView {
         generated_at: Utc::now(),
         total_tasks: tasks.len(),
@@ -2657,6 +2818,13 @@ pub async fn get_daily_brief(state: State<'_, AppState>) -> Result<DailyBriefVie
             .unwrap_or(0.0),
         recent_events,
         recommended_actions: actions,
+        active_sessions,
+        cost_last_24h_usd,
+        tasks_completed_last_24h: tasks_completed_last_24h as usize,
+        tasks_failed_last_24h: tasks_failed_last_24h as usize,
+        stale_ready_count,
+        longest_running_task,
+        top_cost_tasks,
     };
     append_event(
         &db,
@@ -3396,6 +3564,8 @@ pub async fn execute_registered_command(
                     constraints: Vec::new(),
                     dependencies: Vec::new(),
                     priority,
+                    auto_dispatch: None,
+                    agent_profile_override: None,
                 },
                 app.clone(),
                 app.state::<AppState>(),

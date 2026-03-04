@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getTaskDiff } from "../../hooks/useTauri";
 import type { Task, TaskDiff } from "../../lib/types";
+import { StatusBadge, taskStatusVariant } from "../../components/ui/status-badge";
 
 type Props = {
   tasks: Task[];
@@ -62,7 +63,9 @@ export function DiffPane({ tasks }: Props) {
               }`}
             >
               <div className="text-sm font-medium text-slate-100">{task.title}</div>
-              <div className="mt-1 text-xs text-slate-400">{task.status}</div>
+              <div className="mt-1">
+                <StatusBadge variant={taskStatusVariant(task.status)}>{task.status}</StatusBadge>
+              </div>
             </button>
           ))}
         </div>

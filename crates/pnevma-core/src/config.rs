@@ -71,6 +71,50 @@ pub struct PathSection {
     pub paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RemoteSection {
+    /// Enable remote access via Tailscale. Off by default.
+    #[serde(default)]
+    pub enabled: bool,
+    /// HTTPS port for remote access.
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+    /// TLS mode: "tailscale" or "self-signed".
+    #[serde(default = "default_tls_mode")]
+    pub tls_mode: String,
+    /// Token TTL in hours.
+    #[serde(default = "default_token_ttl")]
+    pub token_ttl_hours: u64,
+    /// API rate limit (requests per minute).
+    #[serde(default = "default_rate_limit_rpm")]
+    pub rate_limit_rpm: u32,
+    /// Max WebSocket connections per IP.
+    #[serde(default = "default_max_ws")]
+    pub max_ws_per_ip: usize,
+    /// Serve built frontend SPA.
+    #[serde(default = "default_serve_frontend")]
+    pub serve_frontend: bool,
+}
+
+fn default_remote_port() -> u16 {
+    8443
+}
+fn default_tls_mode() -> String {
+    "tailscale".to_string()
+}
+fn default_token_ttl() -> u64 {
+    24
+}
+fn default_rate_limit_rpm() -> u32 {
+    60
+}
+fn default_max_ws() -> usize {
+    2
+}
+fn default_serve_frontend() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project: ProjectSection,
@@ -82,6 +126,8 @@ pub struct ProjectConfig {
     pub rules: PathSection,
     #[serde(default)]
     pub conventions: PathSection,
+    #[serde(default)]
+    pub remote: RemoteSection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

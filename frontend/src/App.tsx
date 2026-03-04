@@ -78,16 +78,10 @@ import { TaskBoardPane } from "./panes/task-board/TaskBoardPane";
 import { WorkflowPane } from "./panes/workflow/WorkflowPane";
 import { TerminalPane } from "./panes/terminal/TerminalPane";
 import { useAppStore } from "./stores/appStore";
+import { PulseDot } from "./components/ui/pulse-dot";
+import { DigitalClock } from "./components/ui/digital-clock";
 
 const ONBOARDING_ORDER = ["open_project", "create_task", "dispatch_task", "review_task", "merge_task"];
-
-function toShortcutMap(rows: Keybinding[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const row of rows) {
-    out[row.action] = row.shortcut;
-  }
-  return out;
-}
 
 function onboardingRank(step: string): number {
   const index = ONBOARDING_ORDER.indexOf(step);
@@ -320,7 +314,7 @@ export function App() {
   const refreshKeybindings = useCallback(async () => {
     try {
       const rows = await listKeybindings();
-      setKeybindings(toShortcutMap(rows));
+      setKeybindings(Object.fromEntries(rows.map((r) => [r.action, r.shortcut])));
     } catch {
       setKeybindings({});
     }
@@ -395,29 +389,13 @@ export function App() {
       void listRecentProjects().then(setRecentProjects).catch(() => {});
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("workspace_not_trusted")) {
-        const confirmed = await nativeConfirm(
-          "This workspace has not been trusted yet. Trust and open?"
-        );
-        if (confirmed) {
-          await trustWorkspace(trimmed);
-          try {
-            await openProject(trimmed);
-            setBootstrapNotice(undefined);
-            await refreshProjectData();
-            await refreshKeybindings();
-            await refreshOnboarding();
-            void listRecentProjects().then(setRecentProjects).catch(() => {});
-          } catch (retryErr: unknown) {
-            const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            await nativeAlert(`Failed to open project: ${retryMsg}`);
-          }
-        }
-      } else if (message.includes("workspace_config_changed")) {
-        const confirmed = await nativeConfirm(
-          "Workspace configuration has changed since it was last trusted. Re-trust and open?"
-        );
-        if (confirmed) {
+      const trustPrompt = message.includes("workspace_not_trusted")
+        ? "This workspace has not been trusted yet. Trust and open?"
+        : message.includes("workspace_config_changed")
+          ? "Workspace configuration has changed since it was last trusted. Re-trust and open?"
+          : null;
+      if (trustPrompt) {
+        if (await nativeConfirm(trustPrompt)) {
           await trustWorkspace(trimmed);
           try {
             await openProject(trimmed);
@@ -1017,20 +995,24 @@ export function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-white/10 px-4 py-2 backdrop-blur">
+      <header className="glass flex items-center justify-between px-4 py-2">
         <div>
           <h1 className="text-sm font-semibold tracking-wide text-slate-100">Pnevma</h1>
           <p className="text-xs text-slate-400">
             {projectName ? `Project: ${projectName}` : "Terminal-first execution workspace"}
           </p>
         </div>
-        <div className="flex gap-4 text-xs text-slate-300">
-          <span>Sessions: {sessions.length}</span>
+        <div className="flex items-center gap-4 text-xs text-slate-300">
+          <span className="inline-flex items-center gap-1.5">
+            Sessions: {sessions.length}
+            <PulseDot variant={sessions.length > 0 ? "live" : "idle"} />
+          </span>
           <span>Project Cost: ${projectCost.toFixed(2)}</span>
           <span>Merge Queue: {mergeQueue.length}</span>
           <span>
             Alerts: {notifications.filter((notification) => notification.unread).length}
           </span>
+          <DigitalClock />
         </div>
       </header>
 
@@ -1065,8 +1047,8 @@ export function App() {
               <button
                 key={pane.id}
                 onClick={() => focusPane(pane.id)}
-                className={`w-full rounded-md px-2 py-2 text-left text-sm ${
-                  pane.id === activePane?.id ? "bg-mint-500/20 text-mint-300" : "hover:bg-white/10"
+                className={`w-full rounded-md px-2 py-2 text-left text-sm transition-shadow duration-200 ${
+                  pane.id === activePane?.id ? "bg-mint-500/20 text-mint-300 glow-mint" : "hover:bg-white/10"
                 }`}
               >
                 {pane.label}
@@ -1085,12 +1067,25 @@ export function App() {
               <article
                 key={pane.id}
                 onClick={() => focusPane(pane.id)}
-                className={`flex min-h-[260px] cursor-pointer flex-col overflow-hidden rounded-md border ${
-                  pane.id === activePane?.id ? "border-mint-400/70" : "border-white/10"
+                className={`flex min-h-[260px] cursor-pointer flex-col overflow-hidden rounded-md border transition-shadow duration-200 ${
+                  pane.id === activePane?.id ? "border-mint-400/70 glow-mint" : "border-white/10"
                 } ${paneSpanClass(pane.position)} bg-slate-950/70`}
               >
                 <header className="flex items-center justify-between border-b border-white/10 px-3 py-2 text-xs text-slate-400">
-                  <span>{pane.label}</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    {pane.type === "terminal" && (
+                      <PulseDot
+                        variant={
+                          sessions.some((s) => s.status === "Running")
+                            ? "live"
+                            : sessions.some((s) => s.status === "Failed")
+                              ? "error"
+                              : "idle"
+                        }
+                      />
+                    )}
+                    {pane.label}
+                  </span>
                   <span className="uppercase tracking-wide">{pane.type}</span>
                 </header>
                 <div className="flex-1 overflow-hidden p-2">

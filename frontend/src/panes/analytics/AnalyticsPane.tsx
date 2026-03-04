@@ -67,18 +67,16 @@ export function AnalyticsPane() {
       <div className="flex-1 overflow-auto p-4 space-y-4">
         {/* Stat cards */}
         <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-md border border-white/10 bg-slate-950/80 p-3">
-            <div className="text-xs text-slate-500">Total Cost</div>
-            <div className="mt-1 text-lg font-bold text-mint-400">${totalCost.toFixed(2)}</div>
-          </div>
-          <div className="rounded-md border border-white/10 bg-slate-950/80 p-3">
-            <div className="text-xs text-slate-500">Tokens In</div>
-            <div className="mt-1 text-lg font-bold text-slate-200">{totalTokensIn.toLocaleString()}</div>
-          </div>
-          <div className="rounded-md border border-white/10 bg-slate-950/80 p-3">
-            <div className="text-xs text-slate-500">Tokens Out</div>
-            <div className="mt-1 text-lg font-bold text-slate-200">{totalTokensOut.toLocaleString()}</div>
-          </div>
+          {([
+            { label: "Total Cost", value: `$${totalCost.toFixed(2)}`, accent: true },
+            { label: "Tokens In", value: totalTokensIn.toLocaleString(), accent: false },
+            { label: "Tokens Out", value: totalTokensOut.toLocaleString(), accent: false },
+          ] as const).map(({ label, value, accent }) => (
+            <div key={label} className="rounded-md border border-white/10 bg-slate-950/80 p-3">
+              <div className="text-xs text-slate-500">{label}</div>
+              <div className={`mt-1 text-lg font-bold ${accent ? "text-mint-400" : "text-slate-200"}`}>{value}</div>
+            </div>
+          ))}
         </div>
 
         <CostOverview trend={trend} />

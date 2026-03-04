@@ -14,7 +14,8 @@ let showDialogFn: ((state: DialogState) => void) | null = null;
 
 export function alert(message: string): Promise<void> {
   return new Promise((resolve) => {
-    showDialogFn?.({
+    if (!showDialogFn) { resolve(); return; }
+    showDialogFn({
       type: "alert",
       title: message,
       resolve: () => resolve(),
@@ -24,7 +25,8 @@ export function alert(message: string): Promise<void> {
 
 export function confirm(message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    showDialogFn?.({
+    if (!showDialogFn) { resolve(false); return; }
+    showDialogFn({
       type: "confirm",
       title: message,
       resolve: (v) => resolve(v === true),
@@ -34,7 +36,8 @@ export function confirm(message: string): Promise<boolean> {
 
 export function prompt(label: string, defaultValue = ""): Promise<string | null> {
   return new Promise((resolve) => {
-    showDialogFn?.({
+    if (!showDialogFn) { resolve(null); return; }
+    showDialogFn({
       type: "prompt",
       title: label,
       defaultValue,
@@ -93,7 +96,7 @@ export function DialogProvider() {
         aria-modal="true"
         aria-labelledby="dialog-title"
         tabIndex={-1}
-        className="mx-4 w-full max-w-md rounded-lg border border-white/10 bg-slate-900 p-5 shadow-xl outline-none"
+        className="glass-strong mx-4 w-full max-w-md rounded-lg p-5 shadow-xl outline-none"
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             close(dialog.type === "confirm" ? false : null);
@@ -145,11 +148,7 @@ export function DialogProvider() {
             </button>
           )}
           <button
-            onClick={() => {
-              if (dialog.type === "prompt") close(inputValue);
-              else if (dialog.type === "confirm") close(true);
-              else close(true);
-            }}
+            onClick={() => close(dialog.type === "prompt" ? inputValue : true)}
             autoFocus={dialog.type !== "prompt"}
             className="rounded bg-mint-500/20 px-3 py-1.5 text-sm text-mint-300 hover:bg-mint-500/30"
           >

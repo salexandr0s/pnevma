@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { getReviewPack, getTaskCheckResults } from "../../hooks/useTauri";
 import type { ReviewPack, Task, TaskCheckRun } from "../../lib/types";
+import { StatusBadge, taskStatusVariant } from "../../components/ui/status-badge";
+import { prompt } from "../../components/Dialog";
 
 type Props = {
   tasks: Task[];
@@ -62,7 +64,10 @@ export function ReviewPane({ tasks, onApproveReview, onRejectReview, onExecuteMe
               }`}
             >
               <div className="text-sm font-medium text-slate-100">{task.title}</div>
-              <div className="mt-1 text-xs text-slate-400">{task.id.slice(0, 8)}</div>
+              <div className="mt-1 flex items-center gap-1.5">
+                <StatusBadge variant={taskStatusVariant(task.status)}>{task.status}</StatusBadge>
+                <span className="text-xs text-slate-400">{task.id.slice(0, 8)}</span>
+              </div>
             </button>
           ))}
         </div>
@@ -76,28 +81,30 @@ export function ReviewPane({ tasks, onApproveReview, onRejectReview, onExecuteMe
             <header className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-100">Review Pack</h2>
               <div className="flex gap-2">
-                <button
-                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-50"
-                  disabled={busy}
-                  onClick={() => {
-                    const note = prompt("Optional rejection note", "") ?? undefined;
-                    setBusy(true);
-                    void onRejectReview(selectedTaskId, note).finally(() => setBusy(false));
-                  }}
-                >
-                  Reject
-                </button>
-                <button
-                  className="rounded bg-mint-500 px-2 py-1 text-xs font-semibold text-slate-950 disabled:opacity-50"
-                  disabled={busy}
-                  onClick={() => {
-                    const note = prompt("Optional approval note", "") ?? undefined;
-                    setBusy(true);
-                    void onApproveReview(selectedTaskId, note).finally(() => setBusy(false));
-                  }}
-                >
-                  Approve
-                </button>
+                {([
+                  { action: "reject" as const, label: "Reject", cls: "rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-50" },
+                  { action: "approve" as const, label: "Approve", cls: "rounded bg-mint-500 px-2 py-1 text-xs font-semibold text-slate-950 disabled:opacity-50" },
+                ]).map(({ action, label, cls }) => (
+                  <button
+                    key={action}
+                    className={cls}
+                    disabled={busy}
+                    onClick={() => {
+                      void prompt(`Optional ${action} note`, "")
+                        .then((note) => {
+                          if (note === null) return; // cancelled
+                          setBusy(true);
+                          const noteValue = note || undefined;
+                          return action === "approve"
+                            ? onApproveReview(selectedTaskId, noteValue)
+                            : onRejectReview(selectedTaskId, noteValue);
+                        })
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
                 <button
                   className="rounded bg-amber-500 px-2 py-1 text-xs font-semibold text-slate-950 disabled:opacity-50"
                   disabled={busy}
@@ -118,8 +125,11 @@ export function ReviewPane({ tasks, onApproveReview, onRejectReview, onExecuteMe
                   <div className="text-sm text-slate-200">{checkRun.summary ?? checkRun.status}</div>
                   {checkRun.results.map((result) => (
                     <div key={result.id} className="rounded border border-white/10 p-2">
-                      <div className="text-sm text-slate-100">
-                        {result.passed ? "PASS" : "FAIL"} · {result.check_type}
+                      <div className="flex items-center gap-2 text-sm text-slate-100">
+                        <StatusBadge variant={result.passed ? "success" : "error"} dot>
+                          {result.passed ? "PASS" : "FAIL"}
+                        </StatusBadge>
+                        <span>{result.check_type}</span>
                       </div>
                       <div className="text-xs text-slate-400">{result.description}</div>
                       {result.output ? (

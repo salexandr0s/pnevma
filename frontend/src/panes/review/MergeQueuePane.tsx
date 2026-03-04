@@ -1,4 +1,5 @@
 import type { MergeQueueItem } from "../../lib/types";
+import { StatusBadge, mergeQueueStatusVariant } from "../../components/ui/status-badge";
 
 type Props = {
   mergeQueue: MergeQueueItem[];
@@ -25,9 +26,11 @@ export function MergeQueuePane({ mergeQueue, onMove, onExecuteMerge }: Props) {
                 <div className="text-sm font-medium text-slate-100">
                   {index + 1}. {item.task_title}
                 </div>
-                <div className="text-xs text-slate-400">
-                  {item.status}
-                  {item.blocked_reason ? ` · ${item.blocked_reason}` : ""}
+                <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                  <StatusBadge variant={mergeQueueStatusVariant(item.status.toLowerCase())}>
+                    {item.status}
+                  </StatusBadge>
+                  {item.blocked_reason ? <span>· {item.blocked_reason}</span> : null}
                 </div>
               </div>
               <div className="flex items-center gap-2">

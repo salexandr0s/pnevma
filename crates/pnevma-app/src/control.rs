@@ -287,10 +287,7 @@ fn verify_same_user_peer(
 }
 
 fn parse_string_param(params: &Value, key: &str) -> Result<String, String> {
-    params
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
+    parse_optional_string_param(params, key)
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| format!("missing required string param: {key}"))
 }
@@ -340,7 +337,6 @@ async fn process_request(
     let request_id = request.id.clone();
     let method = request.method.clone();
     let params = request.params.clone();
-    let safe_params = params.clone();
 
     if let Err(err) = authorize_request(&request, settings) {
         append_automation_audit(
@@ -362,7 +358,7 @@ async fn process_request(
         json!({
             "request_id": request.id,
             "method": method,
-            "params": safe_params,
+            "params": params,
         }),
     )
     .await;
@@ -424,7 +420,7 @@ fn authorize_request(
     }
 }
 
-async fn route_method(
+pub async fn route_method(
     app: &AppHandle,
     method: &str,
     params: &Value,
@@ -503,6 +499,8 @@ async fn route_method(
                     constraints,
                     dependencies,
                     priority,
+                    auto_dispatch: None,
+                    agent_profile_override: None,
                 },
                 app.clone(),
                 app.state::<AppState>(),

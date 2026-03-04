@@ -35,9 +35,7 @@ pub struct DetectedStory {
 pub struct StoryDetector;
 
 impl StoryDetector {
-    pub fn new() -> Self {
-        Self
-    }
+    pub fn new() -> Self { Self }
 
     /// Scan a line for progress patterns. Returns the detected story info if found.
     pub fn detect(&self, line: &str) -> Option<DetectedStory> {
@@ -82,9 +80,7 @@ impl StoryDetector {
 }
 
 impl Default for StoryDetector {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 fn progress_fraction_re() -> &'static Regex {

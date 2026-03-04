@@ -1,6 +1,8 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Task } from "../../lib/types";
+import { StatusBadge } from "../../components/ui/status-badge";
+import { Avatar } from "../../components/ui/avatar";
 
 type Props = {
   task: Task;
@@ -44,7 +46,19 @@ export function TaskCard({ task, status, onDispatch, overlay = false }: Props) {
       <div className="text-sm font-medium">{task.title}</div>
       <div className="mt-1 line-clamp-3 text-xs text-slate-400">{task.goal}</div>
       <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-        <span>{task.priority}</span>
+        <StatusBadge
+          variant={
+            task.priority === "P0"
+              ? "error"
+              : task.priority === "P1"
+                ? "warning"
+                : task.priority === "P2"
+                  ? "info"
+                  : "neutral"
+          }
+        >
+          {task.priority}
+        </StatusBadge>
         {status === "Ready" ? (
           <button
             className="rounded bg-mint-500 px-2 py-1 text-[11px] font-semibold text-slate-950"
@@ -65,6 +79,12 @@ export function TaskCard({ task, status, onDispatch, overlay = false }: Props) {
         </span>
         <span>{typeof task.cost_usd === "number" ? `$${task.cost_usd.toFixed(2)}` : "No cost"}</span>
       </div>
+      {task.branch ? (
+        <div className="mt-2 flex items-center gap-1.5">
+          <Avatar name={task.branch} size="sm" />
+          <span className="truncate text-[11px] text-slate-500">{task.branch}</span>
+        </div>
+      ) : null}
     </article>
   );
 }

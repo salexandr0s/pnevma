@@ -235,6 +235,10 @@ pub struct CreateTaskInput {
     #[serde(default)]
     pub dependencies: Vec<String>,
     pub priority: String,
+    #[serde(default)]
+    pub auto_dispatch: Option<bool>,
+    #[serde(default)]
+    pub agent_profile_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +270,8 @@ pub struct TaskView {
     pub branch: Option<String>,
     pub worktree_id: Option<String>,
     pub handoff_summary: Option<String>,
+    pub auto_dispatch: bool,
+    pub agent_profile_override: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub queued_position: Option<usize>,
@@ -320,6 +326,21 @@ pub struct DailyBriefView {
     pub total_cost_usd: f64,
     pub recent_events: Vec<TimelineEventView>,
     pub recommended_actions: Vec<String>,
+    // Extended intelligence fields
+    pub active_sessions: usize,
+    pub cost_last_24h_usd: f64,
+    pub tasks_completed_last_24h: usize,
+    pub tasks_failed_last_24h: usize,
+    pub stale_ready_count: usize,
+    pub longest_running_task: Option<String>,
+    pub top_cost_tasks: Vec<TaskCostEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCostEntry {
+    pub task_id: String,
+    pub title: String,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1232,6 +1253,8 @@ fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
         worktree: row.worktree_id.clone(),
         prompt_pack: None,
         handoff_summary: row.handoff_summary.clone(),
+        auto_dispatch: row.auto_dispatch,
+        agent_profile_override: row.agent_profile_override.clone(),
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
@@ -1262,6 +1285,8 @@ fn task_contract_to_row(task: &TaskContract, project_id: &str) -> Result<TaskRow
         handoff_summary: task.handoff_summary.clone(),
         created_at: task.created_at,
         updated_at: task.updated_at,
+        auto_dispatch: task.auto_dispatch,
+        agent_profile_override: task.agent_profile_override.clone(),
     })
 }
 
@@ -1288,6 +1313,8 @@ fn task_row_to_view(row: TaskRow, cost_usd: Option<f64>) -> Result<TaskView, Str
         branch: row.branch,
         worktree_id: row.worktree_id,
         handoff_summary: row.handoff_summary,
+        auto_dispatch: row.auto_dispatch,
+        agent_profile_override: row.agent_profile_override,
         created_at: row.created_at,
         updated_at: row.updated_at,
         queued_position: None,
@@ -1538,6 +1565,15 @@ async fn refresh_dependency_states(
         emit_task_updated(db, project_id, task.id).await;
         if let Some(app) = app {
             emit_enriched_task_event(app, db, &task.id.to_string()).await;
+
+            // Auto-dispatch: if the task became Ready and has auto_dispatch set, dispatch it.
+            if row.auto_dispatch && task.status == TaskStatus::Ready {
+                let state = app.state::<AppState>();
+                match dispatch_task(task.id.to_string(), app.clone(), state).await {
+                    Ok(_) => tracing::info!(task_id = %task.id, "auto-dispatched task on dependency completion"),
+                    Err(e) => tracing::warn!(task_id = %task.id, error = %e, "auto-dispatch failed"),
+                }
+            }
         }
     }
     Ok(())

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { searchProject } from "../../hooks/useTauri";
 import type { SearchResult } from "../../lib/types";
+import { SkeletonText } from "../../components/ui/skeleton";
 
 export function SearchPane() {
   const [query, setQuery] = useState("");
@@ -52,7 +53,7 @@ export function SearchPane() {
         onChange={(event) => setQuery(event.target.value)}
       />
       <div className="mt-3 flex-1 space-y-3 overflow-auto">
-        {loading ? <div className="text-sm text-slate-400">Searching...</div> : null}
+        {loading ? <SkeletonText lines={4} /> : null}
         {error ? <div className="text-sm text-amber-300">{error}</div> : null}
         {!loading && !error && query.trim() && results.length === 0 ? (
           <div className="text-sm text-slate-400">No matches.</div>

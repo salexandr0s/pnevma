@@ -145,9 +145,12 @@ pub async fn override_task_profile(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("profile not found: {profile_name}"))?;
 
-    // TODO: Persist the override once a profile_override column is added to tasks.
-    // For now, return an error rather than a misleading success message.
-    Err("profile override persistence not yet implemented".to_string())
+    // Persist the override to the tasks table.
+    db.update_task_profile_override(&task_id, Some(&profile_name))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!("Profile override set to '{profile_name}' for task {task_id}"))
 }
 
 #[tauri::command]

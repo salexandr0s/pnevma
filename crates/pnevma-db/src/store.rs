@@ -301,8 +301,8 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO tasks
-            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             "#,
         )
         .bind(&task.id)
@@ -320,6 +320,8 @@ impl Db {
         .bind(&task.handoff_summary)
         .bind(task.created_at)
         .bind(task.updated_at)
+        .bind(task.auto_dispatch)
+        .bind(&task.agent_profile_override)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -340,7 +342,9 @@ impl Db {
                 branch = ?10,
                 worktree_id = ?11,
                 handoff_summary = ?12,
-                updated_at = ?13
+                updated_at = ?13,
+                auto_dispatch = ?14,
+                agent_profile_override = ?15
             WHERE id = ?1
             "#,
         )
@@ -357,6 +361,8 @@ impl Db {
         .bind(&task.worktree_id)
         .bind(&task.handoff_summary)
         .bind(task.updated_at)
+        .bind(task.auto_dispatch)
+        .bind(&task.agent_profile_override)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -366,7 +372,8 @@ impl Db {
         let row = sqlx::query_as::<_, TaskRow>(
             r#"
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
-                   priority, status, branch, worktree_id, handoff_summary, created_at, updated_at
+                   priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
+                   auto_dispatch, agent_profile_override
             FROM tasks
             WHERE id = ?1
             LIMIT 1
@@ -383,6 +390,23 @@ impl Db {
             .bind(task_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn update_task_profile_override(
+        &self,
+        task_id: &str,
+        profile_name: Option<&str>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE tasks SET agent_profile_override = ?2, updated_at = datetime('now') WHERE id = ?1
+            "#,
+        )
+        .bind(task_id)
+        .bind(profile_name)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -432,7 +456,8 @@ impl Db {
         let rows = sqlx::query_as::<_, TaskRow>(
             r#"
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
-                   priority, status, branch, worktree_id, handoff_summary, created_at, updated_at
+                   priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
+                   auto_dispatch, agent_profile_override
             FROM tasks
             WHERE project_id = ?1
             ORDER BY created_at DESC

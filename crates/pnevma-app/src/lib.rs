@@ -3,4 +3,5 @@ pub mod command_registry;
 pub mod commands;
 pub mod control;
 pub mod cost_aggregation;
+pub mod remote_bridge;
 pub mod state;

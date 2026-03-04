@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listProjectFiles, openFileTarget } from "../../hooks/useTauri";
 import type { FileOpenResult, ProjectFile } from "../../lib/types";
+import { StatusBadge } from "../../components/ui/status-badge";
+import { SkeletonText } from "../../components/ui/skeleton";
 
 function statusLabel(file: ProjectFile): string {
   if (file.conflicted) {
@@ -28,6 +30,8 @@ export function FileBrowserPane() {
   const [preview, setPreview] = useState<FileOpenResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selectedPathRef = useRef(selectedPath);
+  selectedPathRef.current = selectedPath;
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -35,7 +39,7 @@ export function FileBrowserPane() {
       void listProjectFiles(query, 1500)
         .then((rows) => {
           setFiles(rows);
-          if (!rows.some((row) => row.path === selectedPath)) {
+          if (!rows.some((row) => row.path === selectedPathRef.current)) {
             setSelectedPath(rows[0]?.path);
           }
           setError(null);
@@ -47,7 +51,7 @@ export function FileBrowserPane() {
         .finally(() => setBusy(false));
     }, 140);
     return () => clearTimeout(timer);
-  }, [query, selectedPath]);
+  }, [query]);
 
   useEffect(() => {
     if (!selectedPath) {
@@ -102,7 +106,19 @@ export function FileBrowserPane() {
               }`}
             >
               <div className="truncate text-xs text-slate-100">{file.path}</div>
-              <div className="text-[10px] text-slate-500">{statusLabel(file)}</div>
+              <StatusBadge
+                variant={
+                  file.conflicted
+                    ? "error"
+                    : file.staged
+                      ? "success"
+                      : file.modified
+                        ? "warning"
+                        : "neutral"
+                }
+              >
+                {statusLabel(file)}
+              </StatusBadge>
             </button>
           ))}
         </div>
@@ -124,7 +140,7 @@ export function FileBrowserPane() {
             </button>
           ) : null}
         </header>
-        {busy ? <div className="text-sm text-slate-400">Loading...</div> : null}
+        {busy ? <SkeletonText lines={8} /> : null}
         {error ? <div className="text-sm text-amber-300">{error}</div> : null}
         {!selectedPath ? (
           <div className="text-sm text-slate-400">Select a file to preview.</div>

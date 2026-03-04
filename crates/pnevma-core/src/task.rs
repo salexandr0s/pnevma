@@ -77,6 +77,8 @@ pub struct TaskContract {
     pub worktree: Option<String>,
     pub prompt_pack: Option<ContextPack>,
     pub handoff_summary: Option<String>,
+    pub auto_dispatch: bool,
+    pub agent_profile_override: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -165,6 +167,8 @@ mod tests {
             worktree: None,
             prompt_pack: None,
             handoff_summary: None,
+            auto_dispatch: false,
+            agent_profile_override: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

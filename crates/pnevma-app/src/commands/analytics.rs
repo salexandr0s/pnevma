@@ -184,12 +184,12 @@ pub async fn get_error_signature(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<ErrorSignatureView>, String> {
-    let (_, db) = {
+    let db = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
             .ok_or_else(|| "no open project".to_string())?;
-        (ctx.project_id.to_string(), ctx.db.clone())
+        ctx.db.clone()
     };
 
     let row = db

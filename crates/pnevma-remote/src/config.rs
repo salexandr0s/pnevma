@@ -1,0 +1,57 @@
+use serde::{Deserialize, Serialize};
+
+fn default_port() -> u16 {
+    8443
+}
+
+fn default_tls_mode() -> String {
+    "tailscale".to_string()
+}
+
+fn default_token_ttl() -> u64 {
+    24
+}
+
+fn default_rate_limit() -> u32 {
+    60
+}
+
+fn default_max_ws() -> usize {
+    2
+}
+
+fn default_serve_frontend() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAccessConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_tls_mode")]
+    pub tls_mode: String,
+    #[serde(default = "default_token_ttl")]
+    pub token_ttl_hours: u64,
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit_rpm: u32,
+    #[serde(default = "default_max_ws")]
+    pub max_ws_per_ip: usize,
+    #[serde(default = "default_serve_frontend")]
+    pub serve_frontend: bool,
+}
+
+impl Default for RemoteAccessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_port(),
+            tls_mode: default_tls_mode(),
+            token_ttl_hours: default_token_ttl(),
+            rate_limit_rpm: default_rate_limit(),
+            max_ws_per_ip: default_max_ws(),
+            serve_frontend: default_serve_frontend(),
+        }
+    }
+}

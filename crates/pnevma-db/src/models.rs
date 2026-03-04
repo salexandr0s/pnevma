@@ -68,6 +68,11 @@ pub struct TaskRow {
     pub handoff_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// When true, task auto-dispatches when dependencies complete.
+    #[serde(default)]
+    pub auto_dispatch: bool,
+    /// Override agent profile for this specific task.
+    pub agent_profile_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

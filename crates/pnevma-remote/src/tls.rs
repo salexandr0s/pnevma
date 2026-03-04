@@ -1,0 +1,120 @@
+use rcgen::generate_simple_self_signed;
+use rustls::ServerConfig;
+use std::net::IpAddr;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+use crate::error::RemoteError;
+
+/// Load TLS config according to `mode`.
+///
+/// `tailscale_ip` is forwarded to `generate_self_signed_cert` so the cert
+/// includes the Tailscale IP as a Subject Alternative Name.
+pub async fn load_tls_config(
+    mode: &str,
+    tailscale_ip: Option<IpAddr>,
+) -> Result<ServerConfig, RemoteError> {
+    match mode {
+        "tailscale" => load_tailscale_cert(tailscale_ip).await,
+        "self-signed" => generate_self_signed_cert(tailscale_ip),
+        other => Err(RemoteError::Tls(format!("Unknown TLS mode: {other}"))),
+    }
+}
+
+async fn load_tailscale_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfig, RemoteError> {
+    // Tailscale stores certs in /var/lib/tailscale/certs/ or ~/.local/share/tailscale/certs/
+    let candidates = [
+        "/var/lib/tailscale/certs".to_string(),
+        format!(
+            "{}/.local/share/tailscale/certs",
+            std::env::var("HOME").unwrap_or_default()
+        ),
+        "/Library/Tailscale".to_string(),
+    ];
+
+    for dir in &candidates {
+        let path = std::path::Path::new(dir);
+        if !path.exists() {
+            continue;
+        }
+        // Look for .crt and .key files
+        let mut cert_path = None;
+        let mut key_path = None;
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".crt") {
+                    cert_path = Some(entry.path());
+                } else if name.ends_with(".key") {
+                    key_path = Some(entry.path());
+                }
+            }
+        }
+        if let (Some(cert_path), Some(key_path)) = (cert_path, key_path) {
+            let cert_pem = tokio::fs::read(&cert_path).await.map_err(|e| {
+                RemoteError::Tls(format!("Failed to read cert {}: {e}", cert_path.display()))
+            })?;
+            let key_pem = tokio::fs::read(&key_path).await.map_err(|e| {
+                RemoteError::Tls(format!("Failed to read key {}: {e}", key_path.display()))
+            })?;
+            return build_rustls_config_from_pem(&cert_pem, &key_pem);
+        }
+    }
+
+    // Fall back to self-signed if tailscale certs not found
+    tracing::warn!("Tailscale certs not found, falling back to self-signed");
+    generate_self_signed_cert(tailscale_ip)
+}
+
+fn build_rustls_config_from_pem(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<ServerConfig, RemoteError> {
+    use rustls_pemfile::{certs, pkcs8_private_keys};
+    use std::io::BufReader;
+
+    let certs: Vec<CertificateDer<'static>> = certs(&mut BufReader::new(cert_pem))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| RemoteError::Tls(format!("Failed to parse certs: {e}")))?;
+
+    let keys: Vec<PrivatePkcs8KeyDer<'static>> =
+        pkcs8_private_keys(&mut BufReader::new(key_pem))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| RemoteError::Tls(format!("Failed to parse keys: {e}")))?;
+
+    let key = keys
+        .into_iter()
+        .next()
+        .map(PrivateKeyDer::Pkcs8)
+        .ok_or_else(|| RemoteError::Tls("No private key found in PEM".to_string()))?;
+
+    build_server_config(certs, key)
+}
+
+fn generate_self_signed_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfig, RemoteError> {
+    let mut subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+    if let Some(ip) = tailscale_ip {
+        subject_alt_names.push(ip.to_string());
+    }
+
+    let cert = generate_simple_self_signed(subject_alt_names)
+        .map_err(|e| RemoteError::Tls(format!("rcgen error: {e}")))?;
+
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        cert.key_pair.serialize_der(),
+    ));
+
+    build_server_config(vec![cert_der], key_der)
+}
+
+fn build_server_config(
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> Result<ServerConfig, RemoteError> {
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| RemoteError::Tls(format!("rustls config error: {e}")))?;
+    Ok(config)
+}

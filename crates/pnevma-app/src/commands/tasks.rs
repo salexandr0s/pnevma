@@ -1039,6 +1039,8 @@ pub async fn create_task(
         worktree: None,
         prompt_pack: None,
         handoff_summary: None,
+        auto_dispatch: input.auto_dispatch.unwrap_or(false),
+        agent_profile_override: input.agent_profile_override.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -1341,10 +1343,32 @@ pub async fn dispatch_task(
         }
     };
 
-    let preferred_provider = global_config
-        .default_provider
-        .clone()
-        .unwrap_or_else(|| config.agents.default_provider.clone());
+    // Check for task-level agent profile override first, then fall back to defaults.
+    let profile_override = if let Some(ref override_name) = row.agent_profile_override {
+        let profile = db
+            .get_agent_profile_by_name(&project_id.to_string(), override_name)
+            .await
+            .ok()
+            .flatten();
+        if profile.is_none() {
+            return Err(format!(
+                "agent profile override '{}' not found",
+                override_name
+            ));
+        }
+        profile
+    } else {
+        None
+    };
+
+    let preferred_provider = if let Some(ref profile) = profile_override {
+        profile.provider.clone()
+    } else {
+        global_config
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| config.agents.default_provider.clone())
+    };
     let provider = if adapters.get(&preferred_provider).is_some() {
         preferred_provider
     } else if adapters.get("claude-code").is_some() {
@@ -1484,27 +1508,35 @@ pub async fn dispatch_task(
             .await;
     }
 
-    let timeout_minutes = match provider.as_str() {
-        "codex" => config
-            .agents
-            .codex
-            .as_ref()
-            .map(|c| c.timeout_minutes)
-            .unwrap_or(20),
-        _ => config
-            .agents
-            .claude_code
-            .as_ref()
-            .map(|c| c.timeout_minutes)
-            .unwrap_or(30),
+    let timeout_minutes = if let Some(ref profile) = profile_override {
+        profile.timeout_minutes as u64
+    } else {
+        match provider.as_str() {
+            "codex" => config
+                .agents
+                .codex
+                .as_ref()
+                .map(|c| c.timeout_minutes)
+                .unwrap_or(20),
+            _ => config
+                .agents
+                .claude_code
+                .as_ref()
+                .map(|c| c.timeout_minutes)
+                .unwrap_or(30),
+        }
     };
-    let model = match provider.as_str() {
-        "codex" => config.agents.codex.as_ref().and_then(|c| c.model.clone()),
-        _ => config
-            .agents
-            .claude_code
-            .as_ref()
-            .and_then(|c| c.model.clone()),
+    let model = if let Some(ref profile) = profile_override {
+        Some(profile.model.clone())
+    } else {
+        match provider.as_str() {
+            "codex" => config.agents.codex.as_ref().and_then(|c| c.model.clone()),
+            _ => config
+                .agents
+                .claude_code
+                .as_ref()
+                .and_then(|c| c.model.clone()),
+        }
     };
 
     let handle = adapter

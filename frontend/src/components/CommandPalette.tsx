@@ -115,7 +115,7 @@ export function CommandPalette({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 p-6">
-      <div className="mx-auto max-w-xl rounded-xl border border-white/20 bg-ink-950 p-3 shadow-2xl">
+      <div className="glass-strong mx-auto max-w-xl rounded-xl p-3 shadow-2xl">
         <input
           className="w-full rounded-md border border-white/20 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-mint-400"
           value={query}

@@ -1,5 +1,6 @@
 use pnevma_app::auto_dispatch;
 use pnevma_app::cost_aggregation;
+use pnevma_app::remote_bridge;
 use pnevma_app::commands::*;
 use pnevma_app::state::AppState;
 use tauri::{Emitter, Manager};
@@ -166,6 +167,10 @@ fn main() {
             window.emit("app_ready", serde_json::json!({ "ok": true }))?;
             auto_dispatch::start_auto_dispatch(app.handle().clone());
             cost_aggregation::start_cost_aggregation(app.handle().clone());
+            let remote_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                remote_bridge::maybe_start_remote(remote_app).await;
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

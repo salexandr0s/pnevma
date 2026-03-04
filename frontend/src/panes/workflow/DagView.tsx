@@ -62,7 +62,7 @@ export function DagView({ steps, onNodeClick }: Props) {
               fill="#0f172a"
               stroke={color}
               strokeWidth={2}
-              className={isActive ? "animate-pulse" : ""}
+              className={isActive ? "animate-pulse-dot" : ""}
             />
             <text
               x={node.width / 2}

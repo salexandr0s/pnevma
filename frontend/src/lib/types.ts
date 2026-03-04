@@ -16,6 +16,8 @@ export type Task = {
   branch?: string | null;
   worktree_id?: string | null;
   handoff_summary?: string | null;
+  auto_dispatch: boolean;
+  agent_profile_override?: string | null;
   created_at: string;
   updated_at: string;
   queued_position?: number | null;
@@ -319,6 +321,12 @@ export type RecoveryOption = {
   enabled: boolean;
 };
 
+export type TaskCostEntry = {
+  task_id: string;
+  title: string;
+  cost_usd: number;
+};
+
 export type DailyBrief = {
   generated_at: string;
   total_tasks: number;
@@ -329,6 +337,14 @@ export type DailyBrief = {
   total_cost_usd: number;
   recent_events: TimelineEvent[];
   recommended_actions: string[];
+  // Extended intelligence (optional for backward compat)
+  active_sessions?: number;
+  cost_last_24h_usd?: number;
+  tasks_completed_last_24h?: number;
+  tasks_failed_last_24h?: number;
+  stale_ready_count?: number;
+  longest_running_task?: string | null;
+  top_cost_tasks?: TaskCostEntry[];
 };
 
 export type DraftTask = {

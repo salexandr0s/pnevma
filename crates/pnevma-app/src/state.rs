@@ -36,4 +36,5 @@ pub struct AppState {
     pub recents: Mutex<Vec<RecentProject>>,
     pub control_plane: Mutex<Option<ControlServerHandle>>,
     pub merge_branch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub remote_handle: Mutex<Option<pnevma_remote::RemoteServerHandle>>,
 }

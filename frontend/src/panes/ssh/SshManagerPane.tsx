@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   connectSsh,
   deleteSshProfile,
@@ -10,6 +10,7 @@ import {
   upsertSshProfile,
 } from "../../hooks/useTauri";
 import type { SshKeyInfo, SshProfile } from "../../lib/types";
+import { SkeletonCard } from "../../components/ui/skeleton";
 
 type Tab = "profiles" | "keys";
 type SourceFilter = "all" | "ssh_config" | "tailscale" | "manual";
@@ -40,12 +41,6 @@ function sourceBadgeClass(source: string): string {
   return "bg-slate-500/20 text-slate-300 border-slate-400/30";
 }
 
-function sourceBadgeLabel(source: string): string {
-  if (source === "ssh_config") return "ssh_config";
-  if (source === "tailscale") return "tailscale";
-  return "manual";
-}
-
 export function SshManagerPane() {
   const [profiles, setProfiles] = useState<SshProfile[]>([]);
   const [keys, setKeys] = useState<SshKeyInfo[]>([]);
@@ -59,7 +54,7 @@ export function SshManagerPane() {
   const [newKeyName, setNewKeyName] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const refreshProfiles = async () => {
+  const refreshProfiles = useCallback(async () => {
     setLoadingProfiles(true);
     try {
       setProfiles(await listSshProfiles());
@@ -68,9 +63,9 @@ export function SshManagerPane() {
     } finally {
       setLoadingProfiles(false);
     }
-  };
+  }, []);
 
-  const refreshKeys = async () => {
+  const refreshKeys = useCallback(async () => {
     setLoadingKeys(true);
     try {
       setKeys(await listSshKeys());
@@ -79,67 +74,49 @@ export function SshManagerPane() {
     } finally {
       setLoadingKeys(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void refreshProfiles();
     void refreshKeys();
+  }, [refreshProfiles, refreshKeys]);
+
+  const withBusy = useCallback(async (fn: () => Promise<void>, fallback: string) => {
+    setActionBusy(true);
+    try {
+      await fn();
+    } catch (error) {
+      setStatusMsg(error instanceof Error ? error.message : fallback);
+    } finally {
+      setActionBusy(false);
+    }
   }, []);
 
-  const handleImport = async () => {
-    setActionBusy(true);
-    try {
-      await importSshConfig();
-      await refreshProfiles();
-      setStatusMsg("SSH config imported.");
-    } catch (error) {
-      setStatusMsg(error instanceof Error ? error.message : "import failed");
-    } finally {
-      setActionBusy(false);
-    }
-  };
+  const handleImport = () => withBusy(async () => {
+    await importSshConfig();
+    await refreshProfiles();
+    setStatusMsg("SSH config imported.");
+  }, "import failed");
 
-  const handleDiscover = async () => {
-    setActionBusy(true);
-    try {
-      await discoverTailscale();
-      await refreshProfiles();
-      setStatusMsg("Tailscale hosts discovered.");
-    } catch (error) {
-      setStatusMsg(error instanceof Error ? error.message : "discovery failed");
-    } finally {
-      setActionBusy(false);
-    }
-  };
+  const handleDiscover = () => withBusy(async () => {
+    await discoverTailscale();
+    await refreshProfiles();
+    setStatusMsg("Tailscale hosts discovered.");
+  }, "discovery failed");
 
-  const handleConnect = async (profileId: string) => {
-    setActionBusy(true);
-    try {
-      const sessionId = await connectSsh(profileId);
-      setStatusMsg(`Connected — session ${sessionId}`);
-    } catch (error) {
-      setStatusMsg(error instanceof Error ? error.message : "connection failed");
-    } finally {
-      setActionBusy(false);
-    }
-  };
+  const handleConnect = (profileId: string) => withBusy(async () => {
+    const sessionId = await connectSsh(profileId);
+    setStatusMsg(`Connected — session ${sessionId}`);
+  }, "connection failed");
 
-  const handleDelete = async (id: string) => {
-    setActionBusy(true);
-    try {
-      await deleteSshProfile(id);
-      await refreshProfiles();
-    } catch (error) {
-      setStatusMsg(error instanceof Error ? error.message : "delete failed");
-    } finally {
-      setActionBusy(false);
-    }
-  };
+  const handleDelete = (id: string) => withBusy(async () => {
+    await deleteSshProfile(id);
+    await refreshProfiles();
+  }, "delete failed");
 
-  const handleAddProfile = async () => {
+  const handleAddProfile = () => {
     const portNum = parseInt(form.port, 10);
-    setActionBusy(true);
-    try {
+    return withBusy(async () => {
       await upsertSshProfile({
         name: form.name.trim(),
         host: form.host.trim(),
@@ -147,35 +124,23 @@ export function SshManagerPane() {
         user: form.user.trim() || undefined,
         identity_file: form.identity_file.trim() || undefined,
         proxy_jump: form.proxy_jump.trim() || undefined,
-        tags: form.tags
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean),
+        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
         source: "manual",
       });
       setForm(EMPTY_FORM);
       setShowAddForm(false);
       await refreshProfiles();
-    } catch (error) {
-      setStatusMsg(error instanceof Error ? error.message : "add failed");
-    } finally {
-      setActionBusy(false);
-    }
+    }, "add failed");
   };
 
-  const handleGenerateKey = async () => {
+  const handleGenerateKey = () => {
     if (!newKeyName.trim()) return;
-    setActionBusy(true);
-    try {
+    void withBusy(async () => {
       await generateSshKey({ name: newKeyName.trim() });
       setNewKeyName("");
       await refreshKeys();
       setStatusMsg("Key generated.");
-    } catch (error) {
-      setStatusMsg(error instanceof Error ? error.message : "key generation failed");
-    } finally {
-      setActionBusy(false);
-    }
+    }, "key generation failed");
   };
 
   const filteredProfiles =
@@ -204,26 +169,17 @@ export function SshManagerPane() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-white/10 pb-2">
-        <button
-          onClick={() => setActiveTab("profiles")}
-          className={`rounded-t px-3 py-1 text-xs font-medium ${
-            activeTab === "profiles"
-              ? "bg-mint-500/20 text-mint-300"
-              : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          Profiles
-        </button>
-        <button
-          onClick={() => setActiveTab("keys")}
-          className={`rounded-t px-3 py-1 text-xs font-medium ${
-            activeTab === "keys"
-              ? "bg-mint-500/20 text-mint-300"
-              : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          SSH Keys
-        </button>
+        {([["profiles", "Profiles"], ["keys", "SSH Keys"]] as [Tab, string][]).map(([t, label]) => (
+          <button
+            key={t}
+            onClick={() => setActiveTab(t)}
+            className={`rounded-t px-3 py-1 text-xs font-medium ${
+              activeTab === t ? "bg-mint-500/20 text-mint-300" : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {activeTab === "profiles" && (
@@ -318,7 +274,11 @@ export function SshManagerPane() {
 
           {/* Profile list */}
           {loadingProfiles ? (
-            <div className="text-xs text-slate-400">Loading profiles...</div>
+            <div className="space-y-2">
+              <SkeletonCard />
+              <SkeletonCard />
+              <SkeletonCard />
+            </div>
           ) : filteredProfiles.length === 0 ? (
             <div className="text-xs text-slate-500">No profiles found.</div>
           ) : (
@@ -336,7 +296,7 @@ export function SshManagerPane() {
                           profile.source
                         )}`}
                       >
-                        {sourceBadgeLabel(profile.source)}
+                        {profile.source}
                       </span>
                     </div>
                     <div className="mt-0.5 text-xs text-slate-400">
@@ -400,7 +360,10 @@ export function SshManagerPane() {
           </div>
 
           {loadingKeys ? (
-            <div className="text-xs text-slate-400">Loading keys...</div>
+            <div className="space-y-2">
+              <SkeletonCard />
+              <SkeletonCard />
+            </div>
           ) : keys.length === 0 ? (
             <div className="text-xs text-slate-500">No SSH keys found.</div>
           ) : (

@@ -269,6 +269,8 @@ pub async fn dispatch_workflow(
             handoff_summary: None,
             created_at: now,
             updated_at: now,
+            auto_dispatch: step.auto_dispatch,
+            agent_profile_override: None,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -450,6 +452,8 @@ pub async fn instantiate_workflow(
             handoff_summary: None,
             created_at: now,
             updated_at: now,
+            auto_dispatch: step.auto_dispatch,
+            agent_profile_override: None,
         })
         .await
         .map_err(|e| e.to_string())?;

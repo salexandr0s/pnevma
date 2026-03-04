@@ -63,7 +63,7 @@ async fn run_cycle(app: &AppHandle) -> u64 {
         }
     };
 
-    let ready: Vec<_> = tasks.into_iter().filter(|t| t.status == "Ready").collect();
+    let ready: Vec<_> = tasks.into_iter().filter(|t| t.status == "Ready" && t.auto_dispatch).collect();
 
     if ready.is_empty() {
         debug!("auto-dispatch: no ready tasks");

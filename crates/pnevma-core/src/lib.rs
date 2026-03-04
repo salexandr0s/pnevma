@@ -10,7 +10,7 @@ pub mod workflow;
 
 pub use config::{
     global_config_path, load_global_config, load_project_config, save_global_config, GlobalConfig,
-    ProjectConfig,
+    ProjectConfig, RemoteSection,
 };
 pub use error::CoreError;
 pub use events::{

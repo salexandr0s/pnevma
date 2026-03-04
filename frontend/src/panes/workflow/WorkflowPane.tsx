@@ -36,18 +36,15 @@ export function WorkflowPane() {
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
         <h2 className="text-sm font-semibold">Workflows</h2>
         <div className="ml-auto flex gap-1">
-          <button
-            className={`rounded px-2 py-1 text-xs ${tab === "dag" ? "bg-mint-500/20 text-mint-400" : "text-slate-500"}`}
-            onClick={() => setTab("dag")}
-          >
-            DAG
-          </button>
-          <button
-            className={`rounded px-2 py-1 text-xs ${tab === "gantt" ? "bg-mint-500/20 text-mint-400" : "text-slate-500"}`}
-            onClick={() => setTab("gantt")}
-          >
-            Timeline
-          </button>
+          {(["dag", "gantt"] as Tab[]).map((t) => (
+            <button
+              key={t}
+              className={`rounded px-2 py-1 text-xs ${tab === t ? "bg-mint-500/20 text-mint-400" : "text-slate-500"}`}
+              onClick={() => setTab(t)}
+            >
+              {t === "dag" ? "DAG" : "Timeline"}
+            </button>
+          ))}
         </div>
       </div>
 

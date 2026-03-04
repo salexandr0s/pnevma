@@ -1,4 +1,5 @@
 import type { Notification } from "../../lib/types";
+import { StatusBadge, notificationLevelVariant } from "../../components/ui/status-badge";
 
 type Props = {
   notifications: Notification[];
@@ -41,8 +42,11 @@ export function NotificationsPane({ notifications, onMarkRead, onClearAll }: Pro
               <div>
                 <div className="text-sm font-medium text-slate-100">{notification.title}</div>
                 <div className="mt-1 text-xs text-slate-400">{notification.body}</div>
-                <div className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                  {notification.level} · {new Date(notification.created_at).toLocaleString()}
+                <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <StatusBadge variant={notificationLevelVariant(notification.level)}>
+                    {notification.level}
+                  </StatusBadge>
+                  <span>{new Date(notification.created_at).toLocaleString()}</span>
                 </div>
               </div>
               {notification.unread ? (

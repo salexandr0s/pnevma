@@ -20,6 +20,8 @@ pub struct ClaudeCodeAdapter {
     channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<AgentEvent>>>>,
     configs: Arc<RwLock<HashMap<Uuid, AgentConfig>>>,
     costs: Arc<RwLock<HashMap<Uuid, CostRecord>>>,
+    /// Tracks PIDs of spawned agent subprocesses for lifecycle management.
+    processes: Arc<RwLock<HashMap<Uuid, u32>>>,
 }
 
 impl ClaudeCodeAdapter {
@@ -97,14 +99,29 @@ impl AgentAdapter for ClaudeCodeAdapter {
             "spawning claude CLI"
         );
 
-        let mut child = Command::new("claude")
-            .current_dir(&cfg.working_dir)
-            .envs(cfg.env.iter().cloned())
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| AgentError::Spawn(e.to_string()))?;
+        // SAFETY: setpgid(0,0) creates a new process group so we can signal the
+        // entire tree on interrupt/stop.
+        let mut child = unsafe {
+            Command::new("claude")
+                .current_dir(&cfg.working_dir)
+                .envs(cfg.env.iter().cloned())
+                .args(&args)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .pre_exec(|| {
+                    if libc::setpgid(0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                })
+                .spawn()
+                .map_err(|e| AgentError::Spawn(e.to_string()))?
+        };
+
+        // Store PID for interrupt/stop lifecycle management.
+        if let Some(pid) = child.id() {
+            self.processes.write().expect("process lock poisoned").insert(handle.id, pid);
+        }
 
         let stdout = child
             .stdout
@@ -252,6 +269,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
         });
 
         let status = child.wait().await.map_err(AgentError::Io)?;
+        // Remove PID from tracking — process has exited.
+        self.processes.write().expect("process lock poisoned").remove(&handle_id);
         let out_result = out_task.await;
         let _ = err_task.await;
 
@@ -289,34 +308,71 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
-            let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Paused));
+        let pid_found = if let Some(&pid) = self.processes.read().expect("process lock poisoned").get(&handle.id) {
+            // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
+            let ret = unsafe { libc::kill(-(pid as i32), libc::SIGINT) };
+            if ret != 0 {
+                tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGINT) failed");
+            }
+            true
+        } else {
+            false
+        };
+        if pid_found {
+            if let Some(tx) = self
+                .channels
+                .read()
+                .expect("channel lock poisoned")
+                .get(&handle.id)
+            {
+                let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Paused));
+            }
             Ok(())
         } else {
-            Err(AgentError::Unavailable(
-                "agent handle not found".to_string(),
-            ))
+            Err(AgentError::Unavailable("no process found for agent".into()))
         }
     }
 
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
-            let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
+        // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
+        let pid_found = if let Some(&pid) = self.processes.read().expect("process lock poisoned").get(&handle.id) {
+            // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
+            let ret = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+            if ret != 0 {
+                tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGTERM) failed");
+            }
+            let processes = self.processes.clone();
+            let agent_id = handle.id;
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let should_kill = {
+                    let procs = processes.read().expect("process lock poisoned");
+                    procs.get(&agent_id).copied() == Some(pid)
+                };
+                if should_kill {
+                    let ret = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    if ret != 0 {
+                        tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGKILL) failed");
+                    }
+                    processes.write().expect("process lock poisoned").remove(&agent_id);
+                }
+            });
+            true
+        } else {
+            false
+        };
+        if pid_found {
+            if let Some(tx) = self
+                .channels
+                .read()
+                .expect("channel lock poisoned")
+                .get(&handle.id)
+            {
+                let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
+            }
             Ok(())
         } else {
-            Err(AgentError::Unavailable(
-                "agent handle not found".to_string(),
-            ))
+            Err(AgentError::Unavailable("no process found for agent".into()))
         }
     }
 
@@ -364,37 +420,15 @@ fn build_prompt(input: &TaskPayload) -> String {
 
     sections.push(format!("# Task\n\n{}", input.objective));
 
-    if !input.constraints.is_empty() {
-        let items: Vec<String> = input.constraints.iter().map(|c| format!("- {c}")).collect();
-        sections.push(format!("## Constraints\n\n{}", items.join("\n")));
-    }
-
-    if !input.acceptance_checks.is_empty() {
-        let items: Vec<String> = input
-            .acceptance_checks
-            .iter()
-            .map(|c| format!("- {c}"))
-            .collect();
-        sections.push(format!("## Acceptance Checks\n\n{}", items.join("\n")));
-    }
-
-    if !input.project_rules.is_empty() {
-        let items: Vec<String> = input
-            .project_rules
-            .iter()
-            .map(|r| format!("- {r}"))
-            .collect();
-        sections.push(format!("## Rules\n\n{}", items.join("\n")));
-    }
-
-    if !input.relevant_file_paths.is_empty() {
-        let items: Vec<String> = input
-            .relevant_file_paths
-            .iter()
-            .map(|p| format!("- {p}"))
-            .collect();
-        sections.push(format!("## Relevant Files\n\n{}", items.join("\n")));
-    }
+    let bullet_section = |header: &str, items: &[String]| -> Option<String> {
+        if items.is_empty() { return None; }
+        let body = items.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n");
+        Some(format!("## {header}\n\n{body}"))
+    };
+    sections.extend(bullet_section("Constraints", &input.constraints));
+    sections.extend(bullet_section("Acceptance Checks", &input.acceptance_checks));
+    sections.extend(bullet_section("Rules", &input.project_rules));
+    sections.extend(bullet_section("Relevant Files", &input.relevant_file_paths));
 
     if let Some(ref ctx) = input.prior_context_summary {
         if !ctx.is_empty() {

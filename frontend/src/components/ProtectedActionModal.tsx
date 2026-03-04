@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ActionRiskInfo } from "../lib/types";
+import { StatusBadge } from "./ui/status-badge";
 
 type Props = {
   risk: ActionRiskInfo | null;
@@ -11,6 +12,7 @@ type Props = {
 export function ProtectedActionModal({ risk, open, onConfirm, onCancel }: Props) {
   const [typed, setTyped] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const confirmedRef = useRef(false);
 
   useEffect(() => {
     if (open) {
@@ -19,7 +21,12 @@ export function ProtectedActionModal({ risk, open, onConfirm, onCancel }: Props)
   }, [open, risk]);
 
   useEffect(() => {
-    if (open && risk?.risk_level === "safe") {
+    if (!open) {
+      confirmedRef.current = false;
+      return;
+    }
+    if (open && risk?.risk_level === "safe" && !confirmedRef.current) {
+      confirmedRef.current = true;
       onConfirm();
     }
   }, [open, risk, onConfirm]);
@@ -69,17 +76,9 @@ export function ProtectedActionModal({ risk, open, onConfirm, onCancel }: Props)
       <div className="relative z-10 w-full max-w-md rounded-xl border border-white/10 bg-slate-900 p-6 shadow-2xl">
         {/* Risk badge */}
         <div className="mb-4 flex items-center gap-3">
-          {isDanger ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-xs font-semibold text-red-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
-              Danger
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-xs font-semibold text-amber-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-              Caution
-            </span>
-          )}
+          <StatusBadge variant={isDanger ? "error" : "warning"} dot>
+            {isDanger ? "Danger" : "Caution"}
+          </StatusBadge>
         </div>
 
         <h2 className="text-base font-semibold text-slate-100">{risk.description}</h2>

@@ -23,10 +23,7 @@ async fn run_cycle(app: &AppHandle) {
     let state = app.state::<AppState>();
     let (project_id, db) = {
         let current = state.current.lock().await;
-        let ctx = match current.as_ref() {
-            Some(c) => c,
-            None => return, // no project open
-        };
+        let Some(ctx) = current.as_ref() else { return };
         (ctx.project_id.to_string(), ctx.db.clone())
     };
 
