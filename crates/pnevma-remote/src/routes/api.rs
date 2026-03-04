@@ -27,16 +27,28 @@ pub struct RpcResponse {
     pub error: Option<String>,
 }
 
-async fn call(router: &Arc<dyn CommandRouter>, method: &str, params: Value) -> axum::response::Response {
+async fn call(
+    router: &Arc<dyn CommandRouter>,
+    method: &str,
+    params: Value,
+) -> axum::response::Response {
     match router.route(method, &params).await {
         Ok(result) => (
             StatusCode::OK,
-            Json(RpcResponse { ok: true, result: Some(result), error: None }),
+            Json(RpcResponse {
+                ok: true,
+                result: Some(result),
+                error: None,
+            }),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(RpcResponse { ok: false, result: None, error: Some(e) }),
+            Json(RpcResponse {
+                ok: false,
+                result: None,
+                error: Some(e),
+            }),
         )
             .into_response(),
     }

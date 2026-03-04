@@ -33,20 +33,48 @@ pub struct WsState {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsClientMessage {
-    Subscribe { channel: String },
-    Unsubscribe { channel: String },
-    SessionInput { session_id: String, data: String },
-    Rpc { id: String, method: String, #[serde(default)] params: serde_json::Value },
+    Subscribe {
+        channel: String,
+    },
+    Unsubscribe {
+        channel: String,
+    },
+    SessionInput {
+        session_id: String,
+        data: String,
+    },
+    Rpc {
+        id: String,
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsServerMessage {
-    Subscribed { channel: String },
-    Unsubscribed { channel: String },
-    Event { channel: String, payload: serde_json::Value },
-    RpcResult { id: String, ok: bool, #[serde(skip_serializing_if = "Option::is_none")] result: Option<serde_json::Value>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
-    Error { message: String },
+    Subscribed {
+        channel: String,
+    },
+    Unsubscribed {
+        channel: String,
+    },
+    Event {
+        channel: String,
+        payload: serde_json::Value,
+    },
+    RpcResult {
+        id: String,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub async fn ws_handler(

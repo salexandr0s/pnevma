@@ -114,7 +114,10 @@ impl AgentAdapter for CodexAdapter {
 
         // Store PID for interrupt/stop lifecycle management.
         if let Some(pid) = child.id() {
-            self.processes.write().expect("process lock poisoned").insert(handle.id, pid);
+            self.processes
+                .write()
+                .expect("process lock poisoned")
+                .insert(handle.id, pid);
         }
 
         if let Some(stdin) = child.stdin.as_mut() {
@@ -270,15 +273,18 @@ impl AgentAdapter for CodexAdapter {
             }
             Ok(())
         } else {
-            Err(AgentError::Unavailable(
-                "no process found for agent".into(),
-            ))
+            Err(AgentError::Unavailable("no process found for agent".into()))
         }
     }
 
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
-        let pid_found = if let Some(&pid) = self.processes.read().expect("process lock poisoned").get(&handle.id) {
+        let pid_found = if let Some(&pid) = self
+            .processes
+            .read()
+            .expect("process lock poisoned")
+            .get(&handle.id)
+        {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
             if ret != 0 {
@@ -319,9 +325,7 @@ impl AgentAdapter for CodexAdapter {
             }
             Ok(())
         } else {
-            Err(AgentError::Unavailable(
-                "no process found for agent".into(),
-            ))
+            Err(AgentError::Unavailable("no process found for agent".into()))
         }
     }
 
@@ -352,5 +356,68 @@ impl AgentAdapter for CodexAdapter {
             task_id: Uuid::nil(),
             session_id: handle.id,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_adapter() -> CodexAdapter {
+        CodexAdapter {
+            channels: Arc::new(RwLock::new(HashMap::new())),
+            configs: Arc::new(RwLock::new(HashMap::new())),
+            processes: Arc::new(RwLock::new(HashMap::new())),
+            costs: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn make_handle() -> AgentHandle {
+        AgentHandle {
+            id: Uuid::new_v4(),
+            provider: "codex".to_string(),
+            task_id: Uuid::new_v4(),
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupt_no_process_returns_unavailable() {
+        let adapter = make_adapter();
+        let handle = make_handle();
+        let (tx, _) = broadcast::channel(16);
+        adapter.channels.write().unwrap().insert(handle.id, tx);
+
+        let err = adapter.interrupt(&handle).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::Unavailable(_)),
+            "expected Unavailable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_no_process_returns_unavailable() {
+        let adapter = make_adapter();
+        let handle = make_handle();
+        let (tx, _) = broadcast::channel(16);
+        adapter.channels.write().unwrap().insert(handle.id, tx);
+
+        let err = adapter.stop(&handle).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::Unavailable(_)),
+            "expected Unavailable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn events_missing_handle_emits_error() {
+        let adapter = make_adapter();
+        let handle = make_handle();
+        // No channel registered — should return a receiver with an error event
+        let mut rx = adapter.events(&handle);
+        let event = rx.recv().await.unwrap();
+        assert!(
+            matches!(event, AgentEvent::Error(ref msg) if msg.contains("missing handle")),
+            "expected Error event, got {event:?}"
+        );
     }
 }

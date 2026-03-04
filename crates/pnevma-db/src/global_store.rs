@@ -124,10 +124,7 @@ impl GlobalDb {
         Ok(())
     }
 
-    pub async fn list_recent_projects(
-        &self,
-        limit: i64,
-    ) -> Result<Vec<RecentProjectRow>, DbError> {
+    pub async fn list_recent_projects(&self, limit: i64) -> Result<Vec<RecentProjectRow>, DbError> {
         let rows = sqlx::query_as::<_, RecentProjectRow>(
             "SELECT path, name, project_id, opened_at FROM recent_projects ORDER BY opened_at DESC LIMIT ?",
         )

@@ -1,18 +1,18 @@
 // Submodule declarations
-pub mod project;
-pub mod tasks;
-pub mod workflow;
-pub mod ssh;
 pub mod agents;
 pub mod analytics;
+pub mod project;
+pub mod ssh;
+pub mod tasks;
+pub mod workflow;
 
 // Re-export all command functions from submodules
-pub use self::project::*;
-pub use self::tasks::*;
-pub use self::workflow::*;
-pub use self::ssh::*;
 pub use self::agents::*;
 pub use self::analytics::*;
+pub use self::project::*;
+pub use self::ssh::*;
+pub use self::tasks::*;
+pub use self::workflow::*;
 
 // ── Shared types, helpers, and utilities ──────────────────────────────────────
 
@@ -1223,7 +1223,6 @@ fn session_meta_from_row(row: &SessionRow, data_root: &Path) -> Option<SessionMe
     })
 }
 
-
 fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
     let scope: Vec<String> = serde_json::from_str(&row.scope_json).map_err(|e| e.to_string())?;
     let dependencies: Vec<String> =
@@ -1370,7 +1369,6 @@ async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
     }
     out
 }
-
 
 async fn load_recent_knowledge_summaries(
     db: &Db,
@@ -1570,8 +1568,12 @@ async fn refresh_dependency_states(
             if row.auto_dispatch && task.status == TaskStatus::Ready {
                 let state = app.state::<AppState>();
                 match dispatch_task(task.id.to_string(), app.clone(), state).await {
-                    Ok(_) => tracing::info!(task_id = %task.id, "auto-dispatched task on dependency completion"),
-                    Err(e) => tracing::warn!(task_id = %task.id, error = %e, "auto-dispatch failed"),
+                    Ok(_) => {
+                        tracing::info!(task_id = %task.id, "auto-dispatched task on dependency completion")
+                    }
+                    Err(e) => {
+                        tracing::warn!(task_id = %task.id, error = %e, "auto-dispatch failed")
+                    }
                 }
             }
         }
@@ -2061,8 +2063,7 @@ async fn generate_review_pack(
         &git_output(&worktree_path, &["diff", "--", "."]).await?,
         secrets,
     );
-    let changed_files_raw =
-        git_output(&worktree_path, &["diff", "--name-only", "--", "."]).await?;
+    let changed_files_raw = git_output(&worktree_path, &["diff", "--name-only", "--", "."]).await?;
     let changed_files = changed_files_raw
         .lines()
         .map(str::trim)
@@ -2695,4 +2696,3 @@ fn spawn_session_bridge(app: AppHandle, db: Db, sessions: SessionSupervisor, pro
         }
     });
 }
-

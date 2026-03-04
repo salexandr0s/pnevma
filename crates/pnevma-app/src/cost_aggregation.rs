@@ -29,11 +29,15 @@ async fn run_cycle(app: &AppHandle) {
 
     match db.aggregate_costs_hourly(&project_id).await {
         Ok(_) => info!(project_id = %project_id, "cost-aggregation: hourly aggregates updated"),
-        Err(e) => warn!(project_id = %project_id, error = %e, "cost-aggregation: hourly aggregate failed"),
+        Err(e) => {
+            warn!(project_id = %project_id, error = %e, "cost-aggregation: hourly aggregate failed")
+        }
     }
 
     match db.aggregate_costs_daily(&project_id).await {
         Ok(_) => info!(project_id = %project_id, "cost-aggregation: daily aggregates updated"),
-        Err(e) => warn!(project_id = %project_id, error = %e, "cost-aggregation: daily aggregate failed"),
+        Err(e) => {
+            warn!(project_id = %project_id, error = %e, "cost-aggregation: daily aggregate failed")
+        }
     }
 }

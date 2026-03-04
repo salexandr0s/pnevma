@@ -36,12 +36,12 @@ pub struct DispatchWorkflowInput {
 }
 
 #[tauri::command]
-pub async fn list_workflows(
-    state: State<'_, AppState>,
-) -> Result<Vec<WorkflowView>, String> {
+pub async fn list_workflows(state: State<'_, AppState>) -> Result<Vec<WorkflowView>, String> {
     let (project_id, db) = {
         let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or_else(|| "no open project".to_string())?;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
         (ctx.project_id, ctx.db.clone())
     };
     let rows = db
@@ -62,13 +62,12 @@ pub async fn list_workflows(
 }
 
 #[tauri::command]
-pub async fn get_workflow(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<WorkflowView, String> {
+pub async fn get_workflow(id: String, state: State<'_, AppState>) -> Result<WorkflowView, String> {
     let db = {
         let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or_else(|| "no open project".to_string())?;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
         ctx.db.clone()
     };
     let row = db
@@ -93,7 +92,9 @@ pub async fn create_workflow(
 ) -> Result<WorkflowView, String> {
     let (project_id, db) = {
         let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or_else(|| "no open project".to_string())?;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
         (ctx.project_id, ctx.db.clone())
     };
 
@@ -130,7 +131,9 @@ pub async fn update_workflow(
 ) -> Result<WorkflowView, String> {
     let db = {
         let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or_else(|| "no open project".to_string())?;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
         ctx.db.clone()
     };
 
@@ -140,7 +143,10 @@ pub async fn update_workflow(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("workflow '{}' not found", input.id))?;
 
-    let new_yaml = input.definition_yaml.clone().unwrap_or(existing.definition_yaml.clone());
+    let new_yaml = input
+        .definition_yaml
+        .clone()
+        .unwrap_or(existing.definition_yaml.clone());
     // Validate updated YAML.
     WorkflowDef::from_yaml(&new_yaml).map_err(|e| e.to_string())?;
 
@@ -155,7 +161,9 @@ pub async fn update_workflow(
         created_at: existing.created_at,
         updated_at: now,
     };
-    db.update_workflow(&updated).await.map_err(|e| e.to_string())?;
+    db.update_workflow(&updated)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(WorkflowView {
         id: updated.id,
         name: updated.name,
@@ -167,13 +175,12 @@ pub async fn update_workflow(
 }
 
 #[tauri::command]
-pub async fn delete_workflow(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_workflow(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let db = {
         let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or_else(|| "no open project".to_string())?;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
         ctx.db.clone()
     };
     db.delete_workflow(&id).await.map_err(|e| e.to_string())?;
@@ -188,7 +195,9 @@ pub async fn dispatch_workflow(
 ) -> Result<WorkflowInstanceView, String> {
     let (project_id, db, project_path) = {
         let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or_else(|| "no open project".to_string())?;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
         (ctx.project_id, ctx.db.clone(), ctx.project_path.clone())
     };
 

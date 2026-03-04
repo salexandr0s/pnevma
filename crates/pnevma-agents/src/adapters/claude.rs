@@ -120,7 +120,10 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         // Store PID for interrupt/stop lifecycle management.
         if let Some(pid) = child.id() {
-            self.processes.write().expect("process lock poisoned").insert(handle.id, pid);
+            self.processes
+                .write()
+                .expect("process lock poisoned")
+                .insert(handle.id, pid);
         }
 
         let stdout = child
@@ -270,7 +273,10 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         let status = child.wait().await.map_err(AgentError::Io)?;
         // Remove PID from tracking — process has exited.
-        self.processes.write().expect("process lock poisoned").remove(&handle_id);
+        self.processes
+            .write()
+            .expect("process lock poisoned")
+            .remove(&handle_id);
         let out_result = out_task.await;
         let _ = err_task.await;
 
@@ -308,7 +314,12 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        let pid_found = if let Some(&pid) = self.processes.read().expect("process lock poisoned").get(&handle.id) {
+        let pid_found = if let Some(&pid) = self
+            .processes
+            .read()
+            .expect("process lock poisoned")
+            .get(&handle.id)
+        {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGINT) };
             if ret != 0 {
@@ -335,7 +346,12 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
-        let pid_found = if let Some(&pid) = self.processes.read().expect("process lock poisoned").get(&handle.id) {
+        let pid_found = if let Some(&pid) = self
+            .processes
+            .read()
+            .expect("process lock poisoned")
+            .get(&handle.id)
+        {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
             if ret != 0 {
@@ -354,7 +370,10 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     if ret != 0 {
                         tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGKILL) failed");
                     }
-                    processes.write().expect("process lock poisoned").remove(&agent_id);
+                    processes
+                        .write()
+                        .expect("process lock poisoned")
+                        .remove(&agent_id);
                 }
             });
             true
@@ -421,12 +440,21 @@ fn build_prompt(input: &TaskPayload) -> String {
     sections.push(format!("# Task\n\n{}", input.objective));
 
     let bullet_section = |header: &str, items: &[String]| -> Option<String> {
-        if items.is_empty() { return None; }
-        let body = items.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n");
+        if items.is_empty() {
+            return None;
+        }
+        let body = items
+            .iter()
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         Some(format!("## {header}\n\n{body}"))
     };
     sections.extend(bullet_section("Constraints", &input.constraints));
-    sections.extend(bullet_section("Acceptance Checks", &input.acceptance_checks));
+    sections.extend(bullet_section(
+        "Acceptance Checks",
+        &input.acceptance_checks,
+    ));
     sections.extend(bullet_section("Rules", &input.project_rules));
     sections.extend(bullet_section("Relevant Files", &input.relevant_file_paths));
 
@@ -469,4 +497,120 @@ async fn inject_context_file(context_file: &str, working_dir: &str) -> Result<()
         .map_err(|e| format!("write CLAUDE.md: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_adapter() -> ClaudeCodeAdapter {
+        ClaudeCodeAdapter {
+            channels: Arc::new(RwLock::new(HashMap::new())),
+            configs: Arc::new(RwLock::new(HashMap::new())),
+            costs: Arc::new(RwLock::new(HashMap::new())),
+            processes: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn make_handle() -> AgentHandle {
+        AgentHandle {
+            id: Uuid::new_v4(),
+            provider: "claude-code".to_string(),
+            task_id: Uuid::new_v4(),
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupt_no_process_returns_unavailable() {
+        let adapter = make_adapter();
+        let handle = make_handle();
+        // Insert a channel so the adapter knows the handle, but no PID
+        let (tx, _) = broadcast::channel(16);
+        adapter.channels.write().unwrap().insert(handle.id, tx);
+
+        let err = adapter.interrupt(&handle).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::Unavailable(_)),
+            "expected Unavailable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_no_process_returns_unavailable() {
+        let adapter = make_adapter();
+        let handle = make_handle();
+        let (tx, _) = broadcast::channel(16);
+        adapter.channels.write().unwrap().insert(handle.id, tx);
+
+        let err = adapter.stop(&handle).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::Unavailable(_)),
+            "expected Unavailable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_prompt_empty_optional_sections() {
+        let payload = TaskPayload {
+            task_id: Uuid::nil(),
+            objective: "Do the thing".to_string(),
+            constraints: vec![],
+            project_rules: vec![],
+            worktree_path: "/tmp/work".to_string(),
+            branch_name: "feat/test".to_string(),
+            acceptance_checks: vec![],
+            relevant_file_paths: vec![],
+            prior_context_summary: None,
+        };
+        let prompt = build_prompt(&payload);
+        assert!(prompt.contains("# Task\n\nDo the thing"));
+        assert!(!prompt.contains("## Constraints"));
+        assert!(!prompt.contains("## Acceptance Checks"));
+        assert!(!prompt.contains("## Rules"));
+        assert!(!prompt.contains("## Relevant Files"));
+        assert!(!prompt.contains("## Prior Context"));
+        assert!(prompt.contains("## Working Directory"));
+        assert!(prompt.contains("/tmp/work"));
+        assert!(prompt.contains("feat/test"));
+    }
+
+    #[test]
+    fn build_prompt_with_all_sections() {
+        let payload = TaskPayload {
+            task_id: Uuid::nil(),
+            objective: "Implement feature X".to_string(),
+            constraints: vec!["no breaking changes".to_string()],
+            project_rules: vec!["use strict mode".to_string()],
+            worktree_path: "/home/dev/project".to_string(),
+            branch_name: "feat/x".to_string(),
+            acceptance_checks: vec!["tests pass".to_string()],
+            relevant_file_paths: vec!["src/main.rs".to_string()],
+            prior_context_summary: Some("Previously did Y".to_string()),
+        };
+        let prompt = build_prompt(&payload);
+        assert!(prompt.contains("# Task\n\nImplement feature X"));
+        assert!(prompt.contains("## Constraints\n\n- no breaking changes"));
+        assert!(prompt.contains("## Acceptance Checks\n\n- tests pass"));
+        assert!(prompt.contains("## Rules\n\n- use strict mode"));
+        assert!(prompt.contains("## Relevant Files\n\n- src/main.rs"));
+        assert!(prompt.contains("## Prior Context\n\nPreviously did Y"));
+        assert!(prompt.contains("/home/dev/project"));
+    }
+
+    #[test]
+    fn build_prompt_empty_prior_context_omitted() {
+        let payload = TaskPayload {
+            task_id: Uuid::nil(),
+            objective: "Test".to_string(),
+            constraints: vec![],
+            project_rules: vec![],
+            worktree_path: "/tmp".to_string(),
+            branch_name: "main".to_string(),
+            acceptance_checks: vec![],
+            relevant_file_paths: vec![],
+            prior_context_summary: Some("".to_string()),
+        };
+        let prompt = build_prompt(&payload);
+        assert!(!prompt.contains("## Prior Context"));
+    }
 }

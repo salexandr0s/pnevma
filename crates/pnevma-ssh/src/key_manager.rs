@@ -76,17 +76,13 @@ pub fn generate_key(
     let key_path = ssh_dir.join(name);
 
     // Defense-in-depth: ensure the resolved path stays within ssh_dir
-    let canonical_ssh_dir = ssh_dir
-        .canonicalize()
-        .map_err(SshError::Io)?;
+    let canonical_ssh_dir = ssh_dir.canonicalize().map_err(SshError::Io)?;
     // The key_path may not exist yet, but its parent must be within ssh_dir.
     // We check that the parent resolves inside ssh_dir.
     let parent = key_path
         .parent()
         .ok_or_else(|| SshError::Parse("invalid key path".to_string()))?;
-    let canonical_parent = parent
-        .canonicalize()
-        .map_err(SshError::Io)?;
+    let canonical_parent = parent.canonicalize().map_err(SshError::Io)?;
     if !canonical_parent.starts_with(&canonical_ssh_dir) {
         return Err(SshError::Parse(format!(
             "key path escapes SSH directory: {}",

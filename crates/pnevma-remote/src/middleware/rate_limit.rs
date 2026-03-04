@@ -1,9 +1,4 @@
-use std::{
-    net::IpAddr,
-    num::NonZeroU32,
-    sync::Arc,
-    time::Instant,
-};
+use std::{net::IpAddr, num::NonZeroU32, sync::Arc, time::Instant};
 
 use axum::{
     body::Body,
@@ -53,8 +48,7 @@ impl RateLimitState {
     pub fn spawn_cleanup(&self) {
         let limiters = self.limiters.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(600));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
             loop {
                 interval.tick().await;
                 let cutoff = Instant::now()

@@ -1,12 +1,6 @@
 use std::time::Instant;
 
-use axum::{
-    body::Body,
-    extract::ConnectInfo,
-    http::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::ConnectInfo, http::Request, middleware::Next, response::Response};
 use std::net::SocketAddr;
 
 /// Middleware that logs every request with method, path, IP, status, and timing.

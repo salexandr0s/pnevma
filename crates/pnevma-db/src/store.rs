@@ -1,11 +1,11 @@
 use crate::error::DbError;
 use crate::models::{
     AgentProfileRow, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow,
-    CostDailyAggregateRow, CostRow, ErrorSignatureDailyRow,
-    ErrorSignatureRow, EventRow, FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
-    PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow,
-    SshProfileRow, StoryProgressRow, TaskRow, TaskStoryRow, TelemetryEventRow,
-    WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow, WorktreeRow,
+    CostDailyAggregateRow, CostRow, ErrorSignatureDailyRow, ErrorSignatureRow, EventRow,
+    FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow,
+    PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, SshProfileRow,
+    StoryProgressRow, TaskRow, TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowRow,
+    WorkflowTaskRow, WorktreeRow,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -1878,7 +1878,12 @@ impl Db {
         Ok(rows)
     }
 
-    pub async fn update_story_status(&self, id: &str, status: &str, output_summary: Option<&str>) -> Result<(), DbError> {
+    pub async fn update_story_status(
+        &self,
+        id: &str,
+        status: &str,
+        output_summary: Option<&str>,
+    ) -> Result<(), DbError> {
         let now = Utc::now();
         let (started_at, completed_at) = match status {
             "in_progress" => (Some(now), None),
@@ -1905,10 +1910,7 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_story_progress(
-        &self,
-        task_id: &str,
-    ) -> Result<StoryProgressRow, DbError> {
+    pub async fn get_story_progress(&self, task_id: &str) -> Result<StoryProgressRow, DbError> {
         let row = sqlx::query_as::<_, StoryProgressRow>(
             r#"
             SELECT

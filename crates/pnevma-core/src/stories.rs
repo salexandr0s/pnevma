@@ -35,7 +35,9 @@ pub struct DetectedStory {
 pub struct StoryDetector;
 
 impl StoryDetector {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// Scan a line for progress patterns. Returns the detected story info if found.
     pub fn detect(&self, line: &str) -> Option<DetectedStory> {
@@ -43,27 +45,45 @@ impl StoryDetector {
         if let Some(caps) = processing_file_re().captures(line) {
             let current: usize = caps.get(1)?.as_str().parse().ok()?;
             let total: usize = caps.get(2)?.as_str().parse().ok()?;
-            let title = caps.get(3).map(|m| m.as_str().trim().to_string())
+            let title = caps
+                .get(3)
+                .map(|m| m.as_str().trim().to_string())
                 .unwrap_or_else(|| format!("Step {current}"));
-            return Some(DetectedStory { current, total, title });
+            return Some(DetectedStory {
+                current,
+                total,
+                title,
+            });
         }
 
         // Pattern: "[3/8] Linting..."
         if let Some(caps) = bracket_fraction_re().captures(line) {
             let current: usize = caps.get(1)?.as_str().parse().ok()?;
             let total: usize = caps.get(2)?.as_str().parse().ok()?;
-            let title = caps.get(3).map(|m| m.as_str().trim().to_string())
+            let title = caps
+                .get(3)
+                .map(|m| m.as_str().trim().to_string())
                 .unwrap_or_else(|| format!("Step {current}"));
-            return Some(DetectedStory { current, total, title });
+            return Some(DetectedStory {
+                current,
+                total,
+                title,
+            });
         }
 
         // Pattern: "Step 2/5: Running tests"
         if let Some(caps) = step_of_re().captures(line) {
             let current: usize = caps.get(1)?.as_str().parse().ok()?;
             let total: usize = caps.get(2)?.as_str().parse().ok()?;
-            let title = caps.get(3).map(|m| m.as_str().trim().to_string())
+            let title = caps
+                .get(3)
+                .map(|m| m.as_str().trim().to_string())
                 .unwrap_or_else(|| format!("Step {current}"));
-            return Some(DetectedStory { current, total, title });
+            return Some(DetectedStory {
+                current,
+                total,
+                title,
+            });
         }
 
         // Pattern: "3 of 8" or "3/8"
@@ -71,7 +91,11 @@ impl StoryDetector {
             let current: usize = caps.get(1)?.as_str().parse().ok()?;
             let total: usize = caps.get(2)?.as_str().parse().ok()?;
             if total >= 2 {
-                return Some(DetectedStory { current, total, title: format!("Step {current}") });
+                return Some(DetectedStory {
+                    current,
+                    total,
+                    title: format!("Step {current}"),
+                });
             }
         }
 
@@ -80,7 +104,9 @@ impl StoryDetector {
 }
 
 impl Default for StoryDetector {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn progress_fraction_re() -> &'static Regex {
@@ -100,5 +126,7 @@ fn step_of_re() -> &'static Regex {
 
 fn processing_file_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)processing\s+(?:file\s+)?(\d+)\s+of\s+(\d+)\s*:?\s*(.*)").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)processing\s+(?:file\s+)?(\d+)\s+of\s+(\d+)\s*:?\s*(.*)").unwrap()
+    })
 }

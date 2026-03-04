@@ -74,5 +74,8 @@ jobs:
       - name: Build
         run: npx vite build
 
+      - name: Run tests
+        run: npx vitest run
+
       - name: Audit dependencies
         run: npm audit --audit-level=moderate

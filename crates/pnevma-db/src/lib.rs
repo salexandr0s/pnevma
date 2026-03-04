@@ -10,7 +10,7 @@ pub use models::{
     CostDailyAggregateRow, CostHourlyAggregateRow, CostRow, ErrorSignatureDailyRow,
     ErrorSignatureRow, EventRow, FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
     PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow,
-    SshProfileRow, StoryProgressRow, TaskRow, TaskStoryRow, TelemetryEventRow,
-    WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow, WorktreeRow,
+    SshProfileRow, StoryProgressRow, TaskRow, TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow,
+    WorkflowRow, WorkflowTaskRow, WorktreeRow,
 };
 pub use store::{Db, EventQueryFilter, NewEvent};

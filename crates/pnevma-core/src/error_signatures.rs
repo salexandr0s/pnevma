@@ -56,12 +56,10 @@ pub fn remediation_hint(category: &str) -> Option<&'static str> {
         "rate_limit" => {
             Some("Wait before retrying. Consider using a different model or reducing concurrency")
         }
-        "permission" => Some(
-            "Check file permissions and ensure the agent has access to the required paths",
-        ),
-        "conflict" => {
-            Some("Resolve merge conflicts manually or re-dispatch with conflict context")
+        "permission" => {
+            Some("Check file permissions and ensure the agent has access to the required paths")
         }
+        "conflict" => Some("Resolve merge conflicts manually or re-dispatch with conflict context"),
         "not_found" => Some("Verify file paths and resource URLs are correct"),
         "connection" => Some("Check network connectivity and service availability"),
         "memory" => Some("Reduce task scope or increase available memory"),
@@ -79,10 +77,8 @@ fn timestamp_re() -> &'static Regex {
 fn uuid_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        )
-        .unwrap()
+        Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+            .unwrap()
     })
 }
 

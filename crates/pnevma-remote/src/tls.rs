@@ -77,10 +77,9 @@ fn build_rustls_config_from_pem(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| RemoteError::Tls(format!("Failed to parse certs: {e}")))?;
 
-    let keys: Vec<PrivatePkcs8KeyDer<'static>> =
-        pkcs8_private_keys(&mut BufReader::new(key_pem))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| RemoteError::Tls(format!("Failed to parse keys: {e}")))?;
+    let keys: Vec<PrivatePkcs8KeyDer<'static>> = pkcs8_private_keys(&mut BufReader::new(key_pem))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| RemoteError::Tls(format!("Failed to parse keys: {e}")))?;
 
     let key = keys
         .into_iter()
@@ -101,9 +100,7 @@ fn generate_self_signed_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfi
         .map_err(|e| RemoteError::Tls(format!("rcgen error: {e}")))?;
 
     let cert_der = CertificateDer::from(cert.cert.der().to_vec());
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        cert.key_pair.serialize_der(),
-    ));
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
 
     build_server_config(vec![cert_der], key_der)
 }

@@ -1,5 +1,5 @@
-use super::*;
 use super::tasks::{ensure_scope_rows_from_config, rule_row_to_view};
+use super::*;
 
 #[tauri::command]
 pub async fn open_project(
@@ -1024,7 +1024,10 @@ pub async fn search_project(
 
     if fts_events_available {
         for event in fts_event_results {
-            let body = format!("{}\n{}\n{}", event.event_type, event.source, event.payload_json);
+            let body = format!(
+                "{}\n{}\n{}",
+                event.event_type, event.source, event.payload_json
+            );
             hits.push(SearchResultView {
                 id: format!("event:{}", event.id),
                 source: "event".to_string(),
@@ -1046,7 +1049,10 @@ pub async fn search_project(
             .await
             .map_err(|e| e.to_string())?;
         for event in events {
-            let body = format!("{}\n{}\n{}", event.event_type, event.source, event.payload_json);
+            let body = format!(
+                "{}\n{}\n{}",
+                event.event_type, event.source, event.payload_json
+            );
             if contains_case_insensitive(&body, &query) {
                 hits.push(SearchResultView {
                     id: format!("event:{}", event.id),

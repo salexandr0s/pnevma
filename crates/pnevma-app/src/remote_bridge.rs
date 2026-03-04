@@ -1,7 +1,7 @@
 use crate::control::route_method;
 use crate::state::AppState;
-use pnevma_remote::CommandRouter;
 use async_trait::async_trait;
+use pnevma_remote::CommandRouter;
 use serde_json::Value;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -47,7 +47,9 @@ pub async fn maybe_start_remote(app: AppHandle) {
         .or_else(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             let path = std::path::PathBuf::from(home).join(".config/pnevma/remote-password");
-            std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+            std::fs::read_to_string(path)
+                .ok()
+                .map(|s| s.trim().to_string())
         })
         .filter(|p| !p.is_empty());
 

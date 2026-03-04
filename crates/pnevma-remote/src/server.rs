@@ -10,15 +10,11 @@ use crate::{
     auth::TokenStore,
     config::RemoteAccessConfig,
     middleware::{
-        audit::audit_log,
-        auth_token::auth_token,
-        cors::cors_layer,
-        rate_limit::RateLimitState,
+        audit::audit_log, auth_token::auth_token, cors::cors_layer, rate_limit::RateLimitState,
         tailscale_guard::tailscale_guard,
     },
     routes::{
-        api,
-        auth_routes,
+        api, auth_routes,
         health::health,
         ws::{ws_handler, WsConnectionCounts, WsState},
     },
@@ -72,14 +68,14 @@ pub async fn build_router(
         .route("/api/sessions", post(api::session_new))
         .route("/api/sessions/:id/input", post(api::session_send_input))
         .route("/api/workflows", get(api::workflow_list_defs))
-        .route("/api/workflows/instantiate", post(api::workflow_instantiate))
+        .route(
+            "/api/workflows/instantiate",
+            post(api::workflow_instantiate),
+        )
         .route("/api/rpc", post(api::rpc))
         .merge(ws_router)
         .with_state(router)
-        .layer(middleware::from_fn_with_state(
-            token_store,
-            auth_token,
-        ))
+        .layer(middleware::from_fn_with_state(token_store, auth_token))
         .layer(middleware::from_fn_with_state(
             api_rate_limit,
             crate::middleware::rate_limit::rate_limit,

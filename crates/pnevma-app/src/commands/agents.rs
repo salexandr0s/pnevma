@@ -25,8 +25,7 @@ pub struct DispatchRecommendationView {
 }
 
 fn profile_row_to_view(row: pnevma_db::AgentProfileRow) -> AgentProfileView {
-    let stations: Vec<String> =
-        serde_json::from_str(&row.stations_json).unwrap_or_default();
+    let stations: Vec<String> = serde_json::from_str(&row.stations_json).unwrap_or_default();
     AgentProfileView {
         id: row.id,
         name: row.name,
@@ -81,8 +80,7 @@ pub async fn get_dispatch_recommendation(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("task not found: {task_id}"))?;
 
-    let task_scope: Vec<String> =
-        serde_json::from_str(&task_row.scope_json).unwrap_or_default();
+    let task_scope: Vec<String> = serde_json::from_str(&task_row.scope_json).unwrap_or_default();
 
     let profile_rows = db
         .list_agent_profiles(&project_id)
@@ -150,13 +148,13 @@ pub async fn override_task_profile(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(format!("Profile override set to '{profile_name}' for task {task_id}"))
+    Ok(format!(
+        "Profile override set to '{profile_name}' for task {task_id}"
+    ))
 }
 
 #[tauri::command]
-pub async fn get_agent_team(
-    state: State<'_, AppState>,
-) -> Result<Vec<AgentProfileView>, String> {
+pub async fn get_agent_team(state: State<'_, AppState>) -> Result<Vec<AgentProfileView>, String> {
     let (project_id, db) = {
         let current = state.current.lock().await;
         let ctx = current

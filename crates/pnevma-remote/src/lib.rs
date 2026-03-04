@@ -56,7 +56,10 @@ pub async fn start_remote_server(
     password: &str,
     frontend_dir: Option<PathBuf>,
 ) -> Result<RemoteServerHandle, RemoteError> {
-    let token_store = Arc::new(TokenStore::new(password.to_string(), config.token_ttl_hours));
+    let token_store = Arc::new(TokenStore::new(
+        password.to_string(),
+        config.token_ttl_hours,
+    ));
 
     let app = server::build_router(&config, command_router, token_store, frontend_dir).await;
 
@@ -74,7 +77,8 @@ pub async fn start_remote_server(
     };
     let bind_addr = SocketAddr::from((ts_ip, config.port));
 
-    let tls_config = tls::load_tls_config(&config.tls_mode, Some(std::net::IpAddr::V4(ts_ip))).await?;
+    let tls_config =
+        tls::load_tls_config(&config.tls_mode, Some(std::net::IpAddr::V4(ts_ip))).await?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     let listener = tokio::net::TcpListener::bind(bind_addr)

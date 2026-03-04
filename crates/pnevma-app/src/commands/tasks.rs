@@ -1,5 +1,5 @@
-use super::*;
 use super::project::{fallback_draft, try_provider_task_draft};
+use super::*;
 
 #[tauri::command]
 pub async fn get_task_diff(
@@ -968,7 +968,10 @@ pub async fn checkpoint_restore(
         .await
         .map_err(|e| e.to_string())?;
     if sessions.iter().any(|s| s.status == "running") {
-        return Err("cannot restore checkpoint while sessions are running — stop all sessions first".to_string());
+        return Err(
+            "cannot restore checkpoint while sessions are running — stop all sessions first"
+                .to_string(),
+        );
     }
 
     let row = db
@@ -1947,7 +1950,6 @@ pub async fn get_project_cost(
         .map_err(|e| e.to_string())
 }
 
-
 // ── Story commands ─────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1998,12 +2000,23 @@ pub async fn list_task_stories(
         let ctx = current.as_ref().ok_or("no open project")?;
         ctx.db.clone()
     };
-    let rows = db.list_task_stories(&task_id).await.map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().map(|r| TaskStoryView {
-        id: r.id, task_id: r.task_id, sequence_number: r.sequence_number,
-        title: r.title, status: r.status, started_at: r.started_at,
-        completed_at: r.completed_at, output_summary: r.output_summary,
-    }).collect())
+    let rows = db
+        .list_task_stories(&task_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| TaskStoryView {
+            id: r.id,
+            task_id: r.task_id,
+            sequence_number: r.sequence_number,
+            title: r.title,
+            status: r.status,
+            started_at: r.started_at,
+            completed_at: r.completed_at,
+            output_summary: r.output_summary,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -2016,8 +2029,11 @@ pub async fn create_stories_for_task(
         let ctx = current.as_ref().ok_or("no open project")?;
         ctx.db.clone()
     };
-    let rows: Vec<pnevma_db::TaskStoryRow> = input.stories.iter().enumerate().map(|(i, s)| {
-        pnevma_db::TaskStoryRow {
+    let rows: Vec<pnevma_db::TaskStoryRow> = input
+        .stories
+        .iter()
+        .enumerate()
+        .map(|(i, s)| pnevma_db::TaskStoryRow {
             id: uuid::Uuid::new_v4().to_string(),
             task_id: input.task_id.clone(),
             sequence_number: i as i64,
@@ -2026,15 +2042,28 @@ pub async fn create_stories_for_task(
             started_at: None,
             completed_at: None,
             output_summary: None,
-        }
-    }).collect();
-    db.create_stories_batch(&rows).await.map_err(|e| e.to_string())?;
-    let result = db.list_task_stories(&input.task_id).await.map_err(|e| e.to_string())?;
-    Ok(result.into_iter().map(|r| TaskStoryView {
-        id: r.id, task_id: r.task_id, sequence_number: r.sequence_number,
-        title: r.title, status: r.status, started_at: r.started_at,
-        completed_at: r.completed_at, output_summary: r.output_summary,
-    }).collect())
+        })
+        .collect();
+    db.create_stories_batch(&rows)
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = db
+        .list_task_stories(&input.task_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(result
+        .into_iter()
+        .map(|r| TaskStoryView {
+            id: r.id,
+            task_id: r.task_id,
+            sequence_number: r.sequence_number,
+            title: r.title,
+            status: r.status,
+            started_at: r.started_at,
+            completed_at: r.completed_at,
+            output_summary: r.output_summary,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -2048,7 +2077,8 @@ pub async fn update_story_status(
         ctx.db.clone()
     };
     db.update_story_status(&input.id, &input.status, input.output_summary.as_deref())
-        .await.map_err(|e| e.to_string())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2061,8 +2091,14 @@ pub async fn get_task_story_progress(
         let ctx = current.as_ref().ok_or("no open project")?;
         ctx.db.clone()
     };
-    let p = db.get_story_progress(&task_id).await.map_err(|e| e.to_string())?;
+    let p = db
+        .get_story_progress(&task_id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(StoryProgressView {
-        total: p.total, completed: p.completed, failed: p.failed, in_progress: p.in_progress,
+        total: p.total,
+        completed: p.completed,
+        failed: p.failed,
+        in_progress: p.in_progress,
     })
 }
