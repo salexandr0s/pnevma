@@ -39,8 +39,10 @@ describe("DailyBriefPane", () => {
 
   it("renders with minimal brief (no extended fields)", () => {
     render(<DailyBriefPane brief={minimalBrief} onRefresh={async () => {}} />);
-    // Core stats should render
-    expect(screen.getByText("5")).toBeInTheDocument();
+    // Core stats should render — use composite text matching for numeric values
+    expect(
+      screen.getByText((_, el) => el?.textContent === "Total Tasks: 5"),
+    ).toBeInTheDocument();
     // Extended fields show fallback values — multiple zeros appear so use getAllByText
     const zeros = screen.getAllByText("0");
     expect(zeros.length).toBeGreaterThan(0); // active_sessions, completed, failed all fallback to 0
@@ -61,7 +63,9 @@ describe("DailyBriefPane", () => {
       ],
     };
     render(<DailyBriefPane brief={fullBrief} onRefresh={async () => {}} />);
-    expect(screen.getByText("3")).toBeInTheDocument(); // active_sessions
+    expect(
+      screen.getByText((_, el) => el?.textContent === "Active Sessions: 3"),
+    ).toBeInTheDocument();
     expect(screen.getByText("$4.56")).toBeInTheDocument(); // cost_last_24h_usd
     expect(screen.getByText("Deploy pipeline")).toBeInTheDocument();
     expect(screen.getByText("Expensive task")).toBeInTheDocument();

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { alert, confirm, prompt, DialogProvider } from "./Dialog";
 
@@ -26,11 +26,13 @@ describe("Dialog", () => {
       const user = userEvent.setup();
       render(<DialogProvider />);
 
-      const result = confirm("Are you sure?");
-      // Wait for dialog to appear
+      let result!: Promise<boolean>;
+      act(() => {
+        result = confirm("Are you sure?");
+      });
+
       const okButton = await screen.findByText("OK");
       await user.click(okButton);
-
       await expect(result).resolves.toBe(true);
     });
 
@@ -38,11 +40,33 @@ describe("Dialog", () => {
       const user = userEvent.setup();
       render(<DialogProvider />);
 
-      const result = confirm("Are you sure?");
+      let result!: Promise<boolean>;
+      act(() => {
+        result = confirm("Are you sure?");
+      });
+
       const cancelButton = await screen.findByText("Cancel");
       await user.click(cancelButton);
-
       await expect(result).resolves.toBe(false);
+    });
+
+    it("prompt resolves with typed input", async () => {
+      const user = userEvent.setup();
+      render(<DialogProvider />);
+
+      let result!: Promise<string | null>;
+      act(() => {
+        result = prompt("Enter name:", "default");
+      });
+
+      const input = await screen.findByRole("textbox");
+      await user.clear(input);
+      await user.type(input, "Alice");
+
+      const okButton = screen.getByText("OK");
+      await user.click(okButton);
+
+      await expect(result).resolves.toBe("Alice");
     });
   });
 });

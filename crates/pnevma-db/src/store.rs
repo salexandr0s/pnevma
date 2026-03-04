@@ -62,6 +62,12 @@ impl Db {
         Ok(db)
     }
 
+    /// Create a `Db` from an existing pool and path. Intended for test helpers
+    /// that construct in-memory databases.
+    pub fn from_pool_and_path(pool: SqlitePool, path: PathBuf) -> Self {
+        Self { pool, path }
+    }
+
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }

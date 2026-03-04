@@ -46,6 +46,18 @@ describe("transport", () => {
     expect(t1).toBe(t2);
   });
 
+  it("resetModules produces fresh singleton", async () => {
+    const { getTransport: get1 } = await import("./transport");
+    const t1 = get1();
+
+    vi.resetModules();
+
+    const { getTransport: get2 } = await import("./transport");
+    const t2 = get2();
+
+    expect(t1).not.toBe(t2);
+  });
+
   it("setHttpToken writes to sessionStorage", async () => {
     const { setHttpToken } = await import("./transport");
     setHttpToken("my-secret-token");
