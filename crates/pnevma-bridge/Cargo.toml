@@ -1,0 +1,25 @@
+[package]
+name = "pnevma-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+pnevma-commands = { path = "../pnevma-commands" }
+pnevma-core = { path = "../pnevma-core" }
+pnevma-db = { path = "../pnevma-db" }
+pnevma-session = { path = "../pnevma-session" }
+pnevma-agents = { path = "../pnevma-agents" }
+pnevma-git = { path = "../pnevma-git" }
+pnevma-context = { path = "../pnevma-context" }
+pnevma-ssh = { path = "../pnevma-ssh" }
+pnevma-remote = { path = "../pnevma-remote" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+cbindgen = "0.27"

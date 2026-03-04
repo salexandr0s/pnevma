@@ -1,0 +1,58 @@
+name: Pnevma
+options:
+  bundleIdPrefix: com.pnevma
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    PRODUCT_NAME: Pnevma
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  Pnevma:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Pnevma
+        excludes:
+          - "**/*.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.app
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: Pnevma/Pnevma.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: Pnevma/Bridge/Pnevma-Bridging-Header.h
+        # Rust staticlib — path is relative to the Xcode project file (native/)
+        # Debug: ../target/aarch64-apple-darwin/debug/libpnevma_bridge.a
+        # Release: ../target/aarch64-apple-darwin/release/libpnevma_bridge.a
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/
+      debug:
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/debug/
+      release:
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/release/
+    dependencies:
+      - sdk: Cocoa.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: libresolv.tbd
+      - sdk: libsqlite3.tbd
+      - library: ../target/aarch64-apple-darwin/debug/libpnevma_bridge.a
+        buildPhase: frameworks
+
+  PnevmaTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: PnevmaTests
+    dependencies:
+      - target: Pnevma
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.tests

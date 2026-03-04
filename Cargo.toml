@@ -8,7 +8,8 @@ members = [
   "crates/pnevma-db",
   "crates/pnevma-ssh",
   "crates/pnevma-remote",
-  "crates/pnevma-app",
+  "crates/pnevma-commands",
+  "crates/pnevma-bridge",
 ]
 resolver = "2"
 
