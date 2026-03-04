@@ -292,6 +292,23 @@ pub async fn create_session(
     let ctx = current
         .as_ref()
         .ok_or_else(|| "no open project".to_string())?;
+
+    // H2: Validate command against the configured allowlist.
+    let base_cmd = input.command.split_whitespace().next().unwrap_or("");
+    let cmd_name = std::path::Path::new(base_cmd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(base_cmd);
+    if !ctx
+        .config
+        .automation
+        .allowed_commands
+        .iter()
+        .any(|c| c == cmd_name)
+    {
+        return Err(format!("command not allowed: {cmd_name}"));
+    }
+
     let cwd = if Path::new(&input.cwd).is_relative() {
         ctx.project_path
             .join(&input.cwd)
@@ -300,6 +317,13 @@ pub async fn create_session(
     } else {
         input.cwd.clone()
     };
+
+    // H2: Require cwd to resolve within the project directory.
+    let resolved = std::fs::canonicalize(&cwd).map_err(|e| e.to_string())?;
+    let project_canonical = std::fs::canonicalize(&ctx.project_path).map_err(|e| e.to_string())?;
+    if !resolved.starts_with(&project_canonical) {
+        return Err("session cwd must be within the project directory".to_string());
+    }
 
     let session = ctx
         .sessions
@@ -911,6 +935,180 @@ pub async fn query_events(
         .map_err(|e| e.to_string())
 }
 
+/// Testable core of search_project — searches tasks, events, and artifacts in the DB.
+/// Does not search git commits or session scrollback (those require filesystem/process access).
+pub(crate) async fn search_db(
+    query: &str,
+    limit: usize,
+    db: &Db,
+    project_id: &str,
+) -> Result<Vec<SearchResultView>, String> {
+    let mut hits = Vec::new();
+
+    // Use FTS5 for task search when available, falling back to in-memory scan.
+    // Wrap query in double-quotes for FTS5 phrase matching; inner quotes are
+    // escaped by doubling them per the FTS5 tokenizer grammar.
+    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+    let fts_result: Result<Vec<TaskRow>, _> = sqlx::query_as(
+        r#"SELECT t.id, t.project_id, t.title, t.goal, t.scope_json, t.dependencies_json,
+                  t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
+                  t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
+                  t.auto_dispatch, t.agent_profile_override
+           FROM tasks_fts f
+           JOIN tasks t ON t.rowid = f.rowid
+           WHERE tasks_fts MATCH ?1 AND t.project_id = ?3
+           ORDER BY rank
+           LIMIT ?2"#,
+    )
+    .bind(&fts_query)
+    .bind(limit as i64)
+    .bind(project_id)
+    .fetch_all(db.pool())
+    .await;
+    let fts_available = fts_result.is_ok();
+    let fts_task_results: Vec<TaskRow> = fts_result.unwrap_or_default();
+
+    if fts_available {
+        for task in fts_task_results {
+            let body = format!("{}\n{}", task.title, task.goal);
+            hits.push(SearchResultView {
+                id: format!("task:{}", task.id),
+                source: "task".to_string(),
+                title: task.title.clone(),
+                snippet: summarize_match(&body, query),
+                path: None,
+                task_id: Some(task.id),
+                session_id: None,
+                timestamp: Some(task.updated_at),
+            });
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
+        }
+    } else {
+        // Fallback: in-memory scan if FTS table doesn't exist yet.
+        let tasks = db.list_tasks(project_id).await.map_err(|e| e.to_string())?;
+        for task in tasks {
+            let body = format!(
+                "{}\n{}\n{}\n{}\n{}",
+                task.title, task.goal, task.scope_json, task.constraints_json, task.acceptance_json
+            );
+            if contains_case_insensitive(&body, query) {
+                hits.push(SearchResultView {
+                    id: format!("task:{}", task.id),
+                    source: "task".to_string(),
+                    title: task.title.clone(),
+                    snippet: summarize_match(&body, query),
+                    path: None,
+                    task_id: Some(task.id),
+                    session_id: None,
+                    timestamp: Some(task.updated_at),
+                });
+            }
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
+        }
+    }
+
+    // Use FTS5 for event search when available, falling back to in-memory scan.
+    let fts_event_result: Result<Vec<EventRow>, _> = sqlx::query_as(
+        r#"SELECT e.id, e.project_id, e.task_id, e.session_id, e.trace_id,
+                  e.source, e.event_type, e.payload_json, e.timestamp
+           FROM events_fts f
+           JOIN events e ON e.rowid = f.rowid
+           WHERE events_fts MATCH ?1 AND e.project_id = ?3
+           ORDER BY rank
+           LIMIT ?2"#,
+    )
+    .bind(&fts_query)
+    .bind(limit as i64)
+    .bind(project_id)
+    .fetch_all(db.pool())
+    .await;
+    let fts_events_available = fts_event_result.is_ok();
+    let fts_event_results: Vec<EventRow> = fts_event_result.unwrap_or_default();
+
+    if fts_events_available {
+        for event in fts_event_results {
+            let body = format!(
+                "{}\n{}\n{}",
+                event.event_type, event.source, event.payload_json
+            );
+            hits.push(SearchResultView {
+                id: format!("event:{}", event.id),
+                source: "event".to_string(),
+                title: event.event_type.clone(),
+                snippet: summarize_match(&body, query),
+                path: None,
+                task_id: event.task_id.clone(),
+                session_id: event.session_id.clone(),
+                timestamp: Some(event.timestamp),
+            });
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
+        }
+    } else {
+        // Fallback: in-memory scan.
+        let events = db
+            .list_recent_events(project_id, 4_000)
+            .await
+            .map_err(|e| e.to_string())?;
+        for event in events {
+            let body = format!(
+                "{}\n{}\n{}",
+                event.event_type, event.source, event.payload_json
+            );
+            if contains_case_insensitive(&body, query) {
+                hits.push(SearchResultView {
+                    id: format!("event:{}", event.id),
+                    source: "event".to_string(),
+                    title: event.event_type.clone(),
+                    snippet: summarize_match(&body, query),
+                    path: None,
+                    task_id: event.task_id.clone(),
+                    session_id: event.session_id.clone(),
+                    timestamp: Some(event.timestamp),
+                });
+            }
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
+        }
+    }
+
+    let artifacts = db
+        .list_artifacts(project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    for artifact in artifacts {
+        let body = format!(
+            "{}\n{}\n{}",
+            artifact.r#type,
+            artifact.path,
+            artifact.description.clone().unwrap_or_default()
+        );
+        if contains_case_insensitive(&body, query) {
+            hits.push(SearchResultView {
+                id: format!("artifact:{}", artifact.id),
+                source: "artifact".to_string(),
+                title: format!("{} · {}", artifact.r#type, artifact.path),
+                snippet: summarize_match(&body, query),
+                path: Some(artifact.path.clone()),
+                task_id: artifact.task_id.clone(),
+                session_id: None,
+                timestamp: Some(artifact.created_at),
+            });
+        }
+        if hits.len() >= limit {
+            return Ok(hits);
+        }
+    }
+
+    Ok(hits)
+}
+
 #[tauri::command]
 pub async fn search_project(
     input: SearchProjectInput,
@@ -935,168 +1133,11 @@ pub async fn search_project(
     };
 
     let limit = input.limit.unwrap_or(120).clamp(1, 500);
-    let mut hits = Vec::new();
 
-    // Use FTS5 for task search when available, falling back to in-memory scan.
-    // Wrap query in double-quotes for FTS5 phrase matching; inner quotes are
-    // escaped by doubling them per the FTS5 tokenizer grammar.
-    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
-    let fts_result: Result<Vec<TaskRow>, _> = sqlx::query_as(
-        r#"SELECT t.id, t.project_id, t.title, t.goal, t.scope_json, t.dependencies_json,
-                  t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
-                  t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
-                  t.auto_dispatch, t.agent_profile_override
-           FROM tasks_fts f
-           JOIN tasks t ON t.rowid = f.rowid
-           WHERE tasks_fts MATCH ?1
-           ORDER BY rank
-           LIMIT ?2"#,
-    )
-    .bind(&fts_query)
-    .bind(limit as i64)
-    .fetch_all(db.pool())
-    .await;
-    let fts_available = fts_result.is_ok();
-    let fts_task_results: Vec<TaskRow> = fts_result.unwrap_or_default();
-
-    if fts_available {
-        for task in fts_task_results {
-            let body = format!("{}\n{}", task.title, task.goal);
-            hits.push(SearchResultView {
-                id: format!("task:{}", task.id),
-                source: "task".to_string(),
-                title: task.title.clone(),
-                snippet: summarize_match(&body, &query),
-                path: None,
-                task_id: Some(task.id),
-                session_id: None,
-                timestamp: Some(task.updated_at),
-            });
-            if hits.len() >= limit {
-                return Ok(hits);
-            }
-        }
-    } else {
-        // Fallback: in-memory scan if FTS table doesn't exist yet.
-        let tasks = db
-            .list_tasks(&project_id.to_string())
-            .await
-            .map_err(|e| e.to_string())?;
-        for task in tasks {
-            let body = format!(
-                "{}\n{}\n{}\n{}\n{}",
-                task.title, task.goal, task.scope_json, task.constraints_json, task.acceptance_json
-            );
-            if contains_case_insensitive(&body, &query) {
-                hits.push(SearchResultView {
-                    id: format!("task:{}", task.id),
-                    source: "task".to_string(),
-                    title: task.title.clone(),
-                    snippet: summarize_match(&body, &query),
-                    path: None,
-                    task_id: Some(task.id),
-                    session_id: None,
-                    timestamp: Some(task.updated_at),
-                });
-            }
-            if hits.len() >= limit {
-                return Ok(hits);
-            }
-        }
-    }
-
-    // Use FTS5 for event search when available, falling back to in-memory scan.
-    let fts_event_result: Result<Vec<EventRow>, _> = sqlx::query_as(
-        r#"SELECT e.id, e.project_id, e.task_id, e.session_id, e.trace_id,
-                  e.source, e.event_type, e.payload_json, e.timestamp
-           FROM events_fts f
-           JOIN events e ON e.rowid = f.rowid
-           WHERE events_fts MATCH ?1
-           ORDER BY rank
-           LIMIT ?2"#,
-    )
-    .bind(&fts_query)
-    .bind(limit as i64)
-    .fetch_all(db.pool())
-    .await;
-    let fts_events_available = fts_event_result.is_ok();
-    let fts_event_results: Vec<EventRow> = fts_event_result.unwrap_or_default();
-
-    if fts_events_available {
-        for event in fts_event_results {
-            let body = format!(
-                "{}\n{}\n{}",
-                event.event_type, event.source, event.payload_json
-            );
-            hits.push(SearchResultView {
-                id: format!("event:{}", event.id),
-                source: "event".to_string(),
-                title: event.event_type.clone(),
-                snippet: summarize_match(&body, &query),
-                path: None,
-                task_id: event.task_id.clone(),
-                session_id: event.session_id.clone(),
-                timestamp: Some(event.timestamp),
-            });
-            if hits.len() >= limit {
-                return Ok(hits);
-            }
-        }
-    } else {
-        // Fallback: in-memory scan.
-        let events = db
-            .list_recent_events(&project_id.to_string(), 4_000)
-            .await
-            .map_err(|e| e.to_string())?;
-        for event in events {
-            let body = format!(
-                "{}\n{}\n{}",
-                event.event_type, event.source, event.payload_json
-            );
-            if contains_case_insensitive(&body, &query) {
-                hits.push(SearchResultView {
-                    id: format!("event:{}", event.id),
-                    source: "event".to_string(),
-                    title: event.event_type.clone(),
-                    snippet: summarize_match(&body, &query),
-                    path: None,
-                    task_id: event.task_id.clone(),
-                    session_id: event.session_id.clone(),
-                    timestamp: Some(event.timestamp),
-                });
-            }
-            if hits.len() >= limit {
-                return Ok(hits);
-            }
-        }
-    }
-
-    let artifacts = db
-        .list_artifacts(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    for artifact in artifacts {
-        let body = format!(
-            "{}\n{}\n{}",
-            artifact.r#type,
-            artifact.path,
-            artifact.description.clone().unwrap_or_default()
-        );
-        if contains_case_insensitive(&body, &query) {
-            hits.push(SearchResultView {
-                id: format!("artifact:{}", artifact.id),
-                source: "artifact".to_string(),
-                title: format!("{} · {}", artifact.r#type, artifact.path),
-                snippet: summarize_match(&body, &query),
-                path: Some(artifact.path.clone()),
-                task_id: artifact.task_id.clone(),
-                session_id: None,
-                timestamp: Some(artifact.created_at),
-            });
-        }
-        if hits.len() >= limit {
-            return Ok(hits);
-        }
+    // Search tasks, events, and artifacts in the DB.
+    let mut hits = search_db(&query, limit, &db, &project_id.to_string()).await?;
+    if hits.len() >= limit {
+        return Ok(hits);
     }
 
     let commit_log = git_output(
@@ -1422,6 +1463,16 @@ async fn upsert_scope_item(
     }
 
     let absolute = project_path.join(&row.path);
+    // M2: Validate that the resolved path stays within the project directory.
+    if let Some(parent) = absolute.parent() {
+        if parent.exists() {
+            let canonical_parent = parent.canonicalize().map_err(|e| e.to_string())?;
+            let project_canonical = project_path.canonicalize().map_err(|e| e.to_string())?;
+            if !canonical_parent.starts_with(&project_canonical) {
+                return Err("rule path escapes project directory".to_string());
+            }
+        }
+    }
     if let Some(parent) = absolute.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -1542,7 +1593,15 @@ async fn delete_scope_item(
         return Err(format!("entry scope mismatch: expected {expected_scope}"));
     }
     let path = project_path.join(&row.path);
-    let _ = tokio::fs::remove_file(path).await;
+    // M1: Containment check — prevent deleting files outside the project.
+    if let Ok(canonical) = tokio::fs::canonicalize(&path).await {
+        let project_canonical = project_path.canonicalize().map_err(|e| e.to_string())?;
+        if !canonical.starts_with(&project_canonical) {
+            return Err("rule path escapes project directory".to_string());
+        }
+        let _ = tokio::fs::remove_file(canonical).await;
+    }
+    // If canonicalize fails, the file doesn't exist — skip silently.
     db.delete_rule(&id).await.map_err(|e| e.to_string())?;
     append_event(
         &db,
@@ -1628,6 +1687,10 @@ pub async fn capture_knowledge(
     let kind = input.kind.trim().to_ascii_lowercase();
     if kind != "adr" && kind != "changelog" && kind != "convention-update" {
         return Err("kind must be one of: adr, changelog, convention-update".to_string());
+    }
+    // M4: Validate task_id to prevent directory traversal.
+    if let Some(ref tid) = input.task_id {
+        validate_path_component(tid, "task_id")?;
     }
     let artifact_id = Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -3699,4 +3762,234 @@ pub async fn check_action_risk(
     action_kind: pnevma_core::ActionKind,
 ) -> Result<pnevma_core::ActionRiskInfo, String> {
     Ok(action_kind.risk_info())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn open_test_db() -> Db {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory sqlite");
+        let db = Db::from_pool_and_path(pool, std::path::PathBuf::from(":memory:"));
+        db.migrate().await.expect("migrate");
+        db
+    }
+
+    fn make_task(pid: &str, title: &str) -> TaskRow {
+        let now = chrono::Utc::now();
+        TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: pid.to_string(),
+            title: title.to_string(),
+            goal: String::new(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "medium".to_string(),
+            status: "ready".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_tasks_by_title() {
+        let db = open_test_db().await;
+        let pid = Uuid::new_v4().to_string();
+        db.upsert_project(&pid, "test", "/tmp/test", None, None)
+            .await
+            .unwrap();
+
+        db.create_task(&make_task(&pid, "Fix the widget renderer"))
+            .await
+            .unwrap();
+
+        let hits = search_db("widget", 10, &db, &pid).await.unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].source, "task");
+        assert!(hits[0].title.contains("widget"));
+    }
+
+    #[tokio::test]
+    async fn search_no_results() {
+        let db = open_test_db().await;
+        let pid = Uuid::new_v4().to_string();
+        db.upsert_project(&pid, "test", "/tmp/test", None, None)
+            .await
+            .unwrap();
+
+        let hits = search_db("xyznonexistent", 10, &db, &pid).await.unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_respects_limit() {
+        let db = open_test_db().await;
+        let pid = Uuid::new_v4().to_string();
+        db.upsert_project(&pid, "test", "/tmp/test", None, None)
+            .await
+            .unwrap();
+
+        for i in 0..5 {
+            db.create_task(&make_task(&pid, &format!("Widget task {i}")))
+                .await
+                .unwrap();
+        }
+
+        let hits = search_db("widget", 2, &db, &pid).await.unwrap();
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_events_by_type() {
+        let db = open_test_db().await;
+        let pid = Uuid::new_v4().to_string();
+        db.upsert_project(&pid, "test", "/tmp/test", None, None)
+            .await
+            .unwrap();
+
+        let event = NewEvent {
+            id: Uuid::new_v4().to_string(),
+            project_id: pid.clone(),
+            task_id: None,
+            session_id: None,
+            trace_id: Uuid::new_v4().to_string(),
+            source: "system".to_string(),
+            // Use space-separated words so FTS5 tokenizer can match individual terms.
+            // CamelCase like "DeploymentStarted" is a single FTS token and won't
+            // match a search for "deployment".
+            event_type: "deployment started".to_string(),
+            payload: serde_json::json!({"env": "staging"}),
+        };
+        db.append_event(event).await.unwrap();
+
+        let hits = search_db("deployment", 10, &db, &pid).await.unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].source, "event");
+        assert!(hits[0].title.contains("deployment"));
+    }
+
+    #[tokio::test]
+    async fn fts_fallback_exercised() {
+        let db = open_test_db().await;
+        let pid = Uuid::new_v4().to_string();
+        db.upsert_project(&pid, "test", "/tmp/test", None, None)
+            .await
+            .unwrap();
+
+        // Insert data while FTS tables and triggers still exist.
+        db.create_task(&make_task(&pid, "Fallback search target"))
+            .await
+            .unwrap();
+
+        // Drop FTS triggers and tables to force the in-memory scan fallback path.
+        // Triggers must go first — they reference the FTS tables and would fire
+        // errors on any subsequent task/event mutations.
+        for stmt in [
+            "DROP TRIGGER IF EXISTS tasks_fts_insert",
+            "DROP TRIGGER IF EXISTS tasks_fts_update",
+            "DROP TRIGGER IF EXISTS tasks_fts_delete",
+            "DROP TRIGGER IF EXISTS events_fts_insert",
+            "DROP TABLE IF EXISTS tasks_fts",
+            "DROP TABLE IF EXISTS events_fts",
+        ] {
+            sqlx::query(stmt).execute(db.pool()).await.unwrap();
+        }
+
+        let hits = search_db("Fallback", 10, &db, &pid).await.unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].source, "task");
+        assert!(hits[0].title.contains("Fallback"));
+    }
+
+    #[tokio::test]
+    async fn search_artifacts_by_path() {
+        let db = open_test_db().await;
+        let pid = Uuid::new_v4().to_string();
+        db.upsert_project(&pid, "test", "/tmp/test", None, None)
+            .await
+            .unwrap();
+
+        let artifact = ArtifactRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: pid.clone(),
+            task_id: None,
+            r#type: "document".to_string(),
+            path: "docs/architecture.md".to_string(),
+            description: Some("System architecture overview".to_string()),
+            created_at: chrono::Utc::now(),
+        };
+        db.create_artifact(&artifact).await.unwrap();
+
+        let hits = search_db("architecture", 10, &db, &pid).await.unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].source, "artifact");
+    }
+
+    #[tokio::test]
+    async fn search_does_not_leak_across_projects() {
+        let db = open_test_db().await;
+        let pid_a = Uuid::new_v4().to_string();
+        let pid_b = Uuid::new_v4().to_string();
+        db.upsert_project(&pid_a, "alpha", "/tmp/a", None, None)
+            .await
+            .unwrap();
+        db.upsert_project(&pid_b, "beta", "/tmp/b", None, None)
+            .await
+            .unwrap();
+
+        // Insert task in project A only
+        db.create_task(&make_task(&pid_a, "Unique crosscheck"))
+            .await
+            .unwrap();
+
+        // Search in project B via FTS path → should find nothing
+        let hits = search_db("crosscheck", 10, &db, &pid_b).await.unwrap();
+        assert!(hits.is_empty(), "FTS path must not leak across projects");
+
+        // Drop FTS to verify fallback path also isolates by project
+        sqlx::query("DROP TRIGGER IF EXISTS tasks_fts_insert")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DROP TRIGGER IF EXISTS tasks_fts_update")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DROP TRIGGER IF EXISTS tasks_fts_delete")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS tasks_fts")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let hits = search_db("crosscheck", 10, &db, &pid_b).await.unwrap();
+        assert!(
+            hits.is_empty(),
+            "fallback path must not leak across projects"
+        );
+    }
+
+    #[test]
+    fn validate_path_component_rejects_traversal() {
+        assert!(validate_path_component("../etc", "test").is_err());
+        assert!(validate_path_component("foo/bar", "test").is_err());
+        assert!(validate_path_component("foo\\bar", "test").is_err());
+        assert!(validate_path_component("", "test").is_err());
+        assert!(validate_path_component("foo\0bar", "test").is_err());
+        assert!(validate_path_component("valid-name", "test").is_ok());
+        assert!(validate_path_component("task-123", "test").is_ok());
+    }
 }

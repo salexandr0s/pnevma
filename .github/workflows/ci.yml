@@ -46,6 +46,12 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+      - name: Check updater pubkey is not placeholder
+        run: |
+          if grep -q 'REPLACE_WITH_PNEVMA_UPDATER_PUBKEY' crates/pnevma-app/tauri.conf.json; then
+            echo "::warning::Auto-updater pubkey is still a placeholder"
+          fi
+
   frontend:
     name: Frontend checks
     runs-on: macos-latest
@@ -66,7 +72,7 @@ jobs:
         run: npm ci
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: npx tsc --noEmit -p tsconfig.app.json
 
       - name: Lint
         run: npx eslint .

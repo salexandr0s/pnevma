@@ -11,7 +11,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: https://tauri.localhost; img-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: https://tauri.localhost; img-src 'self' data:; frame-src 'none'; object-src 'none'"
     },
     "windows": [
       {

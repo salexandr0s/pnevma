@@ -11,9 +11,14 @@ class TauriTransport implements Transport {
     return invoke<T>(method, args);
   }
 
-  async subscribe(event: string, cb: (payload: unknown) => void): Promise<() => void> {
+  async subscribe(
+    event: string,
+    cb: (payload: unknown) => void,
+  ): Promise<() => void> {
     const { listen } = await import("@tauri-apps/api/event");
-    const unlisten = await listen(event, (e: { payload: unknown }) => cb(e.payload));
+    const unlisten = await listen(event, (e: { payload: unknown }) =>
+      cb(e.payload),
+    );
     return unlisten;
   }
 
@@ -21,7 +26,11 @@ class TauriTransport implements Transport {
     return this.invoke("send_session_input", { sessionId, data });
   }
 
-  async resizeSession(sessionId: string, cols: number, rows: number): Promise<void> {
+  async resizeSession(
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<void> {
     return this.invoke("resize_session", { sessionId, cols, rows });
   }
 }
@@ -34,6 +43,9 @@ class HttpTransport implements Transport {
 
   constructor(private baseUrl: string) {}
 
+  // Token stored in sessionStorage: tab-scoped, cleared on close.
+  // Acceptable for a desktop app with optional remote access over HTTPS.
+  // XSS is mitigated by a strict CSP; revisit if the threat model changes.
   private get token(): string {
     return sessionStorage.getItem("pnevma_token") ?? "";
   }
@@ -43,7 +55,7 @@ class HttpTransport implements Transport {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.token}`,
+        Authorization: `Bearer ${this.token}`,
       },
       body: JSON.stringify({ method, params: args ?? {} }),
     });
@@ -54,7 +66,11 @@ class HttpTransport implements Transport {
       }
       throw new Error(`RPC failed (${res.status}): ${body}`);
     }
-    const json = (await res.json()) as { ok: boolean; result?: T; error?: { message?: string } };
+    const json = (await res.json()) as {
+      ok: boolean;
+      result?: T;
+      error?: { message?: string };
+    };
     if (!json.ok) throw new Error(json.error?.message ?? "RPC error");
     return json.result as T;
   }
@@ -72,7 +88,8 @@ class HttpTransport implements Transport {
     const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/api/ws";
     this.ws = new WebSocket(wsUrl);
     this.ws.onopen = () => {
-      this.ws!.send(JSON.stringify({ type: "auth", token: this.token }));
+      // Auth is handled by the auth_token middleware on the HTTP upgrade request;
+      // no need to send a separate auth message over the WebSocket.
       // Replay subscriptions after reconnect
       for (const channel of this.activeChannels) {
         this.ws!.send(JSON.stringify({ type: "subscribe", channel }));
@@ -85,9 +102,14 @@ class HttpTransport implements Transport {
     };
     this.ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data as string) as { channel?: string; type?: string; payload: unknown };
+        const msg = JSON.parse(ev.data as string) as {
+          channel?: string;
+          type?: string;
+          payload: unknown;
+        };
         const channel = msg.channel ?? msg.type;
-        if (channel) this.listeners.get(channel)?.forEach((cb) => cb(msg.payload));
+        if (channel)
+          this.listeners.get(channel)?.forEach((cb) => cb(msg.payload));
       } catch {
         // ignore parse errors
       }
@@ -97,7 +119,10 @@ class HttpTransport implements Transport {
     };
   }
 
-  async subscribe(event: string, cb: (payload: unknown) => void): Promise<() => void> {
+  async subscribe(
+    event: string,
+    cb: (payload: unknown) => void,
+  ): Promise<() => void> {
     this.ensureWs();
     if (!this.listeners.has(event)) this.listeners.set(event, new Set());
     this.listeners.get(event)!.add(cb);
@@ -113,12 +138,25 @@ class HttpTransport implements Transport {
 
   async sendSessionInput(sessionId: string, data: string): Promise<void> {
     this.ensureWs();
-    this.wsSend(JSON.stringify({ type: "session_input", session_id: sessionId, data }));
+    this.wsSend(
+      JSON.stringify({ type: "session_input", session_id: sessionId, data }),
+    );
   }
 
-  async resizeSession(sessionId: string, cols: number, rows: number): Promise<void> {
+  async resizeSession(
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<void> {
     this.ensureWs();
-    this.wsSend(JSON.stringify({ type: "session_resize", session_id: sessionId, cols, rows }));
+    this.wsSend(
+      JSON.stringify({
+        type: "session_resize",
+        session_id: sessionId,
+        cols,
+        rows,
+      }),
+    );
   }
 
   /** Close the current WebSocket so the next operation triggers a reconnect. */

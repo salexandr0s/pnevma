@@ -46,12 +46,14 @@ impl TokenStore {
     }
 
     /// Validate a bearer token: constant-time comparison + expiry check.
+    ///
+    /// NOTE: The DashMap lookup is not constant-time, but with 256-bit random
+    /// tokens the timing leak is not practically exploitable. The `ct_eq` below
+    /// is defense-in-depth against future changes to the token format.
     pub fn validate_token(&self, token: &str) -> bool {
         // Clean up first so we don't hold a ref while removing
         self.cleanup_expired();
 
-        // Note: DashMap::get is not constant-time, but with 256-bit token entropy,
-        // timing leaks are not practically exploitable.
         if let Some(entry) = self.tokens.get(token) {
             let age_hours = (Utc::now() - entry.created_at).num_hours() as u64;
             if age_hours < self.ttl_hours {

@@ -138,9 +138,62 @@ pub async fn workflow_instantiate(
 
 // --- generic RPC passthrough ---
 
+/// Methods allowed via the generic RPC endpoint. Dangerous operations like
+/// `session.new`, `trust_workspace`, `ssh.connect`, and mutation of rules/
+/// conventions/keybindings are deliberately excluded.
+const ALLOWED_RPC_METHODS: &[&str] = &[
+    "project.status",
+    "project.daily_brief",
+    "project.search",
+    "task.list",
+    "task.create",
+    "task.dispatch",
+    "task.dispatch_next_ready",
+    "task.poll",
+    "session.list",
+    "session.send_input",
+    "session.timeline",
+    "workflow.list_defs",
+    "workflow.list_instances",
+    "workflow.instantiate",
+    "notification.list",
+    "notification.mark_read",
+];
+
 pub async fn rpc(
     State(r): State<Arc<dyn CommandRouter>>,
     Json(body): Json<RpcRequest>,
 ) -> impl IntoResponse {
+    if !ALLOWED_RPC_METHODS.contains(&body.method.as_str()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(RpcResponse {
+                ok: false,
+                result: None,
+                error: Some(format!("method not allowed via RPC: {}", body.method)),
+            }),
+        )
+            .into_response();
+    }
     call(&r, &body.method, body.params).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rpc_allowlist_includes_expected_methods() {
+        assert!(ALLOWED_RPC_METHODS.contains(&"project.status"));
+        assert!(ALLOWED_RPC_METHODS.contains(&"task.list"));
+        assert!(ALLOWED_RPC_METHODS.contains(&"session.list"));
+    }
+
+    #[test]
+    fn rpc_allowlist_excludes_dangerous_methods() {
+        assert!(!ALLOWED_RPC_METHODS.contains(&"session.new"));
+        assert!(!ALLOWED_RPC_METHODS.contains(&"trust_workspace"));
+        assert!(!ALLOWED_RPC_METHODS.contains(&"ssh.connect"));
+        assert!(!ALLOWED_RPC_METHODS.contains(&"checkpoint.restore"));
+    }
 }

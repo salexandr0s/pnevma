@@ -662,6 +662,19 @@ pub struct PartnerMetricsReportView {
     pub avg_task_cycle_hours: Option<f64>,
 }
 
+/// Reject path components that could traverse directories.
+pub(crate) fn validate_path_component(name: &str, label: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
+        return Err(format!(
+            "{label} must not contain '/', '\\\\', '\\0', or '..'"
+        ));
+    }
+    Ok(())
+}
+
 fn map_priority(priority: &str) -> Priority {
     match priority {
         "P0" => Priority::P0,

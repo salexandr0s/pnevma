@@ -51,6 +51,16 @@ pub struct AutomationSection {
     /// Interval in seconds between auto-dispatch checks.
     #[serde(default = "default_auto_dispatch_interval")]
     pub auto_dispatch_interval_seconds: u64,
+    /// Allowed session commands. Defaults to common shells + agents.
+    #[serde(default = "default_allowed_commands")]
+    pub allowed_commands: Vec<String>,
+}
+
+fn default_allowed_commands() -> Vec<String> {
+    ["zsh", "bash", "sh", "fish", "claude-code", "codex"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 impl Default for AutomationSection {
@@ -61,6 +71,7 @@ impl Default for AutomationSection {
             socket_auth: default_socket_auth(),
             auto_dispatch: false,
             auto_dispatch_interval_seconds: default_auto_dispatch_interval(),
+            allowed_commands: default_allowed_commands(),
         }
     }
 }
@@ -238,4 +249,18 @@ pub fn save_global_config(config: &GlobalConfig) -> Result<(), CoreError> {
         .map_err(|e| CoreError::Serialization(format!("failed to encode global config: {e}")))?;
     fs::write(path, encoded)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automation_default_includes_allowed_commands() {
+        let auto = AutomationSection::default();
+        assert!(auto.allowed_commands.contains(&"zsh".to_string()));
+        assert!(auto.allowed_commands.contains(&"bash".to_string()));
+        assert!(auto.allowed_commands.contains(&"claude-code".to_string()));
+        assert!(!auto.allowed_commands.contains(&"curl".to_string()));
+    }
 }
