@@ -68,6 +68,8 @@ pub struct DispatchPermit {
 
 impl Drop for DispatchPermit {
     fn drop(&mut self) {
+        // CONCURRENCY: Drop cannot be async, so we spawn a task to release the slot.
+        // This is safe because Arc<DispatchPool> is Send+Sync and outlives the spawn.
         let pool = self.pool.clone();
         tokio::spawn(async move {
             pool.release().await;
@@ -105,6 +107,8 @@ impl DispatchPool {
     }
 
     pub async fn wait_next(self: &std::sync::Arc<Self>) -> QueuedDispatch {
+        // CONCURRENCY: The mutex is released before `.notified().await` so other
+        // tasks can acquire and release permits while this waiter sleeps.
         loop {
             {
                 let mut inner = self.inner.lock().await;

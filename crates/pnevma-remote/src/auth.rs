@@ -62,8 +62,9 @@ impl TokenStore {
         self.cleanup_expired();
 
         if let Some(entry) = self.tokens.get(token) {
-            let age_hours = (Utc::now() - entry.created_at).num_hours() as u64;
-            return age_hours < self.ttl_hours;
+            let age_secs = (Utc::now() - entry.created_at).num_seconds();
+            let ttl_secs = self.ttl_hours as i64 * 3600;
+            return age_secs < ttl_secs;
         }
         false
     }
@@ -82,16 +83,103 @@ impl TokenStore {
 
     /// Remove all expired tokens.
     pub fn cleanup_expired(&self) {
-        let ttl = self.ttl_hours;
+        let ttl_secs = self.ttl_hours as i64 * 3600;
         self.tokens.retain(|_, entry| {
-            let age_hours = (Utc::now() - entry.created_at).num_hours() as u64;
-            age_hours < ttl
+            let age_secs = (Utc::now() - entry.created_at).num_seconds();
+            age_secs < ttl_secs
         });
+    }
+
+    /// Revoke a token by removing it from the store.
+    /// Returns `true` if the token existed and was removed.
+    pub fn revoke_token(&self, token: &str) -> bool {
+        self.tokens.remove(token).is_some()
     }
 
     /// Return the expiry timestamp for a freshly-created token.
     pub fn token_expires_at(&self) -> DateTime<Utc> {
         Utc::now() + chrono::Duration::hours(self.ttl_hours as i64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> TokenStore {
+        TokenStore::new("correcthorsebatterystaple".to_string(), 24)
+    }
+
+    #[test]
+    fn valid_token_validates() {
+        let ts = store();
+        let token = ts.create_token("127.0.0.1");
+        assert!(ts.validate_token(&token));
+    }
+
+    #[test]
+    fn unknown_token_is_rejected() {
+        let ts = store();
+        assert!(!ts.validate_token("notarealtoken"));
+    }
+
+    #[test]
+    fn revoked_token_is_rejected() {
+        let ts = store();
+        let token = ts.create_token("127.0.0.1");
+        assert!(ts.revoke_token(&token));
+        assert!(!ts.validate_token(&token));
+    }
+
+    #[test]
+    fn revoke_nonexistent_token_returns_false() {
+        let ts = store();
+        assert!(!ts.revoke_token("doesnotexist"));
+    }
+
+    #[test]
+    fn correct_password_validates() {
+        let ts = store();
+        assert!(ts.validate_password("correcthorsebatterystaple"));
+    }
+
+    #[test]
+    fn wrong_password_is_rejected() {
+        let ts = store();
+        assert!(!ts.validate_password("wrongpassword"));
+    }
+
+    #[test]
+    fn expired_token_ttl_zero_is_rejected() {
+        // TTL of 0 hours means tokens expire immediately.
+        let ts = TokenStore::new("pass".to_string(), 0);
+        let token = ts.create_token("127.0.0.1");
+        // age_secs (0) >= ttl_secs (0), so token is invalid
+        assert!(!ts.validate_token(&token));
+    }
+
+    #[test]
+    fn token_expires_at_is_in_future() {
+        let ts = store();
+        assert!(ts.token_expires_at() > Utc::now());
+    }
+
+    #[test]
+    fn cleanup_expired_removes_zero_ttl_tokens() {
+        let ts = TokenStore::new("pass".to_string(), 0);
+        let token = ts.create_token("127.0.0.1");
+        ts.cleanup_expired();
+        assert!(!ts.tokens.contains_key(&token));
+    }
+
+    #[test]
+    fn multiple_tokens_can_coexist() {
+        let ts = store();
+        let t1 = ts.create_token("10.0.0.1");
+        let t2 = ts.create_token("10.0.0.2");
+        assert!(ts.validate_token(&t1));
+        assert!(ts.validate_token(&t2));
+        assert_ne!(t1, t2);
     }
 }
 

@@ -105,6 +105,11 @@ impl AgentAdapter for ClaudeCodeAdapter {
             Command::new("claude")
                 .current_dir(&cfg.working_dir)
                 .envs(cfg.env.iter().cloned())
+                // Strip credentials that must not leak into agent subprocesses.
+                .env_remove("ANTHROPIC_API_KEY")
+                .env_remove("OPENAI_API_KEY")
+                .env_remove("CLAUDE_API_KEY")
+                .env_remove("PNEVMA_SECRET")
                 .args(&args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())

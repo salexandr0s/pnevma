@@ -2,7 +2,8 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let crate_dir = env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR is always set by Cargo during build scripts");
     let out_dir = PathBuf::from(&crate_dir);
 
     let config = cbindgen::Config::from_file("cbindgen.toml").unwrap_or_default();

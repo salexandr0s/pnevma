@@ -301,10 +301,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openProjectAction() { openProject() }
     @objc private func openSettingsAction() { openSettingsPane() }
 
-    @objc private func splitRightAction() {
-        let (_, pane) = PaneFactory.makeTerminal()
-        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
-    }
+    @objc private func splitRightAction() { newTerminal() }
 
     @objc private func splitDownAction() {
         let (_, pane) = PaneFactory.makeTerminal()

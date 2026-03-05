@@ -503,7 +503,11 @@ pub async fn merge_queue_execute(
     };
     let target_branch = config.branches.target.clone();
 
-    // Acquire per-branch lock to prevent concurrent merge operations on the same branch
+    // CONCURRENCY: Two-level lock pattern — no deadlock risk because:
+    // 1. The outer map lock (merge_branch_locks) is held only to clone the per-branch Arc,
+    //    then immediately released before acquiring the inner per-branch Mutex.
+    // 2. The inner per-branch Mutex guards only same-branch merge serialization.
+    // Code paths never hold both locks simultaneously.
     let branch_lock = {
         let mut locks = state.merge_branch_locks.lock().await;
         locks
@@ -1510,6 +1514,21 @@ pub async fn dispatch_task(
         }
     };
 
+    let auto_approve = match provider.as_str() {
+        "codex" => config
+            .agents
+            .codex
+            .as_ref()
+            .map(|c| c.auto_approve)
+            .unwrap_or(false),
+        _ => config
+            .agents
+            .claude_code
+            .as_ref()
+            .map(|c| c.auto_approve)
+            .unwrap_or(false),
+    };
+
     let handle = adapter
         .spawn(AgentConfig {
             provider: provider.clone(),
@@ -1517,7 +1536,7 @@ pub async fn dispatch_task(
             env: secret_env,
             working_dir: lease.path.clone(),
             timeout_minutes,
-            auto_approve: true, // worktree isolation is the safety boundary
+            auto_approve,
             output_format: "stream-json".to_string(),
             context_file: Some(context_path.to_string_lossy().to_string()),
         })

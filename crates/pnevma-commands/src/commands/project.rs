@@ -64,6 +64,7 @@ pub async fn open_project(
         db.clone(),
         sessions.clone(),
         project_id,
+        build_secrets_list(),
     );
     {
         let sessions = sessions.clone();

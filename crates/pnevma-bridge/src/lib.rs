@@ -87,7 +87,9 @@ impl EventEmitter for FfiEventEmitter {
 // ---------------------------------------------------------------------------
 
 fn make_result(ok: bool, data: &str) -> *mut PnevmaResult {
-    let cstr = CString::new(data).unwrap_or_else(|_| CString::new("").unwrap());
+    let cstr = CString::new(data).unwrap_or_else(|_| {
+        CString::new("").expect("empty string literal cannot contain interior nuls")
+    });
     let len = cstr.as_bytes().len();
     let ptr = cstr.into_raw();
     Box::into_raw(Box::new(PnevmaResult {
@@ -99,6 +101,24 @@ fn make_result(ok: bool, data: &str) -> *mut PnevmaResult {
 
 fn make_error_result(msg: &str) -> *mut PnevmaResult {
     make_result(false, msg)
+}
+
+// ---------------------------------------------------------------------------
+// Helper: parse JSON params from FFI byte pointer
+// ---------------------------------------------------------------------------
+
+/// Parse JSON params from a raw C byte pointer.
+/// Returns `Ok(Value)` on success, or `Err(*mut PnevmaResult)` with an error result
+/// that the caller should return immediately.
+fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, *mut PnevmaResult> {
+    if params_json.is_null() {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+    let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
+    match std::str::from_utf8(slice) {
+        Ok(s) => Ok(serde_json::from_str(s).unwrap_or(Value::Object(serde_json::Map::new()))),
+        Err(_) => Err(make_error_result("invalid UTF-8 in params")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,14 +213,9 @@ pub extern "C" fn pnevma_call(
             Err(_) => return make_error_result("invalid UTF-8 in method"),
         };
 
-        let params: Value = if params_json.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
-            match std::str::from_utf8(slice) {
-                Ok(s) => serde_json::from_str(s).unwrap_or(Value::Object(serde_json::Map::new())),
-                Err(_) => return make_error_result("invalid UTF-8 in params"),
-            }
+        let params = match parse_params(params_json, params_len) {
+            Ok(v) => v,
+            Err(r) => return r,
         };
 
         let state = &handle.state;
@@ -250,24 +265,24 @@ pub extern "C" fn pnevma_call_async(
             }
         };
 
-        let params: Value = if params_json.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
-            match std::str::from_utf8(slice) {
-                Ok(s) => serde_json::from_str(s).unwrap_or(Value::Object(serde_json::Map::new())),
-                Err(_) => {
-                    let r = make_error_result("invalid UTF-8 in params");
-                    cb(r, cb_ctx);
-                    unsafe { pnevma_free_result(r) };
-                    return;
-                }
+        let params = match parse_params(params_json, params_len) {
+            Ok(v) => v,
+            Err(r) => {
+                cb(r, cb_ctx);
+                unsafe { pnevma_free_result(r) };
+                return;
             }
         };
 
-        // Cast pointer to usize for Send safety across the spawn boundary.
-        // This is safe because the caller guarantees the context pointer
-        // remains valid until the callback is invoked.
+        // SAFETY: `cb_ctx` is an opaque pointer supplied by the Swift caller.
+        // The caller guarantees that the pointed-to memory remains valid for
+        // the entire lifetime of this async task — i.e., until `cb` is invoked
+        // and returns. We cast it to `usize` to cross the `Send` boundary
+        // imposed by `tokio::spawn`; the raw pointer is re-materialised inside
+        // the spawned future only immediately before the callback is called.
+        // No aliasing occurs because the caller must not mutate the context
+        // concurrently while this task is alive. NULL is a valid sentinel meaning
+        // "no context" — callers that pass null must ensure the callback handles it.
         let cb_ctx_usize = cb_ctx as usize;
 
         let state = Arc::clone(&handle.state);

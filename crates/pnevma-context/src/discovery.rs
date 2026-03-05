@@ -340,6 +340,33 @@ fn truncate_content(content: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use pnevma_core::{Priority, TaskStatus};
+    use uuid::Uuid;
+
+    fn make_task(scope: Vec<String>) -> TaskContract {
+        TaskContract {
+            id: Uuid::new_v4(),
+            title: "test task".to_string(),
+            goal: "test goal".to_string(),
+            scope,
+            out_of_scope: vec![],
+            dependencies: vec![],
+            acceptance_criteria: vec![],
+            constraints: vec![],
+            priority: Priority::P2,
+            status: TaskStatus::Ready,
+            assigned_session: None,
+            branch: None,
+            worktree: None,
+            prompt_pack: None,
+            handoff_summary: None,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 
     #[test]
     fn glob_extension_match() {
@@ -359,6 +386,12 @@ mod tests {
     }
 
     #[test]
+    fn glob_exact_match() {
+        assert!(matches_glob_simple("CLAUDE.md", "CLAUDE.md"));
+        assert!(!matches_glob_simple("CLAUDE.md", "other.md"));
+    }
+
+    #[test]
     fn truncate_at_line_boundary() {
         let content = "line1\nline2\nline3\nline4\nline5";
         let truncated = truncate_content(content, 15);
@@ -370,5 +403,154 @@ mod tests {
     fn truncate_noop_for_short_content() {
         let content = "short";
         assert_eq!(truncate_content(content, 100), "short");
+    }
+
+    #[test]
+    fn truncate_preserves_truncation_note() {
+        let content = "a".repeat(1000);
+        let truncated = truncate_content(&content, 100);
+        assert!(truncated.contains("[truncated"));
+        assert!(truncated.len() < content.len());
+    }
+
+    // ── Token budget enforcement ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn token_budget_stops_adding_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Create several files each ~100 bytes
+        let content = "x".repeat(100);
+        for i in 0..10 {
+            tokio::fs::write(root.join(format!("file{i}.txt")), &content)
+                .await
+                .unwrap();
+        }
+
+        let task = make_task((0..10).map(|i| format!("file{i}.txt")).collect());
+
+        // Budget of 1 token — file_budget = 0 (1/2), so no files should be included
+        let fd = FileDiscovery::new(DiscoveryConfig {
+            strategies: vec!["scope".to_string()],
+            max_file_size_kb: 1,
+            exclude_patterns: vec![],
+        });
+        let results = fd.discover(&task, root, 1).await.expect("discover");
+        // Budget is 1/2 = 0, so no files fit
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn token_budget_admits_small_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // 4 chars = 1 token estimate
+        tokio::fs::write(root.join("small.txt"), "abcd")
+            .await
+            .unwrap();
+
+        let task = make_task(vec!["small.txt".to_string()]);
+
+        let fd = FileDiscovery::new(DiscoveryConfig {
+            strategies: vec!["scope".to_string()],
+            max_file_size_kb: 1,
+            exclude_patterns: vec![],
+        });
+        // Budget of 1000 tokens => file_budget = 500 >> 1 token needed
+        let results = fd.discover(&task, root, 1000).await.expect("discover");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "small.txt");
+        assert_eq!(results[0].1, "abcd");
+    }
+
+    // ── Exclusion filter ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn excluded_files_are_skipped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        tokio::fs::write(root.join("Cargo.lock"), "lock content")
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("main.rs"), "fn main() {}")
+            .await
+            .unwrap();
+
+        let task = make_task(vec!["Cargo.lock".to_string(), "main.rs".to_string()]);
+
+        let fd = FileDiscovery::new(DiscoveryConfig {
+            strategies: vec!["scope".to_string()],
+            max_file_size_kb: 10,
+            exclude_patterns: vec!["*.lock".to_string()],
+        });
+        let results = fd.discover(&task, root, 10000).await.expect("discover");
+        // Cargo.lock is excluded; only main.rs should be included
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "main.rs");
+    }
+
+    // ── Deduplication ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn duplicate_scope_entries_deduplicated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        tokio::fs::write(root.join("readme.md"), "# Hello")
+            .await
+            .unwrap();
+
+        // Scope lists the same file twice
+        let task = make_task(vec!["readme.md".to_string(), "readme.md".to_string()]);
+
+        let fd = FileDiscovery::new(DiscoveryConfig {
+            strategies: vec!["scope".to_string()],
+            max_file_size_kb: 10,
+            exclude_patterns: vec![],
+        });
+        let results = fd.discover(&task, root, 10000).await.expect("discover");
+        assert_eq!(results.len(), 1);
+    }
+
+    // ── Unknown strategy ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn unknown_strategy_is_skipped_gracefully() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let task = make_task(vec![]);
+        let fd = FileDiscovery::new(DiscoveryConfig {
+            strategies: vec!["nonexistent_strategy".to_string()],
+            max_file_size_kb: 10,
+            exclude_patterns: vec![],
+        });
+        // Should not panic or error — just returns empty
+        let results = fd.discover(&task, root, 10000).await.expect("discover");
+        assert!(results.is_empty());
+    }
+
+    // ── Config defaults ──────────────────────────────────────────────────────
+
+    #[test]
+    fn discovery_config_default_strategies() {
+        let cfg = DiscoveryConfig::default();
+        assert!(cfg.strategies.contains(&"scope".to_string()));
+        assert!(cfg.strategies.contains(&"claude_md".to_string()));
+        assert!(cfg.strategies.contains(&"git_diff".to_string()));
+    }
+
+    #[test]
+    fn discovery_config_default_excludes_common_patterns() {
+        let cfg = DiscoveryConfig::default();
+        assert!(cfg
+            .exclude_patterns
+            .iter()
+            .any(|p| p.contains("node_modules")));
+        assert!(cfg.exclude_patterns.iter().any(|p| p.contains("target")));
+        assert!(cfg.exclude_patterns.iter().any(|p| p.contains(".git")));
     }
 }

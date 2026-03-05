@@ -1369,6 +1369,10 @@ fn session_row_to_event_payload(row: &SessionRow) -> serde_json::Value {
 }
 
 async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
+    let project_canonical = match project_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
     let mut out = Vec::new();
     for path in paths {
         let candidate = if Path::new(path).is_absolute() {
@@ -1376,7 +1380,16 @@ async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
         } else {
             project_path.join(path)
         };
-        if let Ok(text) = tokio::fs::read_to_string(&candidate).await {
+        // Resolve symlinks and verify the path stays within the project root.
+        let canonical = match candidate.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !canonical.starts_with(&project_canonical) {
+            tracing::warn!(path = %path, "load_texts: path escapes project root, skipping");
+            continue;
+        }
+        if let Ok(text) = tokio::fs::read_to_string(&canonical).await {
             out.push(text);
         }
     }
@@ -1813,24 +1826,17 @@ async fn create_notification_row(
 }
 
 async fn store_keychain_secret(service: &str, account: &str, value: &str) -> Result<(), String> {
-    let status = TokioCommand::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            service,
-            "-a",
-            account,
-            "-w",
-            value,
-        ])
-        .status()
-        .await
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("security add-generic-password failed".to_string())
+    // Use the security-framework crate to avoid passing the password as a CLI arg
+    // (which would expose it in `ps` output).
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::passwords::set_generic_password;
+        set_generic_password(service, account, value.as_bytes()).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, account, value);
+        Err("keychain not supported on this platform".to_string())
     }
 }
 
@@ -1951,6 +1957,43 @@ async fn run_acceptance_checks_for_task(
                     .clone()
                     .filter(|v| !v.trim().is_empty())
                     .unwrap_or_else(|| check.description.clone());
+
+                // Validate command against known-safe test runner prefixes.
+                // Reject commands with shell metacharacters that could enable injection.
+                const ALLOWED_PREFIXES: &[&str] = &[
+                    "cargo test",
+                    "cargo nextest",
+                    "npm test",
+                    "npm run test",
+                    "npx",
+                    "yarn test",
+                    "yarn run test",
+                    "pytest",
+                    "python -m pytest",
+                    "just test",
+                    "just check",
+                    "swift test",
+                    "xcodebuild test",
+                    "go test",
+                    "make test",
+                    "bun test",
+                    "deno test",
+                    "vitest",
+                    "jest",
+                ];
+                const FORBIDDEN_CHARS: &[char] = &[';', '|', '&', '$', '`', '\n', '\r'];
+                let cmd_trimmed = command.trim();
+                let has_forbidden = cmd_trimmed.chars().any(|c| FORBIDDEN_CHARS.contains(&c));
+                let has_allowed_prefix = ALLOWED_PREFIXES
+                    .iter()
+                    .any(|prefix| cmd_trimmed.starts_with(prefix));
+                if has_forbidden || !has_allowed_prefix {
+                    return Err(format!(
+                        "TestCommand rejected: command must start with a known test runner \
+                         and must not contain shell metacharacters. Got: {cmd_trimmed:?}"
+                    ));
+                }
+
                 let out = TokioCommand::new("zsh")
                     .arg("-lc")
                     .arg(&command)
@@ -2606,11 +2649,35 @@ async fn ensure_default_panes(db: &Db, project_id: Uuid) -> Result<(), String> {
     Ok(())
 }
 
+/// Build a list of secret values to be redacted from session output.
+/// Reads well-known environment variables and filters out empty/missing ones.
+pub(crate) fn build_secrets_list() -> Vec<String> {
+    const SECRET_ENV_VARS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "CLAUDE_API_KEY",
+        "GITHUB_TOKEN",
+        "PNEVMA_SECRET",
+    ];
+    SECRET_ENV_VARS
+        .iter()
+        .filter_map(|var| {
+            let val = std::env::var(var).unwrap_or_default();
+            if val.is_empty() {
+                None
+            } else {
+                Some(val)
+            }
+        })
+        .collect()
+}
+
 fn spawn_session_bridge(
     emitter: Arc<dyn EventEmitter>,
     db: Db,
     sessions: SessionSupervisor,
     project_id: Uuid,
+    secrets: Vec<String>,
 ) {
     let mut rx = sessions.subscribe();
     tokio::spawn(async move {
@@ -2635,7 +2702,7 @@ fn spawn_session_bridge(
                     .await;
                 }
                 SessionEvent::Output { session_id, chunk } => {
-                    let safe_chunk = redact_text(&chunk, &[]);
+                    let safe_chunk = redact_text(&chunk, &secrets);
                     emitter.emit(
                         "session_output",
                         json!({"session_id": session_id, "chunk": safe_chunk.clone()}),
@@ -2666,7 +2733,7 @@ fn spawn_session_bridge(
                             &body,
                             Some(osc_level(&attention.code)),
                             "osc",
-                            &[],
+                            &secrets,
                         )
                         .await;
                     }
@@ -2713,4 +2780,132 @@ fn spawn_session_bridge(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    // ── redact_text ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn known_secret_is_replaced() {
+        let secret = "s3cr3t-api-key-value".to_string();
+        let input = format!("connecting with token {secret} now");
+        let output = redact_text(&input, std::slice::from_ref(&secret));
+        assert!(
+            !output.contains(&secret),
+            "secret must not appear in output; got: {output}"
+        );
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn multiple_secrets_all_replaced() {
+        let s1 = "alpha-secret".to_string();
+        let s2 = "beta-secret".to_string();
+        let input = format!("first={s1} second={s2}");
+        let output = redact_text(&input, &[s1.clone(), s2.clone()]);
+        assert!(!output.contains(&s1), "s1 must be redacted");
+        assert!(!output.contains(&s2), "s2 must be redacted");
+    }
+
+    #[test]
+    fn partial_match_is_not_redacted_as_whole_word() {
+        // Only the exact secret string is replaced, not a partial overlap.
+        let secret = "secr".to_string();
+        let input = "secret-value is here".to_string();
+        let output = redact_text(&input, std::slice::from_ref(&secret));
+        // "secr" appears inside "secret" — it will be replaced literally.
+        assert!(
+            !output.contains(&secret),
+            "literal substring must be replaced"
+        );
+    }
+
+    #[test]
+    fn empty_secrets_list_returns_pattern_redacted() {
+        // No explicit secrets, but pattern-based redaction still fires.
+        let input = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("eyJhbGciOiJIUzI1NiJ9"),
+            "bearer token must be redacted"
+        );
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn empty_secret_string_is_ignored() {
+        let input = "hello world".to_string();
+        let output = redact_text(&input, &["".to_string()]);
+        // Empty secret is skipped; text should be unchanged (no pattern match here).
+        assert_eq!(output, input);
+    }
+
+    // ── redact_patterns ───────────────────────────────────────────────────────
+
+    #[test]
+    fn api_key_pattern_is_redacted() {
+        let input = "api_key=super-secret-value,other=123";
+        let output = redact_patterns(input);
+        assert!(
+            !output.contains("super-secret-value"),
+            "api_key value must be redacted; got: {output}"
+        );
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn bearer_token_pattern_is_redacted() {
+        let input = "Authorization: Bearer mysecrettoken123";
+        let output = redact_patterns(input);
+        assert!(
+            !output.contains("mysecrettoken123"),
+            "bearer token must be redacted"
+        );
+    }
+
+    #[test]
+    fn password_pattern_is_redacted() {
+        // The regex matches `keyword:value` or `keyword=value` adjacently.
+        // JSON format `"password": "v"` has a closing quote before `:`, breaking adjacency.
+        // Use key=value format which the regex handles directly.
+        let input = "password=hunter2 other=safe";
+        let output = redact_patterns(input);
+        assert!(
+            !output.contains("hunter2"),
+            "password value must be redacted; got: {output}"
+        );
+    }
+
+    #[test]
+    fn non_sensitive_text_is_not_modified() {
+        let input = "hello world, this is safe";
+        let output = redact_patterns(input);
+        assert_eq!(output, input);
+    }
+
+    // ── redact_json_value ────────────────────────────────────────────────────
+
+    #[test]
+    fn json_string_secret_is_redacted() {
+        let secret = "json-secret-xyz".to_string();
+        let val = serde_json::json!({"key": "json-secret-xyz", "other": 42});
+        let out = redact_json_value(val, std::slice::from_ref(&secret));
+        let out_str = out.to_string();
+        assert!(
+            !out_str.contains(&secret),
+            "secret must not appear in JSON output"
+        );
+    }
+
+    #[test]
+    fn json_nested_array_strings_are_redacted() {
+        let secret = "nested-secret".to_string();
+        let val = serde_json::json!(["nested-secret", "safe-value"]);
+        let out = redact_json_value(val, std::slice::from_ref(&secret));
+        let out_str = out.to_string();
+        assert!(!out_str.contains(&secret));
+    }
 }

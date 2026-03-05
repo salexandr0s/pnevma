@@ -35,6 +35,10 @@ impl GitService {
         slug: &str,
     ) -> Result<WorktreeLease, GitError> {
         {
+            // CONCURRENCY: Check-then-act on the lease map. The inner scope drops the
+            // lock before performing git I/O so filesystem operations don't hold the mutex.
+            // A duplicate call with the same task_id will fail at the re-lock below if it
+            // races past this check, because we re-acquire and insert atomically there.
             let leases = self.leases.lock().await;
             if leases.contains_key(&task_id) {
                 return Err(GitError::LeaseViolation(format!(
@@ -186,9 +190,161 @@ impl MergeQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lease::LeaseStatus;
     use proptest::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc as StdArc;
+
+    // ── Branch naming convention ─────────────────────────────────────────────
+
+    #[test]
+    fn branch_name_format() {
+        // Branch name format used in create_worktree: "pnevma/{task_id}/{slug}"
+        let task_id = Uuid::new_v4();
+        let slug = "my-feature";
+        let branch = format!("pnevma/{}/{}", task_id, slug);
+        assert!(branch.starts_with("pnevma/"));
+        assert!(branch.ends_with(&format!("/{}", slug)));
+        assert!(branch.contains(&task_id.to_string()));
+    }
+
+    #[test]
+    fn branch_name_slug_preserved() {
+        let task_id = Uuid::nil();
+        let slug = "fix-auth-bug";
+        let branch = format!("pnevma/{}/{}", task_id, slug);
+        assert_eq!(
+            branch,
+            format!("pnevma/00000000-0000-0000-0000-000000000000/fix-auth-bug")
+        );
+    }
+
+    // ── Duplicate lease detection ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn duplicate_task_id_returns_lease_violation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let task_id = Uuid::new_v4();
+
+        // Manually insert a lease to simulate an existing one
+        let existing_lease = WorktreeLease {
+            id: Uuid::new_v4(),
+            task_id,
+            branch: format!("pnevma/{}/existing", task_id),
+            path: "/tmp/existing".to_string(),
+            started_at: Utc::now(),
+            last_active: Utc::now(),
+            status: LeaseStatus::Active,
+        };
+        service.leases.lock().await.insert(task_id, existing_lease);
+
+        // Creating another worktree for the same task should fail
+        let err = service
+            .create_worktree(task_id, "main", "new-slug")
+            .await
+            .expect_err("should fail with duplicate task_id");
+        assert!(matches!(err, GitError::LeaseViolation(_)));
+    }
+
+    // ── touch_lease ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn touch_lease_updates_active_and_returns_ok() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let task_id = Uuid::new_v4();
+
+        let old_time = Utc::now() - Duration::minutes(5);
+        let lease = WorktreeLease {
+            id: Uuid::new_v4(),
+            task_id,
+            branch: "pnevma/test/slug".to_string(),
+            path: "/tmp/test".to_string(),
+            started_at: old_time,
+            last_active: old_time,
+            status: LeaseStatus::Stale,
+        };
+        service.leases.lock().await.insert(task_id, lease);
+
+        service.touch_lease(task_id).await.expect("touch_lease");
+
+        let leases = service.leases.lock().await;
+        let updated = leases.get(&task_id).expect("lease exists");
+        assert_eq!(updated.status, LeaseStatus::Active);
+        assert!(Utc::now() - updated.last_active < Duration::seconds(2));
+    }
+
+    #[tokio::test]
+    async fn touch_lease_missing_returns_not_found() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let err = service
+            .touch_lease(Uuid::new_v4())
+            .await
+            .expect_err("missing lease");
+        assert!(matches!(err, GitError::WorktreeNotFound(_)));
+    }
+
+    // ── cleanup_worktree without git (missing lease) ─────────────────────────
+
+    #[tokio::test]
+    async fn cleanup_worktree_missing_lease_returns_not_found() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let err = service
+            .cleanup_worktree(Uuid::new_v4(), false)
+            .await
+            .expect_err("missing lease should fail");
+        assert!(matches!(err, GitError::WorktreeNotFound(_)));
+    }
+
+    // ── list_worktrees stale marking ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_worktrees_marks_old_leases_stale() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let task_id = Uuid::new_v4();
+
+        // Insert a lease with last_active 3 hours ago (stale_after = 2h)
+        let old_time = Utc::now() - Duration::hours(3);
+        let lease = WorktreeLease {
+            id: Uuid::new_v4(),
+            task_id,
+            branch: "pnevma/test/old".to_string(),
+            path: "/tmp/old".to_string(),
+            started_at: old_time,
+            last_active: old_time,
+            status: LeaseStatus::Active,
+        };
+        service.leases.lock().await.insert(task_id, lease);
+
+        let leases = service.list_worktrees().await;
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].status, LeaseStatus::Stale);
+    }
+
+    #[tokio::test]
+    async fn list_worktrees_keeps_recent_lease_active() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let task_id = Uuid::new_v4();
+
+        let lease = WorktreeLease {
+            id: Uuid::new_v4(),
+            task_id,
+            branch: "pnevma/test/recent".to_string(),
+            path: "/tmp/recent".to_string(),
+            started_at: Utc::now(),
+            last_active: Utc::now(),
+            status: LeaseStatus::Active,
+        };
+        service.leases.lock().await.insert(task_id, lease);
+
+        let leases = service.list_worktrees().await;
+        assert_eq!(leases[0].status, LeaseStatus::Active);
+    }
 
     proptest! {
         #[test]

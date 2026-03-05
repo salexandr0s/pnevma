@@ -200,6 +200,7 @@ fn has_cycle(steps: &[WorkflowStep]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn parse_simple_workflow() {
@@ -288,5 +289,67 @@ steps:
 "#;
         let wf = WorkflowDef::from_yaml(yaml).unwrap();
         assert_eq!(wf.steps[0].priority, "P1");
+    }
+
+    // ── Proptest helpers ──────────────────────────────────────────────────────
+
+    /// Build a valid N-step linear workflow YAML (each step depends on the previous).
+    fn linear_workflow_yaml(n: usize) -> String {
+        assert!(n >= 1);
+        let mut steps = String::new();
+        for i in 0..n {
+            steps.push_str(&format!(
+                "  - title: \"Step {i}\"\n    goal: \"Do step {i}\"\n"
+            ));
+            if i > 0 {
+                steps.push_str(&format!("    depends_on: [{prev}]\n", prev = i - 1));
+            }
+        }
+        format!("name: \"Linear\"\nsteps:\n{steps}")
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_linear_workflow_validates(n in 1usize..=12) {
+            let yaml = linear_workflow_yaml(n);
+            let result = WorkflowDef::from_yaml(&yaml);
+            prop_assert!(result.is_ok(), "linear workflow of {} steps should validate; err: {:?}", n, result.err());
+        }
+
+        #[test]
+        fn step_with_out_of_bounds_dep_is_rejected(
+            // A 1-step workflow where the step references dep index 1..=20
+            dep in 1usize..=20
+        ) {
+            let yaml = format!(
+                "name: \"Bad\"\nsteps:\n  - title: \"A\"\n    goal: \"Do A\"\n    depends_on: [{dep}]\n"
+            );
+            let result = WorkflowDef::from_yaml(&yaml);
+            prop_assert!(result.is_err(), "dep {dep} is out of bounds for 1-step workflow");
+        }
+
+        #[test]
+        fn empty_workflow_name_always_rejected(
+            // Blank or whitespace-only name
+            name in "[ \t]*"
+        ) {
+            let yaml = format!(
+                "name: \"{name}\"\nsteps:\n  - title: \"A\"\n    goal: \"Do A\"\n"
+            );
+            let result = WorkflowDef::from_yaml(&yaml);
+            prop_assert!(result.is_err(), "blank name should be rejected");
+        }
+
+        #[test]
+        fn workflow_step_ordering_invariant_holds(n in 2usize..=8) {
+            // A valid linear workflow's steps must be in order (depends_on only references earlier steps).
+            let yaml = linear_workflow_yaml(n);
+            let wf = WorkflowDef::from_yaml(&yaml).expect("linear workflow must be valid");
+            for (i, step) in wf.steps.iter().enumerate() {
+                for &dep in &step.depends_on {
+                    prop_assert!(dep < i, "step {i} has dep {dep} >= itself (ordering violated)");
+                }
+            }
+        }
     }
 }

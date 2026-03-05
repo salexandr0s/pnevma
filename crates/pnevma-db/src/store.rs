@@ -2212,7 +2212,8 @@ impl Db {
 mod tests {
     use super::*;
     use crate::models::{
-        ContextRuleUsageRow, FeedbackRow, OnboardingStateRow, RuleRow, TelemetryEventRow,
+        ContextRuleUsageRow, FeedbackRow, NotificationRow, OnboardingStateRow, RuleRow, SessionRow,
+        TaskRow, TelemetryEventRow, WorkflowInstanceRow, WorktreeRow,
     };
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -2230,6 +2231,487 @@ mod tests {
         };
         db.migrate().await.expect("migrate");
         db
+    }
+
+    // ── Helper to create a project that foreign keys can reference ──────────
+    async fn seed_project(db: &Db, project_id: &str) {
+        db.upsert_project(project_id, "test", "/tmp/test", None, None)
+            .await
+            .expect("seed project");
+    }
+
+    // ── D1: Task roundtrip ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn task_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let task = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            title: "Implement feature X".to_string(),
+            goal: "Deliver feature X".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "high".to_string(),
+            status: "Pending".to_string(),
+            branch: Some("feat/x".to_string()),
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+        };
+
+        db.create_task(&task).await.expect("create task");
+
+        let loaded = db
+            .get_task(&task.id)
+            .await
+            .expect("get task")
+            .expect("task should exist");
+        assert_eq!(loaded.id, task.id);
+        assert_eq!(loaded.title, "Implement feature X");
+        assert_eq!(loaded.priority, "high");
+        assert_eq!(loaded.status, "Pending");
+        assert_eq!(loaded.branch.as_deref(), Some("feat/x"));
+        assert!(!loaded.auto_dispatch);
+
+        // Update and verify
+        let mut updated = loaded.clone();
+        updated.status = "InProgress".to_string();
+        updated.updated_at = Utc::now();
+        db.update_task(&updated).await.expect("update task");
+
+        let reloaded = db
+            .get_task(&task.id)
+            .await
+            .expect("get task after update")
+            .expect("task should still exist");
+        assert_eq!(reloaded.status, "InProgress");
+
+        // list_tasks
+        let tasks = db.list_tasks(&project_id).await.expect("list tasks");
+        assert_eq!(tasks.len(), 1);
+
+        // delete
+        db.delete_task(&task.id).await.expect("delete task");
+        let gone = db.get_task(&task.id).await.expect("get deleted task");
+        assert!(gone.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_dependencies_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let make_task = |id: &str| TaskRow {
+            id: id.to_string(),
+            project_id: project_id.clone(),
+            title: format!("Task {id}"),
+            goal: "goal".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "medium".to_string(),
+            status: "Pending".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+        };
+
+        let t1_id = Uuid::new_v4().to_string();
+        let t2_id = Uuid::new_v4().to_string();
+        db.create_task(&make_task(&t1_id)).await.expect("create t1");
+        db.create_task(&make_task(&t2_id)).await.expect("create t2");
+
+        db.replace_task_dependencies(&t2_id, std::slice::from_ref(&t1_id))
+            .await
+            .expect("replace deps");
+
+        let deps = db.list_task_dependencies(&t2_id).await.expect("list deps");
+        assert_eq!(deps, vec![t1_id.clone()]);
+
+        // replace with empty clears deps
+        db.replace_task_dependencies(&t2_id, &[])
+            .await
+            .expect("clear deps");
+        let empty = db
+            .list_task_dependencies(&t2_id)
+            .await
+            .expect("list empty deps");
+        assert!(empty.is_empty());
+    }
+
+    // ── D1: Session roundtrip ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn session_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let session = SessionRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "claude-session".to_string(),
+            r#type: Some("claude".to_string()),
+            status: "running".to_string(),
+            pid: Some(12345),
+            cwd: "/tmp/project".to_string(),
+            command: "claude".to_string(),
+            branch: Some("main".to_string()),
+            worktree_id: None,
+            started_at: now,
+            last_heartbeat: now,
+        };
+
+        db.upsert_session(&session).await.expect("upsert session");
+
+        let sessions = db.list_sessions(&project_id).await.expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        let loaded = &sessions[0];
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.name, "claude-session");
+        assert_eq!(loaded.pid, Some(12345));
+        assert_eq!(loaded.status, "running");
+
+        // upsert updates status
+        let mut updated = session.clone();
+        updated.status = "stopped".to_string();
+        updated.pid = None;
+        db.upsert_session(&updated).await.expect("upsert update");
+
+        let sessions2 = db
+            .list_sessions(&project_id)
+            .await
+            .expect("list sessions after update");
+        assert_eq!(sessions2[0].status, "stopped");
+        assert_eq!(sessions2[0].pid, None);
+    }
+
+    // ── D1: Event roundtrip ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn event_roundtrip_and_filter() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let task_id = Uuid::new_v4().to_string();
+        let session_id = Uuid::new_v4().to_string();
+
+        let ev1 = NewEvent {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: Some(task_id.clone()),
+            session_id: Some(session_id.clone()),
+            trace_id: "trace-1".to_string(),
+            source: "agent".to_string(),
+            event_type: "task.start".to_string(),
+            payload: serde_json::json!({"key": "value"}),
+        };
+        let ev2 = NewEvent {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: Some(task_id.clone()),
+            session_id: None,
+            trace_id: "trace-2".to_string(),
+            source: "system".to_string(),
+            event_type: "task.complete".to_string(),
+            payload: serde_json::json!({}),
+        };
+
+        db.append_event(ev1).await.expect("append ev1");
+        db.append_event(ev2).await.expect("append ev2");
+
+        // Unfiltered query
+        let all = db
+            .query_events(EventQueryFilter {
+                project_id: project_id.clone(),
+                ..Default::default()
+            })
+            .await
+            .expect("query all events");
+        assert_eq!(all.len(), 2);
+
+        // Filter by event_type
+        let filtered = db
+            .query_events(EventQueryFilter {
+                project_id: project_id.clone(),
+                event_type: Some("task.start".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("query filtered events");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].event_type, "task.start");
+        assert_eq!(filtered[0].source, "agent");
+
+        // limit
+        let limited = db
+            .query_events(EventQueryFilter {
+                project_id: project_id.clone(),
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .expect("query limited events");
+        assert_eq!(limited.len(), 1);
+
+        // list_recent_events returns in ascending order
+        let recent = db
+            .list_recent_events(&project_id, 10)
+            .await
+            .expect("list recent");
+        assert_eq!(recent.len(), 2);
+    }
+
+    // ── D1: Workflow roundtrip ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn workflow_instance_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let instance = WorkflowInstanceRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            workflow_name: "deploy".to_string(),
+            description: Some("Deploy to prod".to_string()),
+            status: "pending".to_string(),
+            created_at: now,
+            updated_at: now,
+            params_json: None,
+            stage_results_json: None,
+            expanded_steps_json: None,
+        };
+
+        db.create_workflow_instance(&instance)
+            .await
+            .expect("create workflow instance");
+
+        let loaded = db
+            .get_workflow_instance(&instance.id)
+            .await
+            .expect("get workflow instance")
+            .expect("instance should exist");
+        assert_eq!(loaded.workflow_name, "deploy");
+        assert_eq!(loaded.status, "pending");
+        assert_eq!(loaded.description.as_deref(), Some("Deploy to prod"));
+
+        // Update status
+        db.update_workflow_instance_status(&instance.id, "running")
+            .await
+            .expect("update status");
+        let updated = db
+            .get_workflow_instance(&instance.id)
+            .await
+            .expect("get after update")
+            .expect("instance");
+        assert_eq!(updated.status, "running");
+
+        // workflow_tasks
+        let now2 = Utc::now();
+        let task_row = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            title: "wf task".to_string(),
+            goal: "goal".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "low".to_string(),
+            status: "Pending".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now2,
+            updated_at: now2,
+            auto_dispatch: false,
+            agent_profile_override: None,
+        };
+        db.create_task(&task_row).await.expect("create wf task");
+        db.add_workflow_task(&instance.id, 0, &task_row.id)
+            .await
+            .expect("add wf task");
+
+        let wf_tasks = db
+            .list_workflow_tasks(&instance.id)
+            .await
+            .expect("list wf tasks");
+        assert_eq!(wf_tasks.len(), 1);
+        assert_eq!(wf_tasks[0].task_id, task_row.id);
+        assert_eq!(wf_tasks[0].step_index, 0);
+
+        // find_workflow_by_task
+        let found = db
+            .find_workflow_by_task(&task_row.id)
+            .await
+            .expect("find wf by task")
+            .expect("should be found");
+        assert_eq!(found.workflow_id, instance.id);
+
+        // list_workflow_instances
+        let list = db
+            .list_workflow_instances(&project_id)
+            .await
+            .expect("list instances");
+        assert_eq!(list.len(), 1);
+    }
+
+    // ── D1: Notification roundtrip ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn notification_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let n1 = NotificationRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: None,
+            session_id: None,
+            title: "Task complete".to_string(),
+            body: "Task completed successfully".to_string(),
+            level: "info".to_string(),
+            unread: true,
+            created_at: Utc::now(),
+        };
+        let n2 = NotificationRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: None,
+            session_id: None,
+            title: "Error".to_string(),
+            body: "Something went wrong".to_string(),
+            level: "error".to_string(),
+            unread: true,
+            created_at: Utc::now(),
+        };
+
+        db.create_notification(&n1).await.expect("create n1");
+        db.create_notification(&n2).await.expect("create n2");
+
+        // list all
+        let all = db
+            .list_notifications(&project_id, false)
+            .await
+            .expect("list all");
+        assert_eq!(all.len(), 2);
+
+        // list unread only
+        let unread = db
+            .list_notifications(&project_id, true)
+            .await
+            .expect("list unread");
+        assert_eq!(unread.len(), 2);
+
+        // mark one read
+        db.mark_notification_read(&n1.id).await.expect("mark read");
+        let unread_after = db
+            .list_notifications(&project_id, true)
+            .await
+            .expect("list unread after mark");
+        assert_eq!(unread_after.len(), 1);
+        assert_eq!(unread_after[0].id, n2.id);
+
+        // clear all
+        db.clear_notifications(&project_id)
+            .await
+            .expect("clear notifications");
+        let unread_cleared = db
+            .list_notifications(&project_id, true)
+            .await
+            .expect("list after clear");
+        assert!(unread_cleared.is_empty());
+    }
+
+    // ── D1: Worktree roundtrip ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn worktree_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let task_id = Uuid::new_v4().to_string();
+        // create a task first (worktrees have FK to tasks with ON DELETE CASCADE)
+        let task = TaskRow {
+            id: task_id.clone(),
+            project_id: project_id.clone(),
+            title: "t".to_string(),
+            goal: "g".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "low".to_string(),
+            status: "Pending".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+        };
+        db.create_task(&task).await.expect("create task for wt");
+
+        let wt = WorktreeRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: task_id.clone(),
+            path: "/tmp/worktrees/feat-x".to_string(),
+            branch: "feat/x".to_string(),
+            lease_status: "active".to_string(),
+            lease_started: now,
+            last_active: now,
+        };
+        db.upsert_worktree(&wt).await.expect("upsert worktree");
+
+        let loaded = db
+            .find_worktree_by_task(&task_id)
+            .await
+            .expect("find worktree")
+            .expect("should exist");
+        assert_eq!(loaded.id, wt.id);
+        assert_eq!(loaded.branch, "feat/x");
+        assert_eq!(loaded.lease_status, "active");
+
+        let list = db
+            .list_worktrees(&project_id)
+            .await
+            .expect("list worktrees");
+        assert_eq!(list.len(), 1);
+
+        db.remove_worktree_by_task(&task_id)
+            .await
+            .expect("remove worktree");
+        let gone = db
+            .find_worktree_by_task(&task_id)
+            .await
+            .expect("find after remove");
+        assert!(gone.is_none());
     }
 
     #[tokio::test]

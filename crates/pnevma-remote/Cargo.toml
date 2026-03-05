@@ -8,7 +8,7 @@ license.workspace = true
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "limit", "trace"] }
 tokio = { workspace = true }
 tokio-rustls = "0.26"
 rustls = "0.23"
@@ -29,3 +29,4 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 rustls-pki-types = { version = "1", features = ["std"] }
 argon2 = "0.5"
+sha2 = { workspace = true }

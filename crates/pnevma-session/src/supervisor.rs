@@ -497,6 +497,9 @@ impl SessionSupervisor {
     }
 
     pub async fn send_input(&self, session_id: Uuid, input: &str) -> Result<(), SessionError> {
+        // CONCURRENCY: Read lock on `inputs` is dropped before acquiring the per-session
+        // ChildStdin Mutex. This two-step pattern (clone Arc then lock) avoids holding
+        // the map lock while doing I/O, preventing contention across sessions.
         let writer = self
             .inputs
             .read()
@@ -884,5 +887,241 @@ mod tests {
             .await
             .expect("read scrollback should succeed");
         assert!(slice.data.contains('\u{FFFD}'));
+    }
+
+    // ── Health state transitions ─────────────────────────────────────────────
+
+    async fn make_running_session(
+        root: &std::path::Path,
+        supervisor: &SessionSupervisor,
+        last_heartbeat: chrono::DateTime<Utc>,
+    ) -> Uuid {
+        let session_id = Uuid::new_v4();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        let now = Utc::now();
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "test".to_string(),
+                status: SessionStatus::Running,
+                health: SessionHealth::Active,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+        session_id
+    }
+
+    #[tokio::test]
+    async fn refresh_health_active_when_recent_heartbeat() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+
+        let session_id = make_running_session(&root, &supervisor, Utc::now()).await;
+
+        supervisor.refresh_health().await;
+
+        let meta = supervisor.get(session_id).await.expect("session exists");
+        assert_eq!(meta.health, SessionHealth::Active);
+    }
+
+    #[tokio::test]
+    async fn refresh_health_idle_after_2_minutes() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+
+        // Last heartbeat 3 minutes ago — crosses idle_after (2min)
+        let session_id = make_running_session(
+            &root,
+            &supervisor,
+            Utc::now() - chrono::Duration::minutes(3),
+        )
+        .await;
+
+        supervisor.refresh_health().await;
+
+        let meta = supervisor.get(session_id).await.expect("session exists");
+        assert_eq!(meta.health, SessionHealth::Idle);
+    }
+
+    #[tokio::test]
+    async fn refresh_health_stuck_after_10_minutes() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+
+        // Last heartbeat 11 minutes ago — crosses stuck_after (10min)
+        let session_id = make_running_session(
+            &root,
+            &supervisor,
+            Utc::now() - chrono::Duration::minutes(11),
+        )
+        .await;
+
+        supervisor.refresh_health().await;
+
+        let meta = supervisor.get(session_id).await.expect("session exists");
+        assert_eq!(meta.health, SessionHealth::Stuck);
+    }
+
+    #[tokio::test]
+    async fn refresh_health_skips_non_running_sessions() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let old_heartbeat = Utc::now() - chrono::Duration::minutes(30);
+        let scrollback = root.join("scrollback").join(format!("{session_id}.log"));
+
+        // Register a session that is Complete — should not be changed by refresh
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "complete".to_string(),
+                status: SessionStatus::Complete,
+                health: SessionHealth::Complete,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: Utc::now(),
+                last_heartbeat: old_heartbeat,
+                scrollback_path: scrollback.to_string_lossy().to_string(),
+                exit_code: Some(0),
+                ended_at: None,
+            })
+            .await;
+
+        supervisor.refresh_health().await;
+
+        let meta = supervisor.get(session_id).await.expect("session exists");
+        assert_eq!(meta.health, SessionHealth::Complete);
+    }
+
+    // ── mark_exit ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mark_exit_transitions_session_to_complete() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let scrollback = root.join("scrollback").join(format!("{session_id}.log"));
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "exiting".to_string(),
+                status: SessionStatus::Running,
+                health: SessionHealth::Active,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: Utc::now(),
+                last_heartbeat: Utc::now(),
+                scrollback_path: scrollback.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        supervisor
+            .mark_exit(session_id, Some(0))
+            .await
+            .expect("mark_exit");
+
+        let meta = supervisor.get(session_id).await.expect("session exists");
+        assert_eq!(meta.status, SessionStatus::Complete);
+        assert_eq!(meta.health, SessionHealth::Complete);
+        assert_eq!(meta.exit_code, Some(0));
+        assert!(meta.ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn mark_exit_missing_session_returns_not_found() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let err = supervisor
+            .mark_exit(Uuid::new_v4(), None)
+            .await
+            .expect_err("missing session");
+        assert!(matches!(err, SessionError::NotFound(_)));
+    }
+
+    // ── Redaction patterns ───────────────────────────────────────────────────
+
+    #[test]
+    fn does_not_redact_normal_text() {
+        let input = "Hello, world! This is a normal log line.";
+        let output = redact_stream_chunk(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn redacts_api_key_assignment() {
+        let input = "api_key=supersecret123";
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("supersecret123"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redacts_password_colon_form() {
+        let input = r#"password: "mypassword""#;
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("mypassword"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    // ── list/get ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_returns_all_registered_sessions() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+
+        for i in 0..3 {
+            let id = Uuid::new_v4();
+            let scrollback = root.join("scrollback").join(format!("{id}.log"));
+            supervisor
+                .register_restored(SessionMetadata {
+                    id,
+                    project_id: Uuid::new_v4(),
+                    name: format!("session-{i}"),
+                    status: SessionStatus::Waiting,
+                    health: SessionHealth::Waiting,
+                    pid: None,
+                    cwd: ".".to_string(),
+                    command: "zsh".to_string(),
+                    branch: None,
+                    worktree_id: None,
+                    started_at: Utc::now(),
+                    last_heartbeat: Utc::now(),
+                    scrollback_path: scrollback.to_string_lossy().to_string(),
+                    exit_code: None,
+                    ended_at: None,
+                })
+                .await;
+        }
+
+        assert_eq!(supervisor.list().await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_for_unknown_id() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        assert!(supervisor.get(Uuid::new_v4()).await.is_none());
     }
 }

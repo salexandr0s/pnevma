@@ -166,13 +166,17 @@ final class ContentAreaView: NSView {
         onActivePaneChanged?(paneID)
     }
 
-    /// Replace the layout engine (used when switching workspaces).
-    func setLayoutEngine(_ engine: PaneLayoutEngine) {
-        // Tear down existing views
+    /// Remove all pane and divider subviews and clear their tracking collections.
+    private func teardownAllViews() {
         for (_, v) in paneViews { v.removeFromSuperview() }
         paneViews.removeAll()
         dividerViews.forEach { $0.removeFromSuperview() }
         dividerViews.removeAll()
+    }
+
+    /// Replace the layout engine (used when switching workspaces).
+    func setLayoutEngine(_ engine: PaneLayoutEngine) {
+        teardownAllViews()
 
         layoutEngine = engine
 
@@ -195,11 +199,7 @@ final class ContentAreaView: NSView {
     /// Replace the entire layout with a single root pane.
     /// Used when all panes have been closed and we need a fresh start.
     func setRootPane(_ view: NSView & PaneContent) {
-        // Remove any stale views
-        for (_, v) in paneViews { v.removeFromSuperview() }
-        paneViews.removeAll()
-        dividerViews.forEach { $0.removeFromSuperview() }
-        dividerViews.removeAll()
+        teardownAllViews()
 
         layoutEngine = PaneLayoutEngine(rootPaneID: view.paneID)
         registerPaneView(view)

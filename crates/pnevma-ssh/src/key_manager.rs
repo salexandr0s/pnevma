@@ -90,6 +90,18 @@ pub fn generate_key(
         )));
     }
 
+    // Validate the comment before passing it to ssh-keygen.
+    if comment.len() > 256 {
+        return Err(SshError::Parse(
+            "key comment must not exceed 256 characters".to_string(),
+        ));
+    }
+    if comment.contains('\0') || !comment.chars().all(|c| (' '..='\x7e').contains(&c)) {
+        return Err(SshError::Parse(
+            "key comment must contain only printable ASCII characters (0x20-0x7E)".to_string(),
+        ));
+    }
+
     let key_path_str = key_path.to_string_lossy().to_string();
 
     let output = std::process::Command::new("ssh-keygen")

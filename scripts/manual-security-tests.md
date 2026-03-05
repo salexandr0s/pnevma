@@ -1,0 +1,270 @@
+# Manual Security Tests (G4-G10)
+
+These tests require a running Pnevma app instance. All curl commands assume:
+
+- `BASE_URL` — the HTTPS URL of the pnevma-remote server (e.g., `https://localhost:8443`)
+- `TOKEN` — a valid bearer token obtained from `/api/auth/token`
+- Self-signed TLS: use `-k` / `--insecure` with curl, or pass `--cacert <cert.pem>`
+
+```bash
+BASE_URL="https://localhost:8443"
+TOKEN="<paste valid token here>"
+```
+
+---
+
+## G4: Latency Validation
+
+**Reference**: `docs/latency-validation.md`
+
+**Procedure**:
+
+1. Build a release app via Xcode: `Product → Archive`.
+2. Open a project and create at least two panes (terminal + one non-terminal pane).
+3. In the terminal pane, run:
+   ```bash
+   for i in {1..200}; do printf "ping-%03d\n" "$i"; done
+   ```
+4. While output is active, type continuously for 30 seconds and note perceived lag.
+5. Run the proxy benchmark for supporting data:
+   ```bash
+   bash scripts/latency_proxy.sh
+   ```
+
+**Pass**: No sustained lag above 50 ms during typing.
+**Fail**: Repeated perceived lag events exceeding the threshold.
+
+---
+
+## G5: Updater Production Config
+
+**Procedure**:
+
+1. Verify `native/Pnevma/Supporting\ Files/Info.plist` (or equivalent config) has the production updater feed URL set.
+2. Build a signed release build.
+3. Confirm the app checks for updates against the production endpoint on launch.
+4. Verify the update feed (`appcast.xml`) is served over HTTPS and the signature field is non-empty.
+
+**Pass**: App contacts production update feed; signature verification succeeds.
+**Fail**: App contacts a dev/staging endpoint, or skips signature check.
+
+---
+
+## G6: Sign / Notarize / Staple Pipeline
+
+**Reference**: `scripts/release-macos-sign.sh`, `scripts/release-macos-notarize.sh`, `scripts/release-macos-staple-verify.sh`
+
+**Procedure**:
+
+```bash
+# 1. Sign
+bash scripts/release-macos-sign.sh /path/to/Pnevma.app
+
+# 2. Notarize
+bash scripts/release-macos-notarize.sh /path/to/Pnevma.app
+
+# 3. Staple and verify
+bash scripts/release-macos-staple-verify.sh /path/to/Pnevma.app
+
+# 4. Verify Gatekeeper passes
+spctl --assess --type exec /path/to/Pnevma.app && echo "PASS" || echo "FAIL"
+
+# 5. Verify codesign
+codesign --verify --deep --strict /path/to/Pnevma.app && echo "PASS" || echo "FAIL"
+```
+
+**Pass**: All three scripts exit 0; `spctl` and `codesign` report no errors.
+**Fail**: Any script exits non-zero, or Gatekeeper rejects the bundle.
+
+---
+
+## G7: Auth Bypass Testing
+
+Tests that the API correctly rejects unauthenticated and malformed requests.
+
+### G7a: No token
+
+```bash
+curl -sk "$BASE_URL/api/tasks" | jq .
+```
+
+**Expected**: HTTP 401 `{"error":"unauthorized"}` or equivalent.
+**Pass**: Status code 401.
+
+### G7b: Expired token
+
+Obtain a token, wait for it to expire (default TTL: see `config.token_ttl_hours`), then:
+
+```bash
+curl -sk -H "Authorization: Bearer $EXPIRED_TOKEN" "$BASE_URL/api/tasks" | jq .
+```
+
+**Expected**: HTTP 401.
+
+For faster testing, issue a token and immediately revoke it:
+
+```bash
+curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/auth/token" | jq .
+curl -sk -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/tasks" | jq .
+```
+
+**Pass**: Second request returns 401 after revocation.
+
+### G7c: Malformed token
+
+```bash
+curl -sk -H "Authorization: Bearer not-a-valid-token" "$BASE_URL/api/tasks" | jq .
+curl -sk -H "Authorization: Bearer " "$BASE_URL/api/tasks" | jq .
+curl -sk -H "Authorization: notbearer $TOKEN" "$BASE_URL/api/tasks" | jq .
+```
+
+**Expected**: HTTP 401 for all three.
+
+### G7d: Query-string token on non-WebSocket endpoint
+
+```bash
+curl -sk "$BASE_URL/api/tasks?token=$TOKEN" | jq .
+```
+
+**Expected**: HTTP 401 (query-string `?token=` only accepted for WS upgrade).
+**Pass**: Status 401.
+
+---
+
+## G8: Rate Limit Burst Testing
+
+### G8a: API rate limit (default: 60 req/min)
+
+```bash
+# Send 65 requests in rapid succession — expect 429 after 60
+for i in $(seq 1 65); do
+  STATUS=$(curl -sk -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/tasks")
+  echo "Request $i: $STATUS"
+done
+```
+
+**Expected**: First 60 requests return 200; requests 61+ return 429.
+**Pass**: 429 is returned at or before request 61.
+
+### G8b: Auth rate limit (default: 5 req/min)
+
+```bash
+# Send 7 auth requests — expect 429 after 5
+for i in $(seq 1 7); do
+  STATUS=$(curl -sk -o /dev/null -w "%{http_code}" \
+    -X POST "$BASE_URL/api/auth/token" \
+    -H "Content-Type: application/json" \
+    -d '{"password":"wrong"}')
+  echo "Auth attempt $i: $STATUS"
+done
+```
+
+**Expected**: First 5 requests return 401 (wrong password); requests 6-7 return 429.
+**Pass**: 429 appears at or before request 6.
+
+---
+
+## G9: RPC Allowlist Testing
+
+Verify that methods not in `ALLOWED_RPC_METHODS` are blocked on the generic RPC endpoint.
+
+### G9a: Blocked method via RPC endpoint
+
+```bash
+# session.new is explicitly excluded from the allowlist
+curl -sk -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"test-1","method":"session.new","params":{"name":"x","cwd":".","command":"zsh"}}' \
+  "$BASE_URL/api/rpc" | jq .
+```
+
+**Expected**: HTTP 403 or error response with `method_not_allowed`.
+
+### G9b: Blocked method via WebSocket
+
+Connect via WebSocket and send an RPC message for a blocked method:
+
+```bash
+# Using websocat (install via brew install websocat)
+echo '{"type":"Rpc","id":"test-1","method":"session.new","params":{"name":"x","cwd":".","command":"zsh"}}' \
+  | websocat --header "Authorization: Bearer $TOKEN" \
+    "wss://localhost:8443/ws" -k
+```
+
+**Expected**: Response contains `method_not_allowed` error.
+
+### G9c: Allowed method works
+
+```bash
+curl -sk -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"test-2","method":"task.list","params":{}}' \
+  "$BASE_URL/api/rpc" | jq .
+```
+
+**Expected**: HTTP 200 with `ok: true` and task list in result.
+
+---
+
+## G10: Body and WebSocket Size Limit Testing
+
+### G10a: Oversized REST body (limit: 2 MB)
+
+```bash
+# Generate a 10 MB payload
+python3 -c "import sys; sys.stdout.write('x' * 10_000_000)" > /tmp/big-body.txt
+
+curl -sk -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @/tmp/big-body.txt \
+  "$BASE_URL/api/tasks" | jq .
+```
+
+**Expected**: HTTP 413 (Payload Too Large).
+**Pass**: Status 413; body not processed.
+
+### G10b: Oversized WebSocket message (limit: 64 KB)
+
+```bash
+# Generate a 1 MB WS message
+python3 -c "
+import sys
+payload = 'x' * 1_000_000
+msg = '{\"type\":\"Rpc\",\"id\":\"big-1\",\"method\":\"task.list\",\"params\":{\"padding\":\"' + payload + '\"}}'
+print(msg)
+" | websocat --header "Authorization: Bearer $TOKEN" "wss://localhost:8443/ws" -k
+```
+
+**Expected**: Connection closed by server with close code 1009 (message too big), or the message is dropped and an error response is returned.
+**Pass**: Server does not process the oversized message; connection may be dropped.
+
+### G10c: Edge-case: exactly 2 MB body (should succeed if valid JSON)
+
+```bash
+# 2 MB - 1 byte payload (within limit)
+python3 -c "
+import json
+# Fill a string field to get close to 2 MB total
+padding = 'x' * (2_097_100)
+print(json.dumps({'title': 'test', 'goal': padding, 'priority': 'P2', 'acceptance_criteria': []}))
+" | curl -sk -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$BASE_URL/api/tasks" | jq '{ok: .ok, error: .error}'
+```
+
+**Expected**: Either 200 (accepted) or 400 (invalid params), but NOT 413.
+
+---
+
+## Notes
+
+- All tests require a running Pnevma app with `pnevma-remote` enabled and a valid TLS certificate.
+- The `rate_limit_rpm` default is 60; `auth` limit is hardcoded to 5. Both can be configured in `pnevma.toml`.
+- For WebSocket tests, install `websocat`: `brew install websocat`.
+- For rate-limit tests, use a fresh IP or restart the app between `G8a` and `G8b` to reset limiters.

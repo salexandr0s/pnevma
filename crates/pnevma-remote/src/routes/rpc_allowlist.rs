@@ -11,7 +11,6 @@ pub(crate) const ALLOWED_RPC_METHODS: &[&str] = &[
     "task.dispatch_next_ready",
     "task.poll",
     "session.list",
-    "session.send_input",
     "session.timeline",
     "workflow.list_defs",
     "workflow.list_instances",

@@ -100,11 +100,29 @@ pub async fn ws_handler(
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
 
-    ws.on_upgrade(move |socket| async move {
-        handle_socket(socket, state.router).await;
-        // Release the slot when the connection closes.
-        counter.fetch_sub(1, Ordering::SeqCst);
-    })
+    ws.max_message_size(65_536)
+        .on_upgrade(move |socket| async move {
+            handle_socket(socket, state.router).await;
+            // Release the slot when the connection closes.
+            counter.fetch_sub(1, Ordering::SeqCst);
+        })
+}
+
+fn rpc_result(id: String, result: Result<serde_json::Value, String>) -> WsServerMessage {
+    match result {
+        Ok(value) => WsServerMessage::RpcResult {
+            id,
+            ok: true,
+            result: Some(value),
+            error: None,
+        },
+        Err(e) => WsServerMessage::RpcResult {
+            id,
+            ok: false,
+            result: None,
+            error: Some(e),
+        },
+    }
 }
 
 async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
@@ -140,44 +158,16 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
             }
             WsClientMessage::SessionInput { session_id, data } => {
                 let params = serde_json::json!({ "id": session_id, "data": data });
-                match router.route("session.send_input", &params).await {
-                    Ok(result) => WsServerMessage::RpcResult {
-                        id: session_id,
-                        ok: true,
-                        result: Some(result),
-                        error: None,
-                    },
-                    Err(e) => WsServerMessage::RpcResult {
-                        id: session_id,
-                        ok: false,
-                        result: None,
-                        error: Some(e),
-                    },
-                }
+                rpc_result(
+                    session_id,
+                    router.route("session.send_input", &params).await,
+                )
             }
             WsClientMessage::Rpc { id, method, params } => {
                 if !super::rpc_allowlist::is_allowed(&method) {
-                    WsServerMessage::RpcResult {
-                        id,
-                        ok: false,
-                        result: None,
-                        error: Some(format!("method not allowed via RPC: {method}")),
-                    }
+                    rpc_result(id, Err(format!("method not allowed via RPC: {method}")))
                 } else {
-                    match router.route(&method, &params).await {
-                        Ok(result) => WsServerMessage::RpcResult {
-                            id,
-                            ok: true,
-                            result: Some(result),
-                            error: None,
-                        },
-                        Err(e) => WsServerMessage::RpcResult {
-                            id,
-                            ok: false,
-                            result: None,
-                            error: Some(e),
-                        },
-                    }
+                    rpc_result(id, router.route(&method, &params).await)
                 }
             }
         };

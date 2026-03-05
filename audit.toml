@@ -1,0 +1,6 @@
+[advisories]
+# RUSTSEC-2023-0071: Marvin Attack timing side-channel in the `rsa` crate.
+# This advisory enters the dependency tree via sqlx-mysql (a sqlx optional feature).
+# Pnevma uses SQLite only (sqlx is compiled with the `sqlite` feature, never `mysql`).
+# The rsa crate is never reachable at runtime in any Pnevma binary.
+ignore = ["RUSTSEC-2023-0071"]

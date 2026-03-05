@@ -35,6 +35,17 @@ pub struct ActionRiskInfo {
     pub confirmation_phrase: Option<String>,
 }
 
+impl ActionRiskInfo {
+    /// Returns true when `user_input` exactly matches the required confirmation phrase.
+    /// Actions without a phrase (Caution/Safe) always pass.
+    pub fn verify_confirmation(&self, user_input: &str) -> bool {
+        match &self.confirmation_phrase {
+            Some(phrase) => user_input == phrase,
+            None => true,
+        }
+    }
+}
+
 impl ActionKind {
     pub fn risk_info(&self) -> ActionRiskInfo {
         match self {
@@ -130,5 +141,70 @@ impl ActionKind {
                 confirmation_phrase: None,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── verify_confirmation ───────────────────────────────────────────────────
+
+    #[test]
+    fn correct_phrase_passes() {
+        let info = ActionKind::MergeToTarget.risk_info();
+        assert!(info.verify_confirmation("merge to target"));
+    }
+
+    #[test]
+    fn wrong_phrase_fails() {
+        let info = ActionKind::MergeToTarget.risk_info();
+        assert!(!info.verify_confirmation("merge"));
+        assert!(!info.verify_confirmation("MERGE TO TARGET"));
+        assert!(!info.verify_confirmation("merge to target "));
+    }
+
+    #[test]
+    fn case_sensitive_mismatch_fails() {
+        let info = ActionKind::ForcePush.risk_info();
+        // Phrase is "force push" — uppercase must fail.
+        assert!(!info.verify_confirmation("Force Push"));
+        assert!(!info.verify_confirmation("FORCE PUSH"));
+    }
+
+    #[test]
+    fn empty_input_fails_for_danger_action() {
+        let info = ActionKind::DeleteWorktreeWithChanges.risk_info();
+        assert!(!info.verify_confirmation(""));
+    }
+
+    #[test]
+    fn action_without_phrase_always_passes() {
+        // Caution-level actions have no confirmation phrase.
+        let info = ActionKind::PurgeScrollback.risk_info();
+        assert!(info.verify_confirmation(""));
+        assert!(info.verify_confirmation("anything at all"));
+    }
+
+    #[test]
+    fn safe_action_always_passes() {
+        let info = ActionKind::CreateTask.risk_info();
+        assert!(info.verify_confirmation(""));
+        assert!(info.verify_confirmation("random input"));
+    }
+
+    #[test]
+    fn bulk_delete_phrase_exact_match() {
+        let info = ActionKind::BulkDeleteCompletedTasks.risk_info();
+        assert!(info.verify_confirmation("delete all completed"));
+        assert!(!info.verify_confirmation("delete all"));
+        assert!(!info.verify_confirmation("delete all completed tasks"));
+    }
+
+    #[test]
+    fn delete_active_task_phrase_exact_match() {
+        let info = ActionKind::DeleteTaskWithActiveSession.risk_info();
+        assert!(info.verify_confirmation("delete active task"));
+        assert!(!info.verify_confirmation("delete active"));
     }
 }

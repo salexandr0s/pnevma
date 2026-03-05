@@ -49,10 +49,11 @@ run_check() {
   fi
 }
 
-run_root_cmd() {
-  local label="$1"
-  shift
-  run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$ROOT_DIR" "$@"
+run_in_dir() {
+  local dir="$1"
+  local label="$2"
+  shift 2
+  run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$dir" "$@"
 }
 
 # ── Tooling checks ──────────────────────────────────────────────────────────
@@ -67,10 +68,10 @@ check_cmd xcodegen
 
 # ── Rust quality gates ───────────────────────────────────────────────────────
 
-run_root_cmd "cargo fmt --all -- --check" cargo fmt --all -- --check
-run_root_cmd "cargo clippy --workspace --all-targets -- -D warnings" cargo clippy --workspace --all-targets -- -D warnings
-run_root_cmd "cargo test --workspace" cargo test --workspace
-run_root_cmd "cargo deny check" cargo deny check
+run_in_dir "$ROOT_DIR" "cargo fmt --all -- --check" cargo fmt --all -- --check
+run_in_dir "$ROOT_DIR" "cargo clippy --workspace --all-targets -- -D warnings" cargo clippy --workspace --all-targets -- -D warnings
+run_in_dir "$ROOT_DIR" "cargo test --workspace" cargo test --workspace
+run_in_dir "$ROOT_DIR" "cargo deny check" cargo deny check
 
 # ── Native build validation ──────────────────────────────────────────────────
 

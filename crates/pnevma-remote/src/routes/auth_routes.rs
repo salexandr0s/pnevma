@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::TokenStore;
@@ -44,4 +49,31 @@ pub async fn create_token(
         })),
     )
         .into_response()
+}
+
+/// DELETE /api/auth/token — revokes the bearer token in the Authorization header.
+pub async fn revoke_token(
+    State(store): State<Arc<TokenStore>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    match token {
+        Some(t) if store.revoke_token(t) => {
+            (StatusCode::OK, Json(serde_json::json!({ "revoked": true }))).into_response()
+        }
+        Some(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "token not found" })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "missing Authorization: Bearer <token>" })),
+        )
+            .into_response(),
+    }
 }

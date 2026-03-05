@@ -2,9 +2,10 @@ use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
+use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::{
     auth::TokenStore,
@@ -37,6 +38,7 @@ pub async fn build_router(
     // Auth route (rate-limited separately, no bearer token required)
     let auth_router = Router::new()
         .route("/api/auth/token", post(auth_routes::create_token))
+        .route("/api/auth/token", delete(auth_routes::revoke_token))
         .with_state(token_store.clone())
         .layer(middleware::from_fn_with_state(
             auth_rate_limit,
@@ -65,8 +67,8 @@ pub async fn build_router(
         .route("/api/tasks", post(api::task_create))
         .route("/api/tasks/:id/dispatch", post(api::task_dispatch))
         // session.new is deliberately excluded from the RPC allowlist — no POST route.
+        // session.send_input is excluded from RPC allowlist — no REST route either.
         .route("/api/sessions", get(api::session_list))
-        .route("/api/sessions/:id/input", post(api::session_send_input))
         .route("/api/workflows", get(api::workflow_list_defs))
         .route(
             "/api/workflows/instantiate",
@@ -90,7 +92,8 @@ pub async fn build_router(
         .merge(api_router)
         .layer(middleware::from_fn(audit_log))
         .layer(middleware::from_fn(tailscale_guard))
-        .layer(cors_layer(vec![]));
+        .layer(cors_layer(vec![]))
+        .layer(RequestBodyLimitLayer::new(2_097_152));
 
     // Optionally serve frontend SPA
     if config.serve_frontend {

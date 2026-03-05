@@ -94,6 +94,12 @@ fn generate_self_signed_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfi
     let cert_der = CertificateDer::from(cert.cert.der().to_vec());
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
 
+    {
+        use sha2::{Digest, Sha256};
+        let fingerprint = hex::encode(Sha256::digest(cert_der.as_ref()));
+        tracing::info!(fingerprint = %fingerprint, "Generated self-signed TLS certificate");
+    }
+
     build_server_config(vec![cert_der], key_der)
 }
 
@@ -101,9 +107,8 @@ fn build_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
 ) -> Result<ServerConfig, RemoteError> {
-    let config = ServerConfig::builder()
+    ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .map_err(|e| RemoteError::Tls(format!("rustls config error: {e}")))?;
-    Ok(config)
+        .map_err(|e| RemoteError::Tls(format!("rustls config error: {e}")))
 }

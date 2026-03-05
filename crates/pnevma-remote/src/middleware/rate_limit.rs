@@ -26,7 +26,9 @@ pub struct RateLimitState {
 
 impl RateLimitState {
     pub fn new(requests_per_minute: u32) -> Self {
-        let rpm = NonZeroU32::new(requests_per_minute.max(1)).unwrap();
+        let rpm = NonZeroU32::new(requests_per_minute.max(1)).expect(
+            "requests_per_minute.max(1) is always >= 1, so NonZeroU32 construction cannot fail",
+        );
         Self {
             limiters: Arc::new(DashMap::new()),
             quota: Quota::per_minute(rpm),
@@ -74,5 +76,63 @@ pub async fn rate_limit(
             tracing::warn!(remote_ip = %addr.ip(), "Rate limit exceeded");
             Err(StatusCode::TOO_MANY_REQUESTS)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn rate_limit_state_creates_per_ip_limiter() {
+        let state = RateLimitState::new(60);
+        let ip1: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip2: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let l1 = state.limiter_for(ip1);
+        let l2 = state.limiter_for(ip2);
+        // Should be able to check without exhausting (60/min quota)
+        assert!(l1.check().is_ok());
+        assert!(l2.check().is_ok());
+    }
+
+    #[test]
+    fn rate_limit_state_exhausts_at_threshold() {
+        // 1 request per minute: second check should fail
+        let state = RateLimitState::new(1);
+        let ip: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let limiter = state.limiter_for(ip);
+
+        assert!(limiter.check().is_ok(), "first request should pass");
+        assert!(
+            limiter.check().is_err(),
+            "second request should be rate-limited"
+        );
+    }
+
+    #[test]
+    fn rate_limit_state_max_one_clamped_to_one() {
+        // max(0, 1) = 1, so creating with 0 should work without panic
+        let state = RateLimitState::new(0);
+        let ip: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let limiter = state.limiter_for(ip);
+        // First call uses the 1 token
+        let _ = limiter.check();
+        // Second should fail since quota is 1/min
+        assert!(limiter.check().is_err());
+    }
+
+    #[test]
+    fn same_ip_returns_same_limiter_instance() {
+        let state = RateLimitState::new(10);
+        let ip: IpAddr = IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1));
+        let l1 = state.limiter_for(ip);
+        let l2 = state.limiter_for(ip);
+        // Both should point to the same underlying limiter (shared state)
+        // Consume a token via l1; l2 should see the reduced quota
+        let _ = l1.check();
+        // If they share state, a high-quota limiter won't exhaust after 1 request
+        // We can only verify no panic and both Arc pointers work
+        assert!(Arc::ptr_eq(&l1, &l2));
     }
 }

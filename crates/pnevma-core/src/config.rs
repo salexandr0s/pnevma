@@ -16,6 +16,9 @@ pub struct AgentProviderConfig {
     pub model: Option<String>,
     pub token_budget: usize,
     pub timeout_minutes: u64,
+    /// Allow the agent to skip permission prompts. Defaults to false.
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

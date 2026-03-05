@@ -49,6 +49,13 @@ rust-build-release:
 rust-test:
     cargo test --workspace
 
+rust-audit:
+    @if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then \
+      cargo audit; \
+    else \
+      echo "SKIP: cargo-audit not installed. Install with: cargo install cargo-audit --locked"; \
+    fi
+
 # ── Stage 3: Xcode (Swift) ───────────────────────────────────────────────────
 
 # Generate .xcodeproj from native/project.yml using xcodegen
@@ -100,11 +107,19 @@ dev: rust-build xcode-build
     @echo "Dev build complete"
 
 # Run all checks
-check: rust-check rust-test
+check: rust-check rust-test rust-audit
     @echo "All checks passed"
 
 # Run all tests
 test: rust-test xcode-test
+    @echo "All tests passed"
+
+# Run all tests including E2E
+test-all: rust-test xcode-test
+    @echo "Running E2E smoke test..."
+    ./scripts/ipc-e2e-smoke.sh
+    @echo "Running E2E recovery test..."
+    ./scripts/ipc-e2e-recovery.sh
     @echo "All tests passed"
 
 # Clean all build artifacts

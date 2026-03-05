@@ -27,28 +27,33 @@ pub struct RpcResponse {
     pub error: Option<String>,
 }
 
+impl RpcResponse {
+    fn success(val: Value) -> Self {
+        Self {
+            ok: true,
+            result: Some(val),
+            error: None,
+        }
+    }
+    fn failure(msg: String) -> Self {
+        Self {
+            ok: false,
+            result: None,
+            error: Some(msg),
+        }
+    }
+}
+
 async fn call(
     router: &Arc<dyn CommandRouter>,
     method: &str,
     params: Value,
 ) -> axum::response::Response {
     match router.route(method, &params).await {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(RpcResponse {
-                ok: true,
-                result: Some(result),
-                error: None,
-            }),
-        )
-            .into_response(),
+        Ok(result) => (StatusCode::OK, Json(RpcResponse::success(result))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(RpcResponse {
-                ok: false,
-                result: None,
-                error: Some(e),
-            }),
+            Json(RpcResponse::failure(e)),
         )
             .into_response(),
     }
@@ -71,6 +76,14 @@ pub async fn project_search(
     call(&r, "project.search", params).await
 }
 
+fn inject_id(params: &mut Value, id: String) {
+    if let Some(obj) = params.as_object_mut() {
+        obj.insert("id".to_string(), Value::String(id));
+    } else {
+        *params = serde_json::json!({ "id": id });
+    }
+}
+
 // --- tasks ---
 
 pub async fn task_list(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
@@ -89,11 +102,7 @@ pub async fn task_dispatch(
     Path(id): Path<String>,
     Json(mut params): Json<Value>,
 ) -> impl IntoResponse {
-    if let Some(obj) = params.as_object_mut() {
-        obj.insert("id".to_string(), Value::String(id));
-    } else {
-        params = serde_json::json!({ "id": id });
-    }
+    inject_id(&mut params, id);
     call(&r, "task.dispatch", params).await
 }
 
@@ -102,19 +111,6 @@ pub async fn task_dispatch(
 
 pub async fn session_list(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
     call(&r, "session.list", Value::Null).await
-}
-
-pub async fn session_send_input(
-    State(r): State<Arc<dyn CommandRouter>>,
-    Path(id): Path<String>,
-    Json(mut params): Json<Value>,
-) -> impl IntoResponse {
-    if let Some(obj) = params.as_object_mut() {
-        obj.insert("id".to_string(), Value::String(id));
-    } else {
-        params = serde_json::json!({ "id": id });
-    }
-    call(&r, "session.send_input", params).await
 }
 
 // --- workflows ---
@@ -139,11 +135,10 @@ pub async fn rpc(
     if !super::rpc_allowlist::is_allowed(&body.method) {
         return (
             StatusCode::FORBIDDEN,
-            Json(RpcResponse {
-                ok: false,
-                result: None,
-                error: Some(format!("method not allowed via RPC: {}", body.method)),
-            }),
+            Json(RpcResponse::failure(format!(
+                "method not allowed via RPC: {}",
+                body.method
+            ))),
         )
             .into_response();
     }

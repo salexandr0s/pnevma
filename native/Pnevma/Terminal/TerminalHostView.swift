@@ -113,53 +113,39 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     // MARK: - Mouse Events
 
-    override func mouseDown(with event: NSEvent) {
-        #if canImport(GhosttyKit)
+    #if canImport(GhosttyKit)
+    private func forwardMouseButton(state: ghostty_input_mouse_state_e,
+                                    button: ghostty_input_mouse_button_e,
+                                    event: NSEvent) {
         terminalSurface?.sendMouseButton(
-            state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT,
+            state: state, button: button,
             mods: ghosttyMods(from: event.modifierFlags))
-        #endif
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func mouseUp(with event: NSEvent) {
-        #if canImport(GhosttyKit)
-        terminalSurface?.sendMouseButton(
-            state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT,
-            mods: ghosttyMods(from: event.modifierFlags))
-        #endif
+        forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        #if canImport(GhosttyKit)
-        terminalSurface?.sendMouseButton(
-            state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT,
-            mods: ghosttyMods(from: event.modifierFlags))
-        #endif
+        forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event)
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        #if canImport(GhosttyKit)
-        terminalSurface?.sendMouseButton(
-            state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT,
-            mods: ghosttyMods(from: event.modifierFlags))
-        #endif
+        forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, event: event)
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        #if canImport(GhosttyKit)
-        terminalSurface?.sendMouseButton(
-            state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE,
-            mods: ghosttyMods(from: event.modifierFlags))
-        #endif
+        forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
 
     override func otherMouseUp(with event: NSEvent) {
-        #if canImport(GhosttyKit)
-        terminalSurface?.sendMouseButton(
-            state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE,
-            mods: ghosttyMods(from: event.modifierFlags))
-        #endif
+        forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
+    #endif
 
     override func mouseMoved(with event: NSEvent)      { forwardMousePosition(event) }
     override func mouseDragged(with event: NSEvent)    { forwardMousePosition(event) }
@@ -183,26 +169,12 @@ final class TerminalHostView: NSView, NSTextInputClient {
     // MARK: - NSTextInputClient
 
     func insertText(_ string: Any, replacementRange: NSRange) {
-        let text: String
-        if let attributed = string as? NSAttributedString {
-            text = attributed.string
-        } else if let plain = string as? String {
-            text = plain
-        } else {
-            return
-        }
+        guard let text = extractText(string) else { return }
         terminalSurface?.sendText(text)
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        let text: String
-        if let attributed = string as? NSAttributedString {
-            text = attributed.string
-        } else if let plain = string as? String {
-            text = plain
-        } else {
-            return
-        }
+        guard let text = extractText(string) else { return }
         terminalSurface?.sendPreedit(text)
     }
 
@@ -237,6 +209,10 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+
+    private func extractText(_ string: Any) -> String? {
+        (string as? NSAttributedString)?.string ?? (string as? String)
+    }
 
     // MARK: - Drawing
 

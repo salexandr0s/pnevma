@@ -99,6 +99,11 @@ impl AgentAdapter for CodexAdapter {
             Command::new("codex")
                 .current_dir(&cfg.working_dir)
                 .envs(cfg.env.iter().cloned())
+                // Strip credentials that must not leak into agent subprocesses.
+                .env_remove("ANTHROPIC_API_KEY")
+                .env_remove("OPENAI_API_KEY")
+                .env_remove("CLAUDE_API_KEY")
+                .env_remove("PNEVMA_SECRET")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -372,6 +377,19 @@ mod tests {
         }
     }
 
+    fn make_config() -> AgentConfig {
+        AgentConfig {
+            provider: "codex".to_string(),
+            model: None,
+            env: vec![],
+            working_dir: "/tmp".to_string(),
+            timeout_minutes: 30,
+            auto_approve: false,
+            output_format: "stream-json".to_string(),
+            context_file: None,
+        }
+    }
+
     fn make_handle() -> AgentHandle {
         AgentHandle {
             id: Uuid::new_v4(),
@@ -379,6 +397,95 @@ mod tests {
             task_id: Uuid::new_v4(),
         }
     }
+
+    // ── Construction ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_creates_empty_adapter() {
+        let adapter = CodexAdapter::new();
+        assert!(adapter.channels.read().unwrap().is_empty());
+        assert!(adapter.configs.read().unwrap().is_empty());
+        assert!(adapter.processes.read().unwrap().is_empty());
+        assert!(adapter.costs.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn default_creates_empty_adapter() {
+        let adapter = CodexAdapter::default();
+        assert!(adapter.channels.read().unwrap().is_empty());
+    }
+
+    // ── Spawn registers channel and config ───────────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_registers_handle_and_config() {
+        let adapter = make_adapter();
+        let config = make_config();
+
+        // Subscribe to a temporary sender BEFORE spawning to capture events.
+        // We pre-create channel and insert so spawn finds it. But spawn creates its own.
+        // So instead we just verify the post-spawn state.
+        let handle = adapter.spawn(config.clone()).await.expect("spawn");
+        assert_eq!(handle.provider, "codex");
+
+        // channel registered
+        assert!(adapter.channels.read().unwrap().contains_key(&handle.id));
+        // config stored
+        let stored_cfg = adapter
+            .configs
+            .read()
+            .unwrap()
+            .get(&handle.id)
+            .cloned()
+            .expect("config stored");
+        assert_eq!(stored_cfg.working_dir, "/tmp");
+        assert_eq!(stored_cfg.provider, "codex");
+    }
+
+    // ── Parse usage defaults to zero ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn parse_usage_returns_zero_when_no_record() {
+        let adapter = make_adapter();
+        let handle = make_handle();
+
+        let cost = adapter.parse_usage(&handle).await.expect("parse usage");
+        assert_eq!(cost.provider, "codex");
+        assert_eq!(cost.tokens_in, 0);
+        assert_eq!(cost.tokens_out, 0);
+        assert_eq!(cost.estimated_cost_usd, 0.0);
+        assert!(cost.model.is_none());
+    }
+
+    // ── Config parsing ───────────────────────────────────────────────────────
+
+    #[test]
+    fn config_serialization_roundtrip() {
+        let config = AgentConfig {
+            provider: "codex".to_string(),
+            model: Some("o3".to_string()),
+            env: vec![("KEY".to_string(), "val".to_string())],
+            working_dir: "/workspace".to_string(),
+            timeout_minutes: 60,
+            auto_approve: true,
+            output_format: "text".to_string(),
+            context_file: Some("/tmp/context.md".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).expect("serialize");
+        let deserialized: AgentConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.provider, "codex");
+        assert_eq!(deserialized.model.as_deref(), Some("o3"));
+        assert_eq!(deserialized.working_dir, "/workspace");
+        assert!(deserialized.auto_approve);
+        assert_eq!(deserialized.output_format, "text");
+        assert_eq!(
+            deserialized.context_file.as_deref(),
+            Some("/tmp/context.md")
+        );
+    }
+
+    // ── Interrupt / stop without process ────────────────────────────────────
 
     #[tokio::test]
     async fn interrupt_no_process_returns_unavailable() {
@@ -419,5 +526,28 @@ mod tests {
             matches!(event, AgentEvent::Error(ref msg) if msg.contains("missing handle")),
             "expected Error event, got {event:?}"
         );
+    }
+
+    // ── Prompt format (inline in send; verify via cost record logic) ──────────
+
+    #[test]
+    fn task_payload_serialization_roundtrip() {
+        let payload = TaskPayload {
+            task_id: Uuid::new_v4(),
+            objective: "Implement feature X".to_string(),
+            constraints: vec!["no breaking changes".to_string()],
+            project_rules: vec!["use strict mode".to_string()],
+            worktree_path: "/tmp/worktree".to_string(),
+            branch_name: "feat/x".to_string(),
+            acceptance_checks: vec!["tests pass".to_string()],
+            relevant_file_paths: vec!["src/lib.rs".to_string()],
+            prior_context_summary: Some("prev context".to_string()),
+        };
+
+        let json = serde_json::to_string(&payload).expect("serialize payload");
+        let d: TaskPayload = serde_json::from_str(&json).expect("deserialize payload");
+        assert_eq!(d.objective, "Implement feature X");
+        assert_eq!(d.constraints, vec!["no breaking changes"]);
+        assert_eq!(d.prior_context_summary.as_deref(), Some("prev context"));
     }
 }

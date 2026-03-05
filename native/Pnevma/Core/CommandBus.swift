@@ -4,7 +4,6 @@ import Foundation
 /// All calls are dispatched to a background queue to avoid blocking the main thread.
 actor CommandBus {
     private let bridge: PnevmaBridge
-    private let decoder = JSONDecoder()
 
     init(bridge: PnevmaBridge) {
         self.bridge = bridge

@@ -47,7 +47,9 @@ pub async fn get_tailscale_self_ip() -> Result<Ipv4Addr, RemoteError> {
     ))
 }
 
-/// Check if an IP address is in the Tailscale CGNAT range 100.64.0.0/10.
+/// Check if an IP address is in a Tailscale range.
+/// IPv4: 100.64.0.0/10 (CGNAT)
+/// IPv6: fd7a:115c:a1e0::/48 (Tailscale ULA prefix)
 pub fn is_tailscale_ip(addr: &IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => {
@@ -55,6 +57,10 @@ pub fn is_tailscale_ip(addr: &IpAddr) -> bool {
             // 100.64.0.0/10: first octet == 100, second octet in [64, 127]
             octets[0] == 100 && (64..=127).contains(&octets[1])
         }
-        IpAddr::V6(_) => false,
+        IpAddr::V6(v6) => {
+            let segs = v6.segments();
+            // fd7a:115c:a1e0::/48
+            segs[0] == 0xfd7a && segs[1] == 0x115c && segs[2] == 0xa1e0
+        }
     }
 }

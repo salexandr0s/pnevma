@@ -12,7 +12,11 @@ targets = [
 [advisories]
 version = 2
 
-ignore = []
+ignore = [
+  # RUSTSEC-2023-0071: Marvin Attack timing side-channel in `rsa` crate.
+  # Enters via sqlx-mysql (transitive). Pnevma uses SQLite only — rsa is never reachable at runtime.
+  "RUSTSEC-2023-0071",
+]
 
 # ── Licenses ──────────────────────────────────────────────────────────────────
 

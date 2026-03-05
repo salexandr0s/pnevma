@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="crates/pnevma-app/icons/icon.png" alt="Pnevma" width="128" height="128" />
-</p>
-
 <h1 align="center">Pnevma</h1>
 
 <p align="center">
@@ -20,12 +16,12 @@
   <img alt="CI" src="https://github.com/pnevma/pnevma/actions/workflows/ci.yml/badge.svg" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue" />
   <img alt="Rust" src="https://img.shields.io/badge/rust-2021_edition-orange" />
-  <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8D8" />
+  <img alt="Swift" src="https://img.shields.io/badge/swift-5.9-FA7343" />
 </p>
 
 ---
 
-Pnevma gives developers a single desktop workspace to run, supervise, and review work produced by CLI coding agents like **Claude Code** and **Codex**. It wraps persistent terminal sessions, task orchestration, one-task-one-worktree isolation, and a guarded review/merge flow into a keyboard-driven Tauri app.
+Pnevma gives developers a single desktop workspace to run, supervise, and review work produced by CLI coding agents like **Claude Code** and **Codex**. It wraps persistent terminal sessions, task orchestration, one-task-one-worktree isolation, and a guarded review/merge flow into a keyboard-driven native macOS app.
 
 ## Features
 
@@ -45,9 +41,11 @@ Pnevma gives developers a single desktop workspace to run, supervise, and review
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (stable)
-- [Node.js](https://nodejs.org/) 20+
-- [cargo-tauri](https://tauri.app/) CLI
+- [Rust](https://rustup.rs/) (stable, `aarch64-apple-darwin` target)
+- [Zig](https://ziglang.org/) (version pinned in `.zig-version`) — for Ghostty xcframework build
+- [just](https://github.com/casey/just) — task runner (`brew install just`)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) — project file generator (`brew install xcodegen`)
+- Xcode 15+ with macOS SDK
 - Git
 - A coding agent CLI (Claude Code or Codex)
 
@@ -61,14 +59,11 @@ cd pnevma
 # Install toolchains and dependencies
 ./scripts/bootstrap-dev.sh
 
-# Build the workspace
-cargo build --workspace
+# Generate the Xcode project
+just xcodegen
 
-# Install frontend dependencies
-cd frontend && npm install && cd ..
-
-# Launch the app in development mode
-cargo tauri dev --manifest-path crates/pnevma-app/Cargo.toml
+# Full debug build (Rust staticlib + native macOS app)
+just build
 ```
 
 ### First project
@@ -82,48 +77,48 @@ See [Getting Started](docs/getting-started.md) for a full walkthrough.
 
 ## Architecture
 
-Pnevma is a **Tauri 2.x** desktop app: a Rust backend exposes 100+ IPC commands to a React webview frontend.
+Pnevma is a **native macOS app** (Swift/AppKit) backed by a **Rust workspace**. The Rust crates compile to a static library (`libpnevma_bridge.a`) via `pnevma-bridge`, which is linked directly into the Swift app through a C FFI layer. Terminal rendering is provided by **Ghostty** (libghostty), compiled with Zig and embedded as an xcframework.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Frontend  (React 18 · Zustand · xterm.js · Tailwind)   │
-├─────────────────────────────────────────────────────────┤
-│  Tauri IPC bridge  (commands + events)                  │
-├──────────┬──────────┬──────────┬──────────┬─────────────┤
-│  core    │ session  │ agents   │   git    │  context    │
-│  tasks   │ PTY sup. │ adapters │ worktree │  compiler   │
-│  events  │ health   │ dispatch │ merge Q  │  budget     │
-├──────────┴──────────┴──────────┴──────────┴─────────────┤
-│  pnevma-db  (SQLite · sqlx · migrations)                │
-├─────────────────────────────────────────────────────────┤
-│  pnevma-ssh  (keys · profiles · Tailscale)              │
-└─────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  Native macOS App  (Swift 5.9 · AppKit · XcodeGen)     │
+├────────────────────────────────────────────────────────┤
+│  C FFI bridge  (pnevma-bridge → libpnevma_bridge.a)    │
+├──────────┬─────────┬──────────┬──────────┬─────────────┤
+│  core    │ session │ agents   │   git    │  context    │
+│  tasks   │ PTY sup.│ adapters │ worktree │  compiler   │
+│  events  │ health  │ dispatch │ merge Q  │  budget     │
+├──────────┴─────────┴──────────┴──────────┴─────────────┤
+│  pnevma-commands  (RPC command router)                  │
+├────────────────────────────────────────────────────────┤
+│  pnevma-remote  (HTTP/WS remote access server)         │
+├────────────────────────────────────────────────────────┤
+│  pnevma-db  (SQLite · sqlx · migrations)               │
+├────────────────────────────────────────────────────────┤
+│  pnevma-ssh  (keys · profiles · Tailscale)             │
+└────────────────────────────────────────────────────────┘
+                      ↑
+         Ghostty xcframework (libghostty · Zig)
 ```
 
 ### Workspace crates
 
-| Crate | Purpose |
-|---|---|
-| `pnevma-core` | Project model, task engine, event store, dispatch orchestrator, workflow definitions |
-| `pnevma-session` | tmux-backed PTY supervisor, scrollback persistence, health tracking |
-| `pnevma-agents` | Provider-neutral agent adapters, throttled dispatch pool, adapter registry |
-| `pnevma-git` | Worktree lifecycle, branch management, lease tracking, merge queue |
-| `pnevma-context` | Context pack compiler with scope/claude_md/git_diff/grep discovery strategies |
-| `pnevma-db` | SQLite schema, migrations, typed query layer (18 row types) |
-| `pnevma-ssh` | SSH key management, profile builder, Tailscale discovery, config parsing |
-| `pnevma-app` | Tauri shell, 100+ commands, control plane socket, auto-dispatch, state glue |
+| Crate             | Purpose                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| `pnevma-core`     | Project model, task engine, event store, dispatch orchestrator, workflow definitions |
+| `pnevma-session`  | tmux-backed PTY supervisor, scrollback persistence, health tracking                  |
+| `pnevma-agents`   | Provider-neutral agent adapters, throttled dispatch pool, adapter registry           |
+| `pnevma-git`      | Worktree lifecycle, branch management, lease tracking, merge queue                   |
+| `pnevma-context`  | Context pack compiler with scope/claude_md/git_diff/grep discovery strategies        |
+| `pnevma-db`       | SQLite schema, migrations, typed query layer (18 row types)                          |
+| `pnevma-ssh`      | SSH key management, profile builder, Tailscale discovery, config parsing             |
+| `pnevma-commands` | RPC command router — maps command IDs to backend handlers                            |
+| `pnevma-remote`   | HTTP/WS remote access server with TLS, auth, rate limiting, and CORS                 |
+| `pnevma-bridge`   | FFI entry point — compiles to `libpnevma_bridge.a` linked by the Swift app           |
 
-### Frontend
+### Native app
 
-| Layer | Technology |
-|---|---|
-| Framework | React 18 + TypeScript (strict) |
-| State | Zustand |
-| Terminal | xterm.js with fit addon |
-| Styling | TailwindCSS |
-| Build | Vite |
-
-The UI is organized into **13 pane types** (terminal, task board, review, merge queue, replay, daily brief, diff, search, file browser, settings, rules manager, notifications, SSH manager) rendered in a configurable multi-pane grid.
+The `native/` directory contains the Swift/AppKit application. The project file is generated from `native/project.yml` using XcodeGen. UI is organized into **13 pane types** (terminal, task board, review, merge queue, replay, daily brief, diff, search, file browser, settings, rules manager, notifications, SSH manager) rendered in a configurable multi-pane grid.
 
 ## Configuration
 
@@ -153,51 +148,62 @@ See the full [pnevma.toml reference](docs/pnevma-toml-reference.md).
 ## Development
 
 ```bash
-# Run all checks (Rust + frontend)
-make check
+# Run all checks (cargo fmt + clippy + Rust tests)
+just check
 
-# Rust only
-make rust-check    # fmt, clippy, test, build --release
+# Run all tests (Rust + Xcode)
+just test
 
-# Frontend only
-make frontend-check  # tsc, eslint, vite build
+# Rust checks only
+just rust-check    # fmt --check + clippy -D warnings
+
+# Build the app (debug)
+just build
+
+# Build the app (release)
+just release
 ```
 
 ### CI
 
 GitHub Actions runs on every push and PR:
+
 - **Rust** &mdash; `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `cargo audit`
-- **Frontend** &mdash; `tsc --noEmit`, `eslint`, `vite build`, `npm audit`
+- **Xcode** &mdash; `xcodebuild test`
 
 ## macOS Release
 
 Pnevma includes a full macOS signing, notarization, and auto-update pipeline:
 
-| Step | Script |
-|---|---|
-| Code signing | `scripts/release-macos-sign.sh` |
-| Notarization | `scripts/release-macos-notarize.sh` |
-| Staple & verify | `scripts/release-macos-staple-verify.sh` |
+| Step                  | Script                                     |
+| --------------------- | ------------------------------------------ |
+| Code signing          | `scripts/release-macos-sign.sh`            |
+| Notarization          | `scripts/release-macos-notarize.sh`        |
+| Staple & verify       | `scripts/release-macos-staple-verify.sh`   |
 | Generate updater keys | `scripts/release-updater-generate-keys.sh` |
-| Sign updater artifact | `scripts/release-updater-sign.sh` |
-| Generate update feed | `scripts/release-updater-feed.sh` |
-| Pre-flight checks | `scripts/release-preflight.sh` |
+| Sign updater artifact | `scripts/release-updater-sign.sh`          |
+| Generate update feed  | `scripts/release-updater-feed.sh`          |
+| Pre-flight checks     | `scripts/release-preflight.sh`             |
 
 See the full [macOS release runbook](docs/macos-release.md).
 
 ## Documentation
 
-| Document | Description |
-|---|---|
-| [Getting Started](docs/getting-started.md) | Prerequisites, bootstrap, first project |
-| [Architecture Overview](docs/architecture-overview.md) | Crate boundaries, IPC flow, state ownership, persistence |
-| [pnevma.toml Reference](docs/pnevma-toml-reference.md) | Configuration file schema |
-| [Keyboard Shortcuts](docs/keyboard-shortcuts.md) | Keybinding reference |
-| [IPC Test Harness](docs/ipc-harness.md) | Control plane socket testing |
-| [Release Checklist](docs/release-checklist.md) | Pre-release gating steps |
-| [macOS Release Runbook](docs/macos-release.md) | Signing, notarization, updater distribution |
-| [Implementation Status](docs/implementation-status.md) | Phase completion tracking |
-| [Design Partner Readiness](docs/design-partner-readiness.md) | Readiness assessment |
+| Document                                                     | Description                                              |
+| ------------------------------------------------------------ | -------------------------------------------------------- |
+| [Getting Started](docs/getting-started.md)                   | Prerequisites, bootstrap, first project                  |
+| [Architecture Overview](docs/architecture-overview.md)       | Crate boundaries, FFI flow, state ownership, persistence |
+| [pnevma.toml Reference](docs/pnevma-toml-reference.md)       | Configuration file schema                                |
+| [Keyboard Shortcuts](docs/keyboard-shortcuts.md)             | Keybinding reference                                     |
+| [IPC Test Harness](docs/ipc-harness.md)                      | Control plane socket testing                             |
+| [Release Checklist](docs/release-checklist.md)               | Pre-release gating steps                                 |
+| [macOS Release Runbook](docs/macos-release.md)               | Signing, notarization, updater distribution              |
+| [Implementation Status](docs/implementation-status.md)       | Phase completion tracking                                |
+| [Design Partner Readiness](docs/design-partner-readiness.md) | Readiness assessment                                     |
+
+## Security
+
+`RUSTSEC-2023-0071` (rsa crate) appears via the `sqlx-mysql` transitive dependency. Pnevma uses SQLite only and never enables the MySQL feature, so this is accepted risk. See `audit.toml` at the repo root.
 
 ## License
 

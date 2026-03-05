@@ -199,5 +199,152 @@ mod tests {
             let valid = task.validate_new();
             prop_assert!(valid.is_err());
         }
+
+        #[test]
+        fn arbitrary_transition_sequence_never_panics(
+            // Generate up to 10 transition attempts using indices into valid statuses
+            transitions in proptest::collection::vec(0usize..7, 0..=10)
+        ) {
+            let statuses = [
+                TaskStatus::Planned,
+                TaskStatus::Ready,
+                TaskStatus::InProgress,
+                TaskStatus::Review,
+                TaskStatus::Done,
+                TaskStatus::Failed,
+                TaskStatus::Blocked,
+            ];
+
+            let mut task = base_task();
+            for idx in &transitions {
+                let to = statuses[*idx].clone();
+                // Transition may succeed or fail — both are acceptable, no panics allowed.
+                let _ = task.transition(to);
+                // Assert task is always in one of the defined states (not corrupted).
+                prop_assert!(matches!(
+                    task.status,
+                    TaskStatus::Planned
+                        | TaskStatus::Ready
+                        | TaskStatus::InProgress
+                        | TaskStatus::Review
+                        | TaskStatus::Done
+                        | TaskStatus::Failed
+                        | TaskStatus::Blocked
+                ));
+            }
+        }
+
+        #[test]
+        fn terminal_states_cannot_transition_further(
+            next in 0usize..7
+        ) {
+            let statuses = [
+                TaskStatus::Planned,
+                TaskStatus::Ready,
+                TaskStatus::InProgress,
+                TaskStatus::Review,
+                TaskStatus::Done,
+                TaskStatus::Failed,
+                TaskStatus::Blocked,
+            ];
+
+            // Done and Failed are terminal — no outgoing transitions are defined for them.
+            for terminal in [TaskStatus::Done, TaskStatus::Failed] {
+                let mut task = base_task();
+                task.status = terminal.clone();
+                let to = statuses[next].clone();
+                // Any transition from a terminal state must be rejected.
+                let result = task.transition(to);
+                prop_assert!(
+                    result.is_err(),
+                    "transition from terminal state {:?} should fail",
+                    terminal
+                );
+                // Status must remain terminal after a rejected transition.
+                prop_assert_eq!(task.status, terminal);
+            }
+        }
+
+        #[test]
+        fn happy_path_and_failure_branches_all_succeed(
+            // 0 = full happy path (no failure); 1/2/3 = fail after reaching Ready/InProgress/Review
+            scenario in 0usize..=3
+        ) {
+            // Happy path: Planned → Ready → InProgress → Review → Done
+            // Valid failure exits: Ready→Failed, InProgress→Failed, Review→Failed
+            let mut task = base_task();
+
+            // Step 0: Planned → Ready (always first)
+            prop_assert!(task.transition(TaskStatus::Ready).is_ok());
+            if scenario == 1 {
+                prop_assert!(task.transition(TaskStatus::Failed).is_ok());
+                return Ok(());
+            }
+
+            // Step 1: Ready → InProgress
+            prop_assert!(task.transition(TaskStatus::InProgress).is_ok());
+            if scenario == 2 {
+                prop_assert!(task.transition(TaskStatus::Failed).is_ok());
+                return Ok(());
+            }
+
+            // Step 2: InProgress → Review
+            prop_assert!(task.transition(TaskStatus::Review).is_ok());
+            if scenario == 3 {
+                prop_assert!(task.transition(TaskStatus::Failed).is_ok());
+                return Ok(());
+            }
+
+            // Full happy path: Review → Done
+            prop_assert!(task.transition(TaskStatus::Done).is_ok());
+            prop_assert_eq!(task.status, TaskStatus::Done);
+        }
+    }
+
+    #[test]
+    fn blocked_to_planned_transition_succeeds() {
+        let mut task = base_task();
+        task.status = TaskStatus::Blocked;
+        task.transition(TaskStatus::Planned)
+            .expect("Blocked -> Planned must succeed");
+        assert_eq!(task.status, TaskStatus::Planned);
+    }
+
+    #[test]
+    fn done_state_rejects_all_transitions() {
+        for to in [
+            TaskStatus::Planned,
+            TaskStatus::Ready,
+            TaskStatus::InProgress,
+            TaskStatus::Review,
+            TaskStatus::Failed,
+            TaskStatus::Blocked,
+        ] {
+            let mut task = base_task();
+            task.status = TaskStatus::Done;
+            assert!(
+                task.transition(to.clone()).is_err(),
+                "Done -> {to:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_state_rejects_all_transitions() {
+        for to in [
+            TaskStatus::Planned,
+            TaskStatus::Ready,
+            TaskStatus::InProgress,
+            TaskStatus::Review,
+            TaskStatus::Done,
+            TaskStatus::Blocked,
+        ] {
+            let mut task = base_task();
+            task.status = TaskStatus::Failed;
+            assert!(
+                task.transition(to.clone()).is_err(),
+                "Failed -> {to:?} should be rejected"
+            );
+        }
     }
 }
