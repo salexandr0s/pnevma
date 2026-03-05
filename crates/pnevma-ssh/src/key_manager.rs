@@ -17,12 +17,79 @@ fn validate_key_name(name: &str) -> Result<(), SshError> {
     if name.is_empty() {
         return Err(SshError::Parse("key name must not be empty".to_string()));
     }
-    if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.contains("..")
+        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err(SshError::Parse(format!(
-            "invalid key name: must not contain '/', '\\', '\\0', or '..': {name}"
+            "invalid key name: must not contain '/', '\\', '\\0', '..', whitespace, or control characters: {name}"
         )));
     }
     Ok(())
+}
+
+fn generate_passphrase() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..32)
+        .map(|_| {
+            let idx = rng.gen_range(0..62);
+            match idx {
+                0..=9 => (b'0' + idx) as char,
+                10..=35 => (b'a' + idx - 10) as char,
+                _ => (b'A' + idx - 36) as char,
+            }
+        })
+        .collect()
+}
+
+fn store_passphrase_in_keychain(key_name: &str, passphrase: &str) -> Result<(), SshError> {
+    let output = std::process::Command::new("security")
+        .args([
+            "add-generic-password",
+            "-a",
+            key_name,
+            "-s",
+            "pnevma-ssh-key",
+            "-w",
+            passphrase,
+            "-U", // Update if exists
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SshError::Command(format!(
+            "failed to store passphrase in keychain: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+pub fn retrieve_passphrase_from_keychain(key_name: &str) -> Result<String, SshError> {
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-a",
+            key_name,
+            "-s",
+            "pnevma-ssh-key",
+            "-w",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SshError::Command(format!(
+            "failed to retrieve passphrase from keychain: {}",
+            stderr.trim()
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 pub fn list_ssh_keys(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
@@ -46,7 +113,7 @@ pub fn list_ssh_keys(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
         let path = entry.path();
         let path_str = path.to_string_lossy().to_string();
 
-        let key_info = fingerprint_key(&path_str)?;
+        let key_info = fingerprint_key(&path, Some(ssh_dir))?;
         let name = name_str.trim_end_matches(".pub").to_string();
 
         keys.push(SshKeyInfo {
@@ -67,6 +134,15 @@ pub fn generate_key(
     comment: &str,
 ) -> Result<SshKeyInfo, SshError> {
     validate_key_name(name)?;
+
+    const ALLOWED_KEY_TYPES: &[&str] = &["ed25519", "ecdsa", "rsa"];
+
+    if !key_type.is_empty() && !ALLOWED_KEY_TYPES.contains(&key_type) {
+        return Err(SshError::Parse(format!(
+            "unsupported key type: {key_type}. Allowed: {}",
+            ALLOWED_KEY_TYPES.join(", ")
+        )));
+    }
 
     let effective_type = if key_type.is_empty() {
         "ed25519"
@@ -104,6 +180,8 @@ pub fn generate_key(
 
     let key_path_str = key_path.to_string_lossy().to_string();
 
+    let passphrase = generate_passphrase();
+
     let output = std::process::Command::new("ssh-keygen")
         .args([
             "-t",
@@ -113,7 +191,7 @@ pub fn generate_key(
             "-C",
             comment,
             "-N",
-            "",
+            &passphrase,
         ])
         .output()?;
 
@@ -122,8 +200,31 @@ pub fn generate_key(
         return Err(SshError::Command(stderr.to_string()));
     }
 
+    // Store passphrase in macOS Keychain
+    if let Err(e) = store_passphrase_in_keychain(name, &passphrase) {
+        tracing::warn!(key_name = %name, error = %e, "failed to store passphrase in keychain");
+    }
+
+    // Set restrictive permissions on the private key file
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&key_path, perms).map_err(SshError::Io)?;
+
+        // Verify permissions were set correctly
+        let meta = std::fs::metadata(&key_path).map_err(SshError::Io)?;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            return Err(SshError::Command(format!(
+                "failed to set key permissions: expected 0600, got {:o}",
+                mode
+            )));
+        }
+    }
+
     let pub_path = format!("{}.pub", key_path_str);
-    let (key_type_out, fingerprint) = fingerprint_key(&pub_path)?;
+    let (key_type_out, fingerprint) = fingerprint_key(Path::new(&pub_path), Some(ssh_dir))?;
 
     Ok(SshKeyInfo {
         name: name.to_string(),
@@ -133,9 +234,26 @@ pub fn generate_key(
     })
 }
 
-fn fingerprint_key(pub_path: &str) -> Result<(String, String), SshError> {
+fn fingerprint_key(
+    pub_path: &Path,
+    expected_parent: Option<&Path>,
+) -> Result<(String, String), SshError> {
+    // Validate path stays within expected directory
+    if let Some(parent) = expected_parent {
+        let canonical_parent = parent.canonicalize().map_err(SshError::Io)?;
+        let canonical_path = pub_path.canonicalize().map_err(SshError::Io)?;
+        if !canonical_path.starts_with(&canonical_parent) {
+            return Err(SshError::Parse(format!(
+                "key path {} escapes expected directory {}",
+                canonical_path.display(),
+                canonical_parent.display()
+            )));
+        }
+    }
+
+    let path_str = pub_path.to_string_lossy();
     let output = std::process::Command::new("ssh-keygen")
-        .args(["-lf", pub_path])
+        .args(["-lf", &path_str])
         .output()?;
 
     if !output.status.success() {

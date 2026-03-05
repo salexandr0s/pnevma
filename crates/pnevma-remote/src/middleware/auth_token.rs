@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::Query,
+    extract::{ConnectInfo, Query},
     http::{Request, StatusCode},
     middleware::Next,
     response::Response,
@@ -20,13 +20,15 @@ pub struct TokenQuery {
 pub async fn auth_token(
     Query(query): Query<TokenQuery>,
     axum::extract::State(store): axum::extract::State<Arc<TokenStore>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let token = extract_token(&req, query.token.as_deref());
+    let request_ip = addr.ip().to_string();
 
     match token {
-        Some(t) if store.validate_token(&t) => Ok(next.run(req).await),
+        Some(t) if store.validate_token(&t, &request_ip) => Ok(next.run(req).await),
         _ => {
             tracing::warn!(
                 path = %req.uri().path(),

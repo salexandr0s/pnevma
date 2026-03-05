@@ -50,6 +50,7 @@ impl Ord for QueueItem {
 #[derive(Debug)]
 struct Inner {
     max: usize,
+    max_queue_depth: usize,
     active: usize,
     seq: u64,
     queue: BinaryHeap<QueueItem>,
@@ -63,25 +64,39 @@ pub struct DispatchPool {
 
 #[derive(Debug)]
 pub struct DispatchPermit {
-    pool: std::sync::Arc<DispatchPool>,
+    pool: Option<std::sync::Arc<DispatchPool>>,
+}
+
+impl DispatchPermit {
+    pub async fn release(mut self) {
+        if let Some(pool) = self.pool.take() {
+            pool.release().await;
+        }
+    }
 }
 
 impl Drop for DispatchPermit {
     fn drop(&mut self) {
-        // CONCURRENCY: Drop cannot be async, so we spawn a task to release the slot.
-        // This is safe because Arc<DispatchPool> is Send+Sync and outlives the spawn.
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            pool.release().await;
-        });
+        if let Some(pool) = self.pool.take() {
+            // CONCURRENCY: Drop cannot be async, so we spawn a task to release the slot.
+            // This is safe because Arc<DispatchPool> is Send+Sync and outlives the spawn.
+            tokio::spawn(async move {
+                pool.release().await;
+            });
+        }
     }
 }
 
 impl DispatchPool {
     pub fn new(max: usize) -> std::sync::Arc<Self> {
+        Self::with_queue_limit(max, 32)
+    }
+
+    pub fn with_queue_limit(max: usize, max_queue_depth: usize) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             inner: Mutex::new(Inner {
                 max,
+                max_queue_depth,
                 active: 0,
                 seq: 0,
                 queue: BinaryHeap::new(),
@@ -97,7 +112,13 @@ impl DispatchPool {
         let mut inner = self.inner.lock().await;
         if inner.active < inner.max {
             inner.active += 1;
-            return Ok(DispatchPermit { pool: self.clone() });
+            return Ok(DispatchPermit {
+                pool: Some(self.clone()),
+            });
+        }
+
+        if inner.queue.len() >= inner.max_queue_depth {
+            return Err(inner.queue.len());
         }
 
         let seq = inner.seq;
@@ -132,8 +153,65 @@ impl DispatchPool {
         self.notify.notify_waiters();
     }
 
-    pub async fn state(&self) -> (usize, usize, usize) {
+    pub async fn state(&self) -> (usize, usize, usize, usize) {
         let inner = self.inner.lock().await;
-        (inner.max, inner.active, inner.queue.len())
+        (
+            inner.max,
+            inner.active,
+            inner.queue.len(),
+            inner.max_queue_depth,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn queue_depth_limit_rejects_when_full() {
+        let pool = DispatchPool::with_queue_limit(1, 2);
+        // Acquire the one slot
+        let _permit = pool
+            .try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await
+            .expect("first acquire");
+
+        // Queue 2 items (up to limit)
+        let _ = pool
+            .try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await;
+        let _ = pool
+            .try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await;
+
+        // Third queue attempt should be rejected
+        let result = pool
+            .try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn state_reports_correct_values() {
+        let pool = DispatchPool::with_queue_limit(3, 10);
+        let (max, active, queued, max_queue) = pool.state().await;
+        assert_eq!(max, 3);
+        assert_eq!(active, 0);
+        assert_eq!(queued, 0);
+        assert_eq!(max_queue, 10);
     }
 }

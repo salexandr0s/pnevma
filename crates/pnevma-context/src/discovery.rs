@@ -1,7 +1,9 @@
 use crate::error::ContextError;
 use pnevma_core::TaskContract;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
@@ -29,6 +31,19 @@ impl Default for DiscoveryConfig {
                 ".git/**".to_string(),
                 "dist/**".to_string(),
                 "build/**".to_string(),
+                ".env".to_string(),
+                ".env.*".to_string(),
+                "*.pem".to_string(),
+                "*.key".to_string(),
+                "*.p12".to_string(),
+                "*.pfx".to_string(),
+                "id_rsa*".to_string(),
+                "*.secret".to_string(),
+                "credentials*".to_string(),
+                "*.keystore".to_string(),
+                "*.jks".to_string(),
+                ".npmrc".to_string(),
+                ".pypirc".to_string(),
             ],
         }
     }
@@ -44,6 +59,31 @@ fn default_strategies() -> Vec<String> {
 
 fn default_max_file_size_kb() -> usize {
     100
+}
+
+fn secret_patterns() -> &'static [Regex] {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        [
+            r"AKIA[0-9A-Z]{16}",
+            r"gh[pousr]_[A-Za-z0-9_]{36,255}",
+            r"sk-[A-Za-z0-9]{20,}",
+            r"sk-ant-[A-Za-z0-9\-]{20,}",
+            "(?m)^[A-Z][A-Z0-9_]{2,}=[\"']?[A-Za-z0-9/+=]{40,}[\"']?",
+            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+        ]
+        .iter()
+        .map(|p| Regex::new(p).expect("secret pattern must compile"))
+        .collect()
+    })
+}
+
+fn redact_secrets(content: &str) -> String {
+    let mut result = content.to_string();
+    for pattern in secret_patterns() {
+        result = pattern.replace_all(&result, "[REDACTED]").to_string();
+    }
+    result
 }
 
 pub struct FileDiscovery {
@@ -66,6 +106,13 @@ impl FileDiscovery {
         let mut results: Vec<(String, String)> = Vec::new();
         let mut used_tokens = 0usize;
         let mut seen_paths = std::collections::HashSet::new();
+        let canonical_root = match project_root.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "failed to canonicalize project root");
+                return Ok(results);
+            }
+        };
 
         // Reserve ~50% of budget for file contents (rest for task contract, rules, etc.)
         let file_budget = token_budget / 2;
@@ -103,18 +150,26 @@ impl FileDiscovery {
                     break;
                 }
 
-                let canonical = if path.is_absolute() {
+                let joined = if path.is_absolute() {
                     path.clone()
                 } else {
                     project_root.join(&path)
                 };
+                let canonical = match joined.canonicalize() {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                if !canonical.starts_with(&canonical_root) {
+                    warn!(path = %path.display(), "path escapes project root, skipping");
+                    continue;
+                }
 
                 if !canonical.is_file() {
                     continue;
                 }
 
                 let rel = canonical
-                    .strip_prefix(project_root)
+                    .strip_prefix(&canonical_root)
                     .unwrap_or(&canonical)
                     .to_string_lossy()
                     .to_string();
@@ -151,14 +206,14 @@ impl FileDiscovery {
                         let trunc_tokens = truncated.len() / CHARS_PER_TOKEN_ESTIMATE;
                         used_tokens += trunc_tokens;
                         seen_paths.insert(rel.clone());
-                        results.push((rel, truncated));
+                        results.push((rel, redact_secrets(&truncated)));
                     }
                     break;
                 }
 
                 used_tokens += token_cost;
                 seen_paths.insert(rel.clone());
-                results.push((rel, content));
+                results.push((rel, redact_secrets(&content)));
             }
         }
 
@@ -178,7 +233,24 @@ impl FileDiscovery {
         task: &TaskContract,
         project_root: &Path,
     ) -> Result<Vec<PathBuf>, ContextError> {
-        Ok(task.scope.iter().map(|s| project_root.join(s)).collect())
+        let canonical_root = project_root.canonicalize().map_err(|e| {
+            ContextError::Compile(format!("failed to canonicalize project root: {e}"))
+        })?;
+        let mut paths = Vec::new();
+        for s in &task.scope {
+            let joined = project_root.join(s);
+            match joined.canonicalize() {
+                Ok(p) if p.starts_with(&canonical_root) => paths.push(p),
+                Ok(p) => {
+                    warn!(path = %p.display(), "scope path escapes project root, skipping");
+                }
+                Err(_) => {
+                    // File may not exist yet, include as-is for later filtering
+                    paths.push(joined);
+                }
+            }
+        }
+        Ok(paths)
     }
 
     /// Strategy: read CLAUDE.md, AGENTS.md, README.md from project root
@@ -261,7 +333,11 @@ impl FileDiscovery {
             return Ok(vec![]);
         }
 
-        let pattern = keywords.join("|");
+        let pattern = keywords
+            .iter()
+            .map(|kw| regex::escape(kw))
+            .collect::<Vec<_>>()
+            .join("|");
         let output = Command::new("grep")
             .current_dir(project_root)
             .args([
@@ -321,6 +397,26 @@ fn matches_glob_simple(pattern: &str, path: &str) -> bool {
             return path.starts_with(parts[0]) && path.ends_with(parts[1]);
         }
     }
+    // Prefix-star match: "id_rsa*" matches "id_rsa", "id_rsa.pub"
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        if !prefix.contains('*') {
+            let file_name = path.rsplit('/').next().unwrap_or(path);
+            return file_name.starts_with(prefix);
+        }
+    }
+    // Prefix-dot-star match: ".env.*" matches ".env.local", ".env.production"
+    if pattern.contains(".*") && !pattern.contains("**") {
+        let (before, after) = pattern.split_once(".*").unwrap_or((pattern, ""));
+        let file_name = path.rsplit('/').next().unwrap_or(path);
+        return file_name.starts_with(before)
+            && file_name.len() > before.len()
+            && (after.is_empty() || file_name.ends_with(after));
+    }
+    // Exact filename match: ".env" matches "path/to/.env", ".npmrc" matches "some/.npmrc"
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    if file_name == pattern {
+        return true;
+    }
     path == pattern
 }
 
@@ -329,9 +425,15 @@ fn truncate_content(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         return content.to_string();
     }
-    // Find last newline before max_chars
-    let slice = &content[..max_chars];
-    let cut = slice.rfind('\n').unwrap_or(max_chars);
+    // Find the last valid char boundary at or before max_chars
+    let safe_end = content
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_chars)
+        .last()
+        .unwrap_or(0);
+    // Find last newline before safe_end for a clean cut
+    let cut = content[..safe_end].rfind('\n').unwrap_or(safe_end);
     let mut truncated = content[..cut].to_string();
     truncated.push_str("\n\n... [truncated — file continues] ...\n");
     truncated
@@ -411,6 +513,24 @@ mod tests {
         let truncated = truncate_content(&content, 100);
         assert!(truncated.contains("[truncated"));
         assert!(truncated.len() < content.len());
+    }
+
+    #[test]
+    fn truncate_content_handles_multibyte_utf8() {
+        let content = "Hello 世界! 🌍 This is a test with multibyte characters.";
+        let truncated = truncate_content(content, 10);
+        // Should not panic and should produce valid UTF-8
+        assert!(truncated.len() < content.len());
+        // Verify it's valid UTF-8 by trying to access it
+        assert!(truncated.contains("[truncated"));
+    }
+
+    #[test]
+    fn truncate_content_handles_cjk_characters() {
+        let content = "日本語のテスト文字列です。これは長いテキストです。";
+        let truncated = truncate_content(content, 15);
+        assert!(truncated.contains("[truncated"));
+        // Ensure no panic from splitting multibyte chars
     }
 
     // ── Token budget enforcement ─────────────────────────────────────────────
@@ -552,5 +672,68 @@ mod tests {
             .any(|p| p.contains("node_modules")));
         assert!(cfg.exclude_patterns.iter().any(|p| p.contains("target")));
         assert!(cfg.exclude_patterns.iter().any(|p| p.contains(".git")));
+    }
+
+    #[test]
+    fn default_excludes_secret_file_patterns() {
+        let cfg = DiscoveryConfig::default();
+        let fd = FileDiscovery::new(cfg.clone());
+        assert!(fd.is_excluded(".env"));
+        assert!(fd.is_excluded(".env.local"));
+        assert!(fd.is_excluded("some/path/id_rsa"));
+        assert!(fd.is_excluded("some/path/id_rsa.pub"));
+        assert!(fd.is_excluded("creds.pem"));
+        assert!(fd.is_excluded("path/.npmrc"));
+        assert!(fd.is_excluded("path/.pypirc"));
+    }
+
+    #[test]
+    fn redact_aws_key() {
+        let input = "key = AKIAIOSFODNN7EXAMPLE";
+        let output = redact_secrets(input);
+        assert!(!output.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_github_token() {
+        let input = "token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123";
+        let output = redact_secrets(input);
+        assert!(!output.contains("ghp_"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_openai_key() {
+        let input = "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz";
+        let output = redact_secrets(input);
+        assert!(!output.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn redact_private_key_header() {
+        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQ...";
+        let output = redact_secrets(input);
+        assert!(!output.contains("BEGIN RSA PRIVATE KEY"));
+    }
+
+    #[test]
+    fn redact_preserves_non_secret_content() {
+        let input = "This is normal code with no secrets\nfn main() {}";
+        let output = redact_secrets(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn grep_pattern_escapes_regex_metacharacters() {
+        let keywords = ["foo.bar", "baz()", "qux+"];
+        let pattern = keywords
+            .iter()
+            .map(|kw| regex::escape(kw))
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(pattern.contains(r"foo\.bar"));
+        assert!(pattern.contains(r"baz\(\)"));
+        assert!(pattern.contains(r"qux\+"));
     }
 }

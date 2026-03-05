@@ -28,13 +28,67 @@ fn redaction_key_value_regex() -> &'static Regex {
     })
 }
 
+fn redaction_aws_key_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"AKIA[0-9A-Z]{16}").expect("AWS key redaction regex must compile")
+    })
+}
+
+fn redaction_github_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{36,255}")
+            .expect("GitHub token redaction regex must compile")
+    })
+}
+
+fn redaction_slack_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]{10,}")
+            .expect("Slack token redaction regex must compile")
+    })
+}
+
+fn redaction_pem_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
+            .expect("PEM redaction regex must compile")
+    })
+}
+
+fn redaction_connection_string_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"://[^:]+:([^@]+)@").expect("connection string redaction regex must compile")
+    })
+}
+
 fn redact_stream_chunk(input: &str) -> String {
-    let first = redaction_authorization_regex()
+    let mut result = redaction_authorization_regex()
         .replace_all(input, "$1[REDACTED]")
         .to_string();
-    redaction_key_value_regex()
-        .replace_all(&first, "$1=[REDACTED]")
-        .to_string()
+    result = redaction_key_value_regex()
+        .replace_all(&result, "$1=[REDACTED]")
+        .to_string();
+    result = redaction_aws_key_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_github_token_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_slack_token_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_pem_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_connection_string_regex()
+        .replace_all(&result, "://[REDACTED]@")
+        .to_string();
+    result
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +126,7 @@ pub struct SessionSupervisor {
     stuck_after: Duration,
     data_dir: PathBuf,
     tmux_tmpdir: PathBuf,
+    max_sessions: usize,
 }
 
 impl SessionSupervisor {
@@ -86,6 +141,7 @@ impl SessionSupervisor {
             stuck_after: Duration::minutes(10),
             tmux_tmpdir: data_dir.join("tmux"),
             data_dir,
+            max_sessions: 16,
         }
     }
 
@@ -101,6 +157,16 @@ impl SessionSupervisor {
         command: impl Into<String>,
     ) -> Result<SessionMetadata, SessionError> {
         let session_id = Uuid::new_v4();
+
+        // Check session count limit
+        let current_count = self.sessions.read().await.len();
+        if current_count >= self.max_sessions {
+            return Err(SessionError::LimitReached(format!(
+                "maximum of {} sessions reached",
+                self.max_sessions
+            )));
+        }
+
         let now = Utc::now();
         let cwd = cwd.into();
         let command = command.into();
@@ -218,17 +284,15 @@ impl SessionSupervisor {
             return Ok(());
         }
 
-        let mut args = vec![
+        // Create session WITHOUT a command to avoid shell expansion
+        let args = vec![
             "new-session".to_string(),
             "-d".to_string(),
             "-s".to_string(),
-            name,
+            name.clone(),
             "-c".to_string(),
             cwd.to_string(),
         ];
-        if !command.trim().is_empty() {
-            args.push(command.to_string());
-        }
 
         let out = self
             .tmux_command()
@@ -237,15 +301,43 @@ impl SessionSupervisor {
             .await
             .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
 
-        if out.status.success() {
-            return Ok(());
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            return Err(SessionError::SpawnFailed(format!(
+                "tmux new-session failed: {}",
+                stderr.trim()
+            )));
         }
 
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        Err(SessionError::SpawnFailed(format!(
-            "tmux new-session failed: {}",
-            stderr.trim()
-        )))
+        // Send the command as literal keystrokes to prevent shell injection
+        if !command.trim().is_empty() {
+            let send_out = self
+                .tmux_command()
+                .args(["send-keys", "-t", &name, "-l", command])
+                .output()
+                .await
+                .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
+
+            if !send_out.status.success() {
+                let stderr = String::from_utf8_lossy(&send_out.stderr).to_string();
+                tracing::warn!(session_id = %session_id, "tmux send-keys failed: {}", stderr.trim());
+            }
+
+            // Press Enter to execute the command
+            let enter_out = self
+                .tmux_command()
+                .args(["send-keys", "-t", &name, "Enter"])
+                .output()
+                .await
+                .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
+
+            if !enter_out.status.success() {
+                let stderr = String::from_utf8_lossy(&enter_out.stderr).to_string();
+                tracing::warn!(session_id = %session_id, "tmux send-keys Enter failed: {}", stderr.trim());
+            }
+        }
+
+        Ok(())
     }
 
     async fn attach_tmux_client(&self, session_id: Uuid) -> Result<(), SessionError> {
@@ -497,6 +589,15 @@ impl SessionSupervisor {
     }
 
     pub async fn send_input(&self, session_id: Uuid, input: &str) -> Result<(), SessionError> {
+        const MAX_INPUT_BYTES: usize = 64 * 1024; // 64 KB per send_input call
+        if input.len() > MAX_INPUT_BYTES {
+            return Err(SessionError::SpawnFailed(format!(
+                "input too large: {} bytes (max {})",
+                input.len(),
+                MAX_INPUT_BYTES
+            )));
+        }
+
         // CONCURRENCY: Read lock on `inputs` is dropped before acquiring the per-session
         // ChildStdin Mutex. This two-step pattern (clone Arc then lock) avoids holding
         // the map lock while doing I/O, preventing contention across sessions.
@@ -526,6 +627,9 @@ impl SessionSupervisor {
         offset: u64,
         limit: usize,
     ) -> Result<ScrollbackSlice, SessionError> {
+        const MAX_SCROLLBACK_READ_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+        const MAX_READ_LIMIT: usize = 1024 * 1024; // 1 MB per read
+
         let meta = self
             .sessions
             .read()
@@ -536,12 +640,21 @@ impl SessionSupervisor {
 
         let mut file = tokio::fs::OpenOptions::new()
             .read(true)
-            .open(meta.scrollback_path)
+            .open(&meta.scrollback_path)
             .await?;
         let total = file.metadata().await?.len();
+
+        if total as usize > MAX_SCROLLBACK_READ_BYTES {
+            return Err(SessionError::SpawnFailed(format!(
+                "scrollback file too large: {} bytes (max {})",
+                total, MAX_SCROLLBACK_READ_BYTES
+            )));
+        }
+
+        let capped_limit = limit.min(MAX_READ_LIMIT);
         let start = offset.min(total);
         file.seek(std::io::SeekFrom::Start(start)).await?;
-        let mut buf = vec![0u8; limit];
+        let mut buf = vec![0u8; capped_limit];
         let read = file.read(&mut buf).await?;
         buf.truncate(read);
         let data = String::from_utf8_lossy(&buf).to_string();
@@ -1060,6 +1173,42 @@ mod tests {
     }
 
     // ── Redaction patterns ───────────────────────────────────────────────────
+
+    #[test]
+    fn redacts_aws_access_key() {
+        let input = "found key AKIAIOSFODNN7EXAMPLE in config";
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redacts_github_token() {
+        let input = "GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123";
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("ghp_"));
+    }
+
+    #[test]
+    fn redacts_slack_token() {
+        let input = "SLACK_TOKEN=xoxb-123456789012-abcdef";
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("xoxb-"));
+    }
+
+    #[test]
+    fn redacts_pem_private_key() {
+        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...";
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("BEGIN RSA PRIVATE KEY"));
+    }
+
+    #[test]
+    fn redacts_connection_string_password() {
+        let input = "postgres://user:secretpass@localhost:5432/db";
+        let output = redact_stream_chunk(input);
+        assert!(!output.contains("secretpass"));
+    }
 
     #[test]
     fn does_not_redact_normal_text() {

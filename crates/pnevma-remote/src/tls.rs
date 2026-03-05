@@ -12,15 +12,19 @@ use crate::error::RemoteError;
 pub async fn load_tls_config(
     mode: &str,
     tailscale_ip: Option<IpAddr>,
+    allow_self_signed_fallback: bool,
 ) -> Result<ServerConfig, RemoteError> {
     match mode {
-        "tailscale" => load_tailscale_cert(tailscale_ip).await,
+        "tailscale" => load_tailscale_cert(tailscale_ip, allow_self_signed_fallback).await,
         "self-signed" => generate_self_signed_cert(tailscale_ip),
         other => Err(RemoteError::Tls(format!("Unknown TLS mode: {other}"))),
     }
 }
 
-async fn load_tailscale_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfig, RemoteError> {
+async fn load_tailscale_cert(
+    tailscale_ip: Option<IpAddr>,
+    allow_self_signed_fallback: bool,
+) -> Result<ServerConfig, RemoteError> {
     // Tailscale stores certs in /var/lib/tailscale/certs/ or ~/.local/share/tailscale/certs/
     let candidates = [
         "/var/lib/tailscale/certs".to_string(),
@@ -62,8 +66,15 @@ async fn load_tailscale_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfi
     }
 
     // Fall back to self-signed if tailscale certs not found
-    tracing::warn!("Tailscale certs not found, falling back to self-signed");
-    generate_self_signed_cert(tailscale_ip)
+    if allow_self_signed_fallback {
+        tracing::error!("Tailscale certs not found — falling back to self-signed certificate");
+        generate_self_signed_cert(tailscale_ip)
+    } else {
+        tracing::error!("Tailscale certs not found and self-signed fallback is disabled");
+        Err(RemoteError::Tls(
+            "Tailscale TLS certificates not found and self-signed fallback is disabled".to_string(),
+        ))
+    }
 }
 
 fn build_rustls_config_from_pem(

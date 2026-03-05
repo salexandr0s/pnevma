@@ -10,10 +10,19 @@ class PnevmaBridge {
     init() {
         // Event callback — receives events from Rust
         let callback: @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = { event, payload, ctx in
-            guard let event = event, let payload = payload else { return }
+            guard let event = event else { return }
             let eventStr = String(cString: event)
-            let payloadStr = String(cString: payload)
-            Log.bridge.info("Event: \(eventStr) payload: \(payloadStr)")
+            #if DEBUG
+            if let payload = payload {
+                let payloadStr = String(cString: payload)
+                let truncated = payloadStr.prefix(200)
+                Log.bridge.debug("Event: \(eventStr) payload: \(truncated, privacy: .private)")
+            } else {
+                Log.bridge.debug("Event: \(eventStr)")
+            }
+            #else
+            Log.bridge.info("Event: \(eventStr)")
+            #endif
         }
 
         handle = pnevma_create(callback, nil)
@@ -25,12 +34,13 @@ class PnevmaBridge {
     /// Synchronous call to the Rust backend. Must NOT be called from main thread.
     func call(method: String, params: String) -> String? {
         handleLock.lock()
-        defer { handleLock.unlock() }
-        guard let handle = handle else { return nil }
+        let h = handle
+        handleLock.unlock()
+        guard let h = h else { return nil }
 
         return method.withCString { methodPtr in
             params.withCString { paramsPtr in
-                let result = pnevma_call(handle, methodPtr, paramsPtr, UInt(params.utf8.count))
+                let result = pnevma_call(h, methodPtr, paramsPtr, UInt(params.utf8.count))
                 guard let result = result else { return nil as String? }
                 defer { pnevma_free_result(result) }
 
@@ -43,13 +53,13 @@ class PnevmaBridge {
     /// Async call to the Rust backend with callback.
     func callAsync(method: String, params: String, completion: @escaping (String?) -> Void) {
         handleLock.lock()
-        defer { handleLock.unlock() }
-        guard let handle = handle else {
+        let h = handle
+        handleLock.unlock()
+        guard let h = h else {
             completion(nil)
             return
         }
 
-        // Store completion handler
         let context = Unmanaged.passRetained(CompletionBox(completion) as AnyObject).toOpaque()
 
         let callback: @convention(c) (UnsafePointer<PnevmaResult>?, UnsafeMutableRawPointer?) -> Void = { result, ctx in
@@ -65,10 +75,9 @@ class PnevmaBridge {
             box_.completion(String(cString: dataPtr))
         }
 
-        // pnevma_call_async returns immediately (non-blocking) — safe to hold lock.
         method.withCString { methodPtr in
             params.withCString { paramsPtr in
-                pnevma_call_async(handle, methodPtr, paramsPtr, UInt(params.utf8.count), callback, context)
+                pnevma_call_async(h, methodPtr, paramsPtr, UInt(params.utf8.count), callback, context)
             }
         }
     }
@@ -77,9 +86,10 @@ class PnevmaBridge {
     /// The callback is invoked from a background thread for every chunk of terminal output.
     func setSessionOutputCallback(_ cb: SessionOutputCallback, ctx: UnsafeMutableRawPointer?) {
         handleLock.lock()
-        defer { handleLock.unlock() }
-        guard let handle = handle else { return }
-        pnevma_set_session_output_callback(handle, cb, ctx)
+        let h = handle
+        handleLock.unlock()
+        guard let h = h else { return }
+        pnevma_set_session_output_callback(h, cb, ctx)
     }
 
     func destroy() {

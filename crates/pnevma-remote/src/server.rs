@@ -91,9 +91,9 @@ pub async fn build_router(
         .merge(auth_router)
         .merge(api_router)
         .layer(middleware::from_fn(audit_log))
-        .layer(middleware::from_fn(tailscale_guard))
         .layer(cors_layer(config.allowed_origins.clone()))
-        .layer(RequestBodyLimitLayer::new(2_097_152));
+        .layer(RequestBodyLimitLayer::new(2_097_152))
+        .layer(middleware::from_fn(tailscale_guard));
 
     // Optionally serve frontend SPA
     if config.serve_frontend {

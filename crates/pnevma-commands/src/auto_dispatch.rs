@@ -40,7 +40,7 @@ async fn run_cycle(state: &AppState) -> u64 {
         let interval = config.automation.auto_dispatch_interval_seconds.max(5);
 
         // Check pool capacity.
-        let (max, active, queued) = ctx.pool.state().await;
+        let (max, active, queued, _max_queue) = ctx.pool.state().await;
         if active >= max {
             debug!(
                 max,

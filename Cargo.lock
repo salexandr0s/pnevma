@@ -1617,6 +1617,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "pnevma-core",
+ "regex",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
@@ -1724,6 +1725,7 @@ name = "pnevma-ssh"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",

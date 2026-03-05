@@ -65,7 +65,8 @@ pub async fn maybe_start_remote(state: Arc<AppState>) {
         rate_limit_rpm: config.rate_limit_rpm,
         max_ws_per_ip: config.max_ws_per_ip,
         serve_frontend: config.serve_frontend,
-        allowed_origins: vec![],
+        allowed_origins: config.allowed_origins.clone(),
+        tls_allow_self_signed_fallback: config.tls_allow_self_signed_fallback,
     };
 
     match pnevma_remote::start_remote_server(remote_config, router, &password, None).await {

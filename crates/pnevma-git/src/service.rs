@@ -34,18 +34,29 @@ impl GitService {
         base_branch: &str,
         slug: &str,
     ) -> Result<WorktreeLease, GitError> {
+        // Insert a placeholder lease under the mutex lock BEFORE doing I/O
+        // to prevent TOCTOU race conditions.
         {
-            // CONCURRENCY: Check-then-act on the lease map. The inner scope drops the
-            // lock before performing git I/O so filesystem operations don't hold the mutex.
-            // NOTE: TOCTOU gap exists — if two calls for the same task_id race past this
-            // check, the second insert (line 70) will silently overwrite the first lease.
-            let leases = self.leases.lock().await;
+            let mut leases = self.leases.lock().await;
             if leases.contains_key(&task_id) {
                 return Err(GitError::LeaseViolation(format!(
                     "task {} already has an active lease",
                     task_id
                 )));
             }
+            // Insert placeholder to reserve the slot
+            leases.insert(
+                task_id,
+                WorktreeLease {
+                    id: Uuid::new_v4(),
+                    task_id,
+                    branch: String::new(),
+                    path: String::new(),
+                    started_at: Utc::now(),
+                    last_active: Utc::now(),
+                    status: LeaseStatus::Active,
+                },
+            );
         }
 
         tokio::fs::create_dir_all(&self.worktree_root).await?;
@@ -53,10 +64,22 @@ impl GitService {
         let branch = format!("pnevma/{}/{}", task_id, slug);
         let path = self.worktree_root.join(task_id.to_string());
 
-        self.git(["branch", &branch, base_branch]).await?;
-        self.git(["worktree", "add", path.to_string_lossy().as_ref(), &branch])
-            .await?;
+        // Perform git I/O without holding the lock
+        let result = async {
+            self.git(["branch", &branch, base_branch]).await?;
+            self.git(["worktree", "add", path.to_string_lossy().as_ref(), &branch])
+                .await?;
+            Ok::<_, GitError>(())
+        }
+        .await;
 
+        if let Err(e) = result {
+            // On failure, remove the placeholder
+            self.leases.lock().await.remove(&task_id);
+            return Err(e);
+        }
+
+        // Update placeholder with real data
         let lease = WorktreeLease {
             id: Uuid::new_v4(),
             task_id,
@@ -97,6 +120,20 @@ impl GitService {
         delete_branch: bool,
     ) -> Result<(), GitError> {
         self.leases.lock().await.remove(&task_id);
+
+        // Validate path stays within expected directories
+        let canonical_path = std::path::Path::new(path)
+            .canonicalize()
+            .map_err(|e| GitError::Command(format!("failed to canonicalize worktree path: {e}")))?;
+        let valid = canonical_path.starts_with(&self.worktree_root)
+            || canonical_path.starts_with(&self.repo_root);
+        if !valid {
+            return Err(GitError::Command(format!(
+                "worktree path {} is outside repo and worktree directories",
+                canonical_path.display()
+            )));
+        }
+
         let remove_res = self.git(["worktree", "remove", "--force", path]).await;
         if let Err(err) = remove_res {
             // The path may already be gone after a manual cleanup or failed run.
@@ -165,8 +202,13 @@ impl MergeQueue {
         Self::default()
     }
 
-    pub async fn enqueue(&self, task_id: Uuid) {
-        self.queue.lock().await.push_back(task_id);
+    pub async fn enqueue(&self, task_id: Uuid) -> bool {
+        let mut queue = self.queue.lock().await;
+        if queue.iter().any(|id| *id == task_id) {
+            return false;
+        }
+        queue.push_back(task_id);
+        true
     }
 
     pub async fn next(&self) -> Option<Uuid> {
@@ -352,10 +394,14 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             runtime.block_on(async move {
                 let queue = MergeQueue::new();
-                let expected = task_ids
+                // Deduplicate while preserving insertion order, since enqueue now
+                // rejects duplicates.
+                let mut seen = std::collections::HashSet::new();
+                let expected: Vec<_> = task_ids
                     .iter()
                     .map(|raw| Uuid::from_u128(*raw))
-                    .collect::<Vec<_>>();
+                    .filter(|id| seen.insert(*id))
+                    .collect();
 
                 for task_id in &expected {
                     queue.enqueue(*task_id).await;
@@ -399,5 +445,14 @@ mod tests {
         }
 
         assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_enqueue_returns_false() {
+        let queue = MergeQueue::new();
+        let task_id = Uuid::new_v4();
+        assert!(queue.enqueue(task_id).await);
+        assert!(!queue.enqueue(task_id).await);
+        assert_eq!(queue.size().await, 1);
     }
 }

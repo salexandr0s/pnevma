@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 struct TokenEntry {
     created_at: DateTime<Utc>,
-    #[allow(dead_code)] // stored for future audit/logging
     ip: String,
 }
 
@@ -53,22 +52,41 @@ impl TokenStore {
         token
     }
 
-    /// Validate a bearer token: existence check + expiry check.
+    /// Validate a bearer token: existence check + expiry check + IP binding.
     ///
     /// NOTE: The DashMap lookup is not constant-time, but with 256-bit random
     /// tokens the timing difference is not practically exploitable — an attacker
     /// cannot meaningfully narrow the key space via timing.
-    pub fn validate_token(&self, token: &str) -> bool {
+    pub fn validate_token(&self, token: &str, request_ip: &str) -> bool {
         if let Some(entry) = self.tokens.get(token) {
             let age_secs = (Utc::now() - entry.created_at).num_seconds();
             let ttl_secs = self.ttl_hours as i64 * 3600;
-            return age_secs < ttl_secs;
+            if age_secs >= ttl_secs {
+                return false;
+            }
+            if entry.ip != request_ip {
+                tracing::warn!(
+                    token_ip = %entry.ip,
+                    request_ip = %request_ip,
+                    "token used from different IP than it was created from"
+                );
+                return false;
+            }
+            return true;
         }
         false
     }
 
     /// Validate a password using Argon2id verification (constant-time).
     pub fn validate_password(&self, password: &str) -> bool {
+        const MAX_PASSWORD_LEN: usize = 128;
+        if password.len() > MAX_PASSWORD_LEN {
+            tracing::warn!(
+                "password exceeds maximum length of {} bytes",
+                MAX_PASSWORD_LEN
+            );
+            return false;
+        }
         use argon2::PasswordHash;
         let parsed_hash = match PasswordHash::new(&self.password_hash) {
             Ok(h) => h,
@@ -124,13 +142,13 @@ mod tests {
     fn valid_token_validates() {
         let ts = store();
         let token = ts.create_token("127.0.0.1");
-        assert!(ts.validate_token(&token));
+        assert!(ts.validate_token(&token, "127.0.0.1"));
     }
 
     #[test]
     fn unknown_token_is_rejected() {
         let ts = store();
-        assert!(!ts.validate_token("notarealtoken"));
+        assert!(!ts.validate_token("notarealtoken", "127.0.0.1"));
     }
 
     #[test]
@@ -138,7 +156,7 @@ mod tests {
         let ts = store();
         let token = ts.create_token("127.0.0.1");
         assert!(ts.revoke_token(&token));
-        assert!(!ts.validate_token(&token));
+        assert!(!ts.validate_token(&token, "127.0.0.1"));
     }
 
     #[test]
@@ -165,7 +183,7 @@ mod tests {
         let ts = TokenStore::new("pass".to_string(), 0);
         let token = ts.create_token("127.0.0.1");
         // age_secs (0) >= ttl_secs (0), so token is invalid
-        assert!(!ts.validate_token(&token));
+        assert!(!ts.validate_token(&token, "127.0.0.1"));
     }
 
     #[test]
@@ -187,9 +205,32 @@ mod tests {
         let ts = store();
         let t1 = ts.create_token("10.0.0.1");
         let t2 = ts.create_token("10.0.0.2");
-        assert!(ts.validate_token(&t1));
-        assert!(ts.validate_token(&t2));
+        assert!(ts.validate_token(&t1, "10.0.0.1"));
+        assert!(ts.validate_token(&t2, "10.0.0.2"));
         assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn token_rejected_from_different_ip() {
+        let ts = store();
+        let token = ts.create_token("10.0.0.1");
+        assert!(ts.validate_token(&token, "10.0.0.1"));
+        assert!(!ts.validate_token(&token, "192.168.1.1"));
+    }
+
+    #[test]
+    fn oversized_password_is_rejected() {
+        let ts = store();
+        let long_password = "a".repeat(129);
+        assert!(!ts.validate_password(&long_password));
+    }
+
+    #[test]
+    fn max_length_password_is_accepted() {
+        // Create a store with a 128-char password
+        let password = "b".repeat(128);
+        let ts = TokenStore::new(password.clone(), 24);
+        assert!(ts.validate_password(&password));
     }
 }
 

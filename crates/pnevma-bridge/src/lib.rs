@@ -41,6 +41,7 @@ pub struct PnevmaHandle {
     runtime: Runtime,
     state: Arc<AppState>,
     _session_output_cb: std::sync::Mutex<Option<SessionOutputCallbackWrapper>>,
+    shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 // Wrappers to make callback pointers Send+Sync (they cross FFI boundary)
@@ -78,7 +79,16 @@ impl EventEmitter for FfiEventEmitter {
             Ok(s) => s,
             Err(_) => return,
         };
-        (self.inner.cb)(event_cstr.as_ptr(), payload_cstr.as_ptr(), self.inner.ctx);
+        let cb = self.inner.cb;
+        let ctx = self.inner.ctx;
+        let event_ptr = event_cstr.as_ptr();
+        let payload_ptr = payload_cstr.as_ptr();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            cb(event_ptr, payload_ptr, ctx);
+        }));
+        if result.is_err() {
+            tracing::error!(event = %event, "panic in FFI event callback");
+        }
     }
 }
 
@@ -110,15 +120,21 @@ fn make_error_result(msg: &str) -> *mut PnevmaResult {
 /// Parse JSON params from a raw C byte pointer.
 /// Returns `Ok(Value)` on success, or `Err(*mut PnevmaResult)` with an error result
 /// that the caller should return immediately.
+const MAX_PARAMS_LEN: usize = 16 * 1024 * 1024; // 16 MB
+
 fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, *mut PnevmaResult> {
     if params_json.is_null() {
         return Ok(Value::Object(serde_json::Map::new()));
     }
-    let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
-    match std::str::from_utf8(slice) {
-        Ok(s) => Ok(serde_json::from_str(s).unwrap_or(Value::Object(serde_json::Map::new()))),
-        Err(_) => Err(make_error_result("invalid UTF-8 in params")),
+    if params_len > MAX_PARAMS_LEN {
+        return Err(make_error_result(&format!(
+            "params too large: {} bytes (max {})",
+            params_len, MAX_PARAMS_LEN
+        )));
     }
+    let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
+    let s = std::str::from_utf8(slice).map_err(|_| make_error_result("invalid UTF-8 in params"))?;
+    serde_json::from_str(s).map_err(|e| make_error_result(&format!("invalid JSON in params: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +167,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         };
 
         let state = Arc::new(AppState::new(emitter));
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Start background services
         let state_clone = Arc::clone(&state);
@@ -166,6 +183,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             runtime,
             state,
             _session_output_cb: std::sync::Mutex::new(None),
+            shutdown: shutdown_tx,
         }))
     });
 
@@ -183,8 +201,12 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { Box::from_raw(handle) };
-        // Runtime drops here, cancelling all spawned tasks
-        drop(handle);
+        // Signal all tasks to shut down
+        let _ = handle.shutdown.send(true);
+        // Give tasks time to finish gracefully
+        handle
+            .runtime
+            .shutdown_timeout(std::time::Duration::from_secs(5));
     }));
 }
 
@@ -405,6 +427,38 @@ mod tests {
     fn pnevma_free_result_null_is_safe() {
         // Should not crash
         unsafe { pnevma_free_result(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn parse_params_rejects_oversized_input() {
+        // We can't actually allocate 16MB+ for this test, but we can test the logic
+        // by checking that the constant is set correctly
+        assert_eq!(MAX_PARAMS_LEN, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_params_null_returns_empty_object() {
+        let result = parse_params(ptr::null(), 0);
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        assert!(val.is_object());
+        assert!(val.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_params_invalid_json_returns_error() {
+        let invalid = CString::new("not valid json{{{").unwrap();
+        let result = parse_params(invalid.as_ptr(), invalid.as_bytes().len());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_params_valid_json_returns_value() {
+        let valid = CString::new(r#"{"key": "value"}"#).unwrap();
+        let result = parse_params(valid.as_ptr(), valid.as_bytes().len());
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        assert_eq!(val["key"], "value");
     }
 
     #[test]

@@ -78,8 +78,12 @@ pub async fn start_remote_server(
     };
     let bind_addr = SocketAddr::from((ts_ip, config.port));
 
-    let tls_config =
-        tls::load_tls_config(&config.tls_mode, Some(std::net::IpAddr::V4(ts_ip))).await?;
+    let tls_config = tls::load_tls_config(
+        &config.tls_mode,
+        Some(std::net::IpAddr::V4(ts_ip)),
+        config.tls_allow_self_signed_fallback,
+    )
+    .await?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     let listener = tokio::net::TcpListener::bind(bind_addr)

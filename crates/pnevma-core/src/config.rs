@@ -108,6 +108,12 @@ pub struct RemoteSection {
     /// Serve built frontend SPA.
     #[serde(default = "default_serve_frontend")]
     pub serve_frontend: bool,
+    /// Allowed CORS origins for remote access.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// Allow self-signed TLS certificate fallback when Tailscale certs are unavailable.
+    #[serde(default)]
+    pub tls_allow_self_signed_fallback: bool,
 }
 
 fn default_remote_port() -> u16 {

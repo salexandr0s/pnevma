@@ -72,23 +72,23 @@ impl AgentAdapter for CodexAdapter {
 
         let prompt = format!(
             "{}\n\nConstraints:\n{}\n\nChecks:\n{}\n\nRules:\n{}\n",
-            input.objective,
+            super::claude::sanitize_prompt_field(&input.objective),
             input
                 .constraints
                 .iter()
-                .map(|line| format!("- {line}"))
+                .map(|line| format!("- {}", super::claude::sanitize_prompt_field(line)))
                 .collect::<Vec<_>>()
                 .join("\n"),
             input
                 .acceptance_checks
                 .iter()
-                .map(|line| format!("- {line}"))
+                .map(|line| format!("- {}", super::claude::sanitize_prompt_field(line)))
                 .collect::<Vec<_>>()
                 .join("\n"),
             input
                 .project_rules
                 .iter()
-                .map(|line| format!("- {line}"))
+                .map(|line| format!("- {}", super::claude::sanitize_prompt_field(line)))
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -98,12 +98,27 @@ impl AgentAdapter for CodexAdapter {
         let mut child = unsafe {
             Command::new("codex")
                 .current_dir(&cfg.working_dir)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", std::env::var("HOME").unwrap_or_default())
+                .env(
+                    "SHELL",
+                    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string()),
+                )
+                .env(
+                    "TERM",
+                    std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()),
+                )
+                .env("USER", std::env::var("USER").unwrap_or_default())
+                .env(
+                    "LANG",
+                    std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
+                )
+                .env(
+                    "LC_ALL",
+                    std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
+                )
                 .envs(cfg.env.iter().cloned())
-                // Strip credentials that must not leak into agent subprocesses.
-                .env_remove("ANTHROPIC_API_KEY")
-                .env_remove("OPENAI_API_KEY")
-                .env_remove("CLAUDE_API_KEY")
-                .env_remove("PNEVMA_SECRET")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -125,12 +140,13 @@ impl AgentAdapter for CodexAdapter {
                 .insert(handle.id, pid);
         }
 
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(prompt.as_bytes())
                 .await
                 .map_err(AgentError::Io)?;
             stdin.write_all(b"\n").await.map_err(AgentError::Io)?;
+            drop(stdin); // Close stdin so codex knows input is complete
         }
 
         let usage_re = Regex::new(r"(?i)(tokens|input_tokens|usage)[^0-9]*(\d+)")

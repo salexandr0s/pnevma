@@ -10,11 +10,13 @@ use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::Instant,
 };
 
 use crate::CommandRouter;
@@ -125,8 +127,21 @@ fn rpc_result(id: String, result: Result<serde_json::Value, String>) -> WsServer
     }
 }
 
+fn is_valid_channel(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
+}
+
 async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
     let (mut sender, mut receiver) = socket.split();
+    let mut subscribed_sessions: HashSet<String> = HashSet::new();
+
+    let mut message_count: u32 = 0;
+    let mut window_start = Instant::now();
+    const MAX_MESSAGES_PER_SECOND: u32 = 60;
 
     while let Some(Ok(msg)) = receiver.next().await {
         let text = match msg {
@@ -134,6 +149,22 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
             Message::Close(_) => break,
             _ => continue,
         };
+
+        // Rate limit check
+        let now = Instant::now();
+        if now.duration_since(window_start).as_secs() >= 1 {
+            message_count = 0;
+            window_start = now;
+        }
+        message_count += 1;
+        if message_count > MAX_MESSAGES_PER_SECOND {
+            let err = serde_json::to_string(&WsServerMessage::Error {
+                message: "rate limit exceeded: too many messages per second".to_string(),
+            })
+            .unwrap_or_default();
+            let _ = sender.send(Message::Text(err.into())).await;
+            continue;
+        }
 
         let client_msg: WsClientMessage = match serde_json::from_str(&text) {
             Ok(m) => m,
@@ -149,21 +180,48 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
 
         let response = match client_msg {
             WsClientMessage::Subscribe { channel } => {
-                tracing::debug!(%channel, "WebSocket subscribe");
-                WsServerMessage::Subscribed { channel }
+                if !is_valid_channel(&channel) {
+                    WsServerMessage::Error {
+                        message: format!("invalid channel name: {channel}"),
+                    }
+                } else {
+                    tracing::debug!(%channel, "WebSocket subscribe");
+                    // Track session subscriptions for access control
+                    if let Some(session_id) = channel.strip_prefix("session:") {
+                        subscribed_sessions.insert(session_id.to_string());
+                    }
+                    WsServerMessage::Subscribed { channel }
+                }
             }
             WsClientMessage::Unsubscribe { channel } => {
-                tracing::debug!(%channel, "WebSocket unsubscribe");
-                WsServerMessage::Unsubscribed { channel }
+                if !is_valid_channel(&channel) {
+                    WsServerMessage::Error {
+                        message: format!("invalid channel name: {channel}"),
+                    }
+                } else {
+                    tracing::debug!(%channel, "WebSocket unsubscribe");
+                    if let Some(session_id) = channel.strip_prefix("session:") {
+                        subscribed_sessions.remove(session_id);
+                    }
+                    WsServerMessage::Unsubscribed { channel }
+                }
             }
             // SessionInput is a dedicated typed message — it intentionally bypasses
             // the generic RPC allowlist since the WS connection is already authenticated.
             WsClientMessage::SessionInput { session_id, data } => {
-                let params = serde_json::json!({ "id": session_id, "data": data });
-                rpc_result(
-                    session_id,
-                    router.route("session.send_input", &params).await,
-                )
+                if !subscribed_sessions.contains(&session_id) {
+                    WsServerMessage::Error {
+                        message: format!(
+                            "not subscribed to session {session_id} — subscribe first"
+                        ),
+                    }
+                } else {
+                    let params = serde_json::json!({ "id": session_id, "data": data });
+                    rpc_result(
+                        session_id,
+                        router.route("session.send_input", &params).await,
+                    )
+                }
             }
             WsClientMessage::Rpc { id, method, params } => {
                 if !super::rpc_allowlist::is_allowed(&method) {
@@ -191,6 +249,7 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
 #[cfg(test)]
 mod tests {
     use super::super::rpc_allowlist;
+    use super::is_valid_channel;
 
     #[test]
     fn ws_rpc_rejects_blocked_methods() {
@@ -203,5 +262,23 @@ mod tests {
     fn ws_rpc_allows_safe_methods() {
         assert!(rpc_allowlist::is_allowed("task.list"));
         assert!(rpc_allowlist::is_allowed("project.status"));
+    }
+
+    #[test]
+    fn valid_channel_names_accepted() {
+        assert!(is_valid_channel("session:abc-123"));
+        assert!(is_valid_channel("tasks"));
+        assert!(is_valid_channel("project.status"));
+        assert!(is_valid_channel("a_b-c:d.e"));
+    }
+
+    #[test]
+    fn invalid_channel_names_rejected() {
+        assert!(!is_valid_channel(""));
+        assert!(!is_valid_channel(&"a".repeat(65)));
+        assert!(!is_valid_channel("foo bar"));
+        assert!(!is_valid_channel("foo/bar"));
+        assert!(!is_valid_channel("foo<bar>"));
+        assert!(!is_valid_channel("test\n"));
     }
 }

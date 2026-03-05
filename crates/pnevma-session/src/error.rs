@@ -10,4 +10,7 @@ pub enum SessionError {
 
     #[error("session spawn failed: {0}")]
     SpawnFailed(String),
+
+    #[error("session limit reached: {0}")]
+    LimitReached(String),
 }

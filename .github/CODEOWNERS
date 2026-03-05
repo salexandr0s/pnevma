@@ -1,0 +1,7 @@
+# Security-critical paths require security team review
+crates/pnevma-ssh/     @pnevma/security
+crates/pnevma-session/ @pnevma/security
+crates/pnevma-remote/  @pnevma/security
+crates/pnevma-bridge/  @pnevma/security
+crates/pnevma-db/      @pnevma/security
+.github/workflows/     @pnevma/security

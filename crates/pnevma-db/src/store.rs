@@ -46,12 +46,31 @@ impl Db {
         let db_path = project_root.as_ref().join(".pnevma/pnevma.db");
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o700);
+                std::fs::set_permissions(parent, perms).map_err(DbError::Io)?;
+            }
         }
 
         let uri = format!("sqlite://{}", db_path.to_string_lossy());
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&uri)
+            .await?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if db_path.exists() {
+                let perms = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(&db_path, perms).map_err(DbError::Io)?;
+            }
+        }
+
+        sqlx::query("PRAGMA journal_mode=WAL;")
+            .execute(&pool)
             .await?;
 
         let db = Self {

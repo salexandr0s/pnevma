@@ -3663,7 +3663,7 @@ pub async fn execute_registered_command(
     result
 }
 
-pub async fn pool_state(state: &AppState) -> Result<(usize, usize, usize), String> {
+pub async fn pool_state(state: &AppState) -> Result<(usize, usize, usize, usize), String> {
     let current = state.current.lock().await;
     let ctx = current
         .as_ref()

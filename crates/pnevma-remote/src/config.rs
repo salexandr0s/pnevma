@@ -24,6 +24,10 @@ fn default_serve_frontend() -> bool {
     true
 }
 
+fn default_tls_allow_self_signed() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteAccessConfig {
     #[serde(default)]
@@ -42,6 +46,8 @@ pub struct RemoteAccessConfig {
     pub serve_frontend: bool,
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    #[serde(default = "default_tls_allow_self_signed")]
+    pub tls_allow_self_signed_fallback: bool,
 }
 
 impl Default for RemoteAccessConfig {
@@ -55,6 +61,7 @@ impl Default for RemoteAccessConfig {
             max_ws_per_ip: default_max_ws(),
             serve_frontend: default_serve_frontend(),
             allowed_origins: vec![],
+            tls_allow_self_signed_fallback: false,
         }
     }
 }
