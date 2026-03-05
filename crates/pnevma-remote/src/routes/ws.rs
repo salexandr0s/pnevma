@@ -156,6 +156,8 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
                 tracing::debug!(%channel, "WebSocket unsubscribe");
                 WsServerMessage::Unsubscribed { channel }
             }
+            // SessionInput is a dedicated typed message — it intentionally bypasses
+            // the generic RPC allowlist since the WS connection is already authenticated.
             WsClientMessage::SessionInput { session_id, data } => {
                 let params = serde_json::json!({ "id": session_id, "data": data });
                 rpc_result(

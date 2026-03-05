@@ -2811,8 +2811,8 @@ mod redaction_tests {
     }
 
     #[test]
-    fn partial_match_is_not_redacted_as_whole_word() {
-        // Only the exact secret string is replaced, not a partial overlap.
+    fn partial_substring_is_replaced_literally() {
+        // The secret substring is replaced wherever it appears, even inside longer words.
         let secret = "secr".to_string();
         let input = "secret-value is here".to_string();
         let output = redact_text(&input, std::slice::from_ref(&secret));

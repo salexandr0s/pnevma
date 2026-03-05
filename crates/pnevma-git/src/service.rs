@@ -37,8 +37,8 @@ impl GitService {
         {
             // CONCURRENCY: Check-then-act on the lease map. The inner scope drops the
             // lock before performing git I/O so filesystem operations don't hold the mutex.
-            // A duplicate call with the same task_id will fail at the re-lock below if it
-            // races past this check, because we re-acquire and insert atomically there.
+            // NOTE: TOCTOU gap exists — if two calls for the same task_id race past this
+            // check, the second insert (line 70) will silently overwrite the first lease.
             let leases = self.leases.lock().await;
             if leases.contains_key(&task_id) {
                 return Err(GitError::LeaseViolation(format!(
