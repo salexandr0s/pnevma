@@ -40,6 +40,8 @@ pub struct RemoteAccessConfig {
     pub max_ws_per_ip: usize,
     #[serde(default = "default_serve_frontend")]
     pub serve_frontend: bool,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 impl Default for RemoteAccessConfig {
@@ -52,6 +54,7 @@ impl Default for RemoteAccessConfig {
             rate_limit_rpm: default_rate_limit(),
             max_ws_per_ip: default_max_ws(),
             serve_frontend: default_serve_frontend(),
+            allowed_origins: vec![],
         }
     }
 }

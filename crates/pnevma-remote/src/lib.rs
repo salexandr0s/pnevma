@@ -60,6 +60,7 @@ pub async fn start_remote_server(
         password.to_string(),
         config.token_ttl_hours,
     ));
+    token_store.spawn_cleanup();
 
     let app = server::build_router(&config, command_router, token_store, frontend_dir).await;
 

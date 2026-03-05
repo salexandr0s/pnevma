@@ -92,7 +92,7 @@ pub async fn build_router(
         .merge(api_router)
         .layer(middleware::from_fn(audit_log))
         .layer(middleware::from_fn(tailscale_guard))
-        .layer(cors_layer(vec![]))
+        .layer(cors_layer(config.allowed_origins.clone()))
         .layer(RequestBodyLimitLayer::new(2_097_152));
 
     // Optionally serve frontend SPA

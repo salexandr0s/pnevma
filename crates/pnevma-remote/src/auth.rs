@@ -6,6 +6,7 @@ use argon2::{
 };
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use std::sync::Arc;
 
 struct TokenEntry {
     created_at: DateTime<Utc>,
@@ -58,9 +59,6 @@ impl TokenStore {
     /// tokens the timing difference is not practically exploitable — an attacker
     /// cannot meaningfully narrow the key space via timing.
     pub fn validate_token(&self, token: &str) -> bool {
-        // Clean up first so we don't hold a ref while removing
-        self.cleanup_expired();
-
         if let Some(entry) = self.tokens.get(token) {
             let age_secs = (Utc::now() - entry.created_at).num_seconds();
             let ttl_secs = self.ttl_hours as i64 * 3600;
@@ -87,6 +85,18 @@ impl TokenStore {
         self.tokens.retain(|_, entry| {
             let age_secs = (Utc::now() - entry.created_at).num_seconds();
             age_secs < ttl_secs
+        });
+    }
+
+    /// Spawn a background task that evicts expired tokens every 5 minutes.
+    pub fn spawn_cleanup(self: &Arc<Self>) {
+        let store = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                store.cleanup_expired();
+            }
         });
     }
 
