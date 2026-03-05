@@ -24,7 +24,8 @@ pub use task::{
     TransitionError,
 };
 pub use workflow::{
-    FailurePolicy, StageResult, WorkflowDef, WorkflowInstance, WorkflowStatus, WorkflowStep,
+    ExecutionMode, FailurePolicy, StageResult, WorkflowDef, WorkflowInstance, WorkflowStatus,
+    WorkflowStep,
 };
 
 pub type ProjectId = uuid::Uuid;

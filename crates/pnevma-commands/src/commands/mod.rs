@@ -239,6 +239,12 @@ pub struct CreateTaskInput {
     pub auto_dispatch: Option<bool>,
     #[serde(default)]
     pub agent_profile_override: Option<String>,
+    #[serde(default)]
+    pub execution_mode: Option<String>,
+    #[serde(default)]
+    pub timeout_minutes: Option<i64>,
+    #[serde(default)]
+    pub max_retries: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +278,9 @@ pub struct TaskView {
     pub handoff_summary: Option<String>,
     pub auto_dispatch: bool,
     pub agent_profile_override: Option<String>,
+    pub execution_mode: Option<String>,
+    pub timeout_minutes: Option<i64>,
+    pub max_retries: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub queued_position: Option<usize>,
@@ -1267,6 +1276,9 @@ fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
         handoff_summary: row.handoff_summary.clone(),
         auto_dispatch: row.auto_dispatch,
         agent_profile_override: row.agent_profile_override.clone(),
+        execution_mode: row.execution_mode.clone(),
+        timeout_minutes: row.timeout_minutes,
+        max_retries: row.max_retries,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
@@ -1299,6 +1311,9 @@ fn task_contract_to_row(task: &TaskContract, project_id: &str) -> Result<TaskRow
         updated_at: task.updated_at,
         auto_dispatch: task.auto_dispatch,
         agent_profile_override: task.agent_profile_override.clone(),
+        execution_mode: task.execution_mode.clone(),
+        timeout_minutes: task.timeout_minutes,
+        max_retries: task.max_retries,
     })
 }
 
@@ -1327,6 +1342,9 @@ fn task_row_to_view(row: TaskRow, cost_usd: Option<f64>) -> Result<TaskView, Str
         handoff_summary: row.handoff_summary,
         auto_dispatch: row.auto_dispatch,
         agent_profile_override: row.agent_profile_override,
+        execution_mode: row.execution_mode,
+        timeout_minutes: row.timeout_minutes,
+        max_retries: row.max_retries,
         created_at: row.created_at,
         updated_at: row.updated_at,
         queued_position: None,

@@ -20,7 +20,7 @@ struct OnboardingView: View {
             VStack(spacing: 8) {
                 Image(systemName: "terminal")
                     .font(.system(size: 48))
-                    .foregroundStyle(.accentColor)
+                    .foregroundStyle(Color.accentColor)
                 Text("Welcome to Pnevma")
                     .font(.largeTitle)
                     .fontWeight(.bold)

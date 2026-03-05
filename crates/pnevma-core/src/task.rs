@@ -79,6 +79,9 @@ pub struct TaskContract {
     pub handoff_summary: Option<String>,
     pub auto_dispatch: bool,
     pub agent_profile_override: Option<String>,
+    pub execution_mode: Option<String>,
+    pub timeout_minutes: Option<i64>,
+    pub max_retries: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -169,6 +172,9 @@ mod tests {
             handoff_summary: None,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

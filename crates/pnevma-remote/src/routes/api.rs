@@ -115,8 +115,50 @@ pub async fn session_list(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoR
 
 // --- workflows ---
 
+pub async fn workflow_list(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
+    call(&r, "workflow.list", Value::Null).await
+}
+
 pub async fn workflow_list_defs(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
     call(&r, "workflow.list_defs", Value::Null).await
+}
+
+pub async fn workflow_create(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Json(params): Json<Value>,
+) -> impl IntoResponse {
+    call(&r, "workflow.create", params).await
+}
+
+pub async fn workflow_get(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut params = serde_json::json!({});
+    inject_id(&mut params, id);
+    call(&r, "workflow.get", params).await
+}
+
+pub async fn workflow_update(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Path(id): Path<String>,
+    Json(mut params): Json<Value>,
+) -> impl IntoResponse {
+    inject_id(&mut params, id);
+    call(&r, "workflow.update", params).await
+}
+
+pub async fn workflow_delete(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut params = serde_json::json!({});
+    inject_id(&mut params, id);
+    call(&r, "workflow.delete", params).await
+}
+
+pub async fn workflow_list_instances(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
+    call(&r, "workflow.list_instances", Value::Null).await
 }
 
 pub async fn workflow_instantiate(
@@ -124,6 +166,22 @@ pub async fn workflow_instantiate(
     Json(params): Json<Value>,
 ) -> impl IntoResponse {
     call(&r, "workflow.instantiate", params).await
+}
+
+pub async fn workflow_dispatch(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Json(params): Json<Value>,
+) -> impl IntoResponse {
+    call(&r, "workflow.dispatch", params).await
+}
+
+pub async fn workflow_get_instance(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut params = serde_json::json!({});
+    inject_id(&mut params, id);
+    call(&r, "workflow.get_instance", params).await
 }
 
 // --- generic RPC passthrough ---

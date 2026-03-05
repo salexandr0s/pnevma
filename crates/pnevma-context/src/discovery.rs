@@ -463,6 +463,9 @@ mod tests {
             handoff_summary: None,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

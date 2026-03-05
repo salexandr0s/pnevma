@@ -73,6 +73,12 @@ pub struct TaskRow {
     pub auto_dispatch: bool,
     /// Override agent profile for this specific task.
     pub agent_profile_override: Option<String>,
+    /// Execution isolation mode: "worktree" (default) or "main".
+    pub execution_mode: Option<String>,
+    /// Timeout override in minutes for this task.
+    pub timeout_minutes: Option<i64>,
+    /// Max retry attempts (0 = no retries).
+    pub max_retries: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

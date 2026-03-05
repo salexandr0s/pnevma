@@ -36,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         bridge = PnevmaBridge()
         if let bridge = bridge {
             commandBus = CommandBus(bridge: bridge)
+            CommandBus.shared = commandBus
         }
 
         // Verify bridge works (off main thread to avoid blocking app launch).

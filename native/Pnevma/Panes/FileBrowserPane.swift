@@ -82,7 +82,7 @@ struct FileRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: node.isDirectory ? "folder.fill" : fileIcon(node.name))
-                .foregroundStyle(node.isDirectory ? .accentColor : .secondary)
+                .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
                 .frame(width: 16)
             Text(node.name)
                 .font(.body)

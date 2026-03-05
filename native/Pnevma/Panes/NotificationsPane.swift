@@ -36,7 +36,7 @@ struct NotificationsView: View {
 
                 Button("Mark All Read") { viewModel.markAllRead() }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.accentColor)
+                    .foregroundStyle(Color.accentColor)
 
                 Button("Clear") { viewModel.clearAll() }
                     .buttonStyle(.plain)

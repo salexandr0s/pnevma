@@ -3,6 +3,8 @@ import Foundation
 /// Convenience wrapper for making typed calls to the Rust backend.
 /// All calls are dispatched to a background queue to avoid blocking the main thread.
 actor CommandBus {
+    static var shared: CommandBus!
+
     private let bridge: PnevmaBridge
 
     init(bridge: PnevmaBridge) {
@@ -14,6 +16,7 @@ actor CommandBus {
         let paramsJSON: String
         if let params = params {
             let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
             let data = try encoder.encode(params)
             paramsJSON = String(data: data, encoding: .utf8) ?? "{}"
         } else {
@@ -33,7 +36,9 @@ actor CommandBus {
                 }
 
                 do {
-                    let decoded = try JSONDecoder().decode(T.self, from: data)
+                    let decoder = JSONDecoder()
+                    decoder.keyDecodingStrategy = .convertFromSnakeCase
+                    let decoded = try decoder.decode(T.self, from: data)
                     continuation.resume(returning: decoded)
                 } catch {
                     continuation.resume(throwing: PnevmaError.decodingFailed(error))

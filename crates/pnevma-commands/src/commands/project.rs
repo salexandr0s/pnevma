@@ -3562,6 +3562,9 @@ pub async fn execute_registered_command(
                     priority,
                     auto_dispatch: None,
                     agent_profile_override: None,
+                    execution_mode: None,
+                    timeout_minutes: None,
+                    max_retries: None,
                 },
                 emitter,
                 state,
@@ -3713,6 +3716,9 @@ mod tests {
             updated_at: now,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
         }
     }
 

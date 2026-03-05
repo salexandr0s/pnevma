@@ -326,8 +326,8 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO tasks
-            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
             "#,
         )
         .bind(&task.id)
@@ -347,6 +347,9 @@ impl Db {
         .bind(task.updated_at)
         .bind(task.auto_dispatch)
         .bind(&task.agent_profile_override)
+        .bind(&task.execution_mode)
+        .bind(task.timeout_minutes)
+        .bind(task.max_retries)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -369,7 +372,10 @@ impl Db {
                 handoff_summary = ?12,
                 updated_at = ?13,
                 auto_dispatch = ?14,
-                agent_profile_override = ?15
+                agent_profile_override = ?15,
+                execution_mode = ?16,
+                timeout_minutes = ?17,
+                max_retries = ?18
             WHERE id = ?1
             "#,
         )
@@ -388,6 +394,9 @@ impl Db {
         .bind(task.updated_at)
         .bind(task.auto_dispatch)
         .bind(&task.agent_profile_override)
+        .bind(&task.execution_mode)
+        .bind(task.timeout_minutes)
+        .bind(task.max_retries)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -398,7 +407,7 @@ impl Db {
             r#"
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
                    priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
-                   auto_dispatch, agent_profile_override
+                   auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries
             FROM tasks
             WHERE id = ?1
             LIMIT 1
@@ -482,7 +491,7 @@ impl Db {
             r#"
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
                    priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
-                   auto_dispatch, agent_profile_override
+                   auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries
             FROM tasks
             WHERE project_id = ?1
             ORDER BY created_at DESC
@@ -2286,6 +2295,9 @@ mod tests {
             updated_at: now,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
         };
 
         db.create_task(&task).await.expect("create task");
@@ -2350,6 +2362,9 @@ mod tests {
             updated_at: now,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
         };
 
         let t1_id = Uuid::new_v4().to_string();
@@ -2566,6 +2581,9 @@ mod tests {
             updated_at: now2,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
         };
         db.create_task(&task_row).await.expect("create wf task");
         db.add_workflow_task(&instance.id, 0, &task_row.id)
@@ -2693,6 +2711,9 @@ mod tests {
             updated_at: now,
             auto_dispatch: false,
             agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
         };
         db.create_task(&task).await.expect("create task for wt");
 

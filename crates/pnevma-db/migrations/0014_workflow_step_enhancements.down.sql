@@ -1,0 +1,2 @@
+-- SQLite does not support DROP COLUMN before 3.35.0; these columns are safely ignored if unused.
+-- For full rollback, recreate the tasks table without these columns.

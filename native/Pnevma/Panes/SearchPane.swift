@@ -70,7 +70,7 @@ struct SearchView: View {
                         HStack {
                             Text(result.filePath)
                                 .font(.caption)
-                                .foregroundStyle(.accentColor)
+                                .foregroundStyle(Color.accentColor)
                             Text(":\(result.lineNumber)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

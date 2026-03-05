@@ -1021,6 +1021,9 @@ pub async fn create_task(
         handoff_summary: None,
         auto_dispatch: input.auto_dispatch.unwrap_or(false),
         agent_profile_override: input.agent_profile_override.clone(),
+        execution_mode: input.execution_mode.clone(),
+        timeout_minutes: input.timeout_minutes,
+        max_retries: input.max_retries,
         created_at: now,
         updated_at: now,
     };
@@ -1356,29 +1359,38 @@ pub async fn dispatch_task(
         .get(&provider)
         .ok_or_else(|| "no available agent adapters found".to_string())?;
 
-    let slug = slugify_with_fallback(&task.title, "task");
-    let lease = git
-        .create_worktree(task_id_uuid, &config.branches.target, &slug)
-        .await
-        .map_err(|e| e.to_string())?;
-    let worktree_row = WorktreeRow {
-        id: lease.id.to_string(),
-        project_id: project_id.to_string(),
-        task_id: task_id.clone(),
-        path: lease.path.clone(),
-        branch: lease.branch.clone(),
-        lease_status: "Active".to_string(),
-        lease_started: lease.started_at,
-        last_active: lease.last_active,
-    };
-    db.upsert_worktree(&worktree_row)
-        .await
-        .map_err(|e| e.to_string())?;
+    let execution_mode = row.execution_mode.as_deref().unwrap_or("worktree");
+    let use_worktree = execution_mode != "main";
+
+    let working_dir: String;
+    if use_worktree {
+        let slug = slugify_with_fallback(&task.title, "task");
+        let lease = git
+            .create_worktree(task_id_uuid, &config.branches.target, &slug)
+            .await
+            .map_err(|e| e.to_string())?;
+        let worktree_row = WorktreeRow {
+            id: lease.id.to_string(),
+            project_id: project_id.to_string(),
+            task_id: task_id.clone(),
+            path: lease.path.clone(),
+            branch: lease.branch.clone(),
+            lease_status: "Active".to_string(),
+            lease_started: lease.started_at,
+            last_active: lease.last_active,
+        };
+        db.upsert_worktree(&worktree_row)
+            .await
+            .map_err(|e| e.to_string())?;
+        working_dir = lease.path.clone();
+        task.branch = Some(lease.branch.clone());
+        task.worktree = Some(worktree_row.id.clone());
+    } else {
+        working_dir = project_path.to_string_lossy().to_string();
+    }
 
     task.transition(TaskStatus::InProgress)
         .map_err(|e| e.to_string())?;
-    task.branch = Some(lease.branch.clone());
-    task.worktree = Some(worktree_row.id.clone());
     let task_row = task_contract_to_row(&task, &project_id.to_string())?;
     db.update_task(&task_row).await.map_err(|e| e.to_string())?;
     emit_task_updated(&db, project_id, task.id).await;
@@ -1442,14 +1454,14 @@ pub async fn dispatch_task(
             prior_task_summaries,
         })
         .map_err(|e| e.to_string())?;
-    let context_path = PathBuf::from(&lease.path)
+    let context_path = PathBuf::from(&working_dir)
         .join(".pnevma")
         .join("task-context.md");
     let redacted_context_markdown = redact_text(&ctx_result.markdown, &secret_values);
     compiler
         .write_markdown(&redacted_context_markdown, &context_path)
         .map_err(|e| e.to_string())?;
-    let manifest_path = PathBuf::from(&lease.path)
+    let manifest_path = PathBuf::from(&working_dir)
         .join(".pnevma")
         .join("task-context.manifest.json");
     let redacted_manifest = redact_json_value(
@@ -1485,6 +1497,8 @@ pub async fn dispatch_task(
 
     let timeout_minutes = if let Some(ref profile) = profile_override {
         profile.timeout_minutes as u64
+    } else if let Some(task_timeout) = row.timeout_minutes.filter(|&t| t > 0) {
+        task_timeout as u64
     } else {
         match provider.as_str() {
             "codex" => config
@@ -1534,7 +1548,7 @@ pub async fn dispatch_task(
             provider: provider.clone(),
             model,
             env: secret_env,
-            working_dir: lease.path.clone(),
+            working_dir: working_dir.clone(),
             timeout_minutes,
             auto_approve,
             output_format: "stream-json".to_string(),
@@ -1550,10 +1564,10 @@ pub async fn dispatch_task(
         r#type: Some("agent".to_string()),
         status: "running".to_string(),
         pid: None,
-        cwd: lease.path.clone(),
+        cwd: working_dir.clone(),
         command: provider.clone(),
-        branch: Some(lease.branch.clone()),
-        worktree_id: Some(worktree_row.id.clone()),
+        branch: task.branch.clone(),
+        worktree_id: task.worktree.clone(),
         started_at: Utc::now(),
         last_heartbeat: Utc::now(),
     };
@@ -1583,8 +1597,8 @@ pub async fn dispatch_task(
                 objective: task.goal.clone(),
                 constraints: task.constraints.clone(),
                 project_rules: rules.clone(),
-                worktree_path: lease.path.clone(),
-                branch_name: lease.branch.clone(),
+                worktree_path: working_dir.clone(),
+                branch_name: task.branch.clone().unwrap_or_default(),
                 acceptance_checks: task
                     .acceptance_criteria
                     .iter()

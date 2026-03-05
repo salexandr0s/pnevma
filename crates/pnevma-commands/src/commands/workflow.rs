@@ -273,7 +273,10 @@ pub async fn dispatch_workflow(
             created_at: now,
             updated_at: now,
             auto_dispatch: step.auto_dispatch,
-            agent_profile_override: None,
+            agent_profile_override: step.agent_profile.clone(),
+            execution_mode: Some(step.execution_mode.as_str().to_string()),
+            timeout_minutes: step.timeout_minutes.map(|v| v as i64),
+            max_retries: step.max_retries.map(|v| v as i64),
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -312,8 +315,10 @@ pub async fn dispatch_workflow(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDefView {
+    pub id: Option<String>,
     pub name: String,
     pub description: Option<String>,
+    pub source: String,
     pub steps: Vec<WorkflowStepView>,
 }
 
@@ -325,6 +330,13 @@ pub struct WorkflowStepView {
     pub priority: String,
     pub depends_on: Vec<usize>,
     pub auto_dispatch: bool,
+    pub agent_profile: Option<String>,
+    pub execution_mode: String,
+    pub timeout_minutes: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub acceptance_criteria: Vec<String>,
+    pub constraints: Vec<String>,
+    pub on_failure: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,32 +350,75 @@ pub struct WorkflowInstanceView {
     pub updated_at: DateTime<Utc>,
 }
 
+fn step_to_view(s: pnevma_core::WorkflowStep) -> WorkflowStepView {
+    WorkflowStepView {
+        title: s.title,
+        goal: s.goal,
+        scope: s.scope,
+        priority: s.priority,
+        depends_on: s.depends_on,
+        auto_dispatch: s.auto_dispatch,
+        agent_profile: s.agent_profile,
+        execution_mode: s.execution_mode.as_str().to_string(),
+        timeout_minutes: s.timeout_minutes,
+        max_retries: s.max_retries,
+        acceptance_criteria: s.acceptance_criteria,
+        constraints: s.constraints,
+        on_failure: s.on_failure.as_str().to_string(),
+    }
+}
+
 pub async fn list_workflow_defs(state: &AppState) -> Result<Vec<WorkflowDefView>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let workflows_dir = ctx.project_path.join(".pnevma").join("workflows");
-    let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
-    Ok(defs
-        .into_iter()
-        .map(|d| WorkflowDefView {
-            name: d.name,
-            description: d.description,
-            steps: d
-                .steps
-                .into_iter()
-                .map(|s| WorkflowStepView {
-                    title: s.title,
-                    goal: s.goal,
-                    scope: s.scope,
-                    priority: s.priority,
-                    depends_on: s.depends_on,
-                    auto_dispatch: s.auto_dispatch,
-                })
-                .collect(),
-        })
-        .collect())
+    let (project_id, db, project_path) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (ctx.project_id, ctx.db.clone(), ctx.project_path.clone())
+    };
+
+    let mut result_map: std::collections::HashMap<String, WorkflowDefView> =
+        std::collections::HashMap::new();
+
+    // Load YAML file definitions.
+    let workflows_dir = project_path.join(".pnevma").join("workflows");
+    let yaml_defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
+    for d in yaml_defs {
+        result_map.insert(
+            d.name.clone(),
+            WorkflowDefView {
+                id: None,
+                name: d.name,
+                description: d.description,
+                source: "yaml".to_string(),
+                steps: d.steps.into_iter().map(step_to_view).collect(),
+            },
+        );
+    }
+
+    // Load DB definitions (DB wins on name collision).
+    let db_rows = db
+        .list_workflows(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    for row in db_rows {
+        if let Ok(def) = WorkflowDef::from_yaml(&row.definition_yaml) {
+            result_map.insert(
+                def.name.clone(),
+                WorkflowDefView {
+                    id: Some(row.id),
+                    name: def.name,
+                    description: row.description.or(def.description),
+                    source: row.source,
+                    steps: def.steps.into_iter().map(step_to_view).collect(),
+                },
+            );
+        }
+    }
+
+    let mut views: Vec<WorkflowDefView> = result_map.into_values().collect();
+    views.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(views)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,7 +507,10 @@ pub async fn instantiate_workflow(
             created_at: now,
             updated_at: now,
             auto_dispatch: step.auto_dispatch,
-            agent_profile_override: None,
+            agent_profile_override: step.agent_profile.clone(),
+            execution_mode: Some(step.execution_mode.as_str().to_string()),
+            timeout_minutes: step.timeout_minutes.map(|v| v as i64),
+            max_retries: step.max_retries.map(|v| v as i64),
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -522,4 +580,93 @@ pub async fn list_workflow_instances(
     }
 
     Ok(views)
+}
+
+// ─── Workflow instance detail ──────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowInstanceDetailView {
+    pub id: String,
+    pub workflow_name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub steps: Vec<WorkflowInstanceStepView>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowInstanceStepView {
+    pub step_index: i64,
+    pub task_id: String,
+    pub title: String,
+    pub goal: String,
+    pub status: String,
+    pub priority: String,
+    pub depends_on: Vec<String>,
+    pub agent_profile: Option<String>,
+    pub execution_mode: String,
+    pub branch: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub async fn get_workflow_instance(
+    id: String,
+    state: &AppState,
+) -> Result<WorkflowInstanceDetailView, String> {
+    let db = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        ctx.db.clone()
+    };
+
+    let inst = db
+        .get_workflow_instance(&id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("workflow instance '{id}' not found"))?;
+
+    let wf_tasks = db
+        .list_workflow_tasks(&inst.id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut steps = Vec::with_capacity(wf_tasks.len());
+    for wt in wf_tasks {
+        let task = db
+            .get_task(&wt.task_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task '{}' not found for workflow step", wt.task_id))?;
+        let deps: Vec<String> = serde_json::from_str(&task.dependencies_json).unwrap_or_default();
+        steps.push(WorkflowInstanceStepView {
+            step_index: wt.step_index,
+            task_id: wt.task_id,
+            title: task.title,
+            goal: task.goal,
+            status: task.status,
+            priority: task.priority,
+            depends_on: deps,
+            agent_profile: task.agent_profile_override,
+            execution_mode: task
+                .execution_mode
+                .unwrap_or_else(|| "worktree".to_string()),
+            branch: task.branch,
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+        });
+    }
+
+    Ok(WorkflowInstanceDetailView {
+        id: inst.id,
+        workflow_name: inst.workflow_name,
+        description: inst.description,
+        status: inst.status,
+        steps,
+        created_at: inst.created_at,
+        updated_at: inst.updated_at,
+    })
 }

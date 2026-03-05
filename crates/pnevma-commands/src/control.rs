@@ -501,6 +501,9 @@ pub async fn route_method(
                     priority,
                     auto_dispatch: None,
                     agent_profile_override: None,
+                    execution_mode: None,
+                    timeout_minutes: None,
+                    max_retries: None,
                 },
                 &state.emitter,
                 state,
@@ -582,6 +585,104 @@ pub async fn route_method(
         }
         "workflow.list_instances" => serde_json::to_value(
             commands::list_workflow_instances(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workflow.list" => serde_json::to_value(
+            commands::list_workflows(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workflow.get" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::get_workflow(id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workflow.create" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let definition_yaml = parse_string_param(params, "definition_yaml")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let description = parse_optional_string_param(params, "description");
+            serde_json::to_value(
+                commands::create_workflow(
+                    commands::CreateWorkflowInput {
+                        name,
+                        description,
+                        definition_yaml,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workflow.update" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let name = parse_optional_string_param(params, "name");
+            let description = parse_optional_string_param(params, "description");
+            let definition_yaml = parse_optional_string_param(params, "definition_yaml");
+            serde_json::to_value(
+                commands::update_workflow(
+                    commands::UpdateWorkflowInput {
+                        id,
+                        name,
+                        description,
+                        definition_yaml,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workflow.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_workflow(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "workflow.dispatch" => {
+            let workflow_name = parse_string_param(params, "workflow_name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let params_val = params.get("params").cloned();
+            let result = commands::dispatch_workflow(
+                commands::DispatchWorkflowInput {
+                    workflow_name,
+                    params: params_val,
+                },
+                &state.emitter,
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workflow.get_instance" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::get_workflow_instance(id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent_profile.list" => serde_json::to_value(
+            commands::list_agent_profiles(state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )

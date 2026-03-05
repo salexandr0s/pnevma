@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use tower_http::limit::RequestBodyLimitLayer;
@@ -69,11 +69,22 @@ pub async fn build_router(
         // session.new is deliberately excluded from the RPC allowlist — no POST route.
         // session.send_input is excluded from RPC allowlist — no REST route either.
         .route("/api/sessions", get(api::session_list))
-        .route("/api/workflows", get(api::workflow_list_defs))
+        .route("/api/workflows", get(api::workflow_list))
+        .route("/api/workflows/defs", get(api::workflow_list_defs))
+        .route("/api/workflows", post(api::workflow_create))
         .route(
-            "/api/workflows/instantiate",
-            post(api::workflow_instantiate),
+            "/api/workflows/instances",
+            get(api::workflow_list_instances),
         )
+        .route("/api/workflows/instances", post(api::workflow_instantiate))
+        .route(
+            "/api/workflows/instances/:id",
+            get(api::workflow_get_instance),
+        )
+        .route("/api/workflows/dispatch", post(api::workflow_dispatch))
+        .route("/api/workflows/:id", get(api::workflow_get))
+        .route("/api/workflows/:id", put(api::workflow_update))
+        .route("/api/workflows/:id", delete(api::workflow_delete))
         .route("/api/rpc", post(api::rpc))
         .merge(ws_router)
         .with_state(router)

@@ -32,6 +32,34 @@ pub struct WorkflowDef {
     pub steps: Vec<WorkflowStep>,
 }
 
+/// Execution isolation mode for a workflow step.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    #[default]
+    Worktree,
+    Main,
+}
+
+impl ExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Worktree => "worktree",
+            Self::Main => "main",
+        }
+    }
+}
+
+impl FailurePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pause => "Pause",
+            Self::RetryOnce => "RetryOnce",
+            Self::Skip => "Skip",
+        }
+    }
+}
+
 /// A single step in a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStep {
@@ -53,6 +81,18 @@ pub struct WorkflowStep {
     /// What to do if this step fails.
     #[serde(default)]
     pub on_failure: FailurePolicy,
+    /// Agent profile name (references AgentProfileRow.name). Overrides project default.
+    #[serde(default)]
+    pub agent_profile: Option<String>,
+    /// Execution isolation mode for this step.
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
+    /// Timeout override in minutes. Falls back to agent profile or config default.
+    #[serde(default)]
+    pub timeout_minutes: Option<u64>,
+    /// Max retry attempts (0 = no retries).
+    #[serde(default)]
+    pub max_retries: Option<u32>,
 }
 
 fn default_priority() -> String {
@@ -155,6 +195,27 @@ impl WorkflowDef {
                 if dep == i {
                     return Err(CoreError::InvalidConfig(format!(
                         "step {i} cannot depend on itself"
+                    )));
+                }
+            }
+            if let Some(t) = step.timeout_minutes {
+                if t == 0 {
+                    return Err(CoreError::InvalidConfig(format!(
+                        "step {i} timeout_minutes must be > 0 if set"
+                    )));
+                }
+            }
+            if let Some(r) = step.max_retries {
+                if r > 5 {
+                    return Err(CoreError::InvalidConfig(format!(
+                        "step {i} max_retries must be <= 5 (got {r})"
+                    )));
+                }
+            }
+            if let Some(ref profile) = step.agent_profile {
+                if profile.trim().is_empty() {
+                    return Err(CoreError::InvalidConfig(format!(
+                        "step {i} agent_profile must not be empty if set"
                     )));
                 }
             }
@@ -289,6 +350,84 @@ steps:
 "#;
         let wf = WorkflowDef::from_yaml(yaml).unwrap();
         assert_eq!(wf.steps[0].priority, "P1");
+    }
+
+    #[test]
+    fn parse_new_step_fields() {
+        let yaml = r#"
+name: "Multi-Model"
+steps:
+  - title: "Plan"
+    goal: "Create plan"
+    agent_profile: "opus-planner"
+    execution_mode: main
+    timeout_minutes: 45
+    max_retries: 2
+  - title: "Build"
+    goal: "Implement"
+    depends_on: [0]
+    execution_mode: worktree
+"#;
+        let wf = WorkflowDef::from_yaml(yaml).unwrap();
+        assert_eq!(wf.steps[0].agent_profile.as_deref(), Some("opus-planner"));
+        assert_eq!(wf.steps[0].execution_mode, ExecutionMode::Main);
+        assert_eq!(wf.steps[0].timeout_minutes, Some(45));
+        assert_eq!(wf.steps[0].max_retries, Some(2));
+        assert_eq!(wf.steps[1].execution_mode, ExecutionMode::Worktree);
+        assert_eq!(wf.steps[1].agent_profile, None);
+        assert_eq!(wf.steps[1].timeout_minutes, None);
+    }
+
+    #[test]
+    fn reject_zero_timeout() {
+        let yaml = r#"
+name: "Bad"
+steps:
+  - title: "A"
+    goal: "Do A"
+    timeout_minutes: 0
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err.to_string().contains("timeout_minutes must be > 0"));
+    }
+
+    #[test]
+    fn reject_excessive_retries() {
+        let yaml = r#"
+name: "Bad"
+steps:
+  - title: "A"
+    goal: "Do A"
+    max_retries: 10
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err.to_string().contains("max_retries must be <= 5"));
+    }
+
+    #[test]
+    fn reject_empty_agent_profile() {
+        let yaml = r#"
+name: "Bad"
+steps:
+  - title: "A"
+    goal: "Do A"
+    agent_profile: "  "
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err.to_string().contains("agent_profile must not be empty"));
+    }
+
+    #[test]
+    fn execution_mode_as_str() {
+        assert_eq!(ExecutionMode::Worktree.as_str(), "worktree");
+        assert_eq!(ExecutionMode::Main.as_str(), "main");
+    }
+
+    #[test]
+    fn failure_policy_as_str() {
+        assert_eq!(FailurePolicy::Pause.as_str(), "Pause");
+        assert_eq!(FailurePolicy::RetryOnce.as_str(), "RetryOnce");
+        assert_eq!(FailurePolicy::Skip.as_str(), "Skip");
     }
 
     // ── Proptest helpers ──────────────────────────────────────────────────────
