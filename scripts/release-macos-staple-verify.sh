@@ -2,8 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_PATH_DEFAULT="$ROOT_DIR/target/release/bundle/macos/Pnevma.app"
-APP_PATH="${APP_PATH:-$APP_PATH_DEFAULT}"
+APP_PATH="${APP_PATH:-$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "App bundle not found at $APP_PATH"

@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-sign:
+    name: Build, sign, and notarize
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Quality gates
+        run: |
+          cargo fmt --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          cargo install cargo-deny --locked
+          cargo deny check
+
+      - name: Build Rust staticlib (release)
+        run: cargo build -p pnevma-bridge --release --target aarch64-apple-darwin
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: cd native && xcodegen generate
+
+      - name: Build native app (release)
+        run: |
+          xcodebuild build \
+            -project native/Pnevma.xcodeproj \
+            -scheme Pnevma \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            SYMROOT="$GITHUB_WORKSPACE/native/build" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Sign app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app"
+          APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
+
+      - name: Notarize app
+        env:
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+        run: |
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app"
+          APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh
+
+      - name: Staple and verify
+        run: |
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app"
+          APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh
+
+      - name: Generate SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --output-cdx
+
+      - name: Package release archive
+        run: |
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app"
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE="Pnevma-${VERSION}-macos-arm64.tar.gz"
+          tar -czf "$ARCHIVE" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Pnevma $VERSION" \
+            --generate-notes \
+            "$ARCHIVE" \
+            ./**/bom.cdx.json
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-FRONTEND_DIR="$ROOT_DIR/frontend"
+NATIVE_DIR="$ROOT_DIR/native"
 FAILURES=0
 
 print_check() {
@@ -55,72 +55,51 @@ run_root_cmd() {
   run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$ROOT_DIR" "$@"
 }
 
-run_frontend_cmd() {
-  local label="$1"
-  shift
-  run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$FRONTEND_DIR" "$@"
-}
+# ── Tooling checks ──────────────────────────────────────────────────────────
 
 check_cmd cargo
 check_cmd rustc
 check_cmd git
-check_cmd node
-check_cmd npm
-check_cmd npx
 check_cmd xcrun
 check_cmd codesign
+check_cmd xcodebuild
+check_cmd xcodegen
 
-print_check "tooling: cargo-tauri subcommand"
-if ! cargo tauri --version >/dev/null 2>&1; then
-  fail "cargo tauri subcommand unavailable (run: cargo install tauri-cli)"
+# ── Rust quality gates ───────────────────────────────────────────────────────
+
+run_root_cmd "cargo fmt --all -- --check" cargo fmt --all -- --check
+run_root_cmd "cargo clippy --workspace --all-targets -- -D warnings" cargo clippy --workspace --all-targets -- -D warnings
+run_root_cmd "cargo test --workspace" cargo test --workspace
+run_root_cmd "cargo deny check" cargo deny check
+
+# ── Native build validation ──────────────────────────────────────────────────
+
+print_check "xcodegen: generate project"
+if (cd "$NATIVE_DIR" && xcodegen generate --spec project.yml --project . >/dev/null 2>&1); then
+  pass "xcodegen project generated"
 else
-  pass "cargo tauri subcommand is available"
+  fail "xcodegen project generation failed"
 fi
 
-run_root_cmd "cargo fmt --all -- --check" "cargo fmt --all -- --check"
-run_root_cmd "cargo clippy --workspace --all-targets -- -D warnings" "cargo clippy --workspace --all-targets -- -D warnings"
-run_root_cmd "cargo test --workspace" "cargo test --workspace"
+print_check "xcodebuild: release build"
+if xcodebuild build -project "$NATIVE_DIR/Pnevma.xcodeproj" -scheme Pnevma -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO >/dev/null 2>&1; then
+  pass "xcodebuild release build succeeded"
+else
+  fail "xcodebuild release build failed"
+fi
 
-run_frontend_cmd "npx tsc --noEmit" "npx tsc --noEmit"
-run_frontend_cmd "npx eslint ." "npx eslint ."
-run_frontend_cmd "npx vite build" "npx vite build"
+# ── Environment variables for signing ────────────────────────────────────────
 
 for key in \
   APPLE_SIGNING_IDENTITY \
   APPLE_NOTARY_PROFILE \
-  PNEVMA_UPDATER_ENDPOINT \
-  PNEVMA_UPDATER_PUBKEY \
-  PNEVMA_UPDATER_PRIVATE_KEY_PATH \
   VERSION \
-  TARGET_TRIPLE \
-  BASE_URL
+  TARGET_TRIPLE
 do
   check_env_var "$key"
 done
 
-print_check "env: updater private key path exists"
-if [[ -n "${PNEVMA_UPDATER_PRIVATE_KEY_PATH:-}" && -f "${PNEVMA_UPDATER_PRIVATE_KEY_PATH:-}" ]]; then
-  pass "updater private key found"
-else
-  fail "updater private key missing: ${PNEVMA_UPDATER_PRIVATE_KEY_PATH:-<unset>}"
-fi
-
-TMP_OVERLAY="$(mktemp "${TMPDIR:-/tmp}/pnevma-updater-overlay.XXXXXX.json")"
-cleanup() {
-  rm -f "$TMP_OVERLAY"
-}
-trap cleanup EXIT
-
-run_check "updater overlay generation" bash -lc 'cd "$1" && OVERLAY_PATH="$2" ./scripts/release-updater-overlay.sh' -- "$ROOT_DIR" "$TMP_OVERLAY"
-run_check "updater overlay schema sanity" node -e '
-const fs = require("fs");
-const path = process.argv[1];
-const payload = JSON.parse(fs.readFileSync(path, "utf8"));
-const updater = payload?.plugins?.updater;
-if (!updater || updater.active !== true) process.exit(1);
-if (!Array.isArray(updater.endpoints) || updater.endpoints.length === 0) process.exit(1);
-if (typeof updater.pubkey !== "string" || updater.pubkey.trim() === "") process.exit(1);
-' "$TMP_OVERLAY"
+# ── Summary ──────────────────────────────────────────────────────────────────
 
 printf "\n---- Release Preflight Summary ----\n"
 if [[ "$FAILURES" -gt 0 ]]; then

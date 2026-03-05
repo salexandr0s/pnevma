@@ -2,11 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_PATH_DEFAULT="$ROOT_DIR/target/release/bundle/macos/Pnevma.app"
-APP_PATH="${APP_PATH:-$APP_PATH_DEFAULT}"
+APP_PATH="${APP_PATH:-$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app}"
 NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
-ZIP_PATH_DEFAULT="$ROOT_DIR/target/release/bundle/macos/Pnevma-notarize.zip"
-ZIP_PATH="${ZIP_PATH:-$ZIP_PATH_DEFAULT}"
+ZIP_PATH="${ZIP_PATH:-$ROOT_DIR/native/build/Pnevma-notarize.zip}"
 
 if [[ -z "$NOTARY_PROFILE" ]]; then
   echo "APPLE_NOTARY_PROFILE is required (xcrun notarytool keychain profile name)"
