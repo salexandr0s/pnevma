@@ -10,4 +10,6 @@
 // exist yet (e.g. before the ghostty build step has run), the Swift compiler will
 // fail with a clear error rather than silently producing a broken binary.
 // Use `#if canImport(GhosttyKit)` in Swift files to guard ghostty-specific code.
+#if __has_include("../../vendor/ghostty/include/ghostty.h")
 #include "../../vendor/ghostty/include/ghostty.h"
+#endif

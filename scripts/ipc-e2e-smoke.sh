@@ -10,12 +10,12 @@ TITLE="${TITLE:-IPC Smoke Task}"
 GOAL="${GOAL:-Validate control-plane end-to-end path}"
 
 echo "[1/7] environment.readiness"
-READINESS_JSON="$(pnevma_ctl environment.readiness "{\"path\":\"${PROJECT_PATH:-.}\"}")"
+READINESS_JSON="$(pnevma_ctl environment.readiness "$(jq -n --arg path "${PROJECT_PATH:-.}" '{"path": $path}')")"
 echo "$READINESS_JSON"
 
 if [[ -n "$PROJECT_PATH" ]]; then
   echo "[2/7] project.initialize_scaffold ($PROJECT_PATH)"
-  pnevma_ctl project.initialize_scaffold "{\"path\":\"$PROJECT_PATH\"}"
+  pnevma_ctl project.initialize_scaffold "$(jq -n --arg path "$PROJECT_PATH" '{"path": $path}')"
 else
   echo "[2/7] skip scaffold init (PROJECT_PATH not provided)"
 fi
@@ -24,7 +24,7 @@ echo "[3/7] project.status (requires an already-open project in running app)"
 pnevma_ctl project.status
 
 echo "[4/7] task.create"
-CREATE_JSON="$(pnevma_ctl task.create "{\"title\":\"$TITLE\",\"goal\":\"$GOAL\",\"priority\":\"P1\",\"acceptance_criteria\":[\"manual review\"]}")"
+CREATE_JSON="$(pnevma_ctl task.create "$(jq -n --arg title "$TITLE" --arg goal "$GOAL" '{"title": $title, "goal": $goal, "priority": "P1", "acceptance_criteria": ["manual review"]}')")"
 echo "$CREATE_JSON"
 TASK_ID="$(printf '%s' "$CREATE_JSON" | tr -d '\n' | sed -n 's/.*"task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 if [[ -z "$TASK_ID" ]]; then
@@ -44,7 +44,7 @@ if printf '%s' "$READINESS_JSON" | grep -q '"detected_adapters": \[\]'; then
 fi
 
 echo "[7/7] task.dispatch (optional)"
-if pnevma_ctl task.dispatch "{\"task_id\":\"$TASK_ID\"}"; then
+if pnevma_ctl task.dispatch "$(jq -n --arg id "$TASK_ID" '{"task_id": $id}')"; then
   echo "dispatch requested for $TASK_ID"
 else
   echo "dispatch request failed (continuing; environment may be missing provider auth/config)"

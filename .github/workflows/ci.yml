@@ -67,10 +67,22 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build Rust staticlib
-        run: cargo build -p pnevma-bridge --release
+        run: cargo build -p pnevma-bridge --release --target aarch64-apple-darwin
 
       - name: Verify staticlib exists
-        run: test -f target/release/libpnevma_bridge.a
+        run: test -f target/aarch64-apple-darwin/release/libpnevma_bridge.a
 
       - name: Verify cbindgen header
         run: test -f crates/pnevma-bridge/pnevma-bridge.h
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: cd native && xcodegen generate
+
+      - name: Build Swift app
+        run: xcodebuild build -project native/Pnevma.xcodeproj -scheme Pnevma -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+
+      - name: Run Swift tests
+        run: xcodebuild test -project native/Pnevma.xcodeproj -scheme PnevmaTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO

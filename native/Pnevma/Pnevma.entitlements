@@ -2,10 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Required by Ghostty for Metal GPU shader compilation (JIT) -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
+    <!-- Required by Ghostty for Metal GPU rendering with unsigned executable memory -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
+    <!-- Required for loading the Ghostty dynamic library without code signature validation.
+         TODO: Investigate if ghostty works without this entitlement when statically linked. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
 </dict>

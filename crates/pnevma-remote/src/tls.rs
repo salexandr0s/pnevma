@@ -70,22 +70,14 @@ fn build_rustls_config_from_pem(
     cert_pem: &[u8],
     key_pem: &[u8],
 ) -> Result<ServerConfig, RemoteError> {
-    use rustls_pemfile::{certs, pkcs8_private_keys};
-    use std::io::BufReader;
+    use rustls_pki_types::pem::PemObject;
 
-    let certs: Vec<CertificateDer<'static>> = certs(&mut BufReader::new(cert_pem))
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| RemoteError::Tls(format!("Failed to parse certs: {e}")))?;
 
-    let keys: Vec<PrivatePkcs8KeyDer<'static>> = pkcs8_private_keys(&mut BufReader::new(key_pem))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| RemoteError::Tls(format!("Failed to parse keys: {e}")))?;
-
-    let key = keys
-        .into_iter()
-        .next()
-        .map(PrivateKeyDer::Pkcs8)
-        .ok_or_else(|| RemoteError::Tls("No private key found in PEM".to_string()))?;
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|e| RemoteError::Tls(format!("Failed to parse key: {e}")))?;
 
     build_server_config(certs, key)
 }

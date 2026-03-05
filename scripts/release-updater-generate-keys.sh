@@ -9,7 +9,8 @@ mkdir -p "$(dirname "$KEY_PATH")"
 
 args=(tauri signer generate --ci -w "$KEY_PATH")
 if [[ -n "$KEY_PASSWORD" ]]; then
-  args+=(-p "$KEY_PASSWORD")
+  # Tauri CLI reads password from this env var — avoids exposing it in process args.
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$KEY_PASSWORD"
 fi
 if [[ "$FORCE" == "true" ]]; then
   args+=(--force)

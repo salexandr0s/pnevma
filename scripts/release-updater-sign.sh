@@ -27,15 +27,13 @@ SIGNATURE_PATH="${SIGNATURE_PATH:-$ARTIFACT_PATH.sig}"
 generated_sig="${ARTIFACT_PATH}.sig"
 
 if [[ -n "$UPDATER_KEY_PASSWORD" ]]; then
-  cargo tauri signer sign \
-    -f "$UPDATER_KEY_PATH" \
-    -p "$UPDATER_KEY_PASSWORD" \
-    "$ARTIFACT_PATH" >/dev/null
-else
-  cargo tauri signer sign \
-    -f "$UPDATER_KEY_PATH" \
-    "$ARTIFACT_PATH" >/dev/null
+  # Tauri CLI reads password from this env var — avoids exposing it in process args.
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$UPDATER_KEY_PASSWORD"
 fi
+
+cargo tauri signer sign \
+  -f "$UPDATER_KEY_PATH" \
+  "$ARTIFACT_PATH" >/dev/null
 
 if [[ ! -f "$generated_sig" ]]; then
   echo "Signer did not produce expected signature file: $generated_sig"

@@ -156,19 +156,28 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
                 }
             }
             WsClientMessage::Rpc { id, method, params } => {
-                match router.route(&method, &params).await {
-                    Ok(result) => WsServerMessage::RpcResult {
-                        id,
-                        ok: true,
-                        result: Some(result),
-                        error: None,
-                    },
-                    Err(e) => WsServerMessage::RpcResult {
+                if !super::rpc_allowlist::is_allowed(&method) {
+                    WsServerMessage::RpcResult {
                         id,
                         ok: false,
                         result: None,
-                        error: Some(e),
-                    },
+                        error: Some(format!("method not allowed via RPC: {method}")),
+                    }
+                } else {
+                    match router.route(&method, &params).await {
+                        Ok(result) => WsServerMessage::RpcResult {
+                            id,
+                            ok: true,
+                            result: Some(result),
+                            error: None,
+                        },
+                        Err(e) => WsServerMessage::RpcResult {
+                            id,
+                            ok: false,
+                            result: None,
+                            error: Some(e),
+                        },
+                    }
                 }
             }
         };
@@ -184,5 +193,23 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
         if sender.send(Message::Text(text.into())).await.is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::rpc_allowlist;
+
+    #[test]
+    fn ws_rpc_rejects_blocked_methods() {
+        assert!(!rpc_allowlist::is_allowed("session.new"));
+        assert!(!rpc_allowlist::is_allowed("trust_workspace"));
+        assert!(!rpc_allowlist::is_allowed("ssh.connect"));
+    }
+
+    #[test]
+    fn ws_rpc_allows_safe_methods() {
+        assert!(rpc_allowlist::is_allowed("task.list"));
+        assert!(rpc_allowlist::is_allowed("project.status"));
     }
 }

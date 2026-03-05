@@ -52,13 +52,13 @@ run_check() {
 run_root_cmd() {
   local label="$1"
   shift
-  run_check "$label" bash -lc "cd \"$ROOT_DIR\" && $*"
+  run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$ROOT_DIR" "$@"
 }
 
 run_frontend_cmd() {
   local label="$1"
   shift
-  run_check "$label" bash -lc "cd \"$FRONTEND_DIR\" && $*"
+  run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$FRONTEND_DIR" "$@"
 }
 
 check_cmd cargo
@@ -111,7 +111,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-run_check "updater overlay generation" bash -lc "cd \"$ROOT_DIR\" && OVERLAY_PATH=\"$TMP_OVERLAY\" ./scripts/release-updater-overlay.sh"
+run_check "updater overlay generation" bash -lc 'cd "$1" && OVERLAY_PATH="$2" ./scripts/release-updater-overlay.sh' -- "$ROOT_DIR" "$TMP_OVERLAY"
 run_check "updater overlay schema sanity" node -e '
 const fs = require("fs");
 const path = process.argv[1];

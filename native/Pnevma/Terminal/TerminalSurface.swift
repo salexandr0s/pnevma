@@ -1,4 +1,5 @@
 import Cocoa
+import os
 
 // MARK: - TerminalSurface
 
@@ -23,7 +24,7 @@ class TerminalSurface {
 
         let termConfig = TerminalConfig()
         guard let ghosttyConfig = termConfig.config else {
-            print("[TerminalSurface] ERROR: failed to load ghostty config")
+            Log.terminal.error("Failed to load ghostty config")
             return
         }
 
@@ -54,9 +55,10 @@ class TerminalSurface {
                 }
             },
             confirm_read_clipboard_cb: { _, _, _, statePtr in
-                // Auto-confirm all OSC 52 reads without prompting.
+                // Deny OSC 52 clipboard reads by default for security.
+                // TODO: Add user preference to control clipboard read access.
                 guard let statePtr = statePtr else { return }
-                ghostty_runtime_clipboard_confirm_request(statePtr, true)
+                ghostty_runtime_clipboard_confirm_request(statePtr, false)
             },
             write_clipboard_cb: { _, loc, content, count, confirm in
                 guard let content = content, count > 0 else { return }
@@ -76,10 +78,10 @@ class TerminalSurface {
 
         ghosttyApp = ghostty_app_new(&runtimeConfig, ghosttyConfig)
         if ghosttyApp == nil {
-            print("[TerminalSurface] ERROR: ghostty_app_new() returned nil")
+            Log.terminal.error("ghostty_app_new() returned nil")
         } else {
             isAppInitialized = true
-            print("[TerminalSurface] ghostty app initialized")
+            Log.terminal.info("ghostty app initialized")
         }
     }
 
@@ -95,7 +97,7 @@ class TerminalSurface {
         self.hostView = hostView
 
         guard let app = TerminalSurface.ghosttyApp else {
-            print("[TerminalSurface] ERROR: ghostty app not initialized — call initializeGhostty() first")
+            Log.terminal.error("ghostty app not initialized — call initializeGhostty() first")
             return
         }
 
@@ -115,16 +117,21 @@ class TerminalSurface {
         surfaceConfig.scale_factor = NSScreen.main?.backingScaleFactor ?? 2.0
         surfaceConfig.font_size = 13.0
 
+        // Bind NSString to locals so they outlive surfaceConfig usage below.
+        var wdNSString: NSString?
+        var cmdNSString: NSString?
         if let wd = workingDirectory {
-            surfaceConfig.working_directory = (wd as NSString).utf8String
+            wdNSString = wd as NSString
+            surfaceConfig.working_directory = wdNSString!.utf8String
         }
         if let cmd = command {
-            surfaceConfig.command = (cmd as NSString).utf8String
+            cmdNSString = cmd as NSString
+            surfaceConfig.command = cmdNSString!.utf8String
         }
 
         surface = ghostty_surface_new(app, &surfaceConfig)
         if surface == nil {
-            print("[TerminalSurface] ERROR: ghostty_surface_new() returned nil")
+            Log.terminal.error("ghostty_surface_new() returned nil")
             // Balance the passRetained — close_surface_cb will never fire.
             Unmanaged<TerminalSurface>.fromOpaque(selfPtr).release()
         }
@@ -252,12 +259,12 @@ class TerminalSurface {
     var onClose: (() -> Void)?
 
     static func initializeGhostty() {
-        print("[TerminalSurface] GhosttyKit not available — placeholder mode active")
+        Log.terminal.info("GhosttyKit not available — placeholder mode active")
     }
 
     init(hostView: NSView, workingDirectory: String? = nil, command: String? = nil) {
         self.hostView = hostView
-        print("[TerminalSurface] Placeholder: no ghostty surface created")
+        Log.terminal.info("Placeholder: no ghostty surface created")
     }
 
     func refresh() {}

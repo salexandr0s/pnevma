@@ -1,8 +1,11 @@
+use crate::error::RemoteError;
+use argon2::{
+    self,
+    password_hash::{rand_core::OsRng, SaltString},
+    Argon2, PasswordHasher, PasswordVerifier,
+};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use subtle::ConstantTimeEq;
-
-use crate::error::RemoteError;
 
 struct TokenEntry {
     created_at: DateTime<Utc>,
@@ -12,19 +15,23 @@ struct TokenEntry {
 
 pub struct TokenStore {
     tokens: DashMap<String, TokenEntry>,
-    /// WARNING: Stored as plaintext for constant-time comparison.
-    /// Callers should pre-hash before passing to `new()` for production use.
-    password_plaintext: String,
+    /// Password stored as an Argon2id PHC string. Verification is constant-time
+    /// via the argon2 crate's `verify_password`.
+    password_hash: String,
     ttl_hours: u64,
 }
 
 impl TokenStore {
     pub fn new(password: String, ttl_hours: u64) -> Self {
-        // Store the password directly for constant-time comparison.
-        // In production the caller should pre-hash; keeping it simple per spec.
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .expect("failed to hash password")
+            .to_string();
         Self {
             tokens: DashMap::new(),
-            password_plaintext: password,
+            password_hash,
             ttl_hours,
         }
     }
@@ -45,38 +52,32 @@ impl TokenStore {
         token
     }
 
-    /// Validate a bearer token: constant-time comparison + expiry check.
+    /// Validate a bearer token: existence check + expiry check.
     ///
     /// NOTE: The DashMap lookup is not constant-time, but with 256-bit random
-    /// tokens the timing leak is not practically exploitable. The `ct_eq` below
-    /// is defense-in-depth against future changes to the token format.
+    /// tokens the timing difference is not practically exploitable — an attacker
+    /// cannot meaningfully narrow the key space via timing.
     pub fn validate_token(&self, token: &str) -> bool {
         // Clean up first so we don't hold a ref while removing
         self.cleanup_expired();
 
         if let Some(entry) = self.tokens.get(token) {
             let age_hours = (Utc::now() - entry.created_at).num_hours() as u64;
-            if age_hours < self.ttl_hours {
-                // Constant-time compare the stored key against the supplied token
-                // to prevent timing-attack leaks through the DashMap lookup.
-                let input_bytes = token.as_bytes();
-                let stored_key_bytes = entry.key().as_bytes();
-                return stored_key_bytes.ct_eq(input_bytes).into();
-            }
+            return age_hours < self.ttl_hours;
         }
         false
     }
 
-    /// Validate a password using constant-time comparison.
+    /// Validate a password using Argon2id verification (constant-time).
     pub fn validate_password(&self, password: &str) -> bool {
-        let a = self.password_plaintext.as_bytes();
-        let b = password.as_bytes();
-        if a.len() != b.len() {
-            // Still do a dummy comparison to avoid length-based timing leaks.
-            let _ = a.ct_eq(a);
-            return false;
-        }
-        a.ct_eq(b).into()
+        use argon2::PasswordHash;
+        let parsed_hash = match PasswordHash::new(&self.password_hash) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok()
     }
 
     /// Remove all expired tokens.

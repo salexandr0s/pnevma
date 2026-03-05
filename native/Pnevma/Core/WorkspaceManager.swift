@@ -1,5 +1,6 @@
 import Cocoa
 import Combine
+import os
 
 /// Manages workspace lifecycle — creation, switching, persistence, and teardown.
 /// Coordinates between the sidebar, content area, and Rust backend.
@@ -14,6 +15,11 @@ final class WorkspaceManager: ObservableObject {
         guard let id = activeWorkspaceID else { return nil }
         return workspaces.first { $0.id == id }
     }
+
+    // MARK: - Callbacks
+
+    /// Called when the active workspace changes, providing the new workspace's layout engine.
+    var onActiveWorkspaceChanged: ((PaneLayoutEngine) -> Void)?
 
     // MARK: - Dependencies
 
@@ -42,22 +48,23 @@ final class WorkspaceManager: ObservableObject {
             openProjectInBackend(path: path, workspace: workspace)
         }
 
-        print("[WorkspaceManager] Created workspace '\(name)' id=\(workspace.id)")
+        Log.workspace.info("Created workspace '\(name)' id=\(workspace.id)")
         return workspace
     }
 
     /// Switch to the workspace at the given index.
     func switchToWorkspace(_ id: UUID) {
-        guard workspaces.contains(where: { $0.id == id }) else { return }
+        guard let workspace = workspaces.first(where: { $0.id == id }) else { return }
         activeWorkspaceID = id
-        print("[WorkspaceManager] Switched to workspace \(id)")
+        onActiveWorkspaceChanged?(workspace.layoutEngine)
+        Log.workspace.info("Switched to workspace \(id)")
     }
 
     /// Close and remove a workspace.
     func closeWorkspace(_ id: UUID) {
         guard let index = workspaces.firstIndex(where: { $0.id == id }) else { return }
         let workspace = workspaces.remove(at: index)
-        print("[WorkspaceManager] Closed workspace '\(workspace.name)'")
+        Log.workspace.info("Closed workspace '\(workspace.name)'")
 
         // If we closed the active workspace, switch to next available.
         if activeWorkspaceID == id {
@@ -80,7 +87,7 @@ final class WorkspaceManager: ObservableObject {
                     workspace.costToday = summary.costToday
                 }
             } catch {
-                print("[WorkspaceManager] Failed to refresh metadata: \(error)")
+                Log.workspace.error("Failed to refresh metadata: \(error)")
             }
         }
     }
@@ -96,7 +103,7 @@ final class WorkspaceManager: ObservableObject {
                 )
                 refreshMetadata(for: workspace)
             } catch {
-                print("[WorkspaceManager] Failed to open project: \(error)")
+                Log.workspace.error("Failed to open project: \(error)")
             }
         }
     }

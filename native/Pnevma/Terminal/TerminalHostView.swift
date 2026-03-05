@@ -302,8 +302,11 @@ private func makeGhosttyKeyEvent(from event: NSEvent, action: ghostty_input_acti
     key.composing = false
 
     // text: characters as typed (with shift/option applied).
+    // Bind NSString to local so it outlives the key struct usage.
+    var charsNSString: NSString?
     if let chars = event.characters, !chars.isEmpty {
-        key.text = (chars as NSString).utf8String
+        charsNSString = chars as NSString
+        key.text = charsNSString!.utf8String
     }
 
     // unshifted_codepoint: the base key without shift/option modifiers.

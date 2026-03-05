@@ -27,5 +27,5 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-subtle = { workspace = true }
-rustls-pemfile = "2"
+rustls-pki-types = { version = "1", features = ["std"] }
+argon2 = "0.5"

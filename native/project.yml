@@ -31,19 +31,17 @@ targets:
         # Rust staticlib — path is relative to the Xcode project file (native/)
         # Debug: ../target/aarch64-apple-darwin/debug/libpnevma_bridge.a
         # Release: ../target/aarch64-apple-darwin/release/libpnevma_bridge.a
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge
       debug:
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/debug/
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/debug/ -lpnevma_bridge
       release:
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/release/
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/release/ -lpnevma_bridge
     dependencies:
       - sdk: Cocoa.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
       - sdk: libresolv.tbd
       - sdk: libsqlite3.tbd
-      - library: ../target/aarch64-apple-darwin/debug/libpnevma_bridge.a
-        buildPhase: frameworks
 
   PnevmaTests:
     type: bundle.unit-test

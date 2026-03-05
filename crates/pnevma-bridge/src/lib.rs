@@ -3,9 +3,6 @@
 //! This crate provides a staticlib that Swift code links against.
 //! All public functions are `extern "C"` with `catch_unwind` safety.
 
-// FFI functions dereference raw pointers by design — safety is documented per-function.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-
 use pnevma_commands::event_emitter::EventEmitter;
 use pnevma_commands::state::AppState;
 use pnevma_commands::{route_method, NullEmitter};
@@ -43,7 +40,7 @@ pub struct PnevmaResult {
 pub struct PnevmaHandle {
     runtime: Runtime,
     state: Arc<AppState>,
-    _session_output_cb: Option<SessionOutputCallbackWrapper>,
+    _session_output_cb: std::sync::Mutex<Option<SessionOutputCallbackWrapper>>,
 }
 
 // Wrappers to make callback pointers Send+Sync (they cross FFI boundary)
@@ -115,6 +112,7 @@ fn make_error_result(msg: &str) -> *mut PnevmaResult {
 ///
 /// Returns NULL on failure. The caller must eventually call `pnevma_destroy`.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaHandle {
     let result = panic::catch_unwind(|| {
         // Build tokio runtime
@@ -147,7 +145,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         Box::into_raw(Box::new(PnevmaHandle {
             runtime,
             state,
-            _session_output_cb: None,
+            _session_output_cb: std::sync::Mutex::new(None),
         }))
     });
 
@@ -158,6 +156,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
 ///
 /// After this call, the handle pointer is invalid.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
     if handle.is_null() {
         return;
@@ -175,11 +174,12 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
 ///
 /// Returns a heap-allocated `PnevmaResult`. Caller must free with `pnevma_free_result`.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_call(
     handle: *mut PnevmaHandle,
     method: *const c_char,
     params_json: *const c_char,
-    _len: usize,
+    params_len: usize,
 ) -> *mut PnevmaResult {
     if handle.is_null() || method.is_null() {
         return make_error_result("null handle or method");
@@ -196,7 +196,8 @@ pub extern "C" fn pnevma_call(
         let params: Value = if params_json.is_null() {
             Value::Object(serde_json::Map::new())
         } else {
-            match unsafe { CStr::from_ptr(params_json) }.to_str() {
+            let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
+            match std::str::from_utf8(slice) {
                 Ok(s) => serde_json::from_str(s).unwrap_or(Value::Object(serde_json::Map::new())),
                 Err(_) => return make_error_result("invalid UTF-8 in params"),
             }
@@ -219,13 +220,16 @@ pub extern "C" fn pnevma_call(
 /// completion from a background thread.
 ///
 /// The `PnevmaResult*` passed to the callback is valid only for the duration
-/// of the callback. Copy any data you need before returning.
+/// of the callback. Copy any data you need before returning. The result is
+/// freed automatically by Rust after the callback returns — do NOT call
+/// `pnevma_free_result` on it.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_call_async(
     handle: *mut PnevmaHandle,
     method: *const c_char,
     params_json: *const c_char,
-    _len: usize,
+    params_len: usize,
     cb: AsyncCallback,
     cb_ctx: *mut (),
 ) {
@@ -249,7 +253,8 @@ pub extern "C" fn pnevma_call_async(
         let params: Value = if params_json.is_null() {
             Value::Object(serde_json::Map::new())
         } else {
-            match unsafe { CStr::from_ptr(params_json) }.to_str() {
+            let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
+            match std::str::from_utf8(slice) {
                 Ok(s) => serde_json::from_str(s).unwrap_or(Value::Object(serde_json::Map::new())),
                 Err(_) => {
                     let r = make_error_result("invalid UTF-8 in params");
@@ -305,6 +310,7 @@ pub unsafe extern "C" fn pnevma_free_result(result: *mut PnevmaResult) {
 /// This bypasses the JSON event system for performance. The callback receives
 /// raw bytes directly from the PTY.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_set_session_output_callback(
     handle: *mut PnevmaHandle,
     cb: SessionOutputCallback,
@@ -314,9 +320,110 @@ pub extern "C" fn pnevma_set_session_output_callback(
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        let handle = unsafe { &mut *handle };
-        handle._session_output_cb = Some(SessionOutputCallbackWrapper { _cb: cb, _ctx: ctx });
+        let handle = unsafe { &*handle };
+        if let Ok(mut cb_guard) = handle._session_output_cb.lock() {
+            *cb_guard = Some(SessionOutputCallbackWrapper { _cb: cb, _ctx: ctx });
+        }
         // TODO: Wire the callback into SessionSupervisor's output stream
         // once the session bridge is fully connected.
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pnevma_create_returns_non_null() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(
+            !handle.is_null(),
+            "pnevma_create should return non-null handle"
+        );
+        pnevma_destroy(handle);
+    }
+
+    #[test]
+    fn pnevma_call_with_null_handle_returns_error() {
+        let method = CString::new("task.list").unwrap();
+        let params = CString::new("{}").unwrap();
+        let result = pnevma_call(
+            ptr::null_mut(),
+            method.as_ptr(),
+            params.as_ptr(),
+            params.as_bytes().len(),
+        );
+        assert!(!result.is_null());
+        let r = unsafe { &*result };
+        assert_eq!(r.ok, 0, "should return error for null handle");
+        unsafe { pnevma_free_result(result) };
+    }
+
+    #[test]
+    fn pnevma_call_returns_valid_result() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(!handle.is_null());
+
+        let method = CString::new("task.list").unwrap();
+        let params = CString::new("{}").unwrap();
+        let result = pnevma_call(
+            handle,
+            method.as_ptr(),
+            params.as_ptr(),
+            params.as_bytes().len(),
+        );
+        assert!(
+            !result.is_null(),
+            "pnevma_call should return non-null result"
+        );
+        let r = unsafe { &*result };
+        // Result may be ok or error depending on DB state — just verify it has data
+        assert!(!r.data.is_null(), "result should have data pointer");
+        assert!(r.len > 0, "result should have non-zero length");
+        unsafe { pnevma_free_result(result) };
+        pnevma_destroy(handle);
+    }
+
+    #[test]
+    fn pnevma_free_result_null_is_safe() {
+        // Should not crash
+        unsafe { pnevma_free_result(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn pnevma_call_async_invokes_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(!handle.is_null());
+
+        static CALLED: AtomicBool = AtomicBool::new(false);
+
+        extern "C" fn async_cb(_result: *const PnevmaResult, _ctx: *mut ()) {
+            CALLED.store(true, Ordering::SeqCst);
+        }
+
+        let method = CString::new("task.list").unwrap();
+        let params = CString::new("{}").unwrap();
+        pnevma_call_async(
+            handle,
+            method.as_ptr(),
+            params.as_ptr(),
+            params.as_bytes().len(),
+            async_cb,
+            ptr::null_mut(),
+        );
+
+        // Give the async task time to complete
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(
+            CALLED.load(Ordering::SeqCst),
+            "async callback should have been invoked"
+        );
+
+        pnevma_destroy(handle);
+    }
 }

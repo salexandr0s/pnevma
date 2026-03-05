@@ -64,8 +64,8 @@ pub async fn build_router(
         .route("/api/tasks", get(api::task_list))
         .route("/api/tasks", post(api::task_create))
         .route("/api/tasks/:id/dispatch", post(api::task_dispatch))
+        // session.new is deliberately excluded from the RPC allowlist — no POST route.
         .route("/api/sessions", get(api::session_list))
-        .route("/api/sessions", post(api::session_new))
         .route("/api/sessions/:id/input", post(api::session_send_input))
         .route("/api/workflows", get(api::workflow_list_defs))
         .route(

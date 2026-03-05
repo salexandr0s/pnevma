@@ -1,12 +1,18 @@
 import SwiftUI
 import Cocoa
+import os
 
 // MARK: - OnboardingView
 
 struct OnboardingView: View {
-    @StateObject private var viewModel = OnboardingViewModel()
+    @StateObject private var viewModel: OnboardingViewModel
     @Environment(\.dismiss) private var dismiss
     var onComplete: (() -> Void)?
+
+    init(commandBus: CommandBus? = nil, onComplete: (() -> Void)? = nil) {
+        _viewModel = StateObject(wrappedValue: OnboardingViewModel(commandBus: commandBus))
+        self.onComplete = onComplete
+    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -116,6 +122,13 @@ final class OnboardingViewModel: ObservableObject {
     @Published var shellReady = false
     @Published var projectOpened = false
 
+    /// Injected command bus for backend calls.
+    let commandBus: CommandBus?
+
+    init(commandBus: CommandBus? = nil) {
+        self.commandBus = commandBus
+    }
+
     var allReady: Bool { rustReady && ghosttyReady && gitReady && shellReady }
 
     func checkReadiness() {
@@ -150,18 +163,49 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     func scaffoldProject() {
-        // pnevma_call("project.scaffold", ...)
-        projectOpened = true
+        guard let commandBus = commandBus else {
+            Log.general.warning("CommandBus not available for scaffold")
+            projectOpened = true
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a directory for the new project"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        Task {
+            do {
+                struct ScaffoldParams: Encodable { let path: String }
+                let _: EmptyScaffoldResponse = try await commandBus.call(
+                    method: "project.initialize_scaffold",
+                    params: ScaffoldParams(path: url.path)
+                )
+                await MainActor.run {
+                    projectOpened = true
+                }
+            } catch {
+                Log.general.error("Scaffold failed: \(error)")
+                await MainActor.run {
+                    projectOpened = true // Allow continuing even on error
+                }
+            }
+        }
     }
 }
+
+private struct EmptyScaffoldResponse: Decodable {}
 
 // MARK: - OnboardingWindow
 
 final class OnboardingWindow {
     private var window: NSWindow?
 
-    func show(completion: @escaping () -> Void) {
-        let view = OnboardingView(onComplete: { [weak self] in
+    func show(commandBus: CommandBus? = nil, completion: @escaping () -> Void) {
+        let view = OnboardingView(commandBus: commandBus, onComplete: { [weak self] in
             self?.window?.close()
             completion()
         })

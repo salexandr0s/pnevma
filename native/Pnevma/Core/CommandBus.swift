@@ -22,8 +22,8 @@ actor CommandBus {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [bridge] in
-                guard let resultJSON = bridge.call(method: method, params: paramsJSON) else {
+            bridge.callAsync(method: method, params: paramsJSON) { resultJSON in
+                guard let resultJSON = resultJSON else {
                     continuation.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
                     return
                 }

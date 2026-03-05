@@ -70,20 +70,22 @@ typedef void (*SessionOutputCallback)(const char *session_id,
 struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
                                  const char *method,
                                  const char *params_json,
-                                 uintptr_t _len);
+                                 uintptr_t params_len);
 
 /**
  * Asynchronous RPC call. Returns immediately; the callback is invoked on
  * completion from a background thread.
  *
  * The `PnevmaResult*` passed to the callback is valid only for the duration
- * of the callback. Copy any data you need before returning.
+ * of the callback. Copy any data you need before returning. The result is
+ * freed automatically by Rust after the callback returns — do NOT call
+ * `pnevma_free_result` on it.
  */
 
 void pnevma_call_async(struct PnevmaHandle *handle,
                        const char *method,
                        const char *params_json,
-                       uintptr_t _len,
+                       uintptr_t params_len,
                        AsyncCallback cb,
                        void *cb_ctx);
 

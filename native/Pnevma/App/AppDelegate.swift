@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import os
 
 class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -27,7 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #if canImport(GhosttyKit)
         let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
         if initResult != 0 {
-            print("[Pnevma] ERROR: ghostty_init() failed with code \(initResult)")
+            Log.general.error("ghostty_init() failed with code \(initResult)")
         }
         #endif
 
@@ -37,9 +38,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             commandBus = CommandBus(bridge: bridge)
         }
 
-        // Verify bridge works
-        if let result = bridge?.call(method: "task.list", params: "{}") {
-            print("[Pnevma] Bridge test: \(result)")
+        // Verify bridge works (off main thread to avoid blocking app launch).
+        DispatchQueue.global(qos: .utility).async { [weak bridge] in
+            if let result = bridge?.call(method: "task.list", params: "{}") {
+                Log.bridge.info("Bridge test: \(result)")
+            }
         }
 
         // Initialize ghostty app singleton
@@ -51,6 +54,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Workspace manager
         if let bridge = bridge, let bus = commandBus {
             workspaceManager = WorkspaceManager(bridge: bridge, commandBus: bus)
+        }
+        workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
+            self?.contentAreaView?.setLayoutEngine(engine)
         }
 
         // Persistence
@@ -135,7 +141,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Sidebar
         guard let bridge = bridge, let commandBus = commandBus else {
-            print("[Pnevma] ERROR: bridge or commandBus not initialized — cannot create sidebar")
+            Log.general.error("bridge or commandBus not initialized — cannot create sidebar")
             return
         }
         let mgr = workspaceManager ?? WorkspaceManager(bridge: bridge, commandBus: commandBus)
