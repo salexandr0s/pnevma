@@ -590,15 +590,6 @@ async fn inject_context_file(context_file: &str, working_dir: &str) -> Result<()
 mod tests {
     use super::*;
 
-    fn make_adapter() -> ClaudeCodeAdapter {
-        ClaudeCodeAdapter {
-            channels: Arc::new(RwLock::new(HashMap::new())),
-            configs: Arc::new(RwLock::new(HashMap::new())),
-            costs: Arc::new(RwLock::new(HashMap::new())),
-            processes: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
     fn make_handle() -> AgentHandle {
         AgentHandle {
             id: Uuid::new_v4(),
@@ -609,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_no_process_returns_unavailable() {
-        let adapter = make_adapter();
+        let adapter = ClaudeCodeAdapter::new();
         let handle = make_handle();
         // Insert a channel so the adapter knows the handle, but no PID
         let (tx, _) = broadcast::channel(16);
@@ -624,7 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_no_process_returns_unavailable() {
-        let adapter = make_adapter();
+        let adapter = ClaudeCodeAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
         adapter.channels.write().unwrap().insert(handle.id, tx);

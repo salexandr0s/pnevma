@@ -370,12 +370,10 @@ impl FileDiscovery {
     }
 
     fn is_excluded(&self, rel_path: &str) -> bool {
-        for pattern in &self.config.exclude_patterns {
-            if matches_glob_simple(pattern, rel_path) {
-                return true;
-            }
-        }
-        false
+        self.config
+            .exclude_patterns
+            .iter()
+            .any(|p| matches_glob_simple(p, rel_path))
     }
 }
 

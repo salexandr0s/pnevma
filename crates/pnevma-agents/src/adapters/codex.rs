@@ -198,18 +198,16 @@ impl AgentAdapter for CodexAdapter {
         });
 
         let tx_err = tx.clone();
-        let usage_re_err = usage_re.clone();
-        let cost_re_err = cost_re.clone();
         let err_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = tx_err.send(AgentEvent::OutputChunk(format!("{line}\n")));
-                if let Some(cap) = usage_re_err.captures(&line) {
+                if let Some(cap) = usage_re.captures(&line) {
                     let tokens_in = cap
                         .get(2)
                         .and_then(|m| m.as_str().parse::<u64>().ok())
                         .unwrap_or(0);
-                    let cost = cost_re_err
+                    let cost = cost_re
                         .captures(&line)
                         .and_then(|m| m.get(2))
                         .and_then(|m| m.as_str().parse::<f64>().ok())
@@ -384,15 +382,6 @@ impl AgentAdapter for CodexAdapter {
 mod tests {
     use super::*;
 
-    fn make_adapter() -> CodexAdapter {
-        CodexAdapter {
-            channels: Arc::new(RwLock::new(HashMap::new())),
-            configs: Arc::new(RwLock::new(HashMap::new())),
-            processes: Arc::new(RwLock::new(HashMap::new())),
-            costs: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
     fn make_config() -> AgentConfig {
         AgentConfig {
             provider: "codex".to_string(),
@@ -435,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_registers_handle_and_config() {
-        let adapter = make_adapter();
+        let adapter = CodexAdapter::new();
         let config = make_config();
 
         // Subscribe to a temporary sender BEFORE spawning to capture events.
@@ -462,7 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn parse_usage_returns_zero_when_no_record() {
-        let adapter = make_adapter();
+        let adapter = CodexAdapter::new();
         let handle = make_handle();
 
         let cost = adapter.parse_usage(&handle).await.expect("parse usage");
@@ -505,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_no_process_returns_unavailable() {
-        let adapter = make_adapter();
+        let adapter = CodexAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
         adapter.channels.write().unwrap().insert(handle.id, tx);
@@ -519,7 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_no_process_returns_unavailable() {
-        let adapter = make_adapter();
+        let adapter = CodexAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
         adapter.channels.write().unwrap().insert(handle.id, tx);
@@ -533,7 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_missing_handle_emits_error() {
-        let adapter = make_adapter();
+        let adapter = CodexAdapter::new();
         let handle = make_handle();
         // No channel registered — should return a receiver with an error event
         let mut rx = adapter.events(&handle);
