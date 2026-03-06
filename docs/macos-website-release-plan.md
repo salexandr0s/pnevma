@@ -37,7 +37,7 @@ Pnevma already has significant release infrastructure in place:
 
 Current known gaps:
 
-- the current entitlement set is explicitly provisional and broader than ideal,
+- the remaining hardened-runtime exception is `com.apple.security.cs.disable-library-validation`; it still needs periodic revalidation against signed release builds,
 - the published artifact shape is currently `tar.gz`, which is not the intended final website UX,
 - versioning is inconsistent between the Rust workspace and the app bundle,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
@@ -154,8 +154,7 @@ Reduce the current hardened-runtime exception set to the smallest set that still
 Tasks:
 
 - test Ghostty-linked release builds with `com.apple.security.cs.disable-library-validation` removed,
-- test Ghostty-linked release builds with `com.apple.security.cs.allow-unsigned-executable-memory` removed,
-- test Ghostty-linked release builds with `com.apple.security.cs.allow-jit` removed,
+- record that `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.allow-jit` are no longer required by the checked-in allowlist,
 - record which entitlement removals fail and exactly how they fail,
 - update the checked-in allowlist only after a concrete runtime justification exists for each remaining entitlement,
 - update `scripts/check-entitlements.sh` to enforce the final minimized set.

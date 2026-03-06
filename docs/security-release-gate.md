@@ -17,7 +17,7 @@ Do not ship a remote-enabled release if any of the following are true:
 2. `cd native && swift test`
 3. `just xcode-test`
 4. `./scripts/release-preflight.sh`
-5. `APP_PATH="native/build/Build/Products/Release/Pnevma.app" ./scripts/check-entitlements.sh`
+5. `APP_PATH="native/build/Build/Products/Release/Pnevma.app" ./scripts/check-entitlements.sh` on the packaged candidate bundle
 
 ## Required evidence bundle
 

@@ -139,17 +139,27 @@ async fn read_ws_message(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
 ) -> WsServerMessage {
-    let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("timely websocket message")
-        .expect("websocket stream still open")
-        .expect("websocket frame");
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("timely websocket message")
+            .expect("websocket stream still open")
+            .expect("websocket frame");
 
-    let Message::Text(text) = frame else {
-        panic!("expected text frame");
-    };
-
-    serde_json::from_str(&text).expect("valid ws server message")
+        match frame {
+            Message::Text(text) => {
+                return serde_json::from_str(&text).expect("valid ws server message");
+            }
+            Message::Ping(payload) => {
+                stream
+                    .send(Message::Pong(payload))
+                    .await
+                    .expect("respond to ping");
+            }
+            Message::Pong(_) => {}
+            other => panic!("expected text-compatible websocket flow, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]
@@ -320,5 +330,95 @@ async fn ws_generic_event_subscriptions_fan_out() {
             assert!(payload.get("task_id").is_some());
         }
         other => panic!("expected task event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_rejects_excessive_subscriptions() {
+    let router_impl = Arc::new(RecordingRouter::default());
+    let session_ids = vec![
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+    ];
+    *router_impl
+        .authorized_sessions
+        .lock()
+        .expect("authorized session lock poisoned") = session_ids.clone();
+    let server = TestServer::spawn(router_impl).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    for channel in [
+        "project_opened".to_string(),
+        "task_updated".to_string(),
+        "notification_created".to_string(),
+        "notification_cleared".to_string(),
+        "notification_updated".to_string(),
+        "cost_updated".to_string(),
+        format!("session:{}", session_ids[0]),
+        format!("session:{}", session_ids[1]),
+    ] {
+        let subscribe = serde_json::to_string(&WsClientMessage::Subscribe { channel })
+            .expect("serialize subscribe");
+        stream
+            .send(Message::Text(subscribe.into()))
+            .await
+            .expect("send subscribe");
+        match read_ws_message(&mut stream).await {
+            WsServerMessage::Subscribed { .. } => {}
+            other => panic!("expected successful subscription, got {other:?}"),
+        }
+    }
+
+    let subscribe = serde_json::to_string(&WsClientMessage::Subscribe {
+        channel: format!("session:{}", session_ids[2]),
+    })
+    .expect("serialize capped subscribe");
+    stream
+        .send(Message::Text(subscribe.into()))
+        .await
+        .expect("send capped subscribe");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Error { message } => {
+            assert!(message.contains("subscription limit exceeded"));
+        }
+        other => panic!("expected subscription cap error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_rpc_blocks_workflow_definition_mutation() {
+    let router_impl = Arc::new(RecordingRouter::default());
+    let server = TestServer::spawn(router_impl).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    let rpc = serde_json::to_string(&WsClientMessage::Rpc {
+        id: "req-1".to_string(),
+        method: "workflow.create".to_string(),
+        params: json!({"name": "danger"}),
+    })
+    .expect("serialize blocked rpc");
+    stream
+        .send(Message::Text(rpc.into()))
+        .await
+        .expect("send blocked rpc");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::RpcResult { id, ok, error, .. } => {
+            assert_eq!(id, "req-1");
+            assert!(!ok);
+            assert!(error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("method not allowed"));
+        }
+        other => panic!("expected rpc rejection, got {other:?}"),
     }
 }

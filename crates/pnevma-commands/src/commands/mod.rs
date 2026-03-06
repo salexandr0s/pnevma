@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock as StdRwLock};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
@@ -1891,6 +1891,59 @@ pub(crate) fn normalize_redaction_secrets(secrets: &[String]) -> Vec<String> {
     normalized
 }
 
+fn project_redaction_secret_registry() -> &'static StdRwLock<HashMap<Uuid, Vec<String>>> {
+    static REGISTRY: OnceLock<StdRwLock<HashMap<Uuid, Vec<String>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| StdRwLock::new(HashMap::new()))
+}
+
+pub(crate) fn register_project_redaction_secrets(project_id: Uuid, secrets: &[String]) {
+    let normalized = normalize_redaction_secrets(secrets);
+    match project_redaction_secret_registry().write() {
+        Ok(mut registry) => {
+            registry.insert(project_id, normalized);
+        }
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project_id,
+                %error,
+                "failed to register project redaction secrets"
+            );
+        }
+    }
+}
+
+pub(crate) fn clear_project_redaction_secrets(project_id: Uuid) {
+    match project_redaction_secret_registry().write() {
+        Ok(mut registry) => {
+            registry.remove(&project_id);
+        }
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project_id,
+                %error,
+                "failed to clear project redaction secrets"
+            );
+        }
+    }
+}
+
+fn project_redaction_secrets(project_id: Uuid) -> Vec<String> {
+    match project_redaction_secret_registry().read() {
+        Ok(registry) => registry
+            .get(&project_id)
+            .cloned()
+            .unwrap_or_else(build_secrets_list),
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project_id,
+                %error,
+                "failed to read project redaction secrets"
+            );
+            build_secrets_list()
+        }
+    }
+}
+
 const STREAM_REDACTION_TAIL_BYTES: usize = 256;
 
 fn minimum_partial_match_bytes(literal: &str) -> usize {
@@ -2062,8 +2115,19 @@ fn redact_json_value(value: serde_json::Value, secrets: &[String]) -> serde_json
     }
 }
 
-pub(crate) fn redact_payload_for_log(payload: serde_json::Value) -> serde_json::Value {
-    redact_json_value(payload, &[])
+pub(crate) fn redact_payload_for_log_with_secrets(
+    payload: serde_json::Value,
+    secrets: &[String],
+) -> serde_json::Value {
+    redact_json_value(payload, secrets)
+}
+
+pub(crate) fn redact_payload_for_project_log(
+    project_id: Uuid,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    let secrets = project_redaction_secrets(project_id);
+    redact_payload_for_log_with_secrets(payload, &secrets)
 }
 
 #[derive(Debug, Clone)]
@@ -2227,16 +2291,18 @@ async fn store_keychain_secret(service: &str, account: &str, value: &str) -> Res
 }
 
 async fn read_keychain_secret(service: &str, account: &str) -> Result<String, String> {
-    let out = TokioCommand::new("security")
-        .args(["find-generic-password", "-s", service, "-a", account, "-w"])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err("security find-generic-password failed".to_string());
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::passwords::get_generic_password;
+
+        let bytes = get_generic_password(service, account).map_err(|e| e.to_string())?;
+        String::from_utf8(bytes).map_err(|e| e.to_string())
     }
-    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(value)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, account);
+        Err("keychain not supported on this platform".to_string())
+    }
 }
 
 async fn resolve_secret_env(
@@ -2252,7 +2318,15 @@ async fn resolve_secret_env(
     for secret in refs {
         let value =
             read_keychain_secret(&secret.keychain_service, &secret.keychain_account).await?;
-        env.push((secret.name.clone(), value.clone()));
+        match pnevma_agents::validate_agent_env_entry(&secret.name, &value) {
+            Ok(()) => env.push((secret.name.clone(), value.clone())),
+            Err(error) => tracing::warn!(
+                name = %secret.name,
+                project_id = %project_id,
+                %error,
+                "skipping unsafe secret environment variable"
+            ),
+        }
         values.push(value);
     }
     Ok((env, values))
@@ -2278,6 +2352,34 @@ struct CheckExecution {
     command: Option<String>,
     passed: bool,
     output: Option<String>,
+}
+
+fn split_test_command(command: &str) -> Result<(String, Vec<String>), String> {
+    const MAX_TEST_COMMAND_ARGS: usize = 32;
+    const MAX_TEST_COMMAND_ARG_BYTES: usize = 512;
+
+    let parts = command
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let Some(program) = parts.first().cloned() else {
+        return Err("TestCommand rejected: command must not be empty".to_string());
+    };
+    if parts.len() > MAX_TEST_COMMAND_ARGS {
+        return Err(format!(
+            "TestCommand rejected: command exceeds {MAX_TEST_COMMAND_ARGS} argv segments"
+        ));
+    }
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || part.len() > MAX_TEST_COMMAND_ARG_BYTES)
+    {
+        return Err(format!(
+            "TestCommand rejected: each argv segment must be between 1 and {MAX_TEST_COMMAND_ARG_BYTES} bytes"
+        ));
+    }
+
+    Ok((program, parts.into_iter().skip(1).collect()))
 }
 
 async fn run_acceptance_checks_for_task(
@@ -2381,9 +2483,9 @@ async fn run_acceptance_checks_for_task(
                     ));
                 }
 
-                let out = TokioCommand::new("zsh")
-                    .arg("-lc")
-                    .arg(&command)
+                let (program, args) = split_test_command(&command)?;
+                let out = TokioCommand::new(&program)
+                    .args(&args)
                     .current_dir(&worktree_path)
                     .output()
                     .await
@@ -2779,7 +2881,7 @@ pub(crate) async fn append_event(
     event_type: &str,
     payload: serde_json::Value,
 ) {
-    let safe_payload = redact_json_value(payload, &[]);
+    let safe_payload = redact_payload_for_project_log(project_id, payload);
     let _ = db
         .append_event(NewEvent {
             id: Uuid::new_v4().to_string(),
@@ -2804,7 +2906,7 @@ pub(crate) async fn append_telemetry_event(
     if !global_config.telemetry_opt_in {
         return;
     }
-    let safe_payload = redact_payload_for_log(payload);
+    let safe_payload = redact_payload_for_project_log(project_id, payload);
     let _ = db
         .append_telemetry_event(&TelemetryEventRow {
             id: Uuid::new_v4().to_string(),
@@ -3436,6 +3538,22 @@ mod redaction_tests {
         assert!(!has_invalid, "should accept normal cargo test command");
     }
 
+    #[test]
+    fn split_test_command_parses_safe_argv() {
+        let (program, args) =
+            split_test_command("cargo test --workspace --package pnevma-core").expect("parse");
+        assert_eq!(program, "cargo");
+        assert_eq!(
+            args,
+            vec!["test", "--workspace", "--package", "pnevma-core"]
+        );
+    }
+
+    #[test]
+    fn split_test_command_rejects_empty_input() {
+        assert!(split_test_command("   ").is_err());
+    }
+
     // ── redact_json_value ────────────────────────────────────────────────────
 
     #[test]
@@ -3483,5 +3601,22 @@ mod redaction_tests {
         let out = redact_json_value(val, &[]);
         assert_eq!(out["auth"]["Authorization"], "[REDACTED]");
         assert_eq!(out["auth"]["refresh_token"], "[REDACTED]");
+    }
+
+    #[test]
+    fn project_log_redaction_uses_registered_secret_values() {
+        let project_id = Uuid::new_v4();
+        let secret = "project-secret-value".to_string();
+        register_project_redaction_secrets(project_id, std::slice::from_ref(&secret));
+
+        let out = redact_payload_for_project_log(
+            project_id,
+            serde_json::json!({"chunk": format!("token={secret}")}),
+        );
+        let out_str = out.to_string();
+        assert!(!out_str.contains(&secret));
+        assert!(out_str.contains("[REDACTED]"));
+
+        clear_project_redaction_secrets(project_id);
     }
 }

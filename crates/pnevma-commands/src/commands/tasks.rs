@@ -782,6 +782,8 @@ pub async fn secrets_set_ref(
     input: SecretRefInput,
     state: &AppState,
 ) -> Result<SecretRefView, String> {
+    pnevma_agents::validate_agent_env_entry(&input.name, &input.value)?;
+
     let (db, project_id, sessions, redaction_secrets) = {
         let current = state.current.lock().await;
         let ctx = current
@@ -827,6 +829,7 @@ pub async fn secrets_set_ref(
         .await
         .map_err(|e| e.to_string())?;
     let updated_redaction_secrets = load_redaction_secrets(&db, project_id).await;
+    register_project_redaction_secrets(project_id, &updated_redaction_secrets);
     sessions
         .set_redaction_secrets(updated_redaction_secrets.clone())
         .await;

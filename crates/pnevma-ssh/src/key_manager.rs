@@ -17,6 +17,11 @@ fn validate_key_name(name: &str) -> Result<(), SshError> {
     if name.is_empty() {
         return Err(SshError::Parse("key name must not be empty".to_string()));
     }
+    if name.len() > 128 {
+        return Err(SshError::Parse(
+            "key name must not exceed 128 characters".to_string(),
+        ));
+    }
     if name.contains('/')
         || name.contains('\\')
         || name.contains('\0')
@@ -26,6 +31,20 @@ fn validate_key_name(name: &str) -> Result<(), SshError> {
         return Err(SshError::Parse(format!(
             "invalid key name: must not contain '/', '\\', '\\0', '..', whitespace, or control characters: {name}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_key_comment(comment: &str) -> Result<(), SshError> {
+    if comment.len() > 256 {
+        return Err(SshError::Parse(
+            "key comment must not exceed 256 characters".to_string(),
+        ));
+    }
+    if comment.contains('\0') || !comment.chars().all(|c| (' '..='\x7e').contains(&c)) {
+        return Err(SshError::Parse(
+            "key comment must contain only printable ASCII characters (0x20-0x7E)".to_string(),
+        ));
     }
     Ok(())
 }
@@ -46,50 +65,42 @@ fn generate_passphrase() -> String {
 }
 
 fn store_passphrase_in_keychain(key_name: &str, passphrase: &str) -> Result<(), SshError> {
-    let output = std::process::Command::new("security")
-        .args([
-            "add-generic-password",
-            "-a",
-            key_name,
-            "-s",
-            "pnevma-ssh-key",
-            "-w",
-            passphrase,
-            "-U", // Update if exists
-        ])
-        .output()?;
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::passwords::set_generic_password;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SshError::Command(format!(
-            "failed to store passphrase in keychain: {}",
-            stderr.trim()
-        )));
+        set_generic_password("pnevma-ssh-key", key_name, passphrase.as_bytes())
+            .map_err(|e| SshError::Command(format!("failed to store passphrase in keychain: {e}")))
     }
-    Ok(())
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (key_name, passphrase);
+        Err(SshError::Command(
+            "SSH passphrase keychain storage is only supported on macOS".to_string(),
+        ))
+    }
 }
 
 pub fn retrieve_passphrase_from_keychain(key_name: &str) -> Result<String, SshError> {
-    let output = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-a",
-            key_name,
-            "-s",
-            "pnevma-ssh-key",
-            "-w",
-        ])
-        .output()?;
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::passwords::get_generic_password;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SshError::Command(format!(
-            "failed to retrieve passphrase from keychain: {}",
-            stderr.trim()
-        )));
+        let bytes = get_generic_password("pnevma-ssh-key", key_name).map_err(|e| {
+            SshError::Command(format!("failed to retrieve passphrase from keychain: {e}"))
+        })?;
+        String::from_utf8(bytes)
+            .map_err(|e| SshError::Parse(format!("invalid UTF-8 in stored passphrase: {e}")))
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = key_name;
+        Err(SshError::Command(
+            "SSH passphrase keychain retrieval is only supported on macOS".to_string(),
+        ))
+    }
 }
 
 pub fn list_ssh_keys(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
@@ -166,17 +177,7 @@ pub fn generate_key(
         )));
     }
 
-    // Validate the comment before passing it to ssh-keygen.
-    if comment.len() > 256 {
-        return Err(SshError::Parse(
-            "key comment must not exceed 256 characters".to_string(),
-        ));
-    }
-    if comment.contains('\0') || !comment.chars().all(|c| (' '..='\x7e').contains(&c)) {
-        return Err(SshError::Parse(
-            "key comment must contain only printable ASCII characters (0x20-0x7E)".to_string(),
-        ));
-    }
+    validate_key_comment(comment)?;
 
     let key_path_str = key_path.to_string_lossy().to_string();
 
@@ -307,10 +308,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_overlong_key_names() {
+        assert!(validate_key_name(&"k".repeat(129)).is_err());
+    }
+
+    #[test]
     fn rejects_names_with_whitespace() {
         assert!(validate_key_name("my key").is_err());
         assert!(validate_key_name("key\tname").is_err());
         assert!(validate_key_name("key\nname").is_err());
+    }
+
+    #[test]
+    fn validates_key_comments() {
+        assert!(validate_key_comment("user@host").is_ok());
+        assert!(validate_key_comment("bad\ncomment").is_err());
+        assert!(validate_key_comment("nul\0comment").is_err());
+        assert!(validate_key_comment(&"x".repeat(257)).is_err());
     }
 
     #[test]

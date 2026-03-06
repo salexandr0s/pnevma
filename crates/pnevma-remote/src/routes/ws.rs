@@ -17,8 +17,9 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
+use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::CommandRouter;
@@ -91,6 +92,14 @@ const ALLOWED_EVENT_CHANNELS: &[&str] = &[
     "notification_updated",
     "cost_updated",
 ];
+const MAX_WS_MESSAGE_SIZE: usize = 65_536;
+const MAX_MESSAGES_PER_SECOND: u32 = 60;
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 8;
+const MAX_SESSION_INPUT_BYTES: usize = 16 * 1024;
+const MAX_RPC_ID_LEN: usize = 128;
+const MAX_RPC_METHOD_LEN: usize = 128;
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Deserialize)]
 struct SessionListEntry {
@@ -120,7 +129,7 @@ pub async fn ws_handler(
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
 
-    ws.max_message_size(65_536)
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| async move {
             handle_socket(socket, state.router, state.remote_events).await;
             // Release the slot when the connection closes.
@@ -179,6 +188,36 @@ fn event_channels(event: &RemoteEventEnvelope) -> Vec<String> {
     channels
 }
 
+fn is_valid_rpc_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_RPC_ID_LEN
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
+}
+
+fn is_valid_rpc_method(method: &str) -> bool {
+    !method.is_empty()
+        && method.len() <= MAX_RPC_METHOD_LEN
+        && method
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+fn validate_session_input(session_id: &str, data: &str) -> Result<(), String> {
+    Uuid::parse_str(session_id).map_err(|_| format!("invalid session id: {session_id}"))?;
+    if data.len() > MAX_SESSION_INPUT_BYTES {
+        return Err(format!(
+            "session input exceeds {} byte limit",
+            MAX_SESSION_INPUT_BYTES
+        ));
+    }
+    if data.contains('\0') {
+        return Err("session input must not contain NUL bytes".to_string());
+    }
+    Ok(())
+}
+
 async fn send_ws_message(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     message: &WsServerMessage,
@@ -224,7 +263,10 @@ async fn handle_socket(
 
     let mut message_count: u32 = 0;
     let mut window_start = Instant::now();
-    const MAX_MESSAGES_PER_SECOND: u32 = 60;
+    let mut last_client_activity = Instant::now();
+    let mut heartbeat = tokio::time::interval(WS_PING_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    heartbeat.tick().await;
 
     loop {
         tokio::select! {
@@ -248,15 +290,46 @@ async fn handle_socket(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
             }
+            _ = heartbeat.tick() => {
+                if Instant::now().duration_since(last_client_activity) > WS_IDLE_TIMEOUT {
+                    let _ = sender.send(Message::Close(None)).await;
+                    return;
+                }
+                if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    return;
+                }
+            }
             maybe_msg = receiver.next() => {
                 let Some(Ok(msg)) = maybe_msg else {
                     break;
                 };
 
                 let text = match msg {
-                    Message::Text(t) => t,
+                    Message::Text(t) => {
+                        last_client_activity = Instant::now();
+                        t
+                    }
+                    Message::Ping(payload) => {
+                        last_client_activity = Instant::now();
+                        if sender.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Message::Pong(_) => {
+                        last_client_activity = Instant::now();
+                        continue;
+                    }
+                    Message::Binary(_) => {
+                        let message = WsServerMessage::Error {
+                            message: "binary websocket messages are not supported".to_string(),
+                        };
+                        if !send_ws_message(&mut sender, &message).await {
+                            break;
+                        }
+                        continue;
+                    }
                     Message::Close(_) => break,
-                    _ => continue,
                 };
 
                 let now = Instant::now();
@@ -294,6 +367,15 @@ async fn handle_socket(
                             WsServerMessage::Error {
                                 message: format!("channel not allowed: {channel}"),
                             }
+                        } else if !subscribed_channels.contains(&channel)
+                            && subscribed_channels.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION
+                        {
+                            WsServerMessage::Error {
+                                message: format!(
+                                    "subscription limit exceeded: max {} channels per connection",
+                                    MAX_SUBSCRIPTIONS_PER_CONNECTION
+                                ),
+                            }
                         } else if let Some(session_id) = session_channel_id(&channel) {
                             match authorize_session_channel(&router, session_id).await {
                                 Ok(()) => {
@@ -325,7 +407,9 @@ async fn handle_socket(
                         }
                     }
                     WsClientMessage::SessionInput { session_id, data } => {
-                        if !subscribed_sessions.contains(&session_id) {
+                        if let Err(message) = validate_session_input(&session_id, &data) {
+                            WsServerMessage::Error { message }
+                        } else if !subscribed_sessions.contains(&session_id) {
                             WsServerMessage::Error {
                                 message: format!(
                                     "not subscribed to session {session_id} — subscribe first"
@@ -343,7 +427,11 @@ async fn handle_socket(
                         }
                     }
                     WsClientMessage::Rpc { id, method, params } => {
-                        if !super::rpc_allowlist::is_allowed(&method) {
+                        if !is_valid_rpc_id(&id) {
+                            rpc_result(id, Err("invalid rpc id".to_string()))
+                        } else if !is_valid_rpc_method(&method) {
+                            rpc_result(id, Err("invalid rpc method".to_string()))
+                        } else if !super::rpc_allowlist::is_allowed(&method) {
                             rpc_result(id, Err(format!("method not allowed via RPC: {method}")))
                         } else {
                             rpc_result(id, router.route(&method, &params).await)
@@ -362,7 +450,11 @@ async fn handle_socket(
 #[cfg(test)]
 mod tests {
     use super::super::rpc_allowlist;
-    use super::{authorize_session_channel, event_channels, is_allowed_channel, is_valid_channel};
+    use super::{
+        authorize_session_channel, event_channels, is_allowed_channel, is_valid_channel,
+        is_valid_rpc_id, is_valid_rpc_method, validate_session_input, MAX_RPC_ID_LEN,
+        MAX_RPC_METHOD_LEN, MAX_SESSION_INPUT_BYTES,
+    };
     use crate::CommandRouter;
     use async_trait::async_trait;
     use serde_json::{json, Value};
@@ -380,6 +472,9 @@ mod tests {
     fn ws_rpc_allows_safe_methods() {
         assert!(rpc_allowlist::is_allowed("task.list"));
         assert!(rpc_allowlist::is_allowed("project.status"));
+        assert!(!rpc_allowlist::is_allowed("workflow.create"));
+        assert!(!rpc_allowlist::is_allowed("workflow.update"));
+        assert!(!rpc_allowlist::is_allowed("workflow.delete"));
     }
 
     #[test]
@@ -408,6 +503,28 @@ mod tests {
         assert!(is_allowed_channel(&format!("session:{session_id}")));
         assert!(!is_allowed_channel("session_output"));
         assert!(!is_allowed_channel("task.deleted"));
+    }
+
+    #[test]
+    fn rpc_identifiers_and_methods_are_bounded() {
+        assert!(is_valid_rpc_id("req-1"));
+        assert!(!is_valid_rpc_id(""));
+        assert!(!is_valid_rpc_id(&"a".repeat(MAX_RPC_ID_LEN + 1)));
+        assert!(is_valid_rpc_method("task.list"));
+        assert!(!is_valid_rpc_method("task list"));
+        assert!(!is_valid_rpc_method(&"m".repeat(MAX_RPC_METHOD_LEN + 1)));
+    }
+
+    #[test]
+    fn session_input_is_bounded_and_rejects_nul() {
+        assert!(validate_session_input(&Uuid::new_v4().to_string(), "pwd\n").is_ok());
+        assert!(validate_session_input("not-a-uuid", "pwd\n").is_err());
+        assert!(validate_session_input(&Uuid::new_v4().to_string(), "\0").is_err());
+        assert!(validate_session_input(
+            &Uuid::new_v4().to_string(),
+            &"x".repeat(MAX_SESSION_INPUT_BYTES + 1)
+        )
+        .is_err());
     }
 
     #[test]

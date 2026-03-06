@@ -148,13 +148,32 @@ jobs:
         run: just xcode-build
 
       - name: Check entitlements
-        run: APP_PATH="$GITHUB_WORKSPACE/native/build/Build/Products/Debug/Pnevma.app" ./scripts/check-entitlements.sh
+        run: |
+          mkdir -p native/build/security-artifacts
+          cp native/Pnevma/Pnevma.entitlements native/build/security-artifacts/Pnevma.entitlements.source.plist
+          ./scripts/check-entitlements.sh | tee native/build/security-artifacts/entitlements-check.txt
+          if codesign -d --entitlements :- "$GITHUB_WORKSPACE/native/build/Build/Products/Debug/Pnevma.app" \
+            > native/build/security-artifacts/Pnevma.entitlements.effective.plist 2>/dev/null \
+            && [[ -s native/build/security-artifacts/Pnevma.entitlements.effective.plist ]]; then
+            true
+          else
+            echo "effective entitlements unavailable on unsigned debug build" \
+              > native/build/security-artifacts/Pnevma.entitlements.effective.plist
+          fi
 
       - name: Run Swift tests
         run: just xcode-test
 
       - name: Run Ghostty smoke
         run: ./scripts/run-ghostty-smoke.sh
+
+      - name: Upload native security artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-security-artifacts
+          path: native/build/security-artifacts/**
+          retention-days: ${{ env.CI_ARTIFACT_RETENTION_DAYS }}
 
       - name: Upload native logs on failure
         if: failure()

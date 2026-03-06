@@ -94,26 +94,7 @@ impl AgentAdapter for CodexAdapter {
             Command::new("codex")
                 .current_dir(&cfg.working_dir)
                 .env_clear()
-                .env("PATH", std::env::var("PATH").unwrap_or_default())
-                .env("HOME", std::env::var("HOME").unwrap_or_default())
-                .env(
-                    "SHELL",
-                    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string()),
-                )
-                .env(
-                    "TERM",
-                    std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()),
-                )
-                .env("USER", std::env::var("USER").unwrap_or_default())
-                .env(
-                    "LANG",
-                    std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
-                )
-                .env(
-                    "LC_ALL",
-                    std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
-                )
-                .envs(cfg.env.iter().cloned())
+                .envs(crate::env::build_agent_environment(&cfg.env))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())

@@ -6,8 +6,6 @@ ENTITLEMENTS_PATH="${ENTITLEMENTS_PATH:-$ROOT_DIR/native/Pnevma/Pnevma.entitleme
 APP_PATH="${APP_PATH:-}"
 
 allowed_keys=(
-  "com.apple.security.cs.allow-jit"
-  "com.apple.security.cs.allow-unsigned-executable-memory"
   "com.apple.security.cs.disable-library-validation"
 )
 
@@ -41,6 +39,10 @@ if [[ -n "$APP_PATH" ]]; then
   tmp_plist="$(mktemp -t pnevma-entitlements.XXXXXX.plist)"
   if ! codesign -d --entitlements :- "$APP_PATH" >"$tmp_plist" 2>/dev/null; then
     echo "Failed to extract effective entitlements from $APP_PATH"
+    exit 1
+  fi
+  if [[ ! -s "$tmp_plist" ]]; then
+    echo "No effective entitlements were embedded in $APP_PATH"
     exit 1
   fi
   plist_to_check="$tmp_plist"

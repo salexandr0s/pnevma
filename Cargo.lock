@@ -1904,6 +1904,7 @@ dependencies = [
  "chrono",
  "rand 0.8.5",
  "regex",
+ "security-framework 2.11.1",
  "serde",
  "serde_json",
  "tempfile",

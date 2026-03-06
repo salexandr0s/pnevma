@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+  # Transitive via sqlx-mysql; Pnevma ships SQLite only, so rsa is not reachable in production.
+  "RUSTSEC-2023-0071",
+]

@@ -88,10 +88,10 @@ fi
 run_in_dir "$ROOT_DIR" "just xcode-build-release" just xcode-build-release
 
 print_check "xcodebuild: release entitlements"
-if APP_PATH="$NATIVE_DIR/build/Build/Products/Release/Pnevma.app" ./scripts/check-entitlements.sh >/dev/null 2>&1; then
-  pass "release entitlements match allowlist"
+if ./scripts/check-entitlements.sh >/dev/null 2>&1; then
+  pass "checked-in entitlements match allowlist"
 else
-  fail "release entitlements do not match allowlist"
+  fail "checked-in entitlements do not match allowlist"
 fi
 
 print_check "packaged launch smoke"

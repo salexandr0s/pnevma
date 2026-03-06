@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     middleware,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::limit::RequestBodyLimitLayer;
@@ -73,7 +73,6 @@ pub async fn build_router(
         .route("/api/sessions", get(api::session_list))
         .route("/api/workflows", get(api::workflow_list))
         .route("/api/workflows/defs", get(api::workflow_list_defs))
-        .route("/api/workflows", post(api::workflow_create))
         .route(
             "/api/workflows/instances",
             get(api::workflow_list_instances),
@@ -85,8 +84,6 @@ pub async fn build_router(
         )
         .route("/api/workflows/dispatch", post(api::workflow_dispatch))
         .route("/api/workflows/:id", get(api::workflow_get))
-        .route("/api/workflows/:id", put(api::workflow_update))
-        .route("/api/workflows/:id", delete(api::workflow_delete))
         .route("/api/rpc", post(api::rpc))
         .merge(ws_router)
         .with_state(router)

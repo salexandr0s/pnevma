@@ -42,6 +42,7 @@ pub struct PnevmaHandle {
     runtime: Runtime,
     state: Arc<AppState>,
     session_output_cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
+    session_output_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
@@ -122,6 +123,7 @@ fn make_error_result(msg: &str) -> *mut PnevmaResult {
 /// Returns `Ok(Value)` on success, or `Err(*mut PnevmaResult)` with an error result
 /// that the caller should return immediately.
 const MAX_PARAMS_LEN: usize = 16 * 1024 * 1024; // 16 MB
+const MAX_METHOD_LEN: usize = 128;
 
 fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, *mut PnevmaResult> {
     if params_json.is_null() {
@@ -136,6 +138,24 @@ fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, 
     let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
     let s = std::str::from_utf8(slice).map_err(|_| make_error_result("invalid UTF-8 in params"))?;
     serde_json::from_str(s).map_err(|e| make_error_result(&format!("invalid JSON in params: {e}")))
+}
+
+fn validate_method_name(method: &str) -> Result<(), *mut PnevmaResult> {
+    if method.is_empty() {
+        return Err(make_error_result("method must not be empty"));
+    }
+    if method.len() > MAX_METHOD_LEN {
+        return Err(make_error_result(&format!(
+            "method exceeds {MAX_METHOD_LEN} byte limit"
+        )));
+    }
+    if !method
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err(make_error_result("method contains invalid characters"));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +204,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             runtime,
             state,
             session_output_cb: Arc::new(std::sync::Mutex::new(None)),
+            session_output_task: std::sync::Mutex::new(None),
             shutdown: shutdown_tx,
         }))
     });
@@ -204,6 +225,14 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
         let handle = unsafe { Box::from_raw(handle) };
         // Signal all tasks to shut down
         let _ = handle.shutdown.send(true);
+        if let Ok(mut cb_guard) = handle.session_output_cb.lock() {
+            *cb_guard = None;
+        }
+        if let Ok(mut task_guard) = handle.session_output_task.lock() {
+            if let Some(task) = task_guard.take() {
+                task.abort();
+            }
+        }
         // Give tasks time to finish gracefully
         handle
             .runtime
@@ -235,6 +264,9 @@ pub extern "C" fn pnevma_call(
             Ok(s) => s,
             Err(_) => return make_error_result("invalid UTF-8 in method"),
         };
+        if let Err(r) = validate_method_name(method_str) {
+            return r;
+        }
 
         let params = match parse_params(params_json, params_len) {
             Ok(v) => v,
@@ -287,6 +319,11 @@ pub extern "C" fn pnevma_call_async(
                 return;
             }
         };
+        if let Err(r) = validate_method_name(&method_str) {
+            cb(r, cb_ctx);
+            unsafe { pnevma_free_result(r) };
+            return;
+        }
 
         let params = match parse_params(params_json, params_len) {
             Ok(v) => v,
@@ -359,8 +396,17 @@ pub extern "C" fn pnevma_set_session_output_callback(
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &*handle };
+        if let Ok(mut task_guard) = handle.session_output_task.lock() {
+            if let Some(task) = task_guard.take() {
+                task.abort();
+            }
+        }
         let cb_arc = Arc::clone(&handle.session_output_cb);
         if let Ok(mut cb_guard) = cb_arc.lock() {
+            if cb as usize == 0 {
+                *cb_guard = None;
+                return;
+            }
             *cb_guard = Some(SessionOutputCallbackWrapper { cb, ctx });
         }
 
@@ -369,9 +415,12 @@ pub extern "C" fn pnevma_set_session_output_callback(
         let state = Arc::clone(&handle.state);
         let cb_arc2 = Arc::clone(&handle.session_output_cb);
         let mut shutdown_rx = handle.shutdown.subscribe();
-        handle.runtime.spawn(async move {
+        let join = handle.runtime.spawn(async move {
             session_output_forward_loop(state, cb_arc2, &mut shutdown_rx).await;
         });
+        if let Ok(mut task_guard) = handle.session_output_task.lock() {
+            *task_guard = Some(join);
+        }
     }));
 }
 
@@ -550,6 +599,14 @@ mod tests {
     }
 
     #[test]
+    fn validate_method_name_rejects_invalid_values() {
+        assert!(validate_method_name("").is_err());
+        assert!(validate_method_name("task list").is_err());
+        assert!(validate_method_name(&"m".repeat(MAX_METHOD_LEN + 1)).is_err());
+        assert!(validate_method_name("task.list").is_ok());
+    }
+
+    #[test]
     fn pnevma_set_session_output_callback_stores_callback() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
         extern "C" fn output_cb(_sid: *const c_char, _data: *const u8, _len: usize, _ctx: *mut ()) {
@@ -568,6 +625,9 @@ mod tests {
             "callback should be stored after registration"
         );
         drop(guard);
+        let task_guard = h.session_output_task.lock().unwrap();
+        assert!(task_guard.is_some(), "forward loop should be running");
+        drop(task_guard);
 
         // Give the forward loop a moment to start (it will be waiting for a project)
         std::thread::sleep(std::time::Duration::from_millis(100));

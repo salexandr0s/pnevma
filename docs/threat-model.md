@@ -81,7 +81,6 @@ Assurance target:
 
 ## Residual risks to track
 
-- entitlement minimization is still incomplete; current allowlist is enforced but not yet reduced
+- the hardened-runtime exception set is now reduced to `com.apple.security.cs.disable-library-validation`; validate regularly whether GhosttyKit still requires it on signed release builds
 - project-level data retention can prune stale review packs, knowledge artifacts, feedback attachments, telemetry exports, and completed session scrollback when enabled in `pnevma.toml`
-- remote session-channel authorization hardening depends on the parallel event/runtime workstream landing first
 - no supported native auto-updater exists yet, so release distribution remains manual
