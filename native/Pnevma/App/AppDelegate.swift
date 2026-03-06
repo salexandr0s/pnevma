@@ -2,7 +2,18 @@ import Cocoa
 import SwiftUI
 import os
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+enum AppSmokeMode: String {
+    case launch
+    case ghostty
+
+    static var current: AppSmokeMode? {
+        ProcessInfo.processInfo.environment["PNEVMA_SMOKE_MODE"]
+            .flatMap(AppSmokeMode.init(rawValue:))
+    }
+}
+
+@MainActor
+public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Properties
 
@@ -20,51 +31,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandPalette: CommandPalette?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
+    private var smokeWindow: NSWindow?
+    private var smokeHostView: TerminalHostView?
+    private var smokeTimeoutWorkItem: DispatchWorkItem?
 
     // MARK: - App Lifecycle
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // ghostty_init must be the very first ghostty call.
-        #if canImport(GhosttyKit)
-        let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
-        if initResult != 0 {
-            Log.general.error("ghostty_init() failed with code \(initResult)")
+    public override init() {
+        super.init()
+    }
+
+    public func applicationDidFinishLaunching(_ notification: Notification) {
+        initializeRuntime()
+
+        let restoredState = persistence?.restore()
+        if let smokeMode = AppSmokeMode.current {
+            runSmoke(mode: smokeMode, restoredState: restoredState)
+            return
         }
-        #endif
-
-        // Initialize Rust bridge
-        bridge = PnevmaBridge()
-        if let bridge = bridge {
-            commandBus = CommandBus(bridge: bridge)
-            CommandBus.shared = commandBus
-        }
-
-        // Verify bridge works (off main thread to avoid blocking app launch).
-        DispatchQueue.global(qos: .utility).async { [weak bridge] in
-            if let result = bridge?.call(method: "task.list", params: "{}") {
-                Log.bridge.info("Bridge test: \(result)")
-            }
-        }
-
-        // Initialize ghostty app singleton
-        TerminalSurface.initializeGhostty()
-
-        // Session coordinator
-        sessionBridge = SessionBridge()
-
-        // Workspace manager
-        if let bridge = bridge, let bus = commandBus {
-            workspaceManager = WorkspaceManager(bridge: bridge, commandBus: bus)
-        }
-        workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
-            self?.contentAreaView?.setLayoutEngine(engine)
-        }
-
-        // Persistence
-        persistence = SessionPersistence()
 
         // Create main window
-        createMainWindow()
+        createMainWindow(showWindow: true)
+
+        if let restoredState {
+            applyRestoredState(restoredState)
+        } else {
+            workspaceManager?.createWorkspace(name: "Default")
+        }
 
         // Build menu bar
         NSApplication.shared.mainMenu = buildMainMenu()
@@ -84,29 +77,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         persistence?.startAutoSave()
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    public func applicationWillTerminate(_ notification: Notification) {
         persistence?.save(state: buildSessionState())
         persistence?.stopAutoSave()
+        shutdownRuntime()
+    }
+
+    private func initializeRuntime() {
+        // ghostty_init must be the very first ghostty call.
+        #if canImport(GhosttyKit)
+        let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
+        if initResult != 0 {
+            Log.general.error("ghostty_init() failed with code \(initResult)")
+        }
+        #endif
+
+        bridge = PnevmaBridge()
+        if let bridge = bridge {
+            commandBus = CommandBus(bridge: bridge)
+            CommandBus.shared = commandBus
+        }
+
+        DispatchQueue.global(qos: .utility).async { [weak bridge] in
+            if let result = bridge?.call(method: "task.list", params: "{}") {
+                Log.bridge.info("Bridge test ok=\(result.ok) payload=\(result.payload)")
+            }
+        }
+
+        TerminalSurface.initializeGhostty()
+
+        if let bridge = bridge, let bus = commandBus {
+            workspaceManager = WorkspaceManager(bridge: bridge, commandBus: bus)
+            let sessionBridge = SessionBridge(commandBus: bus) { [weak self] in
+                self?.workspaceManager?.activeWorkspace?.projectPath
+            }
+            self.sessionBridge = sessionBridge
+            SessionBridge.shared = sessionBridge
+            PaneFactory.sessionBridge = sessionBridge
+        }
+        workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
+            self?.contentAreaView?.syncPersistedPanes()
+            self?.contentAreaView?.setLayoutEngine(engine)
+            if let workspace = self?.workspaceManager?.activeWorkspace {
+                self?.statusBar?.updateBranch(workspace.gitBranch)
+                self?.statusBar?.updateAgents(workspace.activeAgents)
+            }
+            self?.persistence?.markDirty()
+        }
+
+        persistence = SessionPersistence()
+    }
+
+    private func shutdownRuntime() {
+        smokeTimeoutWorkItem?.cancel()
+        smokeTimeoutWorkItem = nil
 
         // Free ghostty app singleton before process exit.
         #if canImport(GhosttyKit)
-        if let app = TerminalSurface.ghosttyApp {
-            ghostty_app_free(app)
-            TerminalSurface.ghosttyApp = nil
-        }
+        TerminalSurface.shutdownGhostty()
         #endif
 
         bridge?.destroy()
         bridge = nil
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
 
     // MARK: - Main Window
 
-    private func createMainWindow() {
+    private func createMainWindow(showWindow: Bool) {
         let contentRect = NSRect(x: 0, y: 0, width: 1400, height: 900)
         let win = NSWindow(
             contentRect: contentRect,
@@ -120,8 +161,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let windowContent = win.contentView else { return }
 
-        // Root terminal pane
-        let (_, rootPane) = PaneFactory.makeTerminal()
+        // Root placeholder pane
+        let (_, rootPane) = PaneFactory.makeWelcome()
         contentAreaView = ContentAreaView(frame: windowContent.bounds, rootPaneView: rootPane)
 
         contentAreaView?.onActivePaneChanged = { [weak self] _ in
@@ -130,9 +171,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self?.persistence?.markDirty()
         }
+        contentAreaView?.onPanePersistenceChanged = { [weak self] in
+            self?.persistence?.markDirty()
+        }
 
         contentAreaView?.onAllPanesClosed = { [weak self] in
-            let (_, newPane) = PaneFactory.makeTerminal()
+            let newPane = self?.makeRootPaneForActiveWorkspace() ?? PaneFactory.makeWelcome().1
             self?.contentAreaView?.setRootPane(newPane)
             self?.persistence?.markDirty()
         }
@@ -199,16 +243,108 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             statusBar!.heightAnchor.constraint(equalToConstant: statusHeight),
         ])
 
-        win.makeKeyAndOrderFront(nil)
+        if showWindow {
+            win.makeKeyAndOrderFront(nil)
+        } else {
+            win.orderOut(nil)
+        }
         self.window = win
 
         // Focus the terminal
-        if let pane = contentAreaView?.activePaneView {
+        if showWindow, let pane = contentAreaView?.activePaneView {
             win.makeFirstResponder(pane)
         }
 
-        // Create default workspace
-        workspaceManager?.createWorkspace(name: "Default")
+    }
+
+    private func runSmoke(
+        mode: AppSmokeMode,
+        restoredState: SessionPersistence.SessionState?
+    ) {
+        switch mode {
+        case .launch:
+            createMainWindow(showWindow: false)
+            if let restoredState {
+                applyRestoredState(restoredState)
+            } else {
+                workspaceManager?.createWorkspace(name: "Default")
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.finishSmoke(success: true, message: "launch smoke ready")
+            }
+
+        case .ghostty:
+            guard TerminalSurface.isRealRendererAvailable else {
+                finishSmoke(success: false, message: "Ghostty runtime unavailable")
+                return
+            }
+
+            let timeoutWorkItem = DispatchWorkItem { [weak self] in
+                self?.finishSmoke(success: false, message: "ghostty smoke timed out")
+            }
+            smokeTimeoutWorkItem = timeoutWorkItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeoutWorkItem)
+
+            let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 960, height: 640)
+            let win = NSWindow(
+                contentRect: NSRect(
+                    x: screenFrame.midX - 480,
+                    y: screenFrame.midY - 320,
+                    width: 960,
+                    height: 640
+                ),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            win.title = "Pnevma Smoke"
+            let hostView = TerminalHostView(frame: win.contentView?.bounds ?? .zero)
+            hostView.autoresizingMask = [.width, .height]
+            hostView.onSurfaceReady = { [weak self] in
+                self?.finishSmoke(success: true, message: "ghostty surface ready")
+            }
+
+            if let contentView = win.contentView {
+                hostView.frame = contentView.bounds
+                contentView.addSubview(hostView)
+            }
+
+            smokeHostView = hostView
+            smokeWindow = win
+            win.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async {
+                hostView.ensureSurfaceCreated()
+            }
+        }
+    }
+
+    private func finishSmoke(success: Bool, message: String) {
+        smokeTimeoutWorkItem?.cancel()
+        smokeTimeoutWorkItem = nil
+        smokeHostView?.teardownSurface()
+        smokeHostView?.removeFromSuperview()
+        smokeHostView = nil
+        smokeWindow?.orderOut(nil)
+        smokeWindow = nil
+
+        let smokeMessage = "Smoke \(success ? "passed" : "failed"): \(message)\n"
+        if let data = smokeMessage.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+
+        if success {
+            Log.general.info("Smoke passed: \(message)")
+        } else {
+            Log.general.error("Smoke failed: \(message)")
+        }
+
+        if AppSmokeMode.current == .ghostty {
+            _exit(Int32(success ? 0 : 1))
+        }
+
+        shutdownRuntime()
+        exit(success ? 0 : 1)
     }
 
     // MARK: - Menu Bar
@@ -294,7 +430,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
 
     @objc private func newTerminal() {
-        let (_, pane) = PaneFactory.makeTerminal()
+        guard let workspace = workspaceManager?.activeWorkspace,
+              let projectPath = workspace.projectPath else {
+            Log.workspace.info("Ignoring terminal request because no project is active")
+            return
+        }
+        let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
         contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
     }
 
@@ -305,7 +446,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func splitRightAction() { newTerminal() }
 
     @objc private func splitDownAction() {
-        let (_, pane) = PaneFactory.makeTerminal()
+        guard let workspace = workspaceManager?.activeWorkspace,
+              let projectPath = workspace.projectPath else {
+            Log.workspace.info("Ignoring terminal split because no project is active")
+            return
+        }
+        let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
         contentAreaView?.splitActivePane(direction: .vertical, newPaneView: pane)
     }
 
@@ -321,6 +467,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.duration = DesignTokens.Motion.normal
             sidebarWidthConstraint?.animator().constant = width
         }
+        persistence?.markDirty()
     }
 
     @objc private func showCommandPalette() { commandPalette?.show() }
@@ -341,7 +488,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ("Open Rules Manager", "pane", nil, { RulesManagerPaneView() }),
             ("Open Workflow", "pane", nil, { WorkflowPaneView() }),
             ("Open SSH Manager", "pane", nil, { SshManagerPaneView() }),
-            ("Open Session Replay", "pane", nil, { ReplayPaneView() }),
+            ("Open Session Replay", "pane", nil, { ReplayPaneView(frame: .zero) }),
             ("Open Settings", "pane", "Cmd+,", { SettingsPaneView() }),
         ]
 
@@ -396,6 +543,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildSessionState() -> SessionPersistence.SessionState {
+        contentAreaView?.syncPersistedPanes()
         let frame = window.map { SessionPersistence.CodableRect($0.frame) }
         return SessionPersistence.SessionState(
             windowFrame: frame,
@@ -403,5 +551,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             activeWorkspaceID: workspaceManager?.activeWorkspaceID,
             sidebarVisible: isSidebarVisible
         )
+    }
+
+    private func applyRestoredState(_ state: SessionPersistence.SessionState) {
+        if let frame = state.windowFrame?.nsRect {
+            window?.setFrame(frame, display: true)
+        }
+
+        isSidebarVisible = state.sidebarVisible
+        let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
+        sidebarWidthConstraint?.constant = width
+
+        workspaceManager?.restore(
+            snapshots: state.workspaces,
+            activeWorkspaceID: state.activeWorkspaceID
+        )
+
+        if let activeWorkspace = workspaceManager?.activeWorkspace {
+            contentAreaView?.syncPersistedPanes()
+            contentAreaView?.setLayoutEngine(activeWorkspace.layoutEngine)
+        } else {
+            workspaceManager?.createWorkspace(name: "Default")
+        }
+    }
+
+    private func makeRootPaneForActiveWorkspace() -> (NSView & PaneContent) {
+        if let projectPath = workspaceManager?.activeWorkspace?.projectPath {
+            return PaneFactory.makeTerminal(workingDirectory: projectPath).1
+        }
+        return PaneFactory.makeWelcome().1
     }
 }
