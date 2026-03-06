@@ -18,6 +18,37 @@ working_tree_dirty() {
     ! git -C "$GHOSTTY_DIR" diff --cached --quiet --ignore-submodules --no-ext-diff
 }
 
+patch_touched_files() {
+  if [[ ! -d "$PATCH_DIR" ]]; then
+    return
+  fi
+
+  local patch
+  for patch in "$PATCH_DIR"/*.patch; do
+    [[ -e "$patch" ]] || continue
+    awk '/^\+\+\+ b\// { path=substr($0, 7); if (path != "/dev/null") print path }' "$patch"
+  done | sort -u
+}
+
+dirty_tree_matches_expected_patches() {
+  patches_already_applied || return 1
+
+  local expected_paths tracked_paths untracked_paths
+  expected_paths="$(patch_touched_files)"
+  [[ -n "$expected_paths" ]] || return 1
+
+  tracked_paths="$(
+    {
+      git -C "$GHOSTTY_DIR" diff --name-only --ignore-submodules --no-ext-diff
+      git -C "$GHOSTTY_DIR" diff --cached --name-only --ignore-submodules --no-ext-diff
+    } | sed '/^$/d' | sort -u
+  )"
+  untracked_paths="$(git -C "$GHOSTTY_DIR" ls-files --others --exclude-standard | sort -u)"
+
+  [[ -z "$untracked_paths" ]] || return 1
+  [[ "$tracked_paths" == "$expected_paths" ]]
+}
+
 fetch_expected_refs() {
   git -C "$GHOSTTY_DIR" fetch --tags origin "$GHOSTTY_REF" "$GHOSTTY_COMMIT"
 }
@@ -89,10 +120,11 @@ fetch_expected_refs
 verify_ref_provenance
 
 if [[ "$(git -C "$GHOSTTY_DIR" rev-parse HEAD 2>/dev/null || true)" == "$GHOSTTY_COMMIT" ]] &&
-  ! working_tree_dirty &&
   patches_already_applied; then
-  verify_checkout_commit "existing patched checkout"
-  exit 0
+  if ! working_tree_dirty || dirty_tree_matches_expected_patches; then
+    verify_checkout_commit "existing patched checkout"
+    exit 0
+  fi
 fi
 
 checkout_expected_base

@@ -3,9 +3,24 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Default: Xcode DerivedData build output.
+# Default: detect the xcodebuild release output location.
 # Override APP_PATH to use a custom location.
 APP_PATH="${APP_PATH:-}"
+
+default_app_path() {
+  local candidates=(
+    "$ROOT_DIR/native/build/Release/Pnevma.app"
+    "$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "${candidates[0]}"
+}
 
 if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   echo "APPLE_SIGNING_IDENTITY is required"
@@ -13,19 +28,13 @@ if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
 fi
 
 if [[ -z "$APP_PATH" ]]; then
-  # Try standard xcodebuild output location
-  DERIVED="$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app"
-  if [[ -d "$DERIVED" ]]; then
-    APP_PATH="$DERIVED"
-  else
-    echo "App bundle not found. Set APP_PATH or build with:"
-    echo "  just xcode-build-release"
-    exit 1
-  fi
+  APP_PATH="$(default_app_path)"
 fi
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "App bundle not found at $APP_PATH"
+  echo "Set APP_PATH or build with:"
+  echo "  just xcode-build-release"
   exit 1
 fi
 

@@ -5,6 +5,20 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE_DIR="$ROOT_DIR/native"
 FAILURES=0
 
+resolve_release_app_path() {
+  local candidate
+  for candidate in \
+    "$NATIVE_DIR/build/Release/Pnevma.app" \
+    "$NATIVE_DIR/build/Build/Products/Release/Pnevma.app"
+  do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "$NATIVE_DIR/build/Release/Pnevma.app"
+}
+
 print_check() {
   printf "\n==> %s\n" "$1"
 }
@@ -103,7 +117,7 @@ else
 fi
 
 print_check "packaged launch smoke"
-if APP_PATH="$NATIVE_DIR/build/Build/Products/Release/Pnevma.app" ./scripts/run-packaged-launch-smoke.sh >/dev/null 2>&1; then
+if APP_PATH="$(resolve_release_app_path)" ./scripts/run-packaged-launch-smoke.sh >/dev/null 2>&1; then
   pass "packaged launch smoke succeeded"
 else
   fail "packaged launch smoke failed"

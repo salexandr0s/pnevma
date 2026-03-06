@@ -54,7 +54,7 @@ Then sign, notarize, staple, and verify:
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
 export APPLE_NOTARY_PROFILE="pnevma-notary"
 export APPLE_NOTARY_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
-export APP_PATH="native/build/Build/Products/Release/Pnevma.app"
+export APP_PATH="native/build/Release/Pnevma.app"
 
 APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
 APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh
@@ -86,11 +86,11 @@ If the default keychain on a maintainer machine is not the login keychain, pass
 
 Default release app path:
 
-- `native/build/Build/Products/Release/Pnevma.app`
+- `native/build/Release/Pnevma.app`
 
 Default notarization archive path:
 
-- `native/build/Build/Products/Release/Pnevma-notarize.zip`
+- `native/build/Pnevma-notarize.zip`
 
 ## Auto-updater status
 

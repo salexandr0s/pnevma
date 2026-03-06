@@ -243,7 +243,7 @@ Required quality gates:
 - `cd native && swift test`
 - `just xcode-test`
 - `./scripts/release-preflight.sh`
-- `APP_PATH="native/build/Build/Products/Release/Pnevma.app" ./scripts/check-entitlements.sh`
+- `APP_PATH="native/build/Release/Pnevma.app" ./scripts/check-entitlements.sh`
 
 Stability target:
 

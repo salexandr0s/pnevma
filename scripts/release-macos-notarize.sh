@@ -2,14 +2,33 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_PATH="${APP_PATH:-$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app}"
+APP_PATH="${APP_PATH:-}"
 NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
 NOTARY_KEYCHAIN="${APPLE_NOTARY_KEYCHAIN:-}"
 ZIP_PATH="${ZIP_PATH:-$ROOT_DIR/native/build/Pnevma-notarize.zip}"
 
+default_app_path() {
+  local candidates=(
+    "$ROOT_DIR/native/build/Release/Pnevma.app"
+    "$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "${candidates[0]}"
+}
+
 if [[ -z "$NOTARY_PROFILE" ]]; then
   echo "APPLE_NOTARY_PROFILE is required (xcrun notarytool keychain profile name)"
   exit 1
+fi
+
+if [[ -z "$APP_PATH" ]]; then
+  APP_PATH="$(default_app_path)"
 fi
 
 if [[ ! -d "$APP_PATH" ]]; then

@@ -71,6 +71,7 @@ let package = Package(
                 "Core/ContentAreaView.swift",
                 "Core/Log.swift",
                 "Core/PaneLayoutEngine.swift",
+                "Core/PnevmaJSON.swift",
                 "Core/SessionBridge.swift",
                 "Core/SessionPersistence.swift",
                 "Core/Workspace.swift",
