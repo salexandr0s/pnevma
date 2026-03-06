@@ -15,20 +15,13 @@ check_cmd() {
 
 echo "Checking toolchain..."
 check_cmd cargo
-check_cmd node
-check_cmd npm
+check_cmd just
+check_cmd zig
+check_cmd xcodegen
 
 if [[ "$missing" -ne 0 ]]; then
   echo "\nInstall missing dependencies and rerun scripts/bootstrap-dev.sh"
   exit 1
 fi
 
-echo "\nInstalling frontend dependencies..."
-cd "$(dirname "$0")/../frontend"
-if [[ -f package-lock.json ]]; then
-  npm ci
-else
-  npm install
-fi
-
-echo "\nBootstrap complete. Run: make check"
+echo "\nBootstrap complete. Run: just check"

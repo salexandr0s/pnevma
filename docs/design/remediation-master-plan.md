@@ -1,5 +1,7 @@
 # Pnevma Remediation Master Plan
 
+> **Historical note**: This document was authored during the Tauri + React frontend era. The frontend has since been migrated to native Swift/AppKit. Any references to Tauri, React, `frontend/`, `cargo tauri`, `npm`, or `pnevma-app` crate are historical artifacts reflecting the state at the time this plan was written. The Rust backend crates and all remediation items not related to the frontend remain accurate.
+
 Merged and deduplicated from multiple audit sessions. 56 unique items across 7 workstreams.
 
 ---

@@ -180,12 +180,13 @@ final class ContentAreaView: NSView {
 
         layoutEngine = engine
 
-        // TODO: Recreate pane views from the new engine's tree.
-        // For now, if the engine has pane IDs but no views, create terminals.
+        // TODO: Recreate pane views from the new engine's tree using stored pane type metadata.
+        // PaneLayoutEngine does not yet store pane type per node, so all panes fall back to terminals.
+        // TODO: Store pane type in PaneLayoutEngine nodes and call PaneFactory.make(type:) here
+        //       to fully support non-terminal pane recreation on layout restore.
         if let root = engine.root {
-            for paneID in root.allPaneIDs {
+            for _ in root.allPaneIDs {
                 let (_, pane) = PaneFactory.makeTerminal()
-                // Override the pane's ID if needed — for now register with generated ID.
                 registerPaneView(pane)
             }
         }

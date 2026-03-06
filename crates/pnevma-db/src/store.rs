@@ -2869,4 +2869,228 @@ mod tests {
         assert_eq!(feedback.len(), 1);
         assert_eq!(feedback[0].category, "ux");
     }
+
+    // ── D1: Workflow definition roundtrip ───────────────────────────────────
+
+    #[tokio::test]
+    async fn workflow_definition_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let wf = crate::models::WorkflowRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "ci-pipeline".to_string(),
+            description: Some("Runs CI steps".to_string()),
+            definition_yaml: "steps:\n  - name: lint\n    goal: run linter\n".to_string(),
+            source: "user".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        // list before any inserts
+        let empty = db
+            .list_workflows(&project_id)
+            .await
+            .expect("list before insert");
+        assert!(empty.is_empty());
+
+        db.create_workflow(&wf).await.expect("create workflow");
+
+        // get by id
+        let loaded = db
+            .get_workflow(&wf.id)
+            .await
+            .expect("get workflow")
+            .expect("workflow should exist");
+        assert_eq!(loaded.id, wf.id);
+        assert_eq!(loaded.name, "ci-pipeline");
+        assert_eq!(loaded.description.as_deref(), Some("Runs CI steps"));
+        assert_eq!(loaded.source, "user");
+
+        // get by name
+        let by_name = db
+            .get_workflow_by_name(&project_id, "ci-pipeline")
+            .await
+            .expect("get by name")
+            .expect("should find by name");
+        assert_eq!(by_name.id, wf.id);
+
+        // get by name — not found
+        let missing = db
+            .get_workflow_by_name(&project_id, "nonexistent")
+            .await
+            .expect("get missing by name");
+        assert!(missing.is_none());
+
+        // list_workflows returns one entry
+        let list = db
+            .list_workflows(&project_id)
+            .await
+            .expect("list after insert");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "ci-pipeline");
+
+        // add a second workflow, verify list grows
+        let wf2 = crate::models::WorkflowRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "deploy".to_string(),
+            description: None,
+            definition_yaml: "steps:\n  - name: ship\n    goal: deploy\n".to_string(),
+            source: "user".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        db.create_workflow(&wf2).await.expect("create workflow 2");
+        let list2 = db
+            .list_workflows(&project_id)
+            .await
+            .expect("list after second insert");
+        assert_eq!(list2.len(), 2);
+        // list is ordered by name ASC
+        assert_eq!(list2[0].name, "ci-pipeline");
+        assert_eq!(list2[1].name, "deploy");
+    }
+
+    #[tokio::test]
+    async fn workflow_definition_update_and_delete() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let wf = crate::models::WorkflowRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "release".to_string(),
+            description: Some("Release workflow".to_string()),
+            definition_yaml: "steps:\n  - name: build\n    goal: build artifacts\n".to_string(),
+            source: "user".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        db.create_workflow(&wf).await.expect("create");
+
+        // update — replace definition_yaml and name
+        let updated = crate::models::WorkflowRow {
+            id: wf.id.clone(),
+            project_id: project_id.clone(),
+            name: "release-v2".to_string(),
+            description: Some("Updated release workflow".to_string()),
+            definition_yaml:
+                "steps:\n  - name: build\n    goal: build\n  - name: publish\n    goal: publish\n"
+                    .to_string(),
+            source: "user".to_string(),
+            created_at: now,
+            updated_at: Utc::now(),
+        };
+        db.update_workflow(&updated).await.expect("update");
+
+        let reloaded = db
+            .get_workflow(&wf.id)
+            .await
+            .expect("get after update")
+            .expect("should still exist");
+        assert_eq!(reloaded.name, "release-v2");
+        assert_eq!(
+            reloaded.description.as_deref(),
+            Some("Updated release workflow")
+        );
+        assert!(reloaded.definition_yaml.contains("publish"));
+
+        // delete
+        db.delete_workflow(&wf.id).await.expect("delete");
+        let gone = db.get_workflow(&wf.id).await.expect("get after delete");
+        assert!(gone.is_none());
+
+        let list = db
+            .list_workflows(&project_id)
+            .await
+            .expect("list after delete");
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn workflow_instance_list_roundtrip() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+
+        // empty list before any inserts
+        let empty = db
+            .list_workflow_instances(&project_id)
+            .await
+            .expect("list empty instances");
+        assert!(empty.is_empty());
+
+        let inst1 = WorkflowInstanceRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            workflow_name: "pipeline-a".to_string(),
+            description: Some("first run".to_string()),
+            status: "pending".to_string(),
+            created_at: now,
+            updated_at: now,
+            params_json: Some("{\"env\":\"staging\"}".to_string()),
+            stage_results_json: None,
+            expanded_steps_json: None,
+        };
+        let inst2 = WorkflowInstanceRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            workflow_name: "pipeline-b".to_string(),
+            description: None,
+            status: "running".to_string(),
+            created_at: now,
+            updated_at: now,
+            params_json: None,
+            stage_results_json: None,
+            expanded_steps_json: None,
+        };
+
+        db.create_workflow_instance(&inst1)
+            .await
+            .expect("create inst1");
+        db.create_workflow_instance(&inst2)
+            .await
+            .expect("create inst2");
+
+        let list = db
+            .list_workflow_instances(&project_id)
+            .await
+            .expect("list instances");
+        assert_eq!(list.len(), 2);
+
+        // get_workflow_instance for each
+        let loaded1 = db
+            .get_workflow_instance(&inst1.id)
+            .await
+            .expect("get inst1")
+            .expect("inst1 exists");
+        assert_eq!(loaded1.workflow_name, "pipeline-a");
+        assert_eq!(
+            loaded1.params_json.as_deref(),
+            Some("{\"env\":\"staging\"}")
+        );
+
+        let loaded2 = db
+            .get_workflow_instance(&inst2.id)
+            .await
+            .expect("get inst2")
+            .expect("inst2 exists");
+        assert_eq!(loaded2.workflow_name, "pipeline-b");
+        assert_eq!(loaded2.status, "running");
+
+        // get non-existent
+        let missing = db
+            .get_workflow_instance("no-such-id")
+            .await
+            .expect("get missing");
+        assert!(missing.is_none());
+    }
 }

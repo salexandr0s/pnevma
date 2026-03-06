@@ -279,6 +279,7 @@ fn verify_same_user_peer(
     }
     let creds = stream.peer_cred().map_err(|e| e.to_string())?;
     let peer_uid = creds.uid();
+    // SAFETY: geteuid() is always safe — returns the effective UID of the calling process.
     let self_uid = unsafe { libc::geteuid() } as u32;
     if peer_uid != self_uid {
         return Err("socket peer uid mismatch".to_string());

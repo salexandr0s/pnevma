@@ -184,25 +184,86 @@ final class SshManagerViewModel: ObservableObject {
     @Published var showAddSheet = false
 
     func load() {
-        // pnevma_call("ssh.list_profiles", "{}")
-        // pnevma_call("tailscale.discover", "{}")
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                async let profilesResult: [SshProfile] = bus.call(method: "ssh.list_profiles")
+                async let devicesResult: [TailscaleDevice] = bus.call(method: "ssh.discover_tailscale")
+                let (p, d) = try await (profilesResult, devicesResult)
+                await MainActor.run {
+                    self.profiles = p
+                    self.tailscaleDevices = d
+                }
+            } catch {
+                // Log error, keep existing state
+            }
+        }
     }
 
     func addProfile(_ profile: SshProfile) {
         profiles.append(profile)
-        // pnevma_call("ssh.create_profile", ...)
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable {
+                    let name: String; let host: String; let port: Int
+                    let user: String; let identityFile: String?
+                }
+                let _: SshProfile = try await bus.call(
+                    method: "ssh.create_profile",
+                    params: Params(name: profile.name, host: profile.host, port: profile.port,
+                                   user: profile.user, identityFile: profile.identityFile)
+                )
+            } catch {
+                // Log error
+            }
+        }
     }
 
     func connect(_ profile: SshProfile) {
-        // pnevma_call("ssh.connect", ...)
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let profileId: String }
+                let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(profileId: profile.id))
+                await MainActor.run {
+                    if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
+                        self.profiles[idx].isConnected = true
+                    }
+                }
+            } catch {
+                // Log error
+            }
+        }
     }
 
     func disconnect(_ profile: SshProfile) {
-        // pnevma_call("ssh.disconnect", ...)
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let profileId: String }
+                let _: [String: Bool] = try await bus.call(method: "ssh.disconnect", params: Params(profileId: profile.id))
+                await MainActor.run {
+                    if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
+                        self.profiles[idx].isConnected = false
+                    }
+                }
+            } catch {
+                // Log error
+            }
+        }
     }
 
     func connectTailscale(_ device: TailscaleDevice) {
-        // pnevma_call("ssh.connect", ...) with tailscale IP
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let host: String }
+                let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(host: device.ipAddress))
+            } catch {
+                // Log error
+            }
+        }
     }
 }
 

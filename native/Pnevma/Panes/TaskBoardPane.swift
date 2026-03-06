@@ -163,17 +163,41 @@ final class TaskBoardViewModel: ObservableObject {
     }
 
     func loadTasks() {
-        // Will call pnevma_call("task.list", "{}") via CommandBus.
-        // For now, empty state.
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                let tasks: [TaskItem] = try await bus.call(method: "task.list")
+                await MainActor.run { self.allTasks = tasks }
+            } catch {
+                // Log error, keep existing state
+            }
+        }
     }
 
     func dispatch(_ task: TaskItem) {
-        // pnevma_call("task.dispatch", ...)
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let taskId: String }
+                let _: [String: Bool] = try await bus.call(method: "task.dispatch", params: Params(taskId: task.id))
+            } catch {
+                // Log error
+            }
+        }
     }
 
     func moveTask(_ task: TaskItem, to status: TaskStatus) {
         if let idx = allTasks.firstIndex(where: { $0.id == task.id }) {
             allTasks[idx].status = status
+        }
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let taskId: String; let status: String }
+                let _: [String: Bool] = try await bus.call(method: "task.update", params: Params(taskId: task.id, status: status.rawValue))
+            } catch {
+                // Log error
+            }
         }
     }
 }

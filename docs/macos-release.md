@@ -14,10 +14,9 @@ This repository ships helper scripts for local macOS release packaging and updat
 ## Prerequisites
 
 1. Xcode command line tools installed (`xcode-select --install`).
-2. `cargo-tauri` installed (`cargo install tauri-cli`).
-3. Apple Developer Developer ID signing certificate installed in Keychain.
-4. Notary tool profile configured in Keychain.
-5. Updater keypair generated once for the product (private key kept offline/secret storage).
+2. Apple Developer Developer ID signing certificate installed in Keychain.
+3. Notary tool profile configured in Keychain.
+4. Updater keypair generated once for the product (private key kept offline/secret storage).
 
 Example profile setup:
 
@@ -73,8 +72,7 @@ export APPLE_NOTARY_PROFILE="pnevma-notary"
 ./scripts/release-updater-generate-keys.sh
 ```
 
-2. Keep `crates/pnevma-app/tauri.conf.json` placeholders in-repo; inject production updater endpoint/pubkey via overlay at release time.
-3. Generate updater overlay config from production endpoint/pubkey:
+2. Generate updater overlay config from production endpoint/pubkey (note: this overlay script is a legacy artifact — the Tauri updater flow has been replaced by Sparkle; see the Sparkle appcast section below):
 
 ```bash
 export PNEVMA_UPDATER_ENDPOINT="https://updates.example.com/pnevma/{{target}}/{{arch}}/{{current_version}}"
@@ -82,15 +80,11 @@ export PNEVMA_UPDATER_PUBKEY="$(cat "$HOME/.config/pnevma/updater/private.key.pu
 ./scripts/release-updater-overlay.sh
 ```
 
-4. Build updater artifact bundle (with overlay):
+> **Note**: The Tauri updater flow (`cargo tauri build --manifest-path crates/pnevma-app/Cargo.toml`) is no longer used. The app is now a native Swift/AppKit application using Sparkle for auto-updates. The overlay script above is a legacy artifact pending Sparkle migration. For Sparkle, generate the appcast XML and Ed25519 signature using Sparkle's `generate_appcast` tool instead.
 
-```bash
-cargo tauri build --manifest-path crates/pnevma-app/Cargo.toml -c target/release/updater-overlay.json
-```
-
-5. Sign artifact using updater private key.
-6. Generate `latest.json`.
-7. Publish artifact + signature + `latest.json` to feed host.
+3. Sign artifact using updater private key.
+4. Generate `latest.json`.
+5. Publish artifact + signature + `latest.json` to feed host.
 
 Example:
 

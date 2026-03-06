@@ -6,6 +6,7 @@
 use pnevma_commands::event_emitter::EventEmitter;
 use pnevma_commands::state::AppState;
 use pnevma_commands::{route_method, NullEmitter};
+use pnevma_session::SessionEvent;
 use serde_json::Value;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -40,7 +41,7 @@ pub struct PnevmaResult {
 pub struct PnevmaHandle {
     runtime: Runtime,
     state: Arc<AppState>,
-    _session_output_cb: std::sync::Mutex<Option<SessionOutputCallbackWrapper>>,
+    session_output_cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
@@ -53,8 +54,8 @@ unsafe impl Send for EventCallbackWrapper {}
 unsafe impl Sync for EventCallbackWrapper {}
 
 struct SessionOutputCallbackWrapper {
-    _cb: SessionOutputCallback,
-    _ctx: *mut (),
+    cb: SessionOutputCallback,
+    ctx: *mut (),
 }
 unsafe impl Send for SessionOutputCallbackWrapper {}
 unsafe impl Sync for SessionOutputCallbackWrapper {}
@@ -182,7 +183,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         Box::into_raw(Box::new(PnevmaHandle {
             runtime,
             state,
-            _session_output_cb: std::sync::Mutex::new(None),
+            session_output_cb: Arc::new(std::sync::Mutex::new(None)),
             shutdown: shutdown_tx,
         }))
     });
@@ -358,12 +359,99 @@ pub extern "C" fn pnevma_set_session_output_callback(
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &*handle };
-        if let Ok(mut cb_guard) = handle._session_output_cb.lock() {
-            *cb_guard = Some(SessionOutputCallbackWrapper { _cb: cb, _ctx: ctx });
+        let cb_arc = Arc::clone(&handle.session_output_cb);
+        if let Ok(mut cb_guard) = cb_arc.lock() {
+            *cb_guard = Some(SessionOutputCallbackWrapper { cb, ctx });
         }
-        // TODO: Wire the callback into SessionSupervisor's output stream
-        // once the session bridge is fully connected.
+
+        // Spawn a background task that subscribes to the session supervisor's
+        // output broadcast and forwards chunks to the FFI callback.
+        let state = Arc::clone(&handle.state);
+        let cb_arc2 = Arc::clone(&handle.session_output_cb);
+        let mut shutdown_rx = handle.shutdown.subscribe();
+        handle.runtime.spawn(async move {
+            session_output_forward_loop(state, cb_arc2, &mut shutdown_rx).await;
+        });
     }));
+}
+
+// ---------------------------------------------------------------------------
+// Session output forwarding
+// ---------------------------------------------------------------------------
+
+/// Background loop that subscribes to the session supervisor's output broadcast
+/// and forwards PTY output chunks to the registered FFI callback.
+///
+/// Handles project open/close by polling for an active project context.
+/// Exits when the shutdown signal is received.
+async fn session_output_forward_loop(
+    state: Arc<AppState>,
+    cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+) {
+    loop {
+        // Wait for a project to be open
+        let mut rx = loop {
+            if *shutdown_rx.borrow() {
+                return;
+            }
+            let maybe_rx = {
+                let current = state.current.lock().await;
+                current.as_ref().map(|ctx| ctx.sessions.subscribe())
+            };
+            if let Some(rx) = maybe_rx {
+                break rx;
+            }
+            // No project open yet; poll periodically
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                _ = shutdown_rx.changed() => { return; }
+            }
+        };
+
+        // Forward output events until the channel closes or shutdown
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    match event {
+                        Ok(SessionEvent::Output { session_id, chunk }) => {
+                            let cb_guard = match cb.lock() {
+                                Ok(g) => g,
+                                Err(_) => continue,
+                            };
+                            if let Some(wrapper) = cb_guard.as_ref() {
+                                let sid = session_id.to_string();
+                                let sid_cstr = match CString::new(sid) {
+                                    Ok(s) => s,
+                                    Err(_) => continue,
+                                };
+                                let bytes = chunk.as_bytes();
+                                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                    (wrapper.cb)(
+                                        sid_cstr.as_ptr(),
+                                        bytes.as_ptr(),
+                                        bytes.len(),
+                                        wrapper.ctx,
+                                    );
+                                }));
+                                if result.is_err() {
+                                    tracing::error!("panic in session output FFI callback");
+                                }
+                            }
+                        }
+                        Ok(_) => {} // Ignore non-output events
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(skipped = n, "session output callback lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break; // Channel closed, project likely closed
+                        }
+                    }
+                }
+                _ = shutdown_rx.changed() => { return; }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +547,32 @@ mod tests {
         assert!(result.is_ok());
         let val = result.unwrap();
         assert_eq!(val["key"], "value");
+    }
+
+    #[test]
+    fn pnevma_set_session_output_callback_stores_callback() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        extern "C" fn output_cb(_sid: *const c_char, _data: *const u8, _len: usize, _ctx: *mut ()) {
+        }
+
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(!handle.is_null());
+
+        pnevma_set_session_output_callback(handle, output_cb, ptr::null_mut());
+
+        // Verify the callback was stored
+        let h = unsafe { &*handle };
+        let guard = h.session_output_cb.lock().unwrap();
+        assert!(
+            guard.is_some(),
+            "callback should be stored after registration"
+        );
+        drop(guard);
+
+        // Give the forward loop a moment to start (it will be waiting for a project)
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        pnevma_destroy(handle);
     }
 
     #[test]

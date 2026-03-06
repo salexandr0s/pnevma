@@ -40,6 +40,101 @@ enum PaneFactory {
         let view = TerminalPaneView(workingDirectory: workingDirectory)
         return (view.paneID, view)
     }
+
+    static func makeTaskBoard() -> (PaneID, NSView & PaneContent) {
+        let view = TaskBoardPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeReplay() -> (PaneID, NSView & PaneContent) {
+        let view = ReplayPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeFileBrowser() -> (PaneID, NSView & PaneContent) {
+        let view = FileBrowserPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeSshManager() -> (PaneID, NSView & PaneContent) {
+        let view = SshManagerPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeWorkflow() -> (PaneID, NSView & PaneContent) {
+        let view = WorkflowPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeReview() -> (PaneID, NSView & PaneContent) {
+        let view = ReviewPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeMergeQueue() -> (PaneID, NSView & PaneContent) {
+        let view = MergeQueuePaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeDiff() -> (PaneID, NSView & PaneContent) {
+        let view = DiffPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeSearch() -> (PaneID, NSView & PaneContent) {
+        let view = SearchPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeAnalytics() -> (PaneID, NSView & PaneContent) {
+        let view = AnalyticsPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeSettings() -> (PaneID, NSView & PaneContent) {
+        let view = SettingsPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeNotifications() -> (PaneID, NSView & PaneContent) {
+        let view = NotificationsPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeDailyBrief() -> (PaneID, NSView & PaneContent) {
+        let view = DailyBriefPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    static func makeRulesManager() -> (PaneID, NSView & PaneContent) {
+        let view = RulesManagerPaneView(frame: .zero)
+        return (view.paneID, view)
+    }
+
+    /// Create a pane by type string.
+    /// - Note: Pane type metadata is not currently stored in the layout engine,
+    ///   so non-terminal panes cannot be recreated automatically on layout restore.
+    ///   TODO: Store pane type in PaneLayoutEngine to fully support non-terminal pane recreation.
+    static func make(type paneType: String) -> (PaneID, NSView & PaneContent)? {
+        switch paneType {
+        case "terminal":      return makeTerminal()
+        case "taskboard":     return makeTaskBoard()
+        case "replay":        return makeReplay()
+        case "file_browser":  return makeFileBrowser()
+        case "ssh":           return makeSshManager()
+        case "workflow":      return makeWorkflow()
+        case "review":        return makeReview()
+        case "merge_queue":   return makeMergeQueue()
+        case "diff":          return makeDiff()
+        case "search":        return makeSearch()
+        case "analytics":     return makeAnalytics()
+        case "settings":      return makeSettings()
+        case "notifications": return makeNotifications()
+        case "daily_brief":   return makeDailyBrief()
+        case "rules":         return makeRulesManager()
+        default:              return nil
+        }
+    }
 }
 
 // MARK: - TerminalPaneView

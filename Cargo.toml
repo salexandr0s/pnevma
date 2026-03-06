@@ -18,7 +18,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Pnevma Contributors"]
-repository = "https://example.com/pnevma"
+repository = "https://github.com/salexandr0s/pnevma"
 
 [workspace.dependencies]
 anyhow = "1"

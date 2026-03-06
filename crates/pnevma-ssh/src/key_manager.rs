@@ -305,4 +305,42 @@ mod tests {
         assert!(validate_key_name("key_name.pem").is_ok());
         assert!(validate_key_name("my_key_2024").is_ok());
     }
+
+    #[test]
+    fn rejects_names_with_whitespace() {
+        assert!(validate_key_name("my key").is_err());
+        assert!(validate_key_name("key\tname").is_err());
+        assert!(validate_key_name("key\nname").is_err());
+    }
+
+    #[test]
+    fn parse_keygen_output_rsa() {
+        let line = "2048 SHA256:abc123def456 user@host (RSA)";
+        let (key_type, fingerprint) = parse_keygen_output(line).expect("parse");
+        assert_eq!(key_type, "RSA");
+        assert_eq!(fingerprint, "SHA256:abc123def456");
+    }
+
+    #[test]
+    fn parse_keygen_output_ed25519() {
+        let line = "256 SHA256:xyzXYZ789 mykey (ED25519)";
+        let (key_type, fingerprint) = parse_keygen_output(line).expect("parse");
+        assert_eq!(key_type, "ED25519");
+        assert_eq!(fingerprint, "SHA256:xyzXYZ789");
+    }
+
+    #[test]
+    fn parse_keygen_output_malformed_returns_error() {
+        // No whitespace-separated tokens — can't extract fingerprint
+        let line = "no-fingerprint-here";
+        let result = parse_keygen_output(line);
+        assert!(result.is_err(), "should fail on malformed output");
+    }
+
+    #[test]
+    fn list_ssh_keys_nonexistent_dir_returns_empty() {
+        let result = list_ssh_keys(std::path::Path::new("/nonexistent/ssh/dir"));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
 }

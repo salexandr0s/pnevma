@@ -670,3 +670,424 @@ pub async fn get_workflow_instance(
         updated_at: inst.updated_at,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_emitter::NullEmitter;
+    use crate::state::{AppState, ProjectContext};
+    use pnevma_agents::{AdapterRegistry, DispatchPool};
+    use pnevma_core::config::{
+        AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
+    };
+    use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection};
+    use pnevma_db::Db;
+    use pnevma_git::GitService;
+    use pnevma_session::SessionSupervisor;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    async fn open_test_db() -> Db {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory sqlite");
+        let db = Db::from_pool_and_path(pool, std::path::PathBuf::from(":memory:"));
+        db.migrate().await.expect("migrate");
+        db
+    }
+
+    fn make_project_config() -> ProjectConfig {
+        ProjectConfig {
+            project: ProjectSection {
+                name: "test-project".to_string(),
+                brief: String::new(),
+            },
+            agents: AgentsSection {
+                default_provider: "claude-code".to_string(),
+                max_concurrent: 1,
+                claude_code: None,
+                codex: None,
+            },
+            automation: AutomationSection::default(),
+            branches: BranchesSection {
+                target: "main".to_string(),
+                naming: "feat/{slug}".to_string(),
+            },
+            rules: PathSection::default(),
+            conventions: PathSection::default(),
+            remote: RemoteSection::default(),
+        }
+    }
+
+    async fn make_state_with_project() -> (AppState, Uuid, Db) {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        let tmp_path = std::env::temp_dir().join(format!("pnevma-wf-test-{}", project_id));
+        std::fs::create_dir_all(&tmp_path).ok();
+
+        db.upsert_project(
+            &project_id.to_string(),
+            "test",
+            tmp_path.to_str().unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("seed project");
+
+        let supervisor = SessionSupervisor::new(&tmp_path);
+        let git = Arc::new(GitService::new(&tmp_path));
+        let pool = DispatchPool::new(1);
+        let adapters = AdapterRegistry::default();
+
+        let ctx = ProjectContext {
+            project_id,
+            project_path: tmp_path,
+            config: make_project_config(),
+            global_config: GlobalConfig::default(),
+            db: db.clone(),
+            sessions: supervisor,
+            git,
+            adapters,
+            pool,
+        };
+
+        let state = AppState {
+            current: Mutex::new(Some(ctx)),
+            recents: Mutex::new(Vec::new()),
+            control_plane: Mutex::new(None),
+            merge_branch_locks: Mutex::new(std::collections::HashMap::new()),
+            remote_handle: Mutex::new(None),
+            emitter: Arc::new(NullEmitter),
+        };
+
+        (state, project_id, db)
+    }
+
+    // ── list_workflows — empty and after inserts ────────────────────────────
+
+    #[tokio::test]
+    async fn list_workflows_empty() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let result = list_workflows(&state).await.expect("list");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_workflows_after_create() {
+        let (state, _pid, _db) = make_state_with_project().await;
+
+        let yaml = "name: test-wf\ndescription: Test\nsteps:\n  - title: Step 1\n    goal: Do step 1\n    priority: medium\n";
+        create_workflow(
+            CreateWorkflowInput {
+                name: "test-wf".to_string(),
+                description: Some("Test".to_string()),
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        let list = list_workflows(&state).await.expect("list after create");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "test-wf");
+        assert_eq!(list[0].description.as_deref(), Some("Test"));
+        assert_eq!(list[0].source, "user");
+    }
+
+    // ── create_workflow — valid YAML, invalid YAML, duplicate name ──────────
+
+    #[tokio::test]
+    async fn create_workflow_valid_yaml() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let yaml = "name: build\ndescription: Build pipeline\nsteps:\n  - title: Compile\n    goal: compile code\n    priority: high\n";
+        let view = create_workflow(
+            CreateWorkflowInput {
+                name: "build".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create with valid yaml");
+        assert!(!view.id.is_empty());
+        assert_eq!(view.name, "build");
+        assert_eq!(view.source, "user");
+    }
+
+    #[tokio::test]
+    async fn create_workflow_invalid_yaml_returns_error() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let bad_yaml = "not: valid: workflow: yaml: {{{{";
+        let result = create_workflow(
+            CreateWorkflowInput {
+                name: "broken".to_string(),
+                description: None,
+                definition_yaml: bad_yaml.to_string(),
+            },
+            &state,
+        )
+        .await;
+        assert!(result.is_err(), "should fail on invalid yaml");
+    }
+
+    #[tokio::test]
+    async fn create_workflow_duplicate_name_returns_error() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let yaml = "name: ci\ndescription: CI\nsteps:\n  - title: Test\n    goal: run tests\n    priority: medium\n";
+        create_workflow(
+            CreateWorkflowInput {
+                name: "ci".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("first create");
+
+        // Second create with same name should fail due to unique constraint
+        let result = create_workflow(
+            CreateWorkflowInput {
+                name: "ci".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await;
+        assert!(result.is_err(), "duplicate name should fail");
+    }
+
+    // ── get_workflow — existing, non-existent ───────────────────────────────
+
+    #[tokio::test]
+    async fn get_workflow_existing() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let yaml = "name: deploy\ndescription: Deploy\nsteps:\n  - title: Ship\n    goal: ship it\n    priority: high\n";
+        let created = create_workflow(
+            CreateWorkflowInput {
+                name: "deploy".to_string(),
+                description: Some("Deploy".to_string()),
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        let fetched = get_workflow(created.id.clone(), &state)
+            .await
+            .expect("get existing");
+        assert_eq!(fetched.id, created.id);
+        assert_eq!(fetched.name, "deploy");
+    }
+
+    #[tokio::test]
+    async fn get_workflow_nonexistent_returns_error() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let result = get_workflow("no-such-id".to_string(), &state).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    // ── update_workflow — modify steps, invalid update ──────────────────────
+
+    #[tokio::test]
+    async fn update_workflow_modify_name() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let yaml = "name: release\ndescription: Release\nsteps:\n  - title: Build\n    goal: build\n    priority: medium\n";
+        let created = create_workflow(
+            CreateWorkflowInput {
+                name: "release".to_string(),
+                description: Some("Release".to_string()),
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        let updated_yaml = "name: release-v2\ndescription: Release v2\nsteps:\n  - title: Build\n    goal: build\n    priority: medium\n  - title: Publish\n    goal: publish\n    priority: medium\n";
+        let updated = update_workflow(
+            UpdateWorkflowInput {
+                id: created.id.clone(),
+                name: Some("release-v2".to_string()),
+                description: None,
+                definition_yaml: Some(updated_yaml.to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect("update");
+
+        assert_eq!(updated.name, "release-v2");
+    }
+
+    #[tokio::test]
+    async fn update_workflow_invalid_yaml_returns_error() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let yaml = "name: pipeline\ndescription: Pipeline\nsteps:\n  - title: Step\n    goal: do step\n    priority: low\n";
+        let created = create_workflow(
+            CreateWorkflowInput {
+                name: "pipeline".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        let result = update_workflow(
+            UpdateWorkflowInput {
+                id: created.id,
+                name: None,
+                description: None,
+                definition_yaml: Some("definitely: not: valid: yaml: [[[".to_string()),
+            },
+            &state,
+        )
+        .await;
+        assert!(result.is_err(), "invalid yaml should fail update");
+    }
+
+    // ── delete_workflow — existing, non-existent ────────────────────────────
+
+    #[tokio::test]
+    async fn delete_workflow_existing() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let yaml = "name: cleanup\ndescription: Cleanup\nsteps:\n  - title: Clean\n    goal: clean\n    priority: low\n";
+        let created = create_workflow(
+            CreateWorkflowInput {
+                name: "cleanup".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        delete_workflow(created.id.clone(), &state)
+            .await
+            .expect("delete");
+
+        let result = get_workflow(created.id, &state).await;
+        assert!(result.is_err(), "should be gone after delete");
+    }
+
+    #[tokio::test]
+    async fn delete_workflow_nonexistent_is_ok() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        // delete of non-existent is a no-op (DELETE WHERE id = x with no match)
+        let result = delete_workflow("ghost-id".to_string(), &state).await;
+        assert!(result.is_ok());
+    }
+
+    // ── dispatch_workflow ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_workflow_happy_path() {
+        let (state, _pid, _db) = make_state_with_project().await;
+
+        // First store a workflow def in DB so dispatch can find it by name
+        let yaml = "name: smoke-test\ndescription: Smoke test\nsteps:\n  - title: Run tests\n    goal: run all tests\n    priority: high\n";
+        create_workflow(
+            CreateWorkflowInput {
+                name: "smoke-test".to_string(),
+                description: Some("Smoke test".to_string()),
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create workflow");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let result = dispatch_workflow(
+            DispatchWorkflowInput {
+                workflow_name: "smoke-test".to_string(),
+                params: None,
+            },
+            &emitter,
+            &state,
+        )
+        .await
+        .expect("dispatch");
+
+        assert_eq!(result.workflow_name, "smoke-test");
+        assert_eq!(result.status, "Running");
+        assert_eq!(result.task_ids.len(), 1);
+    }
+
+    // ── get_workflow_instance / list_workflow_instances ─────────────────────
+
+    #[tokio::test]
+    async fn list_workflow_instances_empty() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let list = list_workflow_instances(&state).await.expect("list");
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_and_list_workflow_instances() {
+        let (state, _pid, _db) = make_state_with_project().await;
+
+        let yaml = "name: e2e\ndescription: E2E tests\nsteps:\n  - title: Setup\n    goal: setup env\n    priority: medium\n  - title: Run E2E\n    goal: run e2e tests\n    priority: high\n    depends_on: [0]\n";
+        create_workflow(
+            CreateWorkflowInput {
+                name: "e2e".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let dispatched = dispatch_workflow(
+            DispatchWorkflowInput {
+                workflow_name: "e2e".to_string(),
+                params: Some(serde_json::json!({"env": "ci"})),
+            },
+            &emitter,
+            &state,
+        )
+        .await
+        .expect("dispatch");
+
+        // list_workflow_instances
+        let list = list_workflow_instances(&state).await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, dispatched.id);
+        assert_eq!(list[0].task_ids.len(), 2);
+
+        // get_workflow_instance detail
+        let detail = get_workflow_instance(dispatched.id.clone(), &state)
+            .await
+            .expect("get detail");
+        assert_eq!(detail.id, dispatched.id);
+        assert_eq!(detail.workflow_name, "e2e");
+        assert_eq!(detail.steps.len(), 2);
+        // first step should be Ready, second Blocked (has dependency)
+        let statuses: Vec<&str> = detail.steps.iter().map(|s| s.status.as_str()).collect();
+        assert!(statuses.contains(&"Ready"));
+        assert!(statuses.contains(&"Blocked"));
+    }
+
+    #[tokio::test]
+    async fn get_workflow_instance_nonexistent_returns_error() {
+        let (state, _pid, _db) = make_state_with_project().await;
+        let result = get_workflow_instance("ghost".to_string(), &state).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+}

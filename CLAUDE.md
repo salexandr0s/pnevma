@@ -25,7 +25,7 @@ See the global workspace conventions at `~/GitHub/CLAUDE.md`. Project rules here
 just check          # cargo fmt --check + clippy -D warnings + cargo test --workspace + cargo audit
 just test           # cargo test --workspace + xcodebuild test
 just xcode-build    # build native app (depends on rust-build)
-cargo audit         # vulnerability scan (see audit.toml for accepted risks)
+cargo audit         # vulnerability scan (see .cargo/audit.toml for accepted risks)
 ```
 
 Run `just check` before every commit. Run `just xcode-build` after any FFI changes.
@@ -61,7 +61,7 @@ Run `just check` before every commit. Run `just xcode-build` after any FFI chang
 
 ## Known Accepted Risks
 
-`RUSTSEC-2023-0071` (rsa crate vulnerability) appears via the `sqlx-mysql` transitive dependency. Pnevma uses SQLite only and never enables the MySQL feature. This advisory is ignored in `audit.toml`.
+`RUSTSEC-2023-0071` (rsa crate vulnerability) appears via the `sqlx-mysql` transitive dependency. Pnevma uses SQLite only and never enables the MySQL feature. This advisory is ignored in `.cargo/audit.toml`.
 
 ---
 

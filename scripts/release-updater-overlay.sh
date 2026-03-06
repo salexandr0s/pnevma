@@ -37,5 +37,11 @@ cat > "$OVERLAY_PATH" <<EOF
 EOF
 
 echo "Updater overlay config written: $OVERLAY_PATH"
-echo "Use with:"
-echo "  cargo tauri build --manifest-path crates/pnevma-app/Cargo.toml -c \"$OVERLAY_PATH\""
+echo ""
+echo "NOTE: The Tauri updater flow (cargo tauri build) is no longer used."
+echo "Pnevma now uses Sparkle for auto-updates. This JSON overlay is a legacy"
+echo "artifact. For Sparkle-based releases, use Sparkle's generate_appcast tool:"
+echo ""
+echo "  generate_appcast --ed-key-file <private.key> <release-dir>"
+echo ""
+echo "See: https://sparkle-project.org/documentation/publishing/"

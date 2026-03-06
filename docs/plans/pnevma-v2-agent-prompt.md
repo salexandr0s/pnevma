@@ -1,5 +1,7 @@
 # Pnevma v2 — Full Implementation Prompt
 
+> **Status**: This plan has been executed. The frontend is now a native Swift/AppKit application. The Tauri + React layer described here no longer exists. This document is preserved as a historical reference for the migration decisions made.
+
 > Give this prompt to a Claude Code session with Opus 4.6. It will form a team and execute the full plan.
 
 ---
@@ -190,7 +192,7 @@ All pane engineers work in parallel. Each implements one or more SwiftUI pane vi
   - Implement agent notification hooks: document how to use `pnevma notify` from `.claude/hooks/`
   - Implement `SessionPersistence.swift` — auto-save every 8 seconds: window frame, workspace list, per-workspace pane layout + pane metadata, per-terminal session ID + CWD. Restore on launch.
   - Implement `OnboardingFlow.swift` — native welcome window: environment readiness check, pnevma.toml creation, first-project tutorial. Data from `pnevma_get_environment_readiness`, `pnevma_initialize_project_scaffold`
-  - Integrate Sparkle framework for auto-updates. Replace the Tauri updater pubkey placeholder with a real Ed25519 key.
+  - Integrate Sparkle framework for auto-updates (Sparkle replaces the former Tauri updater). Configure a real Ed25519 key and appcast URL in the Sparkle configuration.
 
 ### Quality Team (cross-cutting)
 

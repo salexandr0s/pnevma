@@ -1,6 +1,13 @@
 import SwiftUI
 import Cocoa
 
+// MARK: - Data Models
+
+struct TimelineEntry: Codable {
+    let timestamp: Double
+    let content: String
+}
+
 // MARK: - ReplayView
 
 struct ReplayView: View {
@@ -103,17 +110,53 @@ final class ReplayViewModel: ObservableObject {
     var currentTimeLabel: String { formatTime(progress * totalDuration) }
     var totalTimeLabel: String { formatTime(totalDuration) }
 
+    private var frames: [TimelineEntry] = []
+    private var currentFrameIndex: Int = 0
     private var totalDuration: Double = 0
 
     func load() {
-        // pnevma_call("session.scrollback", ...)
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let limit: Int }
+                let entries: [TimelineEntry] = try await bus.call(method: "session.timeline", params: Params(limit: 1000))
+                await MainActor.run {
+                    self.frames = entries
+                    self.totalDuration = entries.last?.timestamp ?? 0
+                    self.currentFrameIndex = 0
+                    self.currentFrame = entries.first?.content
+                    self.progress = 0.0
+                }
+            } catch {
+                // Log error, keep existing state
+            }
+        }
     }
 
     func togglePlayback() { isPlaying.toggle() }
-    func stepForward() { progress = min(1.0, progress + 0.01) }
-    func stepBackward() { progress = max(0.0, progress - 0.01) }
+
+    func stepForward() {
+        guard !frames.isEmpty else { return }
+        let newIndex = min(frames.count - 1, currentFrameIndex + 1)
+        currentFrameIndex = newIndex
+        currentFrame = frames[newIndex].content
+        progress = totalDuration > 0 ? frames[newIndex].timestamp / totalDuration : 0
+    }
+
+    func stepBackward() {
+        guard !frames.isEmpty else { return }
+        let newIndex = max(0, currentFrameIndex - 1)
+        currentFrameIndex = newIndex
+        currentFrame = frames[newIndex].content
+        progress = totalDuration > 0 ? frames[newIndex].timestamp / totalDuration : 0
+    }
+
     func seekToProgress() {
-        // Seek to the frame at the given progress point
+        guard !frames.isEmpty, totalDuration > 0 else { return }
+        let targetTime = progress * totalDuration
+        let index = frames.lastIndex(where: { $0.timestamp <= targetTime }) ?? 0
+        currentFrameIndex = index
+        currentFrame = frames[index].content
     }
 
     private func formatTime(_ seconds: Double) -> String {

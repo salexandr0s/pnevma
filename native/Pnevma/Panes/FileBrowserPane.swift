@@ -126,7 +126,16 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var previewContent: String?
 
     func load() {
-        // pnevma_call("project.files", "{}")
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let limit: Int }
+                let nodes: [FileNode] = try await bus.call(method: "workspace.files", params: Params(limit: 500))
+                await MainActor.run { self.rootNodes = nodes }
+            } catch {
+                // Log error, keep existing state
+            }
+        }
     }
 
     func refresh() { load() }
@@ -140,7 +149,17 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func loadPreview(path: String) {
         previewContent = nil
-        // pnevma_call("project.open_file", ...) → content
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let path: String; let mode: String }
+                struct FilePreview: Decodable { let content: String }
+                let preview: FilePreview = try await bus.call(method: "workspace.file.open", params: Params(path: path, mode: "preview"))
+                await MainActor.run { self.previewContent = preview.content }
+            } catch {
+                // Log error, keep existing state
+            }
+        }
     }
 }
 
