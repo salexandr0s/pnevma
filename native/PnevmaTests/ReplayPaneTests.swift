@@ -18,8 +18,7 @@ private actor ReplayCommandBus: CommandCalling {
             if delayNanos > 0 {
                 try await Task.sleep(nanoseconds: delayNanos)
             }
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let decoder = PnevmaJSON.decoder()
             return try decoder.decode(T.self, from: Data(timelineJSON.utf8))
         default:
             throw NSError(domain: "ReplayCommandBus", code: 1)

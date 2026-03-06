@@ -32,8 +32,7 @@ private actor ActivationPaneCommandBus: CommandCalling {
     }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoder = PnevmaJSON.decoder()
         return try decoder.decode(T.self, from: Data(json.utf8))
     }
 }

@@ -961,9 +961,11 @@ async fn discover_markdown_files(
             let Some(parent) = absolute.parent() else {
                 continue;
             };
-            let mut entries = tokio::fs::read_dir(parent)
-                .await
-                .map_err(|e| e.to_string())?;
+            let mut entries = match tokio::fs::read_dir(parent).await {
+                Ok(entries) => entries,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err.to_string()),
+            };
             while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
                 let path = entry.path();
                 if !path.is_file() {
@@ -3618,5 +3620,31 @@ mod redaction_tests {
         assert!(out_str.contains("[REDACTED]"));
 
         clear_project_redaction_secrets(project_id);
+    }
+
+    #[tokio::test]
+    async fn discover_markdown_files_ignores_missing_glob_parent() {
+        let project_root =
+            std::env::temp_dir().join(format!("pnevma-discover-markdown-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&project_root)
+            .await
+            .expect("create temp project root");
+
+        let files = discover_markdown_files(
+            &[
+                ".pnevma/rules/*.md".to_string(),
+                ".pnevma/conventions/*.md".to_string(),
+            ],
+            &project_root,
+        )
+        .await
+        .expect("missing scope dirs should not fail discovery");
+
+        assert!(
+            files.is_empty(),
+            "missing scope dirs should produce no files"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&project_root).await;
     }
 }

@@ -67,7 +67,7 @@ pub async fn build_router(
         .route("/api/project/search", post(api::project_search))
         .route("/api/tasks", get(api::task_list))
         .route("/api/tasks", post(api::task_create))
-        .route("/api/tasks/:id/dispatch", post(api::task_dispatch))
+        .route("/api/tasks/{id}/dispatch", post(api::task_dispatch))
         // session.new is deliberately excluded from the RPC allowlist — no POST route.
         // session.send_input is excluded from RPC allowlist — no REST route either.
         .route("/api/sessions", get(api::session_list))
@@ -79,11 +79,11 @@ pub async fn build_router(
         )
         .route("/api/workflows/instances", post(api::workflow_instantiate))
         .route(
-            "/api/workflows/instances/:id",
+            "/api/workflows/instances/{id}",
             get(api::workflow_get_instance),
         )
         .route("/api/workflows/dispatch", post(api::workflow_dispatch))
-        .route("/api/workflows/:id", get(api::workflow_get))
+        .route("/api/workflows/{id}", get(api::workflow_get))
         .route("/api/rpc", post(api::rpc))
         .merge(ws_router)
         .with_state(router)
@@ -114,4 +114,35 @@ pub async fn build_router(
     }
 
     app
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use tokio::sync::broadcast;
+
+    use super::*;
+    use crate::CommandRouter;
+
+    struct NoopRouter;
+
+    #[async_trait]
+    impl CommandRouter for NoopRouter {
+        async fn route(&self, _method: &str, _params: &Value) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
+    }
+
+    #[tokio::test]
+    async fn build_router_accepts_current_route_syntax() {
+        let config = RemoteAccessConfig::default();
+        let token_store = Arc::new(TokenStore::new("password".to_string(), 24));
+        let (events_tx, _) = broadcast::channel(8);
+
+        let _router =
+            build_router(&config, Arc::new(NoopRouter), events_tx, token_store, None).await;
+    }
 }

@@ -428,8 +428,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     private func showProjectActivationFailure(_ event: BridgeEvent) {
         guard awaitingProjectActivation else { return }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoder = PnevmaJSON.decoder()
         let payload = event.payloadJSON.data(using: .utf8).flatMap {
             try? decoder.decode(ProjectOpenFailureEventPayload.self, from: $0)
         }

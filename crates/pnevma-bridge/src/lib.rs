@@ -158,6 +158,60 @@ fn validate_method_name(method: &str) -> Result<(), *mut PnevmaResult> {
     Ok(())
 }
 
+async fn stop_control_plane_server(state: &Arc<AppState>) {
+    let prior = {
+        let mut slot = state.control_plane.lock().await;
+        slot.take()
+    };
+    if let Some(handle) = prior {
+        handle.shutdown().await;
+    }
+}
+
+async fn stop_remote_server(state: &Arc<AppState>) {
+    let prior = {
+        let mut slot = state.remote_handle.lock().await;
+        slot.take()
+    };
+    if let Some(handle) = prior {
+        handle.shutdown();
+    }
+}
+
+async fn sync_project_services(state: Arc<AppState>) -> Result<(), String> {
+    let (project_path, project_config, global_config) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (
+            ctx.project_path.clone(),
+            ctx.config.clone(),
+            ctx.global_config.clone(),
+        )
+    };
+
+    stop_control_plane_server(&state).await;
+    stop_remote_server(&state).await;
+
+    let settings = pnevma_commands::control::resolve_control_plane_settings(
+        project_path.as_path(),
+        &project_config,
+        &global_config,
+    )?;
+    let control_handle =
+        pnevma_commands::control::start_control_plane(Arc::clone(&state), settings).await?;
+    *state.control_plane.lock().await = control_handle;
+
+    pnevma_commands::remote_bridge::maybe_start_remote(state).await;
+    Ok(())
+}
+
+async fn stop_project_services(state: Arc<AppState>) {
+    stop_control_plane_server(&state).await;
+    stop_remote_server(&state).await;
+}
+
 // ---------------------------------------------------------------------------
 // FFI exports
 // ---------------------------------------------------------------------------
@@ -278,7 +332,28 @@ pub extern "C" fn pnevma_call(
             .runtime
             .block_on(route_method(state, method_str, &params))
         {
-            Ok(val) => make_result(true, &val.to_string()),
+            Ok(val) => {
+                let service_result = match method_str {
+                    "project.open" => {
+                        let state = Arc::clone(state);
+                        handle.runtime.block_on(sync_project_services(state))
+                    }
+                    "project.close" => {
+                        let state = Arc::clone(state);
+                        handle.runtime.block_on(stop_project_services(state));
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                };
+                if let Err(err) = service_result {
+                    let state = Arc::clone(state);
+                    let _ = handle
+                        .runtime
+                        .block_on(pnevma_commands::commands::close_project(state.as_ref()));
+                    return make_error_result(&err);
+                }
+                make_result(true, &val.to_string())
+            }
             Err((_code, msg)) => make_error_result(&msg),
         }
     }));
@@ -349,7 +424,22 @@ pub extern "C" fn pnevma_call_async(
         handle.runtime.spawn(async move {
             let result = route_method(&state, &method_str, &params).await;
             let r = match result {
-                Ok(val) => make_result(true, &val.to_string()),
+                Ok(val) => {
+                    let service_result = match method_str.as_str() {
+                        "project.open" => sync_project_services(Arc::clone(&state)).await,
+                        "project.close" => {
+                            stop_project_services(Arc::clone(&state)).await;
+                            Ok(())
+                        }
+                        _ => Ok(()),
+                    };
+                    if let Err(err) = service_result {
+                        let _ = pnevma_commands::commands::close_project(state.as_ref()).await;
+                        make_error_result(&err)
+                    } else {
+                        make_result(true, &val.to_string())
+                    }
+                }
                 Err((_code, msg)) => make_error_result(&msg),
             };
             cb(r, cb_ctx_usize as *mut ());

@@ -47,9 +47,7 @@ actor CommandBus: CommandCalling {
                 }
 
                 do {
-                    let decoder = JSONDecoder()
-                    decoder.keyDecodingStrategy = .convertFromSnakeCase
-                    decoder.dateDecodingStrategy = .iso8601
+                    let decoder = PnevmaJSON.decoder()
                     let decoded = try decoder.decode(T.self, from: data)
                     continuation.resume(returning: decoded)
                 } catch {

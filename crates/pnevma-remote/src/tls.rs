@@ -1,9 +1,11 @@
 use rcgen::generate_simple_self_signed;
 use rustls::ServerConfig;
-use std::net::IpAddr;
+use std::{net::IpAddr, sync::Once};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::error::RemoteError;
+
+static INSTALL_RUSTLS_PROVIDER: Once = Once::new();
 
 /// Load TLS config according to `mode`.
 ///
@@ -14,11 +16,19 @@ pub async fn load_tls_config(
     tailscale_ip: Option<IpAddr>,
     allow_self_signed_fallback: bool,
 ) -> Result<ServerConfig, RemoteError> {
+    ensure_rustls_crypto_provider();
+
     match mode {
         "tailscale" => load_tailscale_cert(tailscale_ip, allow_self_signed_fallback).await,
         "self-signed" => generate_self_signed_cert(tailscale_ip),
         other => Err(RemoteError::Tls(format!("Unknown TLS mode: {other}"))),
     }
+}
+
+fn ensure_rustls_crypto_provider() {
+    INSTALL_RUSTLS_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
 }
 
 async fn load_tailscale_cert(
@@ -118,8 +128,20 @@ fn build_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
 ) -> Result<ServerConfig, RemoteError> {
+    ensure_rustls_crypto_provider();
+
     ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| RemoteError::Tls(format!("rustls config error: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn self_signed_tls_config_builds_without_preinstalled_provider() {
+        let _config = generate_self_signed_cert(None).expect("self-signed TLS config should build");
+    }
 }

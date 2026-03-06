@@ -118,4 +118,39 @@ final class CommandBusTests: XCTestCase {
             "The workspace configuration changed and must be trusted again before opening."
         )
     }
+
+    func testPnevmaJSONDecoderDecodesSnakeCaseProjectIDs() throws {
+        let json = #"""
+        {
+          "project_id": "project-123",
+          "status": {
+            "project_id": "project-123",
+            "project_name": "Pnevma",
+            "project_path": "/tmp/pnevma",
+            "sessions": 1,
+            "tasks": 2,
+            "worktrees": 3
+          }
+        }
+        """#
+
+        let decoded = try PnevmaJSON.decoder().decode(ProjectOpenResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.projectID, "project-123")
+        XCTAssertEqual(decoded.status.projectID, "project-123")
+        XCTAssertEqual(decoded.status.projectPath, "/tmp/pnevma")
+    }
+
+    func testPnevmaJSONDecoderDecodesOptionalSnakeCaseIDs() throws {
+        let json = #"""
+        {
+          "ok": true,
+          "action": "reattach",
+          "new_session_id": "session-123"
+        }
+        """#
+
+        let decoded = try PnevmaJSON.decoder().decode(SessionRecoveryResult.self, from: Data(json.utf8))
+        XCTAssertTrue(decoded.ok)
+        XCTAssertEqual(decoded.newSessionID, "session-123")
+    }
 }

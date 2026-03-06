@@ -32,7 +32,7 @@ else
 fi
 
 if [[ "$missing" -ne 0 ]]; then
-  echo "\nInstall missing dependencies and rerun scripts/bootstrap-dev.sh"
+  printf '\nInstall missing dependencies and rerun scripts/bootstrap-dev.sh\n'
   exit 1
 fi
 
@@ -45,4 +45,4 @@ fi
 echo "Fetching Ghostty source checkout..."
 "$(cd "$(dirname "$0")/.." && pwd)/scripts/fetch-ghostty.sh"
 
-echo "\nBootstrap complete. Run: just check"
+printf '\nBootstrap complete. Run: just check\n'

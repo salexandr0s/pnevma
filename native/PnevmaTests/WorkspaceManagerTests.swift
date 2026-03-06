@@ -129,7 +129,7 @@ private actor FailingProjectOpenCommandBus: CommandCalling {
 }
 
 private struct ProjectOpenFailurePayload: Decodable {
-    let workspaceId: UUID?
+    let workspaceID: UUID?
     let generation: UInt64?
     let message: String
 }
@@ -420,8 +420,7 @@ final class WorkspaceManagerTests: XCTestCase {
         let workspace = manager.createWorkspace(name: "Untrusted", projectPath: "/tmp/untrusted")
 
         await fulfillment(of: [eventExpectation], timeout: 3.0)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoder = PnevmaJSON.decoder()
         let payloadJSON = try XCTUnwrap(receivedPayloadJSON)
         let payloadData = try XCTUnwrap(payloadJSON.data(using: .utf8))
         let decoded = try decoder.decode(ProjectOpenFailurePayload.self, from: payloadData)
@@ -430,7 +429,7 @@ final class WorkspaceManagerTests: XCTestCase {
             decoded.message,
             "Workspace trust is required before this project can open."
         )
-        XCTAssertEqual(decoded.workspaceId, workspace.id)
+        XCTAssertEqual(decoded.workspaceID, workspace.id)
         XCTAssertEqual(manager.activeWorkspaceID, workspace.id)
         XCTAssertNil(workspace.gitBranch)
         XCTAssertEqual(workspace.activeTasks, 0)

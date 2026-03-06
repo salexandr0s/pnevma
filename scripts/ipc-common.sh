@@ -12,7 +12,8 @@ pnevma_ctl() {
   local params
   params="${2:-}"
   if [[ -z "$params" ]]; then params="{}"; fi
-  local id="req-$(date +%s%N 2>/dev/null || echo $$)"
+  local id
+  id="req-$(date +%s%N 2>/dev/null || echo $$)"
   local request
   request="$(python3 -c "import json,sys; print(json.dumps({'id': sys.argv[1], 'method': sys.argv[2], 'params': json.loads(sys.argv[3])}))" "$id" "$method" "$params")"
   python3 - "$SOCKET_PATH" "$request" <<'EOF'

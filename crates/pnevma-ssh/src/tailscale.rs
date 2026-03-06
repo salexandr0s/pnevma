@@ -1,9 +1,17 @@
-use std::sync::OnceLock;
+use std::{
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+    sync::OnceLock,
+};
 
 use regex::Regex;
 
 use crate::error::SshError;
 use crate::profile::SshProfile;
+
+const TAILSCALE_BIN_ENV: &str = "PNEVMA_TAILSCALE_BIN";
+const FALLBACK_TAILSCALE_PATHS: &[&str] =
+    &["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"];
 
 /// Validates Tailscale DNS names: only alphanumeric, dots, hyphens, underscores.
 fn is_valid_dns_name(name: &str) -> bool {
@@ -45,7 +53,8 @@ pub(crate) fn parse_tailscale_status(json: &serde_json::Value) -> Vec<SshProfile
 }
 
 pub async fn discover_tailscale_devices() -> Result<Vec<SshProfile>, SshError> {
-    let output = match tokio::process::Command::new("tailscale")
+    let tailscale_bin = resolve_tailscale_binary();
+    let output = match tokio::process::Command::new(&tailscale_bin)
         .args(["status", "--json"])
         .output()
         .await
@@ -68,8 +77,49 @@ pub async fn discover_tailscale_devices() -> Result<Vec<SshProfile>, SshError> {
     Ok(parse_tailscale_status(&json))
 }
 
+fn resolve_tailscale_binary() -> PathBuf {
+    resolve_tailscale_binary_from(
+        std::env::var_os(TAILSCALE_BIN_ENV).map(PathBuf::from),
+        std::env::var_os("PATH"),
+        FALLBACK_TAILSCALE_PATHS.iter().map(PathBuf::from),
+    )
+}
+
+fn resolve_tailscale_binary_from<I>(
+    explicit_override: Option<PathBuf>,
+    path_var: Option<OsString>,
+    fallback_candidates: I,
+) -> PathBuf
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    if let Some(path) = explicit_override {
+        return path;
+    }
+
+    if let Some(path) = find_binary_on_path("tailscale", path_var.as_deref()) {
+        return path;
+    }
+
+    fallback_candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("tailscale"))
+}
+
+fn find_binary_on_path(binary: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
+    let path_var = path_var?;
+    std::env::split_paths(path_var)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| candidate.is_file())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -181,5 +231,58 @@ mod tests {
         let profiles = parse_tailscale_status(&json);
         // Missing Online defaults to false → excluded
         assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn resolve_tailscale_binary_prefers_explicit_override() {
+        let temp = tempdir().unwrap();
+        let override_path = create_fake_binary(temp.path(), "override-tailscale");
+        let path_entry = create_fake_binary(temp.path(), "tailscale");
+        let resolved = resolve_tailscale_binary_from(
+            Some(override_path.clone()),
+            Some(std::env::join_paths([temp.path()]).unwrap()),
+            [path_entry],
+        );
+
+        assert_eq!(resolved, override_path);
+    }
+
+    #[test]
+    fn resolve_tailscale_binary_uses_path_entry_when_available() {
+        let temp = tempdir().unwrap();
+        let path_entry = create_fake_binary(temp.path(), "tailscale");
+        let resolved = resolve_tailscale_binary_from(
+            None,
+            Some(std::env::join_paths([temp.path()]).unwrap()),
+            std::iter::empty(),
+        );
+
+        assert_eq!(resolved, path_entry);
+    }
+
+    #[test]
+    fn resolve_tailscale_binary_uses_fallback_when_path_is_missing() {
+        let temp = tempdir().unwrap();
+        let fallback = create_fake_binary(temp.path(), "fallback-tailscale");
+        let resolved = resolve_tailscale_binary_from(
+            None,
+            Some(std::env::join_paths([temp.path().join("missing")]).unwrap()),
+            [fallback.clone()],
+        );
+
+        assert_eq!(resolved, fallback);
+    }
+
+    #[test]
+    fn resolve_tailscale_binary_returns_bare_command_when_unavailable() {
+        let resolved = resolve_tailscale_binary_from(None, None, std::iter::empty());
+
+        assert_eq!(resolved, PathBuf::from("tailscale"));
+    }
+
+    fn create_fake_binary(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+        path
     }
 }

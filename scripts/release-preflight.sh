@@ -53,7 +53,15 @@ run_in_dir() {
   local dir="$1"
   local label="$2"
   shift 2
-  run_check "$label" bash -lc 'cd "$1" && shift && "$@"' -- "$dir" "$@"
+  print_check "$label"
+  if (
+    cd "$dir"
+    "$@"
+  ); then
+    pass "$label"
+  else
+    fail "$label"
+  fi
 }
 
 # ── Tooling checks ──────────────────────────────────────────────────────────

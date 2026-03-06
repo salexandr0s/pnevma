@@ -18,6 +18,7 @@
 		40F4C483EED0254A1A42CD74 /* PaneLayoutEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */; };
 		44D5E0CD0BF7689EDBC69C2C /* SshManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = E583CFB106DF6039794D692B /* SshManagerPane.swift */; };
 		468E8EF67D617BBBF721468C /* SessionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */; };
+		46A93EAACB88DED2171BCE94 /* PnevmaJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 481C3D9236E2D0321C7F9915 /* PnevmaJSON.swift */; };
 		49023C532DCD5386EE7E200C /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */; };
 		4D144841BC682E501E061C51 /* GhosttySettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775982942C9924718860A8DC /* GhosttySettingsViewModel.swift */; };
 		52E723C42B9C37D51D0EDD0F /* TerminalSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */; };
@@ -90,6 +91,7 @@
 		424DB32A4274D56423BCFDA7 /* SessionOutputHubTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionOutputHubTests.swift; sourceTree = "<group>"; };
 		468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		478DE8D1E7E9FD77FAE43F0E /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		481C3D9236E2D0321C7F9915 /* PnevmaJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaJSON.swift; sourceTree = "<group>"; };
 		49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsPane.swift; sourceTree = "<group>"; };
 		504D628AFBF0820CEF6ADF77 /* ProtectedActionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtectedActionSheet.swift; sourceTree = "<group>"; };
 		5F9720138A2A8A983D4E084B /* SessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPersistence.swift; sourceTree = "<group>"; };
@@ -253,6 +255,7 @@
 				BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */,
 				A20D11B7F1496ED9ECFE4003 /* Log.swift */,
 				980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */,
+				481C3D9236E2D0321C7F9915 /* PnevmaJSON.swift */,
 				0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */,
 				5F9720138A2A8A983D4E084B /* SessionPersistence.swift */,
 				A8D239E4D9D6D2BBEFCE9CDD /* Workspace.swift */,
@@ -439,6 +442,7 @@
 				F5CB679F6B9C87400DA3AD42 /* PaneProtocol.swift in Sources */,
 				BF980285DCD2037C225FDBD4 /* PnevmaApp.swift in Sources */,
 				911D8778472DAA448B2A5B9F /* PnevmaBridge.swift in Sources */,
+				46A93EAACB88DED2171BCE94 /* PnevmaJSON.swift in Sources */,
 				9BE6B5F16C1F813061224208 /* ProtectedActionSheet.swift in Sources */,
 				F5F79F02C1F4D95DC5B3F83B /* ReplayPane.swift in Sources */,
 				26ECDCE314120B77635D0905 /* ReviewPane.swift in Sources */,

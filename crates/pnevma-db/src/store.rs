@@ -54,7 +54,9 @@ impl Db {
             }
         }
 
-        let uri = format!("sqlite://{}", db_path.to_string_lossy());
+        // Open in read-write-create mode so a brand new project root can cold-start
+        // without a pre-created SQLite file.
+        let uri = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&uri)
@@ -3122,5 +3124,31 @@ mod tests {
             .await
             .expect("get missing");
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_creates_database_file_for_fresh_project_root() {
+        let project_root = std::env::temp_dir().join(format!("pnevma-db-open-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&project_root)
+            .await
+            .expect("create temp project root");
+
+        let db = Db::open(&project_root)
+            .await
+            .expect("open db in fresh root");
+        assert_eq!(db.path(), project_root.join(".pnevma/pnevma.db").as_path());
+        assert!(
+            db.path().exists(),
+            "Db::open should create the SQLite file for a fresh project root"
+        );
+
+        let projects = db.list_projects().await.expect("list migrated projects");
+        assert!(
+            projects.is_empty(),
+            "fresh database should be migrated and empty"
+        );
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&project_root).await;
     }
 }

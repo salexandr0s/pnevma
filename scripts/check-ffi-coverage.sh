@@ -44,7 +44,7 @@ fi
 echo ""
 echo "Swift pane types:"
 panes=$(grep -l 'PaneContent' native/Pnevma/Panes/*.swift 2>/dev/null | wc -l | tr -d ' ')
-pane_files=$(ls native/Pnevma/Panes/*Pane*.swift 2>/dev/null | wc -l | tr -d ' ')
+pane_files=$(find native/Pnevma/Panes -maxdepth 1 -type f -name '*Pane*.swift' | wc -l | tr -d ' ')
 echo "  Pane files: $pane_files"
 echo "  PaneContent conformances: $panes"
 
