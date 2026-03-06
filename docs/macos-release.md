@@ -1,24 +1,23 @@
 # macOS Release Signing + Notarization
 
-This repository ships helper scripts for local macOS release packaging and updater feed publication in `scripts/`:
+This repository ships a supported native macOS release flow for the notarized `.app` bundle:
 
 - `scripts/release-preflight.sh`
 - `scripts/release-macos-sign.sh`
 - `scripts/release-macos-notarize.sh`
 - `scripts/release-macos-staple-verify.sh`
-- `scripts/release-updater-generate-keys.sh`
-- `scripts/release-updater-overlay.sh`
-- `scripts/release-updater-sign.sh`
-- `scripts/release-updater-feed.sh`
+- `scripts/check-entitlements.sh`
+
+The legacy `scripts/release-updater-*.sh` helpers are intentionally disabled. Pnevma does not currently ship a supported auto-updater for the Swift/AppKit app.
 
 ## Prerequisites
 
 1. Xcode command line tools installed (`xcode-select --install`).
-2. Apple Developer Developer ID signing certificate installed in Keychain.
-3. Notary tool profile configured in Keychain.
-4. Updater keypair generated once for the product (private key kept offline/secret storage).
+2. Apple Developer ID Application certificate installed in Keychain.
+3. `notarytool` profile stored in Keychain.
+4. `just`, `xcodegen`, Rust, and Zig installed for the local build.
 
-Example profile setup:
+Example notary profile setup:
 
 ```bash
 xcrun notarytool store-credentials "pnevma-notary" \
@@ -32,91 +31,67 @@ xcrun notarytool store-credentials "pnevma-notary" \
 - `APPLE_SIGNING_IDENTITY` (required by signing script)
 - `APPLE_NOTARY_PROFILE` (required by notarization script)
 - `APP_PATH` (optional override for app bundle path)
-- `ZIP_PATH` (optional override for notarization zip path)
-- `PNEVMA_UPDATER_PRIVATE_KEY_PATH` (required by updater sign script)
-- `PNEVMA_UPDATER_PRIVATE_KEY_PASSWORD` (optional if key is unencrypted)
-- `PNEVMA_UPDATER_ENDPOINT` (required by updater overlay script)
-- `PNEVMA_UPDATER_PUBKEY` (required by updater overlay script)
-- `OVERLAY_PATH` (optional updater overlay output path)
-- `ARTIFACT_PATH` (required by updater sign/feed scripts)
-- `SIGNATURE_PATH` (required by updater feed script; defaults to `$ARTIFACT_PATH.sig` in sign script)
-- `VERSION` (required by updater feed script)
-- `TARGET_TRIPLE` (required by updater feed script, example: `darwin-aarch64`)
-- `BASE_URL` (required by updater feed script; public URL prefix)
-- `FEED_PATH` (optional updater feed output path)
+- `ZIP_PATH` (optional override for notarization archive path)
 
 ## End-to-end flow
 
-Run strict preflight first:
+Run preflight first:
 
 ```bash
 ./scripts/release-preflight.sh
 ```
 
-Then run packaging/notarization:
+Build the release app:
+
+```bash
+just release
+```
+
+Then sign, notarize, staple, and verify:
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
 export APPLE_NOTARY_PROFILE="pnevma-notary"
+export APP_PATH="native/build/Build/Products/Release/Pnevma.app"
 
-./scripts/release-macos-sign.sh
-./scripts/release-macos-notarize.sh
-./scripts/release-macos-staple-verify.sh
+APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
+APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh
+APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh
+APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+spctl --assess --type exec --verbose=4 "$APP_PATH"
 ```
 
-## Updater feed flow (manual)
+## Evidence bundle
 
-1. Generate updater keys once (or use your existing key):
+Each release should preserve:
 
-```bash
-./scripts/release-updater-generate-keys.sh
-```
+- SBOM output
+- `codesign --verify` output
+- `spctl --assess` output
+- effective entitlements plist
+- notarization/stapling logs
+- remote/manual security test results
 
-2. Generate updater overlay config from production endpoint/pubkey (note: this overlay script is a legacy artifact — the Tauri updater flow has been replaced by Sparkle; see the Sparkle appcast section below):
-
-```bash
-export PNEVMA_UPDATER_ENDPOINT="https://updates.example.com/pnevma/{{target}}/{{arch}}/{{current_version}}"
-export PNEVMA_UPDATER_PUBKEY="$(cat "$HOME/.config/pnevma/updater/private.key.pub")"
-./scripts/release-updater-overlay.sh
-```
-
-> **Note**: The Tauri updater flow (`cargo tauri build --manifest-path crates/pnevma-app/Cargo.toml`) is no longer used. The app is now a native Swift/AppKit application using Sparkle for auto-updates. The overlay script above is a legacy artifact pending Sparkle migration. For Sparkle, generate the appcast XML and Ed25519 signature using Sparkle's `generate_appcast` tool instead.
-
-3. Sign artifact using updater private key.
-4. Generate `latest.json`.
-5. Publish artifact + signature + `latest.json` to feed host.
-
-Example:
-
-```bash
-export ARTIFACT_PATH="target/release/bundle/macos/Pnevma.app.tar.gz"
-export PNEVMA_UPDATER_PRIVATE_KEY_PATH="$HOME/.config/pnevma/updater/private.key"
-export PNEVMA_UPDATER_PRIVATE_KEY_PASSWORD="your-key-password"   # optional
-export VERSION="0.1.0"
-export TARGET_TRIPLE="darwin-aarch64"
-export BASE_URL="https://updates.example.com/pnevma"
-
-./scripts/release-updater-generate-keys.sh
-./scripts/release-updater-sign.sh
-export SIGNATURE_PATH="$ARTIFACT_PATH.sig"
-./scripts/release-updater-feed.sh
-```
+The GitHub release workflow now uploads a `release-security-evidence` artifact containing the entitlement check, effective entitlements, `codesign`, and `spctl` output.
+Release SBOM and evidence artifacts are retained for 90 days in GitHub Actions.
 
 ## Output locations
 
-Default app path:
+Default release app path:
 
-- `target/release/bundle/macos/Pnevma.app`
+- `native/build/Build/Products/Release/Pnevma.app`
 
 Default notarization archive path:
 
-- `target/release/bundle/macos/Pnevma-notarize.zip`
+- `native/build/Build/Products/Release/Pnevma-notarize.zip`
 
-Default updater manifest path:
+## Auto-updater status
 
-- `target/release/bundle/updater/latest.json`
+There is no supported native auto-updater at the moment. Distribution is manual:
 
-## Notes
+1. build the native app,
+2. sign, notarize, and staple it,
+3. publish the notarized archive and release notes.
 
-- Updater feed publication remains manual-by-design in this phase.
-- Keep updater private key outside the repository and CI logs.
+If updater support is introduced later, it must be documented as a native flow and added to the security release gate before use.

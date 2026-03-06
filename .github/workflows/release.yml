@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_ARTIFACT_RETENTION_DAYS: 90
 
 jobs:
   build-and-sign:
@@ -23,6 +24,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
+          toolchain: 1.93.1
           components: rustfmt, clippy
           targets: aarch64-apple-darwin
 
@@ -36,32 +38,29 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Install native build tools
+        run: brew install xcodegen zig
+
       - name: Quality gates
         run: |
-          cargo fmt --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
+          just check
           cargo install cargo-deny --locked
           cargo deny check
 
-      - name: Build Rust staticlib (release)
-        run: cargo build -p pnevma-bridge --release --target aarch64-apple-darwin
+      - name: Build Ghostty xcframework
+        run: just ghostty-build
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: cd native && xcodegen generate
+      - name: Run SwiftPM tests
+        run: just spm-test-clean
 
       - name: Build native app (release)
+        run: just xcode-build-release
+
+      - name: Run packaged launch smoke before signing
         run: |
-          xcodebuild build \
-            -project native/Pnevma.xcodeproj \
-            -scheme Pnevma \
-            -configuration Release \
-            -destination 'platform=macOS' \
-            SYMROOT="$GITHUB_WORKSPACE/native/build" \
-            CODE_SIGNING_ALLOWED=NO
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app" \
+          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-launch.log" \
+          ./scripts/run-packaged-launch-smoke.sh
 
       - name: Import signing certificate
         env:
@@ -98,6 +97,21 @@ jobs:
           APP_PATH="native/build/Build/Products/Release/Pnevma.app"
           APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh
 
+      - name: Run packaged launch smoke after stapling
+        run: |
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app" \
+          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-launch-stapled.log" \
+          ./scripts/run-packaged-launch-smoke.sh
+
+      - name: Collect release security evidence
+        run: |
+          APP_PATH="native/build/Build/Products/Release/Pnevma.app"
+          mkdir -p release-evidence
+          APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh > release-evidence/entitlements-check.txt
+          codesign -d --entitlements :- "$APP_PATH" > release-evidence/entitlements.plist 2>/dev/null
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH" > release-evidence/codesign-verify.txt 2>&1
+          spctl --assess --type exec --verbose=4 "$APP_PATH" > release-evidence/spctl.txt 2>&1
+
       - name: Generate SBOM
         run: |
           cargo install cargo-cyclonedx --locked
@@ -108,7 +122,16 @@ jobs:
         with:
           name: sbom
           path: ./**/bom.cdx.json
-          retention-days: 90
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-security-evidence
+          path: |
+            release-evidence/**
+            native/build/logs/**
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
       - name: Package release archive
         run: |

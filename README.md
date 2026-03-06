@@ -21,14 +21,14 @@
 
 ---
 
-Pnevma gives developers a single desktop workspace to run, supervise, and review work produced by CLI coding agents like **Claude Code** and **Codex**. It wraps persistent terminal sessions, task orchestration, one-task-one-worktree isolation, and a guarded review/merge flow into a keyboard-driven native macOS app.
+Pnevma gives developers a single desktop workspace to run, supervise, and review work produced by CLI coding agents like **Claude Code** and **Codex**. It wraps persistent terminal sessions, task orchestration, one-task-one-worktree git isolation, and a guarded review/merge flow into a keyboard-driven native macOS app.
 
 ## Features
 
 - **Persistent PTY sessions** &mdash; tmux-backed terminals that survive app restarts, with indexed scrollback and replay
 - **Task orchestration** &mdash; contracts, status machines, dependency graphs, and priority-based dispatch
 - **Agent dispatch** &mdash; provider-neutral adapter layer with throttling, supporting Claude Code and Codex out of the box
-- **One-task-one-worktree** &mdash; strict git isolation so agents never step on each other
+- **One-task-one-worktree** &mdash; git/worktree isolation so agents do not modify the same checkout concurrently
 - **Review & merge queue** &mdash; acceptance checks, review packs, approve/reject flow, serialized merge execution
 - **Context compiler** &mdash; builds token-budgeted context packs from scope, `CLAUDE.md`, git diffs, and grep results
 - **Multi-pane UI** &mdash; terminal, task board, review inspector, diff viewer, file browser, search, replay, and more
@@ -41,7 +41,7 @@ Pnevma gives developers a single desktop workspace to run, supervise, and review
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (stable, `aarch64-apple-darwin` target)
+- [Rust via rustup](https://rustup.rs/) (repo-pinned in `rust-toolchain.toml`, `aarch64-apple-darwin` target)
 - [Zig](https://ziglang.org/) (version pinned in `.zig-version`) — for Ghostty xcframework build
 - [just](https://github.com/casey/just) — task runner (`brew install just`)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) — project file generator (`brew install xcodegen`)
@@ -56,7 +56,7 @@ Pnevma gives developers a single desktop workspace to run, supervise, and review
 git clone https://github.com/pnevma/pnevma.git
 cd pnevma
 
-# Install toolchains and dependencies
+# Install rustup-managed Rust 1.93.1, clippy, rustfmt, and local dependencies
 ./scripts/bootstrap-dev.sh
 
 # Generate the Xcode project
@@ -65,6 +65,8 @@ just xcodegen
 # Full debug build (Rust staticlib + native macOS app)
 just build
 ```
+
+`just` commands execute through the repo-pinned rustup toolchain rather than whichever `cargo` happens to be first in `PATH`.
 
 ### First project
 
@@ -151,6 +153,13 @@ See the full [pnevma.toml reference](docs/pnevma-toml-reference.md).
 # Run all checks (cargo fmt + clippy + Rust tests)
 just check
 
+# Run warning-free SwiftPM and Xcode native gates
+just spm-test-clean
+just xcode-test
+
+# Run the real Ghostty smoke gate
+just ghostty-smoke
+
 # Run all tests (Rust + Xcode)
 just test
 
@@ -169,21 +178,19 @@ just release
 GitHub Actions runs on every push and PR:
 
 - **Rust** &mdash; `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `cargo audit`
-- **Xcode** &mdash; `xcodebuild test`
+- **Native** &mdash; warning-free `swift test`, warning-free `xcodebuild build/test`, Ghostty smoke
 
 ## macOS Release
 
-Pnevma includes a full macOS signing, notarization, and auto-update pipeline:
+Pnevma ships a supported macOS signing, notarization, and stapling pipeline for the native `.app` bundle. A native auto-updater is not currently supported; the legacy updater helper scripts are intentionally disabled so they cannot be used by mistake.
 
-| Step                  | Script                                     |
-| --------------------- | ------------------------------------------ |
-| Code signing          | `scripts/release-macos-sign.sh`            |
-| Notarization          | `scripts/release-macos-notarize.sh`        |
-| Staple & verify       | `scripts/release-macos-staple-verify.sh`   |
-| Generate updater keys | `scripts/release-updater-generate-keys.sh` |
-| Sign updater artifact | `scripts/release-updater-sign.sh`          |
-| Generate update feed  | `scripts/release-updater-feed.sh`          |
-| Pre-flight checks     | `scripts/release-preflight.sh`             |
+| Step              | Script                                   |
+| ----------------- | ---------------------------------------- |
+| Code signing      | `scripts/release-macos-sign.sh`          |
+| Notarization      | `scripts/release-macos-notarize.sh`      |
+| Staple & verify   | `scripts/release-macos-staple-verify.sh` |
+| Entitlement check | `scripts/check-entitlements.sh`          |
+| Pre-flight checks | `scripts/release-preflight.sh`           |
 
 See the full [macOS release runbook](docs/macos-release.md).
 
@@ -197,13 +204,19 @@ See the full [macOS release runbook](docs/macos-release.md).
 | [Keyboard Shortcuts](docs/keyboard-shortcuts.md)             | Keybinding reference                                     |
 | [IPC Test Harness](docs/ipc-harness.md)                      | Control plane socket testing                             |
 | [Release Checklist](docs/release-checklist.md)               | Pre-release gating steps                                 |
-| [macOS Release Runbook](docs/macos-release.md)               | Signing, notarization, updater distribution              |
+| [macOS Release Runbook](docs/macos-release.md)               | Signing, notarization, evidence collection               |
+| [Security Deployment](docs/security-deployment.md)           | Remote access, socket auth, Keychain/file password setup |
+| [Threat Model](docs/threat-model.md)                         | Trust boundaries, assets, and primary attack paths       |
+| [Security Release Gate](docs/security-release-gate.md)       | Release blockers, evidence bundle, and exceptions        |
+| [Hardening Exit Criteria](docs/hardening-exit-criteria.md)   | Freeze policy and the bar to resume feature work         |
 | [Implementation Status](docs/implementation-status.md)       | Phase completion tracking                                |
 | [Design Partner Readiness](docs/design-partner-readiness.md) | Readiness assessment                                     |
 
 ## Security
 
 `RUSTSEC-2023-0071` (rsa crate) appears via the `sqlx-mysql` transitive dependency. Pnevma uses SQLite only and never enables the MySQL feature, so this is accepted risk. See `audit.toml` at the repo root.
+
+Worktrees are not an OS sandbox. Agents still run with the current user's filesystem and network privileges, so only dispatch work you would trust that user account to perform directly.
 
 ## License
 

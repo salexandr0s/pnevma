@@ -25,3 +25,12 @@ docs/keyboard-audit.md
 docs/latency-validation.md
 docs/ipc-harness.md
 docs/release-checklist.md
+
+# External local vendor checkout; fetched on demand by scripts/fetch-ghostty.sh
+vendor/ghostty/
+
+# Local SwiftPM/Xcode build outputs
+native/.build/
+native/DerivedData/
+native/build/
+native/native/

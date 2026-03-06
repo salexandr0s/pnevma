@@ -61,17 +61,20 @@ run_in_dir() {
 check_cmd cargo
 check_cmd rustc
 check_cmd git
+check_cmd just
+check_cmd swift
 check_cmd xcrun
 check_cmd codesign
 check_cmd xcodebuild
 check_cmd xcodegen
+check_cmd zig
 
 # ── Rust quality gates ───────────────────────────────────────────────────────
 
-run_in_dir "$ROOT_DIR" "cargo fmt --all -- --check" cargo fmt --all -- --check
-run_in_dir "$ROOT_DIR" "cargo clippy --workspace --all-targets -- -D warnings" cargo clippy --workspace --all-targets -- -D warnings
-run_in_dir "$ROOT_DIR" "cargo test --workspace" cargo test --workspace
+run_in_dir "$ROOT_DIR" "just check" just check
 run_in_dir "$ROOT_DIR" "cargo deny check" cargo deny check
+run_in_dir "$ROOT_DIR" "just ghostty-build" just ghostty-build
+run_in_dir "$ROOT_DIR" "just spm-test-clean" just spm-test-clean
 
 # ── Native build validation ──────────────────────────────────────────────────
 
@@ -82,20 +85,27 @@ else
   fail "xcodegen project generation failed"
 fi
 
-print_check "xcodebuild: release build"
-if xcodebuild build -project "$NATIVE_DIR/Pnevma.xcodeproj" -scheme Pnevma -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO >/dev/null 2>&1; then
-  pass "xcodebuild release build succeeded"
+run_in_dir "$ROOT_DIR" "just xcode-build-release" just xcode-build-release
+
+print_check "xcodebuild: release entitlements"
+if APP_PATH="$NATIVE_DIR/build/Build/Products/Release/Pnevma.app" ./scripts/check-entitlements.sh >/dev/null 2>&1; then
+  pass "release entitlements match allowlist"
 else
-  fail "xcodebuild release build failed"
+  fail "release entitlements do not match allowlist"
 fi
 
-# ── Environment variables for signing ────────────────────────────────────────
+print_check "packaged launch smoke"
+if APP_PATH="$NATIVE_DIR/build/Build/Products/Release/Pnevma.app" ./scripts/run-packaged-launch-smoke.sh >/dev/null 2>&1; then
+  pass "packaged launch smoke succeeded"
+else
+  fail "packaged launch smoke failed"
+fi
+
+# ── Environment variables for signing ───────────────────────────────────────
 
 for key in \
   APPLE_SIGNING_IDENTITY \
-  APPLE_NOTARY_PROFILE \
-  VERSION \
-  TARGET_TRIPLE
+  APPLE_NOTARY_PROFILE
 do
   check_env_var "$key"
 done

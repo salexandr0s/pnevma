@@ -2,12 +2,38 @@
 
 These tests require a running Pnevma app instance. All curl commands assume:
 
-- `BASE_URL` — the HTTPS URL of the pnevma-remote server (e.g., `https://localhost:8443`)
+- `BASE_URL` — the HTTPS URL of the `pnevma-remote` server on the machine's Tailscale IP or MagicDNS name (for example `https://100.101.102.103:8443`)
+- `WS_URL` — the matching WebSocket endpoint at `/api/ws`
 - `TOKEN` — a valid bearer token obtained from `/api/auth/token`
 - Self-signed TLS: use `-k` / `--insecure` with curl, or pass `--cacert <cert.pem>`
+- Remote access only starts when Tailscale is available; `localhost` is not a supported bind target for `pnevma-remote`
+
+## Local setup
+
+1. Enable remote access in `pnevma.toml` and launch the app.
+2. Discover the server address:
+
+   ```bash
+   TAILSCALE_IP="$(tailscale status --json | jq -r '.Self.TailscaleIPs[0]')"
+   BASE_URL="https://${TAILSCALE_IP}:8443"
+   WS_URL="wss://${TAILSCALE_IP}:8443/api/ws"
+   ```
+
+3. Mint a token with the configured remote password:
+
+   ```bash
+   TOKEN="$(
+     curl -sk -X POST "$BASE_URL/api/auth/token" \
+       -H "Content-Type: application/json" \
+       -d '{"password":"<remote password>"}' \
+       | jq -r '.token'
+   )"
+   ```
 
 ```bash
-BASE_URL="https://localhost:8443"
+TAILSCALE_IP="$(tailscale status --json | jq -r '.Self.TailscaleIPs[0]')"
+BASE_URL="https://${TAILSCALE_IP}:8443"
+WS_URL="wss://${TAILSCALE_IP}:8443/api/ws"
 TOKEN="<paste valid token here>"
 ```
 
@@ -36,17 +62,31 @@ TOKEN="<paste valid token here>"
 
 ---
 
-## G5: Updater Production Config
+## G5: Password Source Hardening
 
 **Procedure**:
 
-1. Verify `native/Pnevma/Supporting\ Files/Info.plist` (or equivalent config) has the production updater feed URL set.
-2. Build a signed release build.
-3. Confirm the app checks for updates against the production endpoint on launch.
-4. Verify the update feed (`appcast.xml`) is served over HTTPS and the signature field is non-empty.
+1. Create an insecure remote password file:
 
-**Pass**: App contacts production update feed; signature verification succeeds.
-**Fail**: App contacts a dev/staging endpoint, or skips signature check.
+   ```bash
+   mkdir -p "$HOME/.config/pnevma"
+   printf 'test-password\n' > "$HOME/.config/pnevma/remote-password"
+   chmod 0644 "$HOME/.config/pnevma/remote-password"
+   ```
+
+2. Start Pnevma with remote access enabled and no `PNEVMA_REMOTE_PASSWORD` env var or matching Keychain item.
+3. Confirm remote startup fails closed with an error mentioning insecure password-file permissions.
+4. Fix the mode and retry:
+
+   ```bash
+   chmod 0600 "$HOME/.config/pnevma/remote-password"
+   ```
+
+5. Configure socket password mode with a password file in `~/.config/pnevma/config.toml`, give that file mode `0644`, and verify the local control socket also refuses to start.
+6. Change the socket password file to mode `0600` and verify the control socket starts successfully.
+
+**Pass**: insecure password files are rejected and secure password files are accepted.
+**Fail**: remote or socket auth starts with group/world-readable password files.
 
 ---
 
@@ -190,7 +230,7 @@ Connect via WebSocket and send an RPC message for a blocked method:
 # Using websocat (install via brew install websocat)
 echo '{"type":"Rpc","id":"test-1","method":"session.new","params":{"name":"x","cwd":".","command":"zsh"}}' \
   | websocat --header "Authorization: Bearer $TOKEN" \
-    "wss://localhost:8443/ws" -k
+    "$WS_URL" -k
 ```
 
 **Expected**: Response contains `method_not_allowed` error.
@@ -236,7 +276,7 @@ import sys
 payload = 'x' * 1_000_000
 msg = '{\"type\":\"Rpc\",\"id\":\"big-1\",\"method\":\"task.list\",\"params\":{\"padding\":\"' + payload + '\"}}'
 print(msg)
-" | websocat --header "Authorization: Bearer $TOKEN" "wss://localhost:8443/ws" -k
+" | websocat --header "Authorization: Bearer $TOKEN" "$WS_URL" -k
 ```
 
 **Expected**: Connection closed by server with close code 1009 (message too big), or the message is dropped and an error response is returned.
@@ -264,7 +304,7 @@ print(json.dumps({'title': 'test', 'goal': padding, 'priority': 'P2', 'acceptanc
 
 ## Notes
 
-- All tests require a running Pnevma app with `pnevma-remote` enabled and a valid TLS certificate.
+- All tests require a running Pnevma app with `pnevma-remote` enabled on a Tailscale address and a valid TLS certificate.
 - The `rate_limit_rpm` default is 60; `auth` limit is hardcoded to 5. Both can be configured in `pnevma.toml`.
 - For WebSocket tests, install `websocat`: `brew install websocat`.
 - For rate-limit tests, use a fresh IP or restart the app between `G8a` and `G8b` to reset limiters.

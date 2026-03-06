@@ -1,0 +1,166 @@
+name: Release Rehearsal
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS: 30
+
+jobs:
+  release-package-preflight:
+    name: Release package preflight
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: 1.93.1
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install native build tools
+        run: brew install xcodegen zig
+
+      - name: Rust quality gates
+        run: just check
+
+      - name: Build Ghostty xcframework
+        run: just ghostty-build
+
+      - name: Run SwiftPM tests
+        run: just spm-test-clean
+
+      - name: Build release app
+        run: just xcode-build-release
+
+      - name: Check entitlements
+        run: |
+          APP_PATH="$GITHUB_WORKSPACE/native/build/Build/Products/Release/Pnevma.app" \
+          ./scripts/check-entitlements.sh
+
+      - name: Package release archive
+        run: |
+          APP_PATH="$GITHUB_WORKSPACE/native/build/Build/Products/Release/Pnevma.app"
+          ARCHIVE="$GITHUB_WORKSPACE/Pnevma-rehearsal-macos-arm64.tar.gz"
+          tar -czf "$ARCHIVE" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
+          mkdir -p "$RUNNER_TEMP/release-rehearsal"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/release-rehearsal"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "EXTRACTED_APP=$RUNNER_TEMP/release-rehearsal/Pnevma.app" >> "$GITHUB_ENV"
+
+      - name: Run packaged launch smoke
+        run: |
+          APP_PATH="$EXTRACTED_APP" \
+          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-rehearsal-launch.log" \
+          ./scripts/run-packaged-launch-smoke.sh
+
+      - name: Upload package rehearsal artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-package-preflight
+          path: |
+            ${{ env.ARCHIVE }}
+            native/build/logs/**
+          retention-days: ${{ env.RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS }}
+
+  release-sign-notarize-dry-run:
+    name: Release sign/notarize dry run
+    runs-on: macos-latest
+    needs: release-package-preflight
+    if: ${{ github.event_name != 'pull_request' && secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_NOTARY_PROFILE != '' && secrets.KEYCHAIN_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download packaged app artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        with:
+          name: release-package-preflight
+          path: ${{ runner.temp }}/release-package-preflight
+
+      - name: Extract packaged app
+        run: |
+          ARCHIVE="$(find "$RUNNER_TEMP/release-package-preflight" -name 'Pnevma-rehearsal-macos-arm64.tar.gz' -print -quit)"
+          test -n "$ARCHIVE"
+          mkdir -p "$RUNNER_TEMP/release-sign"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/release-sign"
+          echo "APP_PATH=$RUNNER_TEMP/release-sign/Pnevma.app" >> "$GITHUB_ENV"
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Sign app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
+
+      - name: Notarize app
+        env:
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+        run: APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh
+
+      - name: Staple and verify
+        run: APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh
+
+      - name: Run packaged launch smoke after stapling
+        run: |
+          APP_PATH="$APP_PATH" \
+          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-rehearsal-stapled-launch.log" \
+          ./scripts/run-packaged-launch-smoke.sh
+
+      - name: Collect release evidence
+        run: |
+          mkdir -p release-evidence
+          APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh > release-evidence/entitlements-check.txt
+          codesign -d --entitlements :- "$APP_PATH" > release-evidence/entitlements.plist 2>/dev/null
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH" > release-evidence/codesign-verify.txt 2>&1
+          spctl --assess --type exec --verbose=4 "$APP_PATH" > release-evidence/spctl.txt 2>&1
+
+      - name: Upload release dry-run evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-sign-notarize-dry-run
+          path: |
+            release-evidence/**
+            native/build/logs/**
+          retention-days: ${{ env.RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS }}
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

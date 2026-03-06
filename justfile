@@ -11,7 +11,13 @@ default: build
 rust_target := "aarch64-apple-darwin"
 build_mode := "debug"
 xcode_scheme := "Pnevma"
+xcode_test_scheme := "PnevmaTests"
 xcode_project := "native/Pnevma.xcodeproj"
+xcode_destination := "'platform=macOS,arch=arm64'"
+rust_tool := "./scripts/with-rust-toolchain.sh"
+clean_log := "./scripts/assert-clean-command-log.sh"
+native_log_dir := "native/build/logs"
+xcode_derived_data := "native/DerivedData"
 
 # ── Stage 1: Ghostty xcframework (Zig) ────────────────────────────────────────
 
@@ -27,31 +33,32 @@ ghostty-check:
 
 ghostty-build: ghostty-check
     @echo "Building Ghostty xcframework..."
+    ./scripts/fetch-ghostty.sh
     cd vendor/ghostty && zig build -Demit-xcframework=true -Doptimize=ReleaseFast
-    @echo "Ghostty xcframework built at vendor/ghostty/zig-out/"
+    @echo "Ghostty xcframework built at vendor/ghostty/macos/GhosttyKit.xcframework"
 
 # ── Stage 2: Rust staticlib (Cargo) ──────────────────────────────────────────
 
 rust-check:
-    cargo fmt --check
-    cargo clippy --workspace --all-targets -- -D warnings
+    {{rust_tool}} cargo fmt --check
+    {{rust_tool}} cargo clippy --workspace --all-targets -- -D warnings
 
 rust-build:
     @echo "Building Rust staticlib..."
-    cargo build -p pnevma-bridge --target {{rust_target}}
+    {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}}
     @echo "Rust staticlib built"
 
 rust-build-release:
     @echo "Building Rust staticlib (release)..."
-    cargo build -p pnevma-bridge --target {{rust_target}} --release
+    {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}} --release
     @echo "Rust staticlib built (release)"
 
 rust-test:
-    cargo test --workspace
+    {{rust_tool}} cargo test --workspace
 
 rust-audit:
-    @if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then \
-      cargo audit; \
+    @if command -v cargo-audit >/dev/null 2>&1 || {{rust_tool}} cargo audit --version >/dev/null 2>&1; then \
+      {{rust_tool}} cargo audit; \
     else \
       echo "SKIP: cargo-audit not installed. Install with: cargo install cargo-audit --locked"; \
     fi
@@ -68,18 +75,21 @@ xcodegen:
     @echo "Generated native/Pnevma.xcodeproj"
 
 # Note: xcode-build depends on rust-build completing first
-xcode-build: rust-build
+xcode-build: xcodegen rust-build
     @echo "Building native macOS app..."
-    xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug build
+    mkdir -p {{native_log_dir}}
+    {{clean_log}} --log {{native_log_dir}}/xcode-build.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build
     @echo "Native app built"
 
-xcode-build-release: rust-build-release
+xcode-build-release: xcodegen rust-build-release
     @echo "Building native macOS app (release)..."
-    xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release build
+    mkdir -p {{native_log_dir}}
+    {{clean_log}} --log {{native_log_dir}}/xcode-build-release.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build
     @echo "Native app built (release)"
 
-xcode-test:
-    xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} test
+xcode-test: xcodegen rust-build
+    mkdir -p {{native_log_dir}}
+    {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test
 
 # SPM build path (alternative to xcodebuild)
 spm-build: rust-build
@@ -91,6 +101,17 @@ spm-test: rust-build
     @echo "Running tests via Swift Package Manager..."
     cd native && swift test
     @echo "SPM tests complete"
+
+spm-test-clean: rust-build
+    @echo "Running clean Swift Package Manager test gate..."
+    mkdir -p {{native_log_dir}}
+    {{clean_log}} --log {{native_log_dir}}/swift-test.log -- zsh -lc 'cd native && swift test'
+    @echo "SPM tests complete"
+
+ghostty-smoke: ghostty-build xcode-build
+    @echo "Running Ghostty runtime smoke..."
+    ./scripts/run-ghostty-smoke.sh
+    @echo "Ghostty smoke passed"
 
 # ── Composite targets ────────────────────────────────────────────────────────
 
@@ -137,5 +158,5 @@ ffi-coverage:
 
 # Format all code
 fmt:
-    cargo fmt
+    {{rust_tool}} cargo fmt
     @echo "Formatted"

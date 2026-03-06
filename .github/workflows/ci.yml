@@ -11,6 +11,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CI_ARTIFACT_RETENTION_DAYS: 30
 
 jobs:
   secret-scan:
@@ -27,10 +28,33 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  workflow-hygiene:
+    name: Workflow and shell hygiene
+    runs-on: ubuntu-latest
+    needs: secret-scan
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Run actionlint
+        run: ~/go/bin/actionlint
+
   rust:
     name: Rust checks
     runs-on: macos-latest
-    needs: secret-scan
+    needs: [secret-scan, workflow-hygiene]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -39,6 +63,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
+          toolchain: 1.93.1
           components: rustfmt, clippy
 
       - name: Cache cargo registry and build
@@ -83,7 +108,7 @@ jobs:
         with:
           name: sbom
           path: ./**/bom.cdx.json
-          retention-days: 90
+          retention-days: ${{ env.CI_ARTIFACT_RETENTION_DAYS }}
 
   native-build:
     name: Native app build
@@ -96,6 +121,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: 1.93.1
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo registry and build
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -107,23 +135,31 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Build Rust staticlib
-        run: cargo build -p pnevma-bridge --release --target aarch64-apple-darwin
+      - name: Install native build tools
+        run: brew install xcodegen zig
 
-      - name: Verify staticlib exists
-        run: test -f target/aarch64-apple-darwin/release/libpnevma_bridge.a
+      - name: Build Ghostty xcframework
+        run: just ghostty-build
 
-      - name: Verify cbindgen header
-        run: test -f crates/pnevma-bridge/pnevma-bridge.h
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: cd native && xcodegen generate
+      - name: Run SwiftPM tests
+        run: just spm-test-clean
 
       - name: Build Swift app
-        run: xcodebuild build -project native/Pnevma.xcodeproj -scheme Pnevma -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+        run: just xcode-build
+
+      - name: Check entitlements
+        run: APP_PATH="$GITHUB_WORKSPACE/native/build/Build/Products/Debug/Pnevma.app" ./scripts/check-entitlements.sh
 
       - name: Run Swift tests
-        run: xcodebuild test -project native/Pnevma.xcodeproj -scheme PnevmaTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+        run: just xcode-test
+
+      - name: Run Ghostty smoke
+        run: ./scripts/run-ghostty-smoke.sh
+
+      - name: Upload native logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-build-logs
+          path: native/build/logs/**
+          retention-days: ${{ env.CI_ARTIFACT_RETENTION_DAYS }}

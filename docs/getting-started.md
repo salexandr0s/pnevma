@@ -2,56 +2,62 @@
 
 ## Prerequisites
 
-1. Rust toolchain (stable).
-2. Node.js + npm.
-3. `cargo-tauri`:
-
-```bash
-cargo install tauri-cli
-```
-
-4. At least one supported agent CLI on `PATH` (`claude` or `codex`).
-5. `git` available on `PATH`.
+1. Rust via `rustup` using the repo-pinned toolchain in `rust-toolchain.toml`.
+2. Zig matching `.zig-version`.
+3. `just` (`brew install just`).
+4. XcodeGen (`brew install xcodegen`).
+5. Xcode 15+ with the macOS SDK.
+6. `git` on `PATH`.
+7. At least one supported agent CLI on `PATH` (`claude-code` or `codex`).
 
 ## Bootstrap
 
 From repo root:
 
 ```bash
+# Installs the repo-pinned rustup toolchain if needed.
 ./scripts/bootstrap-dev.sh
-cargo build --workspace
-cd frontend && npm install
+just xcodegen
+just build
+just ghostty-smoke
 ```
+
+`just build` compiles the Rust bridge static library and the native Swift/AppKit app. It does not use Tauri, npm, or a web frontend.
 
 ## Run the app
 
-From repo root:
+For interactive development, open the generated Xcode project and run the `Pnevma` scheme:
 
 ```bash
-cargo tauri dev --manifest-path crates/pnevma-app/Cargo.toml
+open native/Pnevma.xcodeproj
+```
+
+For command-line verification, use:
+
+```bash
+just xcode-build
+just ghostty-smoke
 ```
 
 ## First project flow
 
-1. Use the **First Launch Setup** panel.
-2. Enter project path.
-3. Click `Initialize Global Config` if needed.
-4. Click `Initialize Project Scaffold` to create:
-   - `pnevma.toml`
-   - `.pnevma/` directories
-   - seed rules/conventions markdown files
-5. Click `Open Project`.
-6. Use command palette (`Mod+K`) to draft/create tasks.
-7. Dispatch a ready task and follow review/merge.
+Before you dispatch an agent: Pnevma isolates work by git worktree, not by OS sandbox. Agent commands still run with your user account's filesystem and network access.
+
+1. Launch Pnevma and use the first-launch setup panel if global config or scaffold files are missing.
+2. Open a repository root.
+3. Initialize `pnevma.toml` and `.pnevma/` support files if prompted.
+4. Use the command palette (`Mod+K`) to create or draft tasks.
+5. Dispatch a ready task and review live progress in the task board and pane layout.
+6. Review the resulting diff, checks, and review pack before merge.
 
 ## Quality gates
 
 Before shipping changes:
 
 ```bash
-cargo fmt --all
-cargo check --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cd frontend && npx tsc --noEmit && npx eslint . && npx vite build
+just check
+just spm-test-clean
+just xcode-test
 ```
+
+The `just` targets invoke the repo-pinned rustup toolchain directly, so local builds stay aligned with CI and the native linker sees a consistent Rust stdlib. `just ghostty-smoke` is the required terminal-runtime gate; placeholder rendering does not satisfy it.

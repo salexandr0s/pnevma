@@ -1,0 +1,10 @@
+[env]
+# Keep Rust staticlib and C/C++ vendored objects aligned with the native app's
+# macOS 14 deployment target so SwiftPM/Xcode do not link a newer minimum OS.
+MACOSX_DEPLOYMENT_TARGET = { value = "14.0", force = false }
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-mmacosx-version-min=14.0"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-mmacosx-version-min=14.0"]

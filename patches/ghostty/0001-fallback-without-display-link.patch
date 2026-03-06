@@ -1,0 +1,19 @@
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index a72acf5..5a3a943 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -650,7 +650,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
+             const display_link: ?DisplayLink = switch (builtin.os.tag) {
+                 .macos => if (options.config.vsync)
+-                    try macos.video.DisplayLink.createWithActiveCGDisplays()
++                    macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| link: {
++                        log.warn(
++                            "failed to create display link; continuing without vsync err={}",
++                            .{err},
++                        );
++                        break :link null;
++                    }
+                 else
+                     null,
+                 else => null,

@@ -2,11 +2,10 @@
 
 ## Ghostty
 
-Clone ghostty into this directory:
+Fetch ghostty into this directory:
 
 ```bash
-git submodule add https://github.com/ghostty-org/ghostty.git vendor/ghostty
-cd vendor/ghostty && git checkout v1.2.0
+./scripts/fetch-ghostty.sh
 ```
 
 Build xcframework:
