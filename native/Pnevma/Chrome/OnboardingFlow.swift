@@ -6,7 +6,6 @@ import os
 
 struct OnboardingView: View {
     @StateObject private var viewModel: OnboardingViewModel
-    @Environment(\.dismiss) private var dismiss
     var onComplete: (() -> Void)?
 
     init(commandBus: CommandBus? = nil, onComplete: (() -> Void)? = nil) {
