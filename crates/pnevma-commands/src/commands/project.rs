@@ -1,6 +1,49 @@
 use super::tasks::{ensure_scope_rows_from_config, rule_row_to_view};
 use super::*;
 
+const MAX_SESSION_NAME_BYTES: usize = 128;
+const MAX_SESSION_COMMAND_BYTES: usize = 2048;
+const MAX_SESSION_INPUT_BYTES: usize = 16 * 1024;
+const MAX_PATH_INPUT_BYTES: usize = 4096;
+
+fn ensure_bounded_text_field(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if value.len() > max_bytes {
+        return Err(format!("{label} exceeds {max_bytes} byte limit"));
+    }
+    if value.chars().any(|c| c == '\0' || c.is_control()) {
+        return Err(format!("{label} contains unsafe control characters"));
+    }
+    Ok(())
+}
+
+fn ensure_safe_path_input(value: &str, label: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if value.len() > MAX_PATH_INPUT_BYTES {
+        return Err(format!("{label} exceeds {MAX_PATH_INPUT_BYTES} byte limit"));
+    }
+    if value.chars().any(|c| c == '\0' || c.is_control()) {
+        return Err(format!("{label} contains unsafe control characters"));
+    }
+    Ok(())
+}
+
+fn ensure_safe_session_input(value: &str) -> Result<(), String> {
+    if value.len() > MAX_SESSION_INPUT_BYTES {
+        return Err(format!(
+            "session input exceeds {MAX_SESSION_INPUT_BYTES} byte limit"
+        ));
+    }
+    if value.contains('\0') {
+        return Err("session input must not contain NUL bytes".to_string());
+    }
+    Ok(())
+}
+
 async fn abort_project_runtime(state: &AppState) {
     if let Some(runtime) = state.current_runtime.lock().await.take() {
         runtime.abort();
@@ -187,11 +230,18 @@ pub async fn open_project(
         pool,
     };
 
-    if let Err(err) = restart_control_plane(state, path_buf.as_path(), &cfg, &global_cfg).await {
-        return Err(err);
-    }
+    restart_control_plane(state, path_buf.as_path(), &cfg, &global_cfg).await?;
 
     abort_project_runtime(state).await;
+    let previous_project_id = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| ctx.project_id)
+    };
+    if let Some(previous_project_id) = previous_project_id {
+        clear_project_redaction_secrets(previous_project_id);
+    }
+    let current_redaction_secrets = redaction_secrets.read().await.clone();
+    register_project_redaction_secrets(project_id, &current_redaction_secrets);
     {
         let mut current = state.current.lock().await;
         *current = Some(ctx);
@@ -284,6 +334,7 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
         let mut current = state.current.lock().await;
         *current = None;
     }
+    clear_project_redaction_secrets(project_id);
     abort_project_runtime(state).await;
     stop_control_plane(state).await;
     Ok(())
@@ -641,6 +692,10 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
         .as_ref()
         .ok_or_else(|| "no open project".to_string())?;
 
+    ensure_bounded_text_field(&input.name, "session name", MAX_SESSION_NAME_BYTES)?;
+    ensure_safe_path_input(&input.cwd, "session cwd")?;
+    ensure_bounded_text_field(&input.command, "session command", MAX_SESSION_COMMAND_BYTES)?;
+
     // H2: Validate command against the configured allowlist.
     let base_cmd = input.command.split_whitespace().next().unwrap_or("");
     let cmd_name = std::path::Path::new(base_cmd)
@@ -879,6 +934,7 @@ pub async fn send_session_input(
     let ctx = current
         .as_ref()
         .ok_or_else(|| "no open project".to_string())?;
+    ensure_safe_session_input(&input)?;
     let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     ctx.sessions
         .send_input(session_id, &input)
@@ -1700,6 +1756,7 @@ pub async fn open_file_target(
         ctx.project_path.clone()
     };
     let rel = input.path.trim().trim_start_matches('/');
+    ensure_safe_path_input(rel, "file path")?;
     if rel.is_empty() {
         return Err("invalid path".to_string());
     }
@@ -2596,6 +2653,56 @@ pub async fn set_telemetry_opt_in(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhosttyAuditInput {
+    pub action: String,
+    #[serde(default)]
+    pub changed_keys: Vec<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+    pub applied: bool,
+    pub managed_path: String,
+}
+
+pub async fn audit_ghostty_settings(
+    input: GhosttyAuditInput,
+    state: &AppState,
+) -> Result<bool, String> {
+    ensure_bounded_text_field(&input.action, "action", 128)?;
+    ensure_safe_path_input(&input.managed_path, "managed_path")?;
+
+    let payload = json!({
+        "action": input.action,
+        "changed_keys": input.changed_keys,
+        "diagnostics": input.diagnostics,
+        "applied": input.applied,
+        "managed_path": input.managed_path,
+    });
+
+    let maybe_project = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| (ctx.db.clone(), ctx.project_id))
+    };
+    let recorded = maybe_project.is_some();
+
+    if let Some((db, project_id)) = maybe_project {
+        append_event(
+            &db,
+            project_id,
+            None,
+            None,
+            "settings",
+            "GhosttySettingsAudit",
+            payload.clone(),
+        )
+        .await;
+    }
+
+    state.emitter.emit("ghostty_settings_audited", payload);
+
+    Ok(recorded)
+}
+
 pub async fn export_telemetry_bundle(
     input: Option<ExportTelemetryInput>,
     state: &AppState,
@@ -2638,6 +2745,7 @@ pub async fn export_telemetry_bundle(
 
     let data_dir = project_path.join(".pnevma").join("data");
     let target = if let Some(path) = input.and_then(|v| v.path) {
+        ensure_safe_path_input(&path, "export path")?;
         let requested = PathBuf::from(&path);
         let canonical_data = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
         let canonical_target = if requested.exists() {
@@ -2917,7 +3025,10 @@ pub async fn get_session_timeline(
         .map(timeline_view_from_event)
         .collect::<Vec<_>>();
 
-    if let Ok(slice) = sessions.read_scrollback_tail(session_uuid, 128 * 1024).await {
+    if let Ok(slice) = sessions
+        .read_scrollback_tail(session_uuid, 128 * 1024)
+        .await
+    {
         if !slice.data.trim().is_empty() {
             timeline.push(TimelineEventView {
                 timestamp: Utc::now(),
@@ -4211,6 +4322,18 @@ mod tests {
         assert!(validate_path_component("foo\0bar", "test").is_err());
         assert!(validate_path_component("valid-name", "test").is_ok());
         assert!(validate_path_component("task-123", "test").is_ok());
+    }
+
+    #[test]
+    fn session_and_path_inputs_are_bounded() {
+        assert!(ensure_bounded_text_field("shell", "session name", MAX_SESSION_NAME_BYTES).is_ok());
+        assert!(
+            ensure_bounded_text_field("bad\nname", "session name", MAX_SESSION_NAME_BYTES).is_err()
+        );
+        assert!(ensure_safe_path_input("src/main.rs", "file path").is_ok());
+        assert!(ensure_safe_path_input("src/\0main.rs", "file path").is_err());
+        assert!(ensure_safe_session_input("pwd\n").is_ok());
+        assert!(ensure_safe_session_input(&"x".repeat(MAX_SESSION_INPUT_BYTES + 1)).is_err());
     }
 
     #[tokio::test]

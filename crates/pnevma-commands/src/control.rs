@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
+const MAX_CONTROL_REQUEST_ID_BYTES: usize = 128;
+const MAX_CONTROL_METHOD_BYTES: usize = 128;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlRequest {
     pub id: String,
@@ -335,11 +338,51 @@ fn parse_optional_string_list_param(params: &Value, key: &str) -> Option<Vec<Str
     }
 }
 
+fn validate_control_request(request: &ControlRequest) -> Result<(), String> {
+    if request.id.trim().is_empty() {
+        return Err("request id must not be empty".to_string());
+    }
+    if request.id.len() > MAX_CONTROL_REQUEST_ID_BYTES {
+        return Err(format!(
+            "request id exceeds {MAX_CONTROL_REQUEST_ID_BYTES} byte limit"
+        ));
+    }
+    if !request
+        .id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
+    {
+        return Err("request id contains invalid characters".to_string());
+    }
+
+    if request.method.is_empty() {
+        return Err("request method must not be empty".to_string());
+    }
+    if request.method.len() > MAX_CONTROL_METHOD_BYTES {
+        return Err(format!(
+            "request method exceeds {MAX_CONTROL_METHOD_BYTES} byte limit"
+        ));
+    }
+    if !request
+        .method
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err("request method contains invalid characters".to_string());
+    }
+
+    Ok(())
+}
+
 async fn process_request(
     state: &AppState,
     settings: &ControlPlaneSettings,
     request: ControlRequest,
 ) -> ControlResponse {
+    if let Err(err) = validate_control_request(&request) {
+        return ControlResponse::err(request.id.clone(), "invalid_request", err);
+    }
+
     let request_id = request.id.clone();
     let method = request.method.clone();
     let params = request.params.clone();
@@ -1354,6 +1397,31 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?;
             json!({"ok": true})
         }
+        "settings.ghostty.audit" => {
+            let action = parse_string_param(params, "action")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let changed_keys =
+                parse_optional_string_list_param(params, "changed_keys").unwrap_or_default();
+            let diagnostics =
+                parse_optional_string_list_param(params, "diagnostics").unwrap_or_default();
+            let applied = parse_optional_bool_param(params, "applied")
+                .ok_or_else(|| ("invalid_params".to_string(), "missing applied".to_string()))?;
+            let managed_path = parse_string_param(params, "managed_path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let recorded = commands::audit_ghostty_settings(
+                commands::GhosttyAuditInput {
+                    action,
+                    changed_keys,
+                    diagnostics,
+                    applied,
+                    managed_path,
+                },
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "recorded": recorded })
+        }
         "feedback.submit" => {
             let category = parse_string_param(params, "category")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
@@ -1421,16 +1489,23 @@ pub async fn route_method(
 }
 
 async fn append_automation_audit(state: &AppState, event_type: &str, payload: Value) {
-    let current = state.current.lock().await;
-    let Some(ctx) = current.as_ref() else {
-        return;
+    let (db, project_id, redaction_secrets) = {
+        let current = state.current.lock().await;
+        let Some(ctx) = current.as_ref() else {
+            return;
+        };
+        (
+            ctx.db.clone(),
+            ctx.project_id,
+            Arc::clone(&ctx.redaction_secrets),
+        )
     };
-    let safe_payload = commands::redact_payload_for_log(payload);
-    let _ = ctx
-        .db
+    let current_secrets = commands::current_redaction_secrets(&redaction_secrets).await;
+    let safe_payload = commands::redact_payload_for_log_with_secrets(payload, &current_secrets);
+    let _ = db
         .append_event(NewEvent {
             id: Uuid::new_v4().to_string(),
-            project_id: ctx.project_id.to_string(),
+            project_id: project_id.to_string(),
             task_id: None,
             session_id: None,
             trace_id: Uuid::new_v4().to_string(),
@@ -1537,6 +1612,25 @@ mod tests {
         };
         let request = request_with_password(None);
         authorize_request(&request, &settings).expect("same-user mode should pass");
+    }
+
+    #[test]
+    fn validate_control_request_rejects_invalid_id_and_method() {
+        let mut request = request_with_password(None);
+        request.id = "bad id".to_string();
+        let err = validate_control_request(&request).expect_err("spaces should fail");
+        assert!(err.contains("request id"));
+
+        request.id = "req-1".to_string();
+        request.method = "project status".to_string();
+        let err = validate_control_request(&request).expect_err("spaces should fail");
+        assert!(err.contains("request method"));
+    }
+
+    #[test]
+    fn validate_control_request_accepts_safe_values() {
+        let request = request_with_password(None);
+        validate_control_request(&request).expect("safe request should pass");
     }
 
     #[tokio::test]

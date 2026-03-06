@@ -37,8 +37,17 @@ class TerminalSurface {
         NSPasteboard.general.string(forType: .string) ?? ""
     }
 
-    static func clipboardStringForRequest(confirmed: Bool) -> String {
-        _ = confirmed
+    static func decodeSelectionText(
+        text: UnsafePointer<CChar>?,
+        length: Int
+    ) -> String? {
+        guard let text, length > 0 else { return nil }
+        let bytes = UnsafeRawBufferPointer(start: text, count: length)
+        let selection = String(decoding: bytes, as: UTF8.self)
+        return selection.isEmpty ? nil : selection
+    }
+
+    static func clipboardStringForRequest(confirmed _: Bool) -> String {
         return clipboardStringProvider()
     }
 
@@ -50,12 +59,14 @@ class TerminalSurface {
     static var ghosttyApp: ghostty_app_t?
     private static var ghosttyConfigOwner: TerminalConfig?
     private static var isAppInitialized = false
+    private static let surfaceRegistry = NSHashTable<TerminalSurface>.weakObjects()
 
     /// Create the ghostty app singleton. Call once at launch from AppDelegate.
+    @MainActor
     static func initializeGhostty() {
         guard !isAppInitialized else { return }
 
-        let termConfig = TerminalConfig()
+        let termConfig = GhosttyConfigController.shared.runtimeConfigOwner()
         ghosttyConfigOwner = termConfig
         guard let ghosttyConfig = termConfig.config else {
             Log.terminal.error("Failed to load ghostty config")
@@ -112,6 +123,7 @@ class TerminalSurface {
         }
     }
 
+    @MainActor
     static func shutdownGhostty() {
         if let app = ghosttyApp {
             ghostty_app_free(app)
@@ -124,8 +136,6 @@ class TerminalSurface {
     // MARK: - Instance
 
     private var surface: ghostty_surface_t?
-    private let hostView: NSView
-
     var isRendererReady: Bool {
         surface != nil
     }
@@ -141,8 +151,6 @@ class TerminalSurface {
         hostView: NSView,
         launchConfiguration: TerminalSurfaceLaunchConfiguration = .shell()
     ) {
-        self.hostView = hostView
-
         guard let app = TerminalSurface.ghosttyApp else {
             Log.terminal.error("ghostty app not initialized - call initializeGhostty() first")
             Self.emitSmokeDiagnostic("ghostty app was not initialized before surface creation")
@@ -209,6 +217,8 @@ class TerminalSurface {
             Log.terminal.error("ghostty_surface_new() returned nil")
             Self.emitSmokeDiagnostic("ghostty_surface_new returned nil")
             Unmanaged<TerminalSurface>.fromOpaque(selfPtr).release()
+        } else {
+            Self.surfaceRegistry.add(self)
         }
     }
 
@@ -216,6 +226,7 @@ class TerminalSurface {
         if let surface {
             ghostty_surface_free(surface)
         }
+        Self.surfaceRegistry.remove(self)
     }
 
     // MARK: - Rendering
@@ -261,6 +272,23 @@ class TerminalSurface {
     func setOcclusion(_ occluded: Bool) {
         guard let surface else { return }
         ghostty_surface_set_occlusion(surface, occluded)
+    }
+
+    fileprivate func updateConfig(_ config: ghostty_config_t) {
+        guard let surface else { return }
+        ghostty_surface_update_config(surface, config)
+    }
+
+    @MainActor
+    static func applyGhosttyConfig(_ owner: TerminalConfig) {
+        ghosttyConfigOwner = owner
+        guard let config = owner.config else { return }
+        if let ghosttyApp {
+            ghostty_app_update_config(ghosttyApp, config)
+        }
+        for surface in surfaceRegistry.allObjects {
+            surface.updateConfig(config)
+        }
     }
 
     // MARK: - Keyboard Input
@@ -329,9 +357,7 @@ class TerminalSurface {
         var text = ghostty_text_s()
         guard ghostty_surface_read_selection(surface, &text) else { return nil }
         defer { ghostty_surface_free_text(surface, &text) }
-        guard let ptr = text.text else { return nil }
-        let selection = String(cString: ptr)
-        return selection.isEmpty ? nil : selection
+        return Self.decodeSelectionText(text: text.text, length: Int(text.text_len))
     }
 
     func requestClose() {
@@ -379,24 +405,31 @@ class TerminalSurface {
 
     // MARK: - Placeholder (no GhosttyKit)
 
-    private let hostView: NSView
     var onClose: (() -> Void)?
 
     var isRendererReady: Bool { false }
 
     static var isRealRendererAvailable: Bool { false }
 
+    @MainActor
     static func initializeGhostty() {
         Log.terminal.info("GhosttyKit not available - placeholder mode active")
     }
 
+    @MainActor
     static func shutdownGhostty() {}
+
+    @MainActor
+    static func applyGhosttyConfig(_ owner: TerminalConfig) {
+        _ = owner
+    }
 
     init(
         hostView: NSView,
         launchConfiguration: TerminalSurfaceLaunchConfiguration = .shell()
     ) {
-        self.hostView = hostView
+        _ = hostView
+        _ = launchConfiguration
         Log.terminal.info("Placeholder: no ghostty surface created")
     }
 
