@@ -1,3 +1,4 @@
+mod auth_secret;
 pub mod auto_dispatch;
 pub mod command_registry;
 pub mod commands;

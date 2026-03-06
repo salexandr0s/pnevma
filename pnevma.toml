@@ -19,6 +19,12 @@ timeout_minutes = 20
 target = "main"
 naming = "pnevma/{task_id}/{slug}"
 
+[retention]
+enabled = false
+artifact_days = 30
+review_days = 30
+scrollback_days = 14
+
 [rules]
 paths = [".pnevma/rules/*.md"]
 

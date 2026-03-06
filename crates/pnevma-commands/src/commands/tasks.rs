@@ -782,12 +782,17 @@ pub async fn secrets_set_ref(
     input: SecretRefInput,
     state: &AppState,
 ) -> Result<SecretRefView, String> {
-    let (db, project_id) = {
+    let (db, project_id, sessions, redaction_secrets) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
             .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
+        (
+            ctx.db.clone(),
+            ctx.project_id,
+            ctx.sessions.clone(),
+            Arc::clone(&ctx.redaction_secrets),
+        )
     };
     let scope = if input.scope.eq_ignore_ascii_case("global") {
         "global".to_string()
@@ -821,6 +826,11 @@ pub async fn secrets_set_ref(
     db.upsert_secret_ref(&row)
         .await
         .map_err(|e| e.to_string())?;
+    let updated_redaction_secrets = load_redaction_secrets(&db, project_id).await;
+    sessions
+        .set_redaction_secrets(updated_redaction_secrets.clone())
+        .await;
+    *redaction_secrets.write().await = updated_redaction_secrets;
     Ok(SecretRefView {
         id: row.id,
         project_id: row.project_id,
@@ -1274,7 +1284,17 @@ pub async fn dispatch_task(
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<String, String> {
-    let (project_id, db, project_path, config, global_config, pool, adapters, git) = {
+    let (
+        project_id,
+        db,
+        project_path,
+        config,
+        global_config,
+        pool,
+        adapters,
+        git,
+        redaction_secrets,
+    ) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
@@ -1288,6 +1308,7 @@ pub async fn dispatch_task(
             ctx.pool.clone(),
             ctx.adapters.clone(),
             ctx.git.clone(),
+            Arc::clone(&ctx.redaction_secrets),
         )
     };
 
@@ -1429,9 +1450,12 @@ pub async fn dispatch_task(
             .map(|c| c.token_budget)
             .unwrap_or(80_000),
     };
-    let (secret_env, secret_values) = resolve_secret_env(&db, project_id)
+    let (secret_env, keychain_secret_values) = resolve_secret_env(&db, project_id)
         .await
         .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+    let mut secret_values = build_secrets_list();
+    secret_values.extend(keychain_secret_values);
+    let secret_values = normalize_redaction_secrets(&secret_values);
     let compiler = ContextCompiler::new(ContextCompilerConfig {
         mode: ContextCompileMode::V2,
         token_budget,
@@ -1588,30 +1612,23 @@ pub async fn dispatch_task(
         "session_spawned",
         json!({"session_id": handle.id.to_string(), "name": agent_session_row.name, "session": session_row_to_event_payload(&agent_session_row)}),
     );
-
-    adapter
-        .send(
-            &handle,
-            TaskPayload {
-                task_id: task_id_uuid,
-                objective: task.goal.clone(),
-                constraints: task.constraints.clone(),
-                project_rules: rules.clone(),
-                worktree_path: working_dir.clone(),
-                branch_name: task.branch.clone().unwrap_or_default(),
-                acceptance_checks: task
-                    .acceptance_criteria
-                    .iter()
-                    .map(|check| check.description.clone())
-                    .collect(),
-                relevant_file_paths: task.scope.clone(),
-                prior_context_summary: None,
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
     let mut rx = adapter.events(&handle);
+    let payload = TaskPayload {
+        task_id: task_id_uuid,
+        objective: task.goal.clone(),
+        constraints: task.constraints.clone(),
+        project_rules: rules.clone(),
+        worktree_path: working_dir.clone(),
+        branch_name: task.branch.clone().unwrap_or_default(),
+        acceptance_checks: task
+            .acceptance_criteria
+            .iter()
+            .map(|check| check.description.clone())
+            .collect(),
+        relevant_file_paths: task.scope.clone(),
+        prior_context_summary: None,
+    };
+    let permit_holder = Arc::new(std::sync::Mutex::new(Some(permit)));
     let db_for_task = db.clone();
     let app_for_task = Arc::clone(emitter);
     let git_for_task = git.clone();
@@ -1621,49 +1638,54 @@ pub async fn dispatch_task(
     let session_uuid_for_task = handle.id;
     let project_path_for_task = project_path.clone();
     let target_branch_for_task = config.branches.target.clone();
-    let secret_values_for_task = secret_values.clone();
+    let redaction_secrets_for_task = Arc::clone(&redaction_secrets);
+    let permit_holder_for_task = Arc::clone(&permit_holder);
 
-    tokio::spawn(async move {
+    let event_task = tokio::spawn(async move {
         let mut last_summary: Option<String> = None;
         let mut failed = false;
+        let mut output_redactor = StreamRedactor::new(Arc::clone(&redaction_secrets_for_task));
 
         while let Ok(event) = rx.recv().await {
             match event {
                 AgentEvent::OutputChunk(chunk) => {
-                    let safe_chunk = redact_text(&chunk, &secret_values_for_task);
-                    app_for_task.emit(
-                        "session_output",
-                        json!({"session_id": session_id, "chunk": safe_chunk.clone()}),
-                    );
-                    append_event(
-                        &db_for_task,
-                        project_id,
-                        Some(lease_task_id),
-                        None,
-                        "agent",
-                        "AgentOutputChunk",
-                        json!({"chunk": safe_chunk.clone()}),
-                    )
-                    .await;
-                    for attention in parse_osc_attention(&safe_chunk) {
-                        let body = if attention.body.trim().is_empty() {
-                            format!("OSC {} attention sequence received", attention.code)
-                        } else {
-                            attention.body
-                        };
-                        let _ = create_notification_row(
+                    if let Some(safe_chunk) = output_redactor.push_chunk(&chunk).await {
+                        app_for_task.emit(
+                            "session_output",
+                            json!({"session_id": session_id, "chunk": safe_chunk.clone()}),
+                        );
+                        append_event(
                             &db_for_task,
-                            &app_for_task,
                             project_id,
                             Some(lease_task_id),
-                            Some(session_uuid_for_task),
-                            osc_title(&attention.code),
-                            &body,
-                            Some(osc_level(&attention.code)),
-                            "osc",
-                            &secret_values_for_task,
+                            None,
+                            "agent",
+                            "AgentOutputChunk",
+                            json!({"chunk": safe_chunk.clone()}),
                         )
                         .await;
+                        for attention in parse_osc_attention(&safe_chunk) {
+                            let body = if attention.body.trim().is_empty() {
+                                format!("OSC {} attention sequence received", attention.code)
+                            } else {
+                                attention.body
+                            };
+                            let current_secrets =
+                                current_redaction_secrets(&redaction_secrets_for_task).await;
+                            let _ = create_notification_row(
+                                &db_for_task,
+                                &app_for_task,
+                                project_id,
+                                Some(lease_task_id),
+                                Some(session_uuid_for_task),
+                                osc_title(&attention.code),
+                                &body,
+                                Some(osc_level(&attention.code)),
+                                "osc",
+                                &current_secrets,
+                            )
+                            .await;
+                        }
                     }
                 }
                 AgentEvent::ToolUse {
@@ -1671,6 +1693,8 @@ pub async fn dispatch_task(
                     input,
                     output,
                 } => {
+                    let current_secrets =
+                        current_redaction_secrets(&redaction_secrets_for_task).await;
                     append_event(
                         &db_for_task,
                         project_id,
@@ -1680,8 +1704,8 @@ pub async fn dispatch_task(
                         "AgentToolUse",
                         json!({
                             "name": name,
-                            "input": redact_text(&input, &secret_values_for_task),
-                            "output": redact_text(&output, &secret_values_for_task)
+                            "input": redact_text(&input, &current_secrets),
+                            "output": redact_text(&output, &current_secrets)
                         }),
                     )
                     .await;
@@ -1713,17 +1737,63 @@ pub async fn dispatch_task(
                 }
                 AgentEvent::Error(message) => {
                     failed = true;
-                    last_summary = Some(redact_text(&message, &secret_values_for_task));
+                    let current_secrets =
+                        current_redaction_secrets(&redaction_secrets_for_task).await;
+                    last_summary = Some(redact_text(&message, &current_secrets));
                     break;
                 }
                 AgentEvent::Complete { summary } => {
-                    last_summary = Some(redact_text(&summary, &secret_values_for_task));
+                    let current_secrets =
+                        current_redaction_secrets(&redaction_secrets_for_task).await;
+                    last_summary = Some(redact_text(&summary, &current_secrets));
                     break;
                 }
                 AgentEvent::StatusChange(_) => {}
             }
         }
-        drop(permit);
+        if let Some(safe_chunk) = output_redactor.finish().await {
+            app_for_task.emit(
+                "session_output",
+                json!({"session_id": session_id, "chunk": safe_chunk.clone()}),
+            );
+            append_event(
+                &db_for_task,
+                project_id,
+                Some(lease_task_id),
+                None,
+                "agent",
+                "AgentOutputChunk",
+                json!({"chunk": safe_chunk.clone()}),
+            )
+            .await;
+            for attention in parse_osc_attention(&safe_chunk) {
+                let body = if attention.body.trim().is_empty() {
+                    format!("OSC {} attention sequence received", attention.code)
+                } else {
+                    attention.body
+                };
+                let current_secrets = current_redaction_secrets(&redaction_secrets_for_task).await;
+                let _ = create_notification_row(
+                    &db_for_task,
+                    &app_for_task,
+                    project_id,
+                    Some(lease_task_id),
+                    Some(session_uuid_for_task),
+                    osc_title(&attention.code),
+                    &body,
+                    Some(osc_level(&attention.code)),
+                    "osc",
+                    &current_secrets,
+                )
+                .await;
+            }
+        }
+        drop(
+            permit_holder_for_task
+                .lock()
+                .expect("permit lock poisoned")
+                .take(),
+        );
         if let Ok(Some(mut row)) = db_for_task.get_task(&lease_task_id.to_string()).await {
             let prev_status = parse_status(&row.status);
             row.handoff_summary = last_summary.clone();
@@ -1745,6 +1815,8 @@ pub async fn dispatch_task(
                     {
                         Ok((check_run, check_results, all_automated_passed)) => {
                             if all_automated_passed {
+                                let current_secrets =
+                                    current_redaction_secrets(&redaction_secrets_for_task).await;
                                 let cost = db_for_task
                                     .task_cost_total(&lease_task_id.to_string())
                                     .await
@@ -1759,7 +1831,7 @@ pub async fn dispatch_task(
                                     &check_results,
                                     cost,
                                     last_summary.as_deref(),
-                                    &secret_values_for_task,
+                                    &current_secrets,
                                 )
                                 .await
                                 .is_ok()
@@ -1769,6 +1841,8 @@ pub async fn dispatch_task(
                             }
                         }
                         Err(err) => {
+                            let current_secrets =
+                                current_redaction_secrets(&redaction_secrets_for_task).await;
                             append_event(
                                 &db_for_task,
                                 project_id,
@@ -1778,7 +1852,7 @@ pub async fn dispatch_task(
                                 "AcceptanceCheckRunFailed",
                                 json!({
                                     "task_id": lease_task_id,
-                                    "error": redact_text(&err, &secret_values_for_task)
+                                    "error": redact_text(&err, &current_secrets)
                                 }),
                             )
                             .await;
@@ -1867,6 +1941,41 @@ pub async fn dispatch_task(
         )
         .await;
     });
+
+    if let Err(err) = adapter.send(&handle, payload).await {
+        event_task.abort();
+        drop(permit_holder.lock().expect("permit lock poisoned").take());
+
+        let error = err.to_string();
+        let failed_summary = redact_text(&error, &secret_values);
+
+        if let Ok(Some(mut row)) = db.get_task(&task_id_uuid.to_string()).await {
+            row.status = status_to_str(&TaskStatus::Failed).to_string();
+            row.handoff_summary = Some(failed_summary.clone());
+            row.updated_at = Utc::now();
+            let _ = db.update_task(&row).await;
+            emit_enriched_task_event(emitter, &db, &row.id).await;
+        }
+
+        let mut failed_session_row = agent_session_row.clone();
+        failed_session_row.status = "failed".to_string();
+        failed_session_row.last_heartbeat = Utc::now();
+        let _ = db.upsert_session(&failed_session_row).await;
+
+        let _ = cleanup_task_worktree(&db, &git, project_id, task_id_uuid, Some(emitter)).await;
+
+        append_event(
+            &db,
+            project_id,
+            Some(task_id_uuid),
+            Some(handle.id),
+            "agent",
+            "AgentLaunchFailed",
+            json!({"error": failed_summary}),
+        )
+        .await;
+        return Err(error);
+    }
 
     Ok("started".to_string())
 }

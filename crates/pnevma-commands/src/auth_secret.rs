@@ -1,0 +1,236 @@
+use std::path::{Path, PathBuf};
+
+pub(crate) const REMOTE_KEYCHAIN_SERVICE: &str = "com.pnevma.remote-access";
+pub(crate) const REMOTE_KEYCHAIN_ACCOUNT: &str = "shared-password";
+pub(crate) const SOCKET_KEYCHAIN_SERVICE: &str = "com.pnevma.control-plane";
+pub(crate) const SOCKET_KEYCHAIN_ACCOUNT: &str = "shared-password";
+
+#[derive(Debug)]
+enum PasswordFileError {
+    NotFound,
+    Insecure(String),
+    Io(String),
+}
+
+impl std::fmt::Display for PasswordFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "password file not found"),
+            Self::Insecure(msg) | Self::Io(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+pub(crate) fn remote_password_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config/pnevma/remote-password")
+}
+
+pub(crate) fn load_remote_password() -> Result<Option<String>, String> {
+    load_password(
+        "PNEVMA_REMOTE_PASSWORD",
+        REMOTE_KEYCHAIN_SERVICE,
+        REMOTE_KEYCHAIN_ACCOUNT,
+        Some(remote_password_file_path()),
+    )
+}
+
+pub(crate) fn load_socket_password(password_file: Option<&str>) -> Result<Option<String>, String> {
+    load_password(
+        "PNEVMA_SOCKET_PASSWORD",
+        SOCKET_KEYCHAIN_SERVICE,
+        SOCKET_KEYCHAIN_ACCOUNT,
+        password_file.map(PathBuf::from),
+    )
+}
+
+fn load_password(
+    env_var: &str,
+    keychain_service: &str,
+    keychain_account: &str,
+    password_file: Option<PathBuf>,
+) -> Result<Option<String>, String> {
+    if let Some(password) = env_password(env_var) {
+        return Ok(Some(password));
+    }
+
+    if let Some(password) = read_keychain_password(keychain_service, keychain_account)? {
+        return Ok(Some(password));
+    }
+
+    let Some(path) = password_file else {
+        return Ok(None);
+    };
+
+    match read_password_file_secure(&path) {
+        Ok(password) => Ok(Some(password)),
+        Err(PasswordFileError::NotFound) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn env_password(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+}
+
+fn read_keychain_password(service: &str, account: &str) -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::passwords::get_generic_password;
+        const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+        match get_generic_password(service, account) {
+            Ok(value) => {
+                let value = String::from_utf8_lossy(&value).trim().to_string();
+                if value.is_empty() {
+                    return Err(format!("Keychain item {service}/{account} is empty"));
+                }
+                Ok(Some(value))
+            }
+            Err(err) if err.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+            Err(err) => Err(format!(
+                "failed to read Keychain item {service}/{account}: {err}"
+            )),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, account);
+        Ok(None)
+    }
+}
+
+fn read_password_file_secure(path: &Path) -> Result<String, PasswordFileError> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(PasswordFileError::NotFound);
+        }
+        Err(err) => {
+            return Err(PasswordFileError::Io(format!(
+                "failed to stat password file {}: {err}",
+                path.display()
+            )));
+        }
+    };
+
+    if meta.file_type().is_symlink() {
+        return Err(PasswordFileError::Insecure(format!(
+            "password file {} must not be a symlink",
+            path.display()
+        )));
+    }
+
+    if !meta.is_file() {
+        return Err(PasswordFileError::Insecure(format!(
+            "password file {} must be a regular file",
+            path.display()
+        )));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(PasswordFileError::Insecure(format!(
+                "password file {} must not be readable by group or others (current mode {:o})",
+                path.display(),
+                mode
+            )));
+        }
+
+        let owner = meta.uid();
+        let current_uid = unsafe { libc::geteuid() } as u32;
+        if owner != current_uid {
+            return Err(PasswordFileError::Insecure(format!(
+                "password file {} must be owned by uid {}",
+                path.display(),
+                current_uid
+            )));
+        }
+    }
+
+    let value = std::fs::read_to_string(path).map_err(|err| {
+        PasswordFileError::Io(format!(
+            "failed to read password file {}: {err}",
+            path.display()
+        ))
+    })?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(PasswordFileError::Insecure(format!(
+            "password file {} is empty",
+            path.display()
+        )));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[cfg(unix)]
+    fn write_password_file(mode: u32) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("password.txt");
+        std::fs::write(&path, "secret\n").expect("write password");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("set mode");
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_password_file_is_accepted() {
+        let (_dir, path) = write_password_file(0o600);
+        let password = read_password_file_secure(&path).expect("password");
+        assert_eq!(password, "secret");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_readable_password_file_is_rejected() {
+        let (_dir, path) = write_password_file(0o640);
+        let err = read_password_file_secure(&path).expect_err("must reject");
+        assert!(err.to_string().contains("group or others"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_password_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("link.txt");
+        std::fs::write(&target, "secret\n").expect("write target");
+        symlink(&target, &link).expect("symlink");
+        let err = read_password_file_secure(&link).expect_err("must reject symlink");
+        assert!(err.to_string().contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_password_file_returns_not_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err =
+            read_password_file_secure(&dir.path().join("missing.txt")).expect_err("missing file");
+        assert!(matches!(err, PasswordFileError::NotFound));
+    }
+
+    #[test]
+    fn env_password_trims_whitespace() {
+        let key = "PNEVMA_TEST_ENV_PASSWORD";
+        std::env::set_var(key, "  secret  ");
+        let password = env_password(key).expect("env password");
+        std::env::remove_var(key);
+        assert_eq!(password, "secret");
+    }
+}

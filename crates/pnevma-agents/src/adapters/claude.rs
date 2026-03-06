@@ -38,16 +38,11 @@ impl AgentAdapter for ClaudeCodeAdapter {
         self.channels
             .write()
             .expect("channel lock poisoned")
-            .insert(id, tx.clone());
+            .insert(id, tx);
         self.configs
             .write()
             .expect("config lock poisoned")
             .insert(id, config.clone());
-        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Running));
-        let _ = tx.send(AgentEvent::OutputChunk(format!(
-            "[claude-code] spawned in {}",
-            config.working_dir
-        )));
 
         Ok(AgentHandle {
             id,
@@ -161,180 +156,194 @@ impl AgentAdapter for ClaudeCodeAdapter {
             .ok_or_else(|| AgentError::Spawn("missing stderr".to_string()))?;
 
         let handle_id = handle.id;
+        let task_id = input.task_id;
         let costs = self.costs.clone();
+        let processes = self.processes.clone();
+        let working_dir = cfg.working_dir.clone();
 
-        // Parse structured stream-json output from stdout.
-        let tx_out = tx.clone();
-        let use_stream_json = cfg.output_format == "stream-json";
-        let out_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            let mut total_tokens_in: u64 = 0;
-            let mut total_tokens_out: u64 = 0;
-            let mut total_cost: f64 = 0.0;
-            let mut model_name: Option<String> = None;
+        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Running));
+        let _ = tx.send(AgentEvent::OutputChunk(format!(
+            "[claude-code] spawned in {working_dir}\n"
+        )));
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
+        tokio::spawn(async move {
+            // Parse structured stream-json output from stdout.
+            let tx_out = tx.clone();
+            let use_stream_json = cfg.output_format == "stream-json";
+            let out_task = tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                let mut total_tokens_in: u64 = 0;
+                let mut total_tokens_out: u64 = 0;
+                let mut total_cost: f64 = 0.0;
+                let mut model_name: Option<String> = None;
 
-                if !use_stream_json {
-                    let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
-                    continue;
-                }
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
 
-                let event: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        // Not JSON — emit as raw output.
+                    if !use_stream_json {
                         let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
                         continue;
                     }
-                };
 
-                match event.get("type").and_then(|v| v.as_str()) {
-                    Some("assistant") => {
-                        if let Some(message) = event.get("message") {
-                            // Capture model name.
-                            if model_name.is_none() {
-                                model_name = message
-                                    .get("model")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                            }
+                    let event: serde_json::Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                            continue;
+                        }
+                    };
 
-                            // Extract content blocks: text and tool_use.
-                            if let Some(content) = message.get("content").and_then(|v| v.as_array())
-                            {
-                                for block in content {
-                                    match block.get("type").and_then(|v| v.as_str()) {
-                                        Some("text") => {
-                                            if let Some(text) =
-                                                block.get("text").and_then(|v| v.as_str())
-                                            {
-                                                let _ = tx_out.send(AgentEvent::OutputChunk(
-                                                    format!("{text}\n"),
-                                                ));
+                    match event.get("type").and_then(|v| v.as_str()) {
+                        Some("assistant") => {
+                            if let Some(message) = event.get("message") {
+                                if model_name.is_none() {
+                                    model_name = message
+                                        .get("model")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                }
+
+                                if let Some(content) =
+                                    message.get("content").and_then(|v| v.as_array())
+                                {
+                                    for block in content {
+                                        match block.get("type").and_then(|v| v.as_str()) {
+                                            Some("text") => {
+                                                if let Some(text) =
+                                                    block.get("text").and_then(|v| v.as_str())
+                                                {
+                                                    let _ = tx_out.send(AgentEvent::OutputChunk(
+                                                        format!("{text}\n"),
+                                                    ));
+                                                }
                                             }
+                                            Some("tool_use") => {
+                                                let name = block
+                                                    .get("name")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("unknown");
+                                                let tool_input = block
+                                                    .get("input")
+                                                    .map(|v| v.to_string())
+                                                    .unwrap_or_default();
+                                                let _ = tx_out.send(AgentEvent::ToolUse {
+                                                    name: name.to_string(),
+                                                    input: tool_input,
+                                                    output: String::new(),
+                                                });
+                                            }
+                                            _ => {}
                                         }
-                                        Some("tool_use") => {
-                                            let name = block
-                                                .get("name")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("unknown");
-                                            let tool_input = block
-                                                .get("input")
-                                                .map(|v| v.to_string())
-                                                .unwrap_or_default();
-                                            let _ = tx_out.send(AgentEvent::ToolUse {
-                                                name: name.to_string(),
-                                                input: tool_input,
-                                                output: String::new(),
-                                            });
-                                        }
-                                        _ => {}
                                     }
                                 }
-                            }
 
-                            // Accumulate token usage from message.usage.
-                            if let Some(usage) = message.get("usage") {
-                                let tin = usage
-                                    .get("input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                                let tout = usage
-                                    .get("output_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                                total_tokens_in += tin;
-                                total_tokens_out += tout;
+                                if let Some(usage) = message.get("usage") {
+                                    let tin = usage
+                                        .get("input_tokens")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    let tout = usage
+                                        .get("output_tokens")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    total_tokens_in += tin;
+                                    total_tokens_out += tout;
+                                }
                             }
                         }
-                    }
-                    Some("result") => {
-                        // Final result event — extract cost and summary.
-                        total_cost = event
-                            .get("total_cost_usd")
-                            .or_else(|| event.get("cost_usd"))
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
+                        Some("result") => {
+                            total_cost = event
+                                .get("total_cost_usd")
+                                .or_else(|| event.get("cost_usd"))
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
 
-                        let _ = tx_out.send(AgentEvent::UsageUpdate {
-                            tokens_in: total_tokens_in,
-                            tokens_out: total_tokens_out,
-                            cost_usd: total_cost,
-                        });
+                            let _ = tx_out.send(AgentEvent::UsageUpdate {
+                                tokens_in: total_tokens_in,
+                                tokens_out: total_tokens_out,
+                                cost_usd: total_cost,
+                            });
 
-                        if let Some(result) = event.get("result").and_then(|v| v.as_str()) {
-                            let _ = tx_out.send(AgentEvent::OutputChunk(format!(
-                                "\n--- Result ---\n{result}\n"
-                            )));
+                            if let Some(result) = event.get("result").and_then(|v| v.as_str()) {
+                                let _ = tx_out.send(AgentEvent::OutputChunk(format!(
+                                    "\n--- Result ---\n{result}\n"
+                                )));
+                            }
                         }
-                    }
-                    Some("system") => {
-                        let _ = tx_out.send(AgentEvent::OutputChunk(
-                            "[claude-code] session initialized\n".to_string(),
-                        ));
-                    }
-                    _ => {
-                        // Unknown event type — emit raw for debugging.
-                        let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                        Some("system") => {
+                            let _ = tx_out.send(AgentEvent::OutputChunk(
+                                "[claude-code] session initialized\n".to_string(),
+                            ));
+                        }
+                        _ => {
+                            let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                        }
                     }
                 }
+
+                (total_tokens_in, total_tokens_out, total_cost, model_name)
+            });
+
+            let tx_err = tx.clone();
+            let err_task = tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let _ = tx_err.send(AgentEvent::OutputChunk(format!("[stderr] {line}\n")));
+                }
+            });
+
+            let status = match child.wait().await {
+                Ok(status) => status,
+                Err(err) => {
+                    let _ = tx.send(AgentEvent::Error(err.to_string()));
+                    let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
+                    processes
+                        .write()
+                        .expect("process lock poisoned")
+                        .remove(&handle_id);
+                    return;
+                }
+            };
+
+            processes
+                .write()
+                .expect("process lock poisoned")
+                .remove(&handle_id);
+            let out_result = out_task.await;
+            let _ = err_task.await;
+
+            if let Ok((tokens_in, tokens_out, cost_usd, model_name)) = out_result {
+                costs.write().expect("cost lock poisoned").insert(
+                    handle_id,
+                    CostRecord {
+                        provider: "claude-code".to_string(),
+                        model: model_name,
+                        tokens_in,
+                        tokens_out,
+                        estimated_cost_usd: cost_usd,
+                        timestamp: Utc::now(),
+                        task_id,
+                        session_id: handle_id,
+                    },
+                );
             }
 
-            (total_tokens_in, total_tokens_out, total_cost, model_name)
-        });
-
-        // Stream stderr as output chunks (warnings, progress info).
-        let tx_err = tx.clone();
-        let err_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let _ = tx_err.send(AgentEvent::OutputChunk(format!("[stderr] {line}\n")));
+            if !status.success() {
+                let _ = tx.send(AgentEvent::Error(format!(
+                    "claude exited with status {:?}",
+                    status.code()
+                )));
+                let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
+                return;
             }
+
+            let _ = tx.send(AgentEvent::Complete {
+                summary: "Claude run completed".to_string(),
+            });
+            let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
         });
-
-        let status = child.wait().await.map_err(AgentError::Io)?;
-        // Remove PID from tracking — process has exited.
-        self.processes
-            .write()
-            .expect("process lock poisoned")
-            .remove(&handle_id);
-        let out_result = out_task.await;
-        let _ = err_task.await;
-
-        // Store cost record from parsed output.
-        if let Ok((tokens_in, tokens_out, cost_usd, model_name)) = out_result {
-            costs.write().expect("cost lock poisoned").insert(
-                handle_id,
-                CostRecord {
-                    provider: "claude-code".to_string(),
-                    model: model_name,
-                    tokens_in,
-                    tokens_out,
-                    estimated_cost_usd: cost_usd,
-                    timestamp: Utc::now(),
-                    task_id: input.task_id,
-                    session_id: handle_id,
-                },
-            );
-        }
-
-        if !status.success() {
-            let _ = tx.send(AgentEvent::Error(format!(
-                "claude exited with status {:?}",
-                status.code()
-            )));
-            let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
-            return Ok(());
-        }
-
-        let _ = tx.send(AgentEvent::Complete {
-            summary: "Claude run completed".to_string(),
-        });
-        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
         Ok(())
     }
 

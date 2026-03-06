@@ -84,6 +84,14 @@ fn inject_id(params: &mut Value, id: String) {
     }
 }
 
+fn inject_param(params: &mut Value, key: &str, value: String) {
+    if let Some(obj) = params.as_object_mut() {
+        obj.insert(key.to_string(), Value::String(value));
+    } else {
+        *params = serde_json::json!({ key: value });
+    }
+}
+
 // --- tasks ---
 
 pub async fn task_list(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
@@ -102,7 +110,7 @@ pub async fn task_dispatch(
     Path(id): Path<String>,
     Json(mut params): Json<Value>,
 ) -> impl IntoResponse {
-    inject_id(&mut params, id);
+    inject_param(&mut params, "task_id", id);
     call(&r, "task.dispatch", params).await
 }
 
@@ -206,6 +214,30 @@ pub async fn rpc(
 #[cfg(test)]
 mod tests {
     use super::super::rpc_allowlist;
+    use super::task_dispatch;
+    use crate::CommandRouter;
+    use async_trait::async_trait;
+    use axum::{
+        extract::{Path, State},
+        Json,
+    };
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingRouter {
+        method: Mutex<Option<String>>,
+        params: Mutex<Option<Value>>,
+    }
+
+    #[async_trait]
+    impl CommandRouter for RecordingRouter {
+        async fn route(&self, method: &str, params: &Value) -> Result<Value, String> {
+            *self.method.lock().expect("method mutex") = Some(method.to_string());
+            *self.params.lock().expect("params mutex") = Some(params.clone());
+            Ok(json!({"ok": true}))
+        }
+    }
 
     #[test]
     fn rpc_allowlist_includes_expected_methods() {
@@ -220,5 +252,30 @@ mod tests {
         assert!(!rpc_allowlist::is_allowed("trust_workspace"));
         assert!(!rpc_allowlist::is_allowed("ssh.connect"));
         assert!(!rpc_allowlist::is_allowed("checkpoint.restore"));
+    }
+
+    #[tokio::test]
+    async fn task_dispatch_injects_task_id_without_dropping_existing_fields() {
+        let recorder = Arc::new(RecordingRouter::default());
+        let router: Arc<dyn CommandRouter> = recorder.clone();
+
+        let _ = task_dispatch(
+            State(router),
+            Path("task-123".to_string()),
+            Json(json!({ "priority": "high" })),
+        )
+        .await;
+
+        assert_eq!(
+            recorder.method.lock().expect("method mutex").as_deref(),
+            Some("task.dispatch")
+        );
+        assert_eq!(
+            recorder.params.lock().expect("params mutex").clone(),
+            Some(json!({
+                "priority": "high",
+                "task_id": "task-123"
+            }))
+        );
     }
 }

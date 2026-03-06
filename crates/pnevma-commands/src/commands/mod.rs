@@ -48,6 +48,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::process::Command as TokioCommand;
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
@@ -309,6 +310,49 @@ pub struct ProjectStatusView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectOpenResponse {
+    pub project_id: String,
+    pub status: ProjectStatusView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionNewResponse {
+    pub session_id: String,
+    pub binding: SessionBindingView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSummaryView {
+    pub project_id: String,
+    pub git_branch: Option<String>,
+    pub active_tasks: usize,
+    pub active_agents: usize,
+    pub cost_today: f64,
+    pub unread_notifications: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDispatchResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OkResponse {
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRetentionCleanupResponse {
+    pub dry_run: bool,
+    pub artifacts_pruned: usize,
+    pub feedback_artifacts_cleared: usize,
+    pub review_packs_pruned: usize,
+    pub scrollback_sessions_pruned: usize,
+    pub telemetry_exports_pruned: usize,
+    pub files_deleted: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEventView {
     pub timestamp: DateTime<Utc>,
     pub kind: String,
@@ -322,6 +366,22 @@ pub struct RecoveryOptionView {
     pub label: String,
     pub description: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEnvVarView {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionBindingView {
+    pub session_id: String,
+    pub mode: String,
+    pub cwd: String,
+    pub env: Vec<SessionEnvVarView>,
+    pub wait_after_command: bool,
+    pub recovery_options: Vec<RecoveryOptionView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1636,6 +1696,21 @@ fn optional_arg(args: &HashMap<String, String>, key: &str) -> Option<String> {
     args.get(key).cloned().filter(|v| !v.trim().is_empty())
 }
 
+fn json_value_from_arg(raw: &str) -> serde_json::Value {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("true") {
+        serde_json::Value::Bool(true)
+    } else if trimmed.eq_ignore_ascii_case("false") {
+        serde_json::Value::Bool(false)
+    } else if let Ok(value) = trimmed.parse::<i64>() {
+        json!(value)
+    } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        value
+    } else {
+        json!(raw)
+    }
+}
+
 fn redaction_authorization_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -1654,12 +1729,137 @@ fn redaction_key_value_regex() -> &'static Regex {
     })
 }
 
+fn redaction_aws_key_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"AKIA[0-9A-Z]{16}").expect("AWS key redaction regex must compile")
+    })
+}
+
+fn redaction_github_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{36,255}")
+            .expect("GitHub token redaction regex must compile")
+    })
+}
+
+fn redaction_slack_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]{10,}")
+            .expect("Slack token redaction regex must compile")
+    })
+}
+
+fn redaction_pem_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
+            .expect("PEM redaction regex must compile")
+    })
+}
+
+fn redaction_connection_string_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"://[^:]+:([^@]+)@").expect("connection string redaction regex must compile")
+    })
+}
+
+fn redaction_partial_authorization_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)authorization\s*:\s*(?:(?:b|be|bea|bear|beare|bearer)(?:\s+[^\s]*)?)?$")
+            .expect("partial authorization redaction regex must compile")
+    })
+}
+
+fn redaction_partial_key_value_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*|'[^']*|[^\s,;]*)$"#,
+        )
+        .expect("partial key-value redaction regex must compile")
+    })
+}
+
+fn redaction_partial_aws_key_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"AKIA[0-9A-Z]{0,15}$").expect("partial AWS key redaction regex must compile")
+    })
+}
+
+fn redaction_partial_github_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{0,255}$")
+            .expect("partial GitHub token redaction regex must compile")
+    })
+}
+
+fn redaction_partial_slack_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]*$")
+            .expect("partial Slack token redaction regex must compile")
+    })
+}
+
+fn redaction_partial_connection_string_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^:@\s]+:[^@\s]*$")
+            .expect("partial connection string redaction regex must compile")
+    })
+}
+
+fn is_sensitive_json_key(key: &str) -> bool {
+    let normalized = key.trim().replace('-', "_").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "password"
+            | "passphrase"
+            | "token"
+            | "access_token"
+            | "refresh_token"
+            | "bearer_token"
+            | "secret"
+            | "client_secret"
+            | "secret_key"
+            | "private_key"
+            | "api_key"
+            | "apikey"
+            | "authorization"
+    ) || normalized.ends_with("_token")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_password")
+        || normalized.ends_with("_api_key")
+}
+
 fn redact_patterns(input: &str) -> String {
-    let first = redaction_authorization_regex()
+    let mut result = redaction_authorization_regex()
         .replace_all(input, "$1[REDACTED]")
         .to_string();
-    redaction_key_value_regex()
-        .replace_all(&first, "$1=[REDACTED]")
+    result = redaction_key_value_regex()
+        .replace_all(&result, "$1=[REDACTED]")
+        .to_string();
+    result = redaction_aws_key_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_github_token_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_slack_token_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    result = redaction_pem_regex()
+        .replace_all(&result, "[REDACTED]")
+        .to_string();
+    redaction_connection_string_regex()
+        .replace_all(&result, "://[REDACTED]@")
         .to_string()
 }
 
@@ -1674,6 +1874,170 @@ fn redact_text(input: &str, secrets: &[String]) -> String {
     redacted
 }
 
+pub(crate) fn normalize_redaction_secrets(secrets: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .filter_map(|secret| {
+            if seen.insert(secret.clone()) {
+                Some(secret.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    normalized
+}
+
+const STREAM_REDACTION_TAIL_BYTES: usize = 256;
+
+fn minimum_partial_match_bytes(literal: &str) -> usize {
+    if literal.len() <= 4 {
+        2
+    } else {
+        3
+    }
+}
+
+fn partial_literal_start(
+    input: &str,
+    literal: &str,
+    retain_full_match: bool,
+    min_match_bytes: usize,
+) -> Option<usize> {
+    if input.is_empty() || literal.is_empty() {
+        return None;
+    }
+
+    let mut retain_start = None;
+    for (idx, _) in literal.char_indices().skip(1) {
+        if idx < min_match_bytes {
+            continue;
+        }
+        if input.ends_with(&literal[..idx]) {
+            retain_start = Some(input.len() - idx);
+        }
+    }
+
+    if retain_full_match && literal.len() >= min_match_bytes && input.ends_with(literal) {
+        return Some(input.len() - literal.len());
+    }
+
+    retain_start
+}
+
+fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
+    const PEM_PREFIX_MARKERS: &[&str] = &[
+        "-----BEGIN ",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+        "-----BEGIN DSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+    ];
+
+    let mut retain_start = None;
+
+    for marker in PEM_PREFIX_MARKERS {
+        let candidate =
+            partial_literal_start(input, marker, false, minimum_partial_match_bytes(marker));
+        if let Some(start) = candidate {
+            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
+        }
+    }
+
+    for secret in secrets {
+        if let Some(start) =
+            partial_literal_start(input, secret, false, minimum_partial_match_bytes(secret))
+        {
+            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
+        }
+    }
+
+    for regex in [
+        redaction_partial_authorization_regex(),
+        redaction_partial_key_value_regex(),
+        redaction_partial_aws_key_regex(),
+        redaction_partial_github_token_regex(),
+        redaction_partial_slack_token_regex(),
+        redaction_partial_connection_string_regex(),
+    ] {
+        if let Some(found) = regex.find(input) {
+            retain_start = Some(
+                retain_start.map_or(found.start(), |current: usize| current.min(found.start())),
+            );
+        }
+    }
+
+    retain_start
+}
+
+fn drain_to_retained_tail(input: &str, retain_bytes: usize) -> usize {
+    if input.len() <= retain_bytes {
+        return input.len();
+    }
+
+    let mut split_at = input.len() - retain_bytes;
+    while split_at > 0 && !input.is_char_boundary(split_at) {
+        split_at -= 1;
+    }
+    split_at
+}
+
+pub(crate) async fn current_redaction_secrets(secrets: &Arc<RwLock<Vec<String>>>) -> Vec<String> {
+    secrets.read().await.clone()
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StreamRedactor {
+    pending: String,
+    secrets: Arc<RwLock<Vec<String>>>,
+}
+
+impl StreamRedactor {
+    pub(crate) fn new(secrets: Arc<RwLock<Vec<String>>>) -> Self {
+        Self {
+            pending: String::new(),
+            secrets,
+        }
+    }
+
+    pub(crate) async fn push_chunk(&mut self, chunk: &str) -> Option<String> {
+        self.pending.push_str(chunk);
+        self.drain(false).await
+    }
+
+    pub(crate) async fn finish(&mut self) -> Option<String> {
+        self.drain(true).await
+    }
+
+    async fn drain(&mut self, flush_all: bool) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+
+        let secrets = current_redaction_secrets(&self.secrets).await;
+        let drain_to = if flush_all {
+            self.pending.len()
+        } else {
+            let tail_boundary = drain_to_retained_tail(&self.pending, STREAM_REDACTION_TAIL_BYTES);
+            partial_redaction_start(&self.pending, &secrets).map_or(tail_boundary, |retain_start| {
+                tail_boundary.min(retain_start)
+            })
+        };
+
+        if drain_to == 0 {
+            return None;
+        }
+
+        let chunk = self.pending[..drain_to].to_string();
+        self.pending.replace_range(..drain_to, "");
+        Some(redact_text(&chunk, &secrets))
+    }
+}
+
 fn redact_json_value(value: serde_json::Value, secrets: &[String]) -> serde_json::Value {
     match value {
         serde_json::Value::String(text) => serde_json::Value::String(redact_text(&text, secrets)),
@@ -1686,7 +2050,11 @@ fn redact_json_value(value: serde_json::Value, secrets: &[String]) -> serde_json
         serde_json::Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (key, value) in map {
-                out.insert(key, redact_json_value(value, secrets));
+                if is_sensitive_json_key(&key) {
+                    out.insert(key, serde_json::Value::String("[REDACTED]".to_string()));
+                } else {
+                    out.insert(key, redact_json_value(value, secrets));
+                }
             }
             serde_json::Value::Object(out)
         }
@@ -2678,7 +3046,7 @@ pub(crate) fn build_secrets_list() -> Vec<String> {
         "GITHUB_TOKEN",
         "PNEVMA_SECRET",
     ];
-    SECRET_ENV_VARS
+    let secrets = SECRET_ENV_VARS
         .iter()
         .filter_map(|var| {
             let val = std::env::var(var).unwrap_or_default();
@@ -2688,7 +3056,65 @@ pub(crate) fn build_secrets_list() -> Vec<String> {
                 Some(val)
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    normalize_redaction_secrets(&secrets)
+}
+
+pub(crate) async fn load_redaction_secrets(db: &Db, project_id: Uuid) -> Vec<String> {
+    let mut secrets = build_secrets_list();
+    match resolve_secret_env(db, project_id).await {
+        Ok((_, secret_values)) => secrets.extend(secret_values),
+        Err(err) => tracing::warn!(
+            project_id = %project_id,
+            "failed to load keychain-backed redaction secrets: {err}"
+        ),
+    }
+    normalize_redaction_secrets(&secrets)
+}
+
+async fn emit_session_output_chunk(
+    emitter: &Arc<dyn EventEmitter>,
+    db: &Db,
+    project_id: Uuid,
+    session_id: Uuid,
+    safe_chunk: String,
+    secrets: &Arc<RwLock<Vec<String>>>,
+) {
+    emitter.emit(
+        "session_output",
+        json!({"session_id": session_id, "chunk": safe_chunk.clone()}),
+    );
+    append_event(
+        db,
+        project_id,
+        None,
+        Some(session_id),
+        "session",
+        "SessionOutputChunk",
+        json!({"chunk": safe_chunk.clone()}),
+    )
+    .await;
+    for attention in parse_osc_attention(&safe_chunk) {
+        let body = if attention.body.trim().is_empty() {
+            format!("OSC {} attention sequence received", attention.code)
+        } else {
+            attention.body
+        };
+        let current_secrets = current_redaction_secrets(secrets).await;
+        let _ = create_notification_row(
+            db,
+            emitter,
+            project_id,
+            None,
+            Some(session_id),
+            osc_title(&attention.code),
+            &body,
+            Some(osc_level(&attention.code)),
+            "osc",
+            &current_secrets,
+        )
+        .await;
+    }
 }
 
 fn spawn_session_bridge(
@@ -2696,10 +3122,11 @@ fn spawn_session_bridge(
     db: Db,
     sessions: SessionSupervisor,
     project_id: Uuid,
-    secrets: Vec<String>,
-) {
+    secrets: Arc<RwLock<Vec<String>>>,
+) -> tokio::task::JoinHandle<()> {
     let mut rx = sessions.subscribe();
     tokio::spawn(async move {
+        let mut output_redactors: HashMap<Uuid, StreamRedactor> = HashMap::new();
         while let Ok(event) = rx.recv().await {
             match event {
                 SessionEvent::Spawned(meta) => {
@@ -2721,38 +3148,12 @@ fn spawn_session_bridge(
                     .await;
                 }
                 SessionEvent::Output { session_id, chunk } => {
-                    let safe_chunk = redact_text(&chunk, &secrets);
-                    emitter.emit(
-                        "session_output",
-                        json!({"session_id": session_id, "chunk": safe_chunk.clone()}),
-                    );
-                    append_event(
-                        &db,
-                        project_id,
-                        None,
-                        Some(session_id),
-                        "session",
-                        "SessionOutputChunk",
-                        json!({"chunk": safe_chunk.clone()}),
-                    )
-                    .await;
-                    for attention in parse_osc_attention(&safe_chunk) {
-                        let body = if attention.body.trim().is_empty() {
-                            format!("OSC {} attention sequence received", attention.code)
-                        } else {
-                            attention.body
-                        };
-                        let _ = create_notification_row(
-                            &db,
-                            &emitter,
-                            project_id,
-                            None,
-                            Some(session_id),
-                            osc_title(&attention.code),
-                            &body,
-                            Some(osc_level(&attention.code)),
-                            "osc",
-                            &secrets,
+                    let redactor = output_redactors
+                        .entry(session_id)
+                        .or_insert_with(|| StreamRedactor::new(Arc::clone(&secrets)));
+                    if let Some(safe_chunk) = redactor.push_chunk(&chunk).await {
+                        emit_session_output_chunk(
+                            &emitter, &db, project_id, session_id, safe_chunk, &secrets,
                         )
                         .await;
                     }
@@ -2784,6 +3185,15 @@ fn spawn_session_bridge(
                     if let Some(s) = session_payload {
                         payload["session"] = s;
                     }
+                    if let Some(redactor) = output_redactors.get_mut(&session_id) {
+                        if let Some(safe_chunk) = redactor.finish().await {
+                            emit_session_output_chunk(
+                                &emitter, &db, project_id, session_id, safe_chunk, &secrets,
+                            )
+                            .await;
+                        }
+                    }
+                    output_redactors.remove(&session_id);
                     emitter.emit("session_exited", payload);
                     append_event(
                         &db,
@@ -2798,7 +3208,7 @@ fn spawn_session_bridge(
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -2862,6 +3272,73 @@ mod redaction_tests {
         assert_eq!(output, input);
     }
 
+    #[tokio::test]
+    async fn stream_redactor_redacts_secret_split_across_chunks() {
+        let secrets = Arc::new(RwLock::new(vec!["supersecret123".to_string()]));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        let first = redactor
+            .push_chunk("prefix super")
+            .await
+            .expect("safe prefix should flush");
+        assert_eq!(first, "prefix ");
+
+        let second = redactor
+            .push_chunk("secret123 suffix")
+            .await
+            .expect("completed secret should flush");
+        assert_eq!(second, "[REDACTED] suffix");
+    }
+
+    #[tokio::test]
+    async fn stream_redactor_redacts_pattern_split_across_chunks() {
+        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        assert!(
+            redactor.push_chunk("Authorization: Bea").await.is_none(),
+            "partial auth prefix should be retained"
+        );
+
+        let output = redactor
+            .push_chunk("rer abc123\n")
+            .await
+            .expect("completed auth header should flush");
+        assert_eq!(output, "Authorization: Bearer [REDACTED]\n");
+    }
+
+    #[tokio::test]
+    async fn stream_redactor_flushes_safe_marker_words_immediately() {
+        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        let output = redactor
+            .push_chunk("enter token\n")
+            .await
+            .expect("safe text should flush immediately");
+        assert_eq!(output, "enter token\n");
+    }
+
+    #[tokio::test]
+    async fn stream_redactor_uses_live_secret_updates() {
+        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let mut redactor = StreamRedactor::new(Arc::clone(&secrets));
+
+        let first = redactor
+            .push_chunk("safe prefix\n")
+            .await
+            .expect("safe text should flush");
+        assert_eq!(first, "safe prefix\n");
+
+        *secrets.write().await = vec!["rotated-secret".to_string()];
+
+        let second = redactor
+            .push_chunk("token=rotated-secret\n")
+            .await
+            .expect("updated secret should be redacted");
+        assert_eq!(second, "token=[REDACTED]\n");
+    }
+
     // ── redact_patterns ───────────────────────────────────────────────────────
 
     #[test]
@@ -2896,6 +3373,13 @@ mod redaction_tests {
             !output.contains("hunter2"),
             "password value must be redacted; got: {output}"
         );
+    }
+
+    #[test]
+    fn github_token_pattern_is_redacted() {
+        let input = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123456789";
+        let output = redact_patterns(input);
+        assert!(!output.contains("ghp_"), "github token must be redacted");
     }
 
     #[test]
@@ -2973,5 +3457,31 @@ mod redaction_tests {
         let out = redact_json_value(val, std::slice::from_ref(&secret));
         let out_str = out.to_string();
         assert!(!out_str.contains(&secret));
+    }
+
+    #[test]
+    fn json_sensitive_key_is_redacted_without_known_secret() {
+        let val = serde_json::json!({
+            "password": "hunter2",
+            "token": "abc123",
+            "safe": "hello"
+        });
+        let out = redact_json_value(val, &[]);
+        assert_eq!(out["password"], "[REDACTED]");
+        assert_eq!(out["token"], "[REDACTED]");
+        assert_eq!(out["safe"], "hello");
+    }
+
+    #[test]
+    fn json_nested_sensitive_key_is_redacted() {
+        let val = serde_json::json!({
+            "auth": {
+                "Authorization": "Bearer live-token",
+                "refresh_token": "refresh-me"
+            }
+        });
+        let out = redact_json_value(val, &[]);
+        assert_eq!(out["auth"]["Authorization"], "[REDACTED]");
+        assert_eq!(out["auth"]["refresh_token"], "[REDACTED]");
     }
 }

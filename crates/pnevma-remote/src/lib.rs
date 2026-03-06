@@ -11,13 +11,19 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tracing::info;
 
 pub use auth::TokenStore;
 pub use config::RemoteAccessConfig;
 pub use error::RemoteError;
+
+#[derive(Debug, Clone)]
+pub struct RemoteEventEnvelope {
+    pub event: String,
+    pub payload: Value,
+}
 
 /// Trait that abstracts routing commands to the application control plane.
 /// The `pnevma-app` crate implements this to bridge `route_method()`.
@@ -53,6 +59,7 @@ impl RemoteServerHandle {
 pub async fn start_remote_server(
     config: RemoteAccessConfig,
     command_router: Arc<dyn CommandRouter>,
+    remote_events: broadcast::Sender<RemoteEventEnvelope>,
     password: &str,
     frontend_dir: Option<PathBuf>,
 ) -> Result<RemoteServerHandle, RemoteError> {
@@ -62,7 +69,14 @@ pub async fn start_remote_server(
     ));
     token_store.spawn_cleanup();
 
-    let app = server::build_router(&config, command_router, token_store, frontend_dir).await;
+    let app = server::build_router(
+        &config,
+        command_router,
+        remote_events,
+        token_store,
+        frontend_dir,
+    )
+    .await;
 
     // Determine bind address — Tailscale is required; no insecure fallback.
     let ts_ip = match tailscale::get_tailscale_self_ip().await {

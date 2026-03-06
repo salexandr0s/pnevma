@@ -36,16 +36,11 @@ impl AgentAdapter for CodexAdapter {
         self.channels
             .write()
             .expect("channel lock poisoned")
-            .insert(id, tx.clone());
+            .insert(id, tx);
         self.configs
             .write()
             .expect("config lock poisoned")
             .insert(id, config.clone());
-        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Running));
-        let _ = tx.send(AgentEvent::OutputChunk(format!(
-            "[codex] spawned in {}",
-            config.working_dir
-        )));
 
         Ok(AgentHandle {
             id,
@@ -164,104 +159,124 @@ impl AgentAdapter for CodexAdapter {
             .ok_or_else(|| AgentError::Spawn("missing stderr".to_string()))?;
 
         let handle_id = handle.id;
+        let task_id = input.task_id;
         let costs = self.costs.clone();
+        let processes = self.processes.clone();
+        let working_dir = cfg.working_dir.clone();
 
-        let tx_out = tx.clone();
-        let usage_re_out = usage_re.clone();
-        let cost_re_out = cost_re.clone();
-        let out_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            let mut last_tokens_in: u64 = 0;
-            let mut last_cost: f64 = 0.0;
-            while let Ok(Some(line)) = lines.next_line().await {
-                let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
-                if let Some(cap) = usage_re_out.captures(&line) {
-                    let tokens_in = cap
-                        .get(2)
-                        .and_then(|m| m.as_str().parse::<u64>().ok())
-                        .unwrap_or(0);
-                    let cost = cost_re_out
-                        .captures(&line)
-                        .and_then(|m| m.get(2))
-                        .and_then(|m| m.as_str().parse::<f64>().ok())
-                        .unwrap_or(0.0);
-                    last_tokens_in = tokens_in;
-                    last_cost = cost;
-                    let _ = tx_out.send(AgentEvent::UsageUpdate {
+        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Running));
+        let _ = tx.send(AgentEvent::OutputChunk(format!(
+            "[codex] spawned in {working_dir}\n"
+        )));
+
+        tokio::spawn(async move {
+            let tx_out = tx.clone();
+            let usage_re_out = usage_re.clone();
+            let cost_re_out = cost_re.clone();
+            let out_task = tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                let mut last_tokens_in: u64 = 0;
+                let mut last_cost: f64 = 0.0;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                    if let Some(cap) = usage_re_out.captures(&line) {
+                        let tokens_in = cap
+                            .get(2)
+                            .and_then(|m| m.as_str().parse::<u64>().ok())
+                            .unwrap_or(0);
+                        let cost = cost_re_out
+                            .captures(&line)
+                            .and_then(|m| m.get(2))
+                            .and_then(|m| m.as_str().parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                        last_tokens_in = tokens_in;
+                        last_cost = cost;
+                        let _ = tx_out.send(AgentEvent::UsageUpdate {
+                            tokens_in,
+                            tokens_out: 0,
+                            cost_usd: cost,
+                        });
+                    }
+                }
+                (last_tokens_in, last_cost)
+            });
+
+            let tx_err = tx.clone();
+            let err_task = tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let _ = tx_err.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                    if let Some(cap) = usage_re.captures(&line) {
+                        let tokens_in = cap
+                            .get(2)
+                            .and_then(|m| m.as_str().parse::<u64>().ok())
+                            .unwrap_or(0);
+                        let cost = cost_re
+                            .captures(&line)
+                            .and_then(|m| m.get(2))
+                            .and_then(|m| m.as_str().parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                        let _ = tx_err.send(AgentEvent::UsageUpdate {
+                            tokens_in,
+                            tokens_out: 0,
+                            cost_usd: cost,
+                        });
+                    }
+                }
+            });
+
+            let status = match child.wait().await {
+                Ok(status) => status,
+                Err(err) => {
+                    let _ = tx.send(AgentEvent::Error(err.to_string()));
+                    let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
+                    processes
+                        .write()
+                        .expect("process lock poisoned")
+                        .remove(&handle_id);
+                    return;
+                }
+            };
+
+            processes
+                .write()
+                .expect("process lock poisoned")
+                .remove(&handle_id);
+            let out_result = out_task.await;
+            let _ = err_task.await;
+
+            if let Err(ref e) = out_result {
+                tracing::warn!(error = %e, "stdout reader task failed; cost record unavailable");
+            }
+            if let Ok((tokens_in, cost_usd)) = out_result {
+                costs.write().expect("cost lock poisoned").insert(
+                    handle_id,
+                    CostRecord {
+                        provider: "codex".to_string(),
+                        model: None,
                         tokens_in,
                         tokens_out: 0,
-                        cost_usd: cost,
-                    });
-                }
+                        estimated_cost_usd: cost_usd,
+                        timestamp: Utc::now(),
+                        task_id,
+                        session_id: handle_id,
+                    },
+                );
             }
-            (last_tokens_in, last_cost)
-        });
-
-        let tx_err = tx.clone();
-        let err_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let _ = tx_err.send(AgentEvent::OutputChunk(format!("{line}\n")));
-                if let Some(cap) = usage_re.captures(&line) {
-                    let tokens_in = cap
-                        .get(2)
-                        .and_then(|m| m.as_str().parse::<u64>().ok())
-                        .unwrap_or(0);
-                    let cost = cost_re
-                        .captures(&line)
-                        .and_then(|m| m.get(2))
-                        .and_then(|m| m.as_str().parse::<f64>().ok())
-                        .unwrap_or(0.0);
-                    let _ = tx_err.send(AgentEvent::UsageUpdate {
-                        tokens_in,
-                        tokens_out: 0,
-                        cost_usd: cost,
-                    });
-                }
+            if !status.success() {
+                let _ = tx.send(AgentEvent::Error(format!(
+                    "codex exited with status {:?}",
+                    status.code()
+                )));
+                let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
+                return;
             }
+
+            let _ = tx.send(AgentEvent::Complete {
+                summary: "Codex run completed".to_string(),
+            });
+            let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
         });
-
-        let status = child.wait().await.map_err(AgentError::Io)?;
-        // Remove PID from tracking — process has exited.
-        self.processes
-            .write()
-            .expect("process lock poisoned")
-            .remove(&handle_id);
-        let out_result = out_task.await;
-        let _ = err_task.await;
-
-        // Store cost record from parsed output.
-        if let Err(ref e) = out_result {
-            tracing::warn!(error = %e, "stdout reader task failed; cost record unavailable");
-        }
-        if let Ok((tokens_in, cost_usd)) = out_result {
-            costs.write().expect("cost lock poisoned").insert(
-                handle_id,
-                CostRecord {
-                    provider: "codex".to_string(),
-                    model: None,
-                    tokens_in,
-                    tokens_out: 0,
-                    estimated_cost_usd: cost_usd,
-                    timestamp: Utc::now(),
-                    task_id: input.task_id,
-                    session_id: handle_id,
-                },
-            );
-        }
-        if !status.success() {
-            let _ = tx.send(AgentEvent::Error(format!(
-                "codex exited with status {:?}",
-                status.code()
-            )));
-            let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
-            return Ok(());
-        }
-
-        let _ = tx.send(AgentEvent::Complete {
-            summary: "Codex run completed".to_string(),
-        });
-        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
         Ok(())
     }
 

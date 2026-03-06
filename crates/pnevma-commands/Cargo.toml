@@ -28,3 +28,4 @@ uuid.workspace = true
 libc.workspace = true
 subtle.workspace = true
 sqlx.workspace = true
+tempfile.workspace = true

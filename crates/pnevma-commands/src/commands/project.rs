@@ -1,9 +1,43 @@
 use super::tasks::{ensure_scope_rows_from_config, rule_row_to_view};
 use super::*;
 
+async fn abort_project_runtime(state: &AppState) {
+    if let Some(runtime) = state.current_runtime.lock().await.take() {
+        runtime.abort();
+    }
+}
+
+async fn install_project_runtime(
+    state: &AppState,
+    db: Db,
+    sessions: SessionSupervisor,
+    project_id: Uuid,
+    redaction_secrets: Arc<RwLock<Vec<String>>>,
+) {
+    let session_bridge = spawn_session_bridge(
+        Arc::clone(&state.emitter),
+        db,
+        sessions.clone(),
+        project_id,
+        redaction_secrets,
+    );
+    let health_refresh = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            sessions.refresh_health().await;
+        }
+    });
+
+    *state.current_runtime.lock().await = Some(crate::state::ProjectRuntime::new(
+        session_bridge,
+        health_refresh,
+    ));
+}
+
 pub async fn open_project(
     path: String,
-    _emitter: &Arc<dyn EventEmitter>,
+    emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<String, String> {
     let path_buf = std::fs::canonicalize(PathBuf::from(path.clone()))
@@ -55,27 +89,15 @@ pub async fn open_project(
     .await
     .map_err(|e| e.to_string())?;
 
+    let redaction_secrets = load_redaction_secrets(&db, project_id).await;
     let sessions = SessionSupervisor::new(path_buf.join(".pnevma/data"));
+    sessions
+        .set_redaction_secrets(redaction_secrets.clone())
+        .await;
+    let redaction_secrets = Arc::new(RwLock::new(redaction_secrets));
     let adapters = pnevma_agents::AdapterRegistry::detect();
     let pool = DispatchPool::new(cfg.agents.max_concurrent);
     let git = Arc::new(GitService::new(&path_buf));
-    spawn_session_bridge(
-        Arc::clone(&state.emitter),
-        db.clone(),
-        sessions.clone(),
-        project_id,
-        build_secrets_list(),
-    );
-    {
-        let sessions = sessions.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
-            loop {
-                ticker.tick().await;
-                sessions.refresh_health().await;
-            }
-        });
-    }
 
     let session_rows = reconcile_persisted_sessions(&db, project_id, path_buf.as_path()).await?;
     let restore_root = path_buf.join(".pnevma/data");
@@ -128,6 +150,29 @@ pub async fn open_project(
     ensure_system_layout_templates(&db, project_id).await?;
     ensure_scope_rows_from_config(&db, project_id, &path_buf, &cfg, "rule").await?;
     ensure_scope_rows_from_config(&db, project_id, &path_buf, &cfg, "convention").await?;
+    if cfg.retention.enabled {
+        if let Err(err) = cleanup_project_data_retention_inner(
+            &db,
+            project_id,
+            &path_buf,
+            &cfg.retention,
+            emitter,
+            false,
+        )
+        .await
+        {
+            append_event(
+                &db,
+                project_id,
+                None,
+                None,
+                "system",
+                "DataRetentionCleanupFailed",
+                json!({ "error": err }),
+            )
+            .await;
+        }
+    }
 
     let ctx = ProjectContext {
         project_id,
@@ -136,21 +181,29 @@ pub async fn open_project(
         global_config: global_cfg.clone(),
         db: db.clone(),
         sessions: sessions.clone(),
+        redaction_secrets: Arc::clone(&redaction_secrets),
         git,
         adapters,
         pool,
     };
 
+    if let Err(err) = restart_control_plane(state, path_buf.as_path(), &cfg, &global_cfg).await {
+        return Err(err);
+    }
+
+    abort_project_runtime(state).await;
     {
         let mut current = state.current.lock().await;
         *current = Some(ctx);
     }
-
-    if let Err(err) = restart_control_plane(state, path_buf.as_path(), &cfg, &global_cfg).await {
-        let mut current = state.current.lock().await;
-        *current = None;
-        return Err(err);
-    }
+    install_project_runtime(
+        state,
+        db.clone(),
+        sessions.clone(),
+        project_id,
+        Arc::clone(&redaction_secrets),
+    )
+    .await;
 
     {
         let mut recents = state.recents.lock().await;
@@ -191,6 +244,14 @@ pub async fn open_project(
         json!({"path": path_str}),
     )
     .await;
+    emitter.emit(
+        "project_opened",
+        json!({
+            "project_id": project_id.to_string(),
+            "project_name": cfg.project.name,
+            "project_path": path_str,
+        }),
+    );
 
     Ok(project_id.to_string())
 }
@@ -223,8 +284,303 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
         let mut current = state.current.lock().await;
         *current = None;
     }
+    abort_project_runtime(state).await;
     stop_control_plane(state).await;
     Ok(())
+}
+
+fn resolve_retention_path(
+    project_path: &Path,
+    data_root: &Path,
+    raw_path: &str,
+) -> Option<PathBuf> {
+    let candidate = if Path::new(raw_path).is_absolute() {
+        PathBuf::from(raw_path)
+    } else {
+        project_path.join(raw_path)
+    };
+    let canonical_data = data_root
+        .canonicalize()
+        .unwrap_or_else(|_| data_root.to_path_buf());
+    let canonical_candidate = if candidate.exists() {
+        candidate.canonicalize().ok()?
+    } else if let Some(parent) = candidate.parent() {
+        let canonical_parent = parent.canonicalize().ok()?;
+        canonical_parent.join(candidate.file_name().unwrap_or_default())
+    } else {
+        return None;
+    };
+    canonical_candidate
+        .starts_with(&canonical_data)
+        .then_some(canonical_candidate)
+}
+
+fn count_path_files(path: &Path) -> usize {
+    if !path.exists() {
+        return 0;
+    }
+    if path.is_file() {
+        return 1;
+    }
+    std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| count_path_files(&entry.path()))
+        .sum()
+}
+
+fn remove_retained_path(path: &Path, dry_run: bool) -> Result<usize, String> {
+    let file_count = count_path_files(path);
+    if file_count == 0 {
+        return Ok(0);
+    }
+    if dry_run {
+        return Ok(file_count);
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(file_count)
+}
+
+fn prune_stale_files_in_dir(
+    dir: &Path,
+    cutoff: DateTime<Utc>,
+    dry_run: bool,
+) -> Result<(usize, usize), String> {
+    if !dir.exists() {
+        return Ok((0, 0));
+    }
+
+    let mut entries_pruned = 0;
+    let mut files_deleted = 0;
+
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        let modified = metadata.modified().map_err(|e| e.to_string())?;
+        let modified_at: DateTime<Utc> = modified.into();
+        if modified_at >= cutoff {
+            continue;
+        }
+        let removed = remove_retained_path(&path, dry_run)?;
+        if removed > 0 {
+            entries_pruned += 1;
+            files_deleted += removed;
+        }
+    }
+
+    Ok((entries_pruned, files_deleted))
+}
+
+async fn cleanup_project_data_retention_inner(
+    db: &Db,
+    project_id: Uuid,
+    project_path: &Path,
+    retention: &pnevma_core::RetentionSection,
+    emitter: &Arc<dyn EventEmitter>,
+    dry_run: bool,
+) -> Result<DataRetentionCleanupResponse, String> {
+    let data_root = project_path.join(".pnevma").join("data");
+    if !data_root.exists() {
+        return Ok(DataRetentionCleanupResponse {
+            dry_run,
+            artifacts_pruned: 0,
+            feedback_artifacts_cleared: 0,
+            review_packs_pruned: 0,
+            scrollback_sessions_pruned: 0,
+            telemetry_exports_pruned: 0,
+            files_deleted: 0,
+        });
+    }
+
+    let artifact_cutoff = Utc::now() - chrono::Duration::days(retention.artifact_days);
+    let review_cutoff = Utc::now() - chrono::Duration::days(retention.review_days);
+    let scrollback_cutoff = Utc::now() - chrono::Duration::days(retention.scrollback_days);
+
+    let mut response = DataRetentionCleanupResponse {
+        dry_run,
+        artifacts_pruned: 0,
+        feedback_artifacts_cleared: 0,
+        review_packs_pruned: 0,
+        scrollback_sessions_pruned: 0,
+        telemetry_exports_pruned: 0,
+        files_deleted: 0,
+    };
+
+    for artifact in db
+        .list_artifacts(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if artifact.created_at >= artifact_cutoff {
+            continue;
+        }
+        if let Some(path) = resolve_retention_path(project_path, &data_root, &artifact.path) {
+            response.files_deleted += remove_retained_path(&path, dry_run)?;
+        }
+        if !dry_run {
+            db.delete_artifact(&artifact.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        response.artifacts_pruned += 1;
+    }
+
+    for feedback in db
+        .list_feedback(&project_id.to_string(), 10_000)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if feedback.created_at >= artifact_cutoff {
+            continue;
+        }
+        let Some(path_str) = feedback.artifact_path.as_deref() else {
+            continue;
+        };
+        if let Some(path) = resolve_retention_path(project_path, &data_root, path_str) {
+            response.files_deleted += remove_retained_path(&path, dry_run)?;
+        }
+        if !dry_run {
+            db.clear_feedback_artifact_path(&feedback.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        response.feedback_artifacts_cleared += 1;
+    }
+
+    for task in db
+        .list_tasks(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if !matches!(task.status.as_str(), "Done" | "Failed") || task.updated_at >= review_cutoff {
+            continue;
+        }
+        let Some(review) = db
+            .get_review_by_task(&task.id)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+
+        let review_dir = resolve_retention_path(project_path, &data_root, &review.review_pack_path)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| data_root.join("reviews").join(&task.id));
+
+        response.files_deleted += remove_retained_path(&review_dir, dry_run)?;
+        if !dry_run {
+            db.delete_review_by_task(&task.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        response.review_packs_pruned += 1;
+    }
+
+    for session in db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if matches!(session.status.as_str(), "running" | "waiting")
+            || session.last_heartbeat >= scrollback_cutoff
+        {
+            continue;
+        }
+
+        let log_path = data_root
+            .join("scrollback")
+            .join(format!("{}.log", session.id));
+        let idx_path = data_root
+            .join("scrollback")
+            .join(format!("{}.idx", session.id));
+        let mut deleted_any = false;
+
+        for path in [&log_path, &idx_path] {
+            let removed = remove_retained_path(path, dry_run)?;
+            if removed > 0 {
+                response.files_deleted += removed;
+                deleted_any = true;
+            }
+        }
+
+        if deleted_any {
+            response.scrollback_sessions_pruned += 1;
+        }
+    }
+
+    let (telemetry_entries, telemetry_files) =
+        prune_stale_files_in_dir(&data_root.join("telemetry"), artifact_cutoff, dry_run)?;
+    response.telemetry_exports_pruned = telemetry_entries;
+    response.files_deleted += telemetry_files;
+
+    append_event(
+        db,
+        project_id,
+        None,
+        None,
+        "system",
+        "DataRetentionCleanupCompleted",
+        json!({
+            "dry_run": response.dry_run,
+            "artifacts_pruned": response.artifacts_pruned,
+            "feedback_artifacts_cleared": response.feedback_artifacts_cleared,
+            "review_packs_pruned": response.review_packs_pruned,
+            "scrollback_sessions_pruned": response.scrollback_sessions_pruned,
+            "telemetry_exports_pruned": response.telemetry_exports_pruned,
+            "files_deleted": response.files_deleted,
+        }),
+    )
+    .await;
+
+    emitter.emit(
+        "data_retention_cleaned",
+        json!({
+            "project_id": project_id.to_string(),
+            "dry_run": response.dry_run,
+            "artifacts_pruned": response.artifacts_pruned,
+            "feedback_artifacts_cleared": response.feedback_artifacts_cleared,
+            "review_packs_pruned": response.review_packs_pruned,
+            "scrollback_sessions_pruned": response.scrollback_sessions_pruned,
+            "telemetry_exports_pruned": response.telemetry_exports_pruned,
+            "files_deleted": response.files_deleted,
+        }),
+    );
+
+    Ok(response)
+}
+
+pub async fn cleanup_project_data(
+    dry_run: bool,
+    state: &AppState,
+) -> Result<DataRetentionCleanupResponse, String> {
+    let (db, project_id, project_path, retention) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (
+            ctx.db.clone(),
+            ctx.project_id,
+            ctx.project_path.clone(),
+            ctx.config.retention.clone(),
+        )
+    };
+
+    cleanup_project_data_retention_inner(
+        &db,
+        project_id,
+        &project_path,
+        &retention,
+        &state.emitter,
+        dry_run,
+    )
+    .await
 }
 
 pub async fn list_recent_projects(state: &AppState) -> Result<Vec<RecentProject>, String> {
@@ -346,6 +702,79 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
     .await;
 
     Ok(row.id)
+}
+
+fn recovery_options_for_meta(meta: &SessionMetadata) -> Vec<RecoveryOptionView> {
+    let can_interrupt = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
+    let can_restart = true;
+    let can_reattach = meta.status == SessionStatus::Waiting;
+    vec![
+        RecoveryOptionView {
+            id: "interrupt".to_string(),
+            label: "Interrupt".to_string(),
+            description: "Send Ctrl+C to the session process.".to_string(),
+            enabled: can_interrupt,
+        },
+        RecoveryOptionView {
+            id: "restart".to_string(),
+            label: "Restart Session".to_string(),
+            description: "Restart backend process and rebind panes.".to_string(),
+            enabled: can_restart,
+        },
+        RecoveryOptionView {
+            id: "reattach".to_string(),
+            label: "Reattach Backend".to_string(),
+            description: "Attach to an existing waiting backend.".to_string(),
+            enabled: can_reattach,
+        },
+    ]
+}
+
+pub async fn get_session_binding(
+    session_id: String,
+    state: &AppState,
+) -> Result<SessionBindingView, String> {
+    let current = state.current.lock().await;
+    let ctx = current
+        .as_ref()
+        .ok_or_else(|| "no open project".to_string())?;
+    let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let Some(meta) = ctx.sessions.get(session_uuid).await else {
+        return Err(format!("session not found: {session_id}"));
+    };
+
+    let is_live = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
+    let mut env = Vec::new();
+    if is_live {
+        env.push(SessionEnvVarView {
+            key: "PNEVMA_TMUX_TARGET".to_string(),
+            value: tmux_name_from_session_id(&session_id),
+        });
+        env.push(SessionEnvVarView {
+            key: "TMUX_TMPDIR".to_string(),
+            value: ctx.sessions.tmux_tmpdir().to_string_lossy().to_string(),
+        });
+        env.push(SessionEnvVarView {
+            key: "PNEVMA_SESSION_ID".to_string(),
+            value: session_id.clone(),
+        });
+    }
+
+    let recovery_options = recovery_options_for_meta(&meta);
+    let cwd = meta.cwd.clone();
+
+    Ok(SessionBindingView {
+        session_id,
+        mode: if is_live {
+            "live_attach".to_string()
+        } else {
+            "archived".to_string()
+        },
+        cwd,
+        env,
+        wait_after_command: false,
+        recovery_options,
+    })
 }
 
 pub async fn list_sessions(state: &AppState) -> Result<Vec<SessionRow>, String> {
@@ -484,14 +913,19 @@ pub async fn get_scrollback(
         .ok_or_else(|| "no open project".to_string())?;
     let session_id = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
 
-    ctx.sessions
-        .read_scrollback(
-            session_id,
-            input.offset.unwrap_or(0),
-            input.limit.unwrap_or(64 * 1024),
-        )
-        .await
-        .map_err(|e| e.to_string())
+    let limit = input.limit.unwrap_or(64 * 1024);
+    match input.offset {
+        Some(offset) => ctx
+            .sessions
+            .read_scrollback(session_id, offset, limit)
+            .await
+            .map_err(|e| e.to_string()),
+        None => ctx
+            .sessions
+            .read_scrollback_tail(session_id, limit)
+            .await
+            .map_err(|e| e.to_string()),
+    }
 }
 
 pub async fn restore_sessions(state: &AppState) -> Result<Vec<SessionRow>, String> {
@@ -2483,7 +2917,7 @@ pub async fn get_session_timeline(
         .map(timeline_view_from_event)
         .collect::<Vec<_>>();
 
-    if let Ok(slice) = sessions.read_scrollback(session_uuid, 0, 128 * 1024).await {
+    if let Ok(slice) = sessions.read_scrollback_tail(session_uuid, 128 * 1024).await {
         if !slice.data.trim().is_empty() {
             timeline.push(TimelineEventView {
                 timestamp: Utc::now(),
@@ -2515,29 +2949,7 @@ pub async fn get_session_recovery_options(
     let Some(meta) = ctx.sessions.get(session_uuid).await else {
         return Err(format!("session not found: {session_id}"));
     };
-    let can_interrupt = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
-    let can_restart = true;
-    let can_reattach = meta.status == SessionStatus::Waiting;
-    Ok(vec![
-        RecoveryOptionView {
-            id: "interrupt".to_string(),
-            label: "Interrupt".to_string(),
-            description: "Send Ctrl+C to the session process.".to_string(),
-            enabled: can_interrupt,
-        },
-        RecoveryOptionView {
-            id: "restart".to_string(),
-            label: "Restart Session".to_string(),
-            description: "Restart backend process and rebind panes.".to_string(),
-            enabled: can_restart,
-        },
-        RecoveryOptionView {
-            id: "reattach".to_string(),
-            label: "Reattach Backend".to_string(),
-            description: "Attach to an existing waiting backend.".to_string(),
-            enabled: can_reattach,
-        },
-    ])
+    Ok(recovery_options_for_meta(&meta))
 }
 
 pub async fn recover_session(
@@ -2675,6 +3087,73 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
         sessions: sessions.len(),
         tasks: tasks.len(),
         worktrees: worktrees.len(),
+    })
+}
+
+pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, String> {
+    let (db, project_id, project_path) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
+    };
+
+    let sessions = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let tasks = db
+        .list_tasks(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let unread_notifications = db
+        .list_notifications(&project_id.to_string(), true)
+        .await
+        .map_err(|e| e.to_string())?
+        .len();
+
+    db.aggregate_costs_daily(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let cost_today = db
+        .get_usage_daily_trend(&project_id.to_string(), 1)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|row| row.period_date == today)
+        .map(|row| row.estimated_usd)
+        .unwrap_or(0.0);
+
+    let git_branch = TokioCommand::new("git")
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .current_dir(&project_path)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|branch| branch.trim().to_string())
+        .filter(|branch| !branch.is_empty());
+
+    Ok(ProjectSummaryView {
+        project_id: project_id.to_string(),
+        git_branch,
+        active_tasks: tasks
+            .iter()
+            .filter(|task| !matches!(task.status.as_str(), "Done" | "Failed"))
+            .count(),
+        active_agents: sessions
+            .iter()
+            .filter(|session| {
+                session.r#type.as_deref() == Some("agent") && session.status == "running"
+            })
+            .count(),
+        cost_today,
+        unread_notifications,
     })
 }
 
@@ -3086,9 +3565,7 @@ pub async fn create_notification(
             .ok_or_else(|| "no open project".to_string())?;
         (ctx.db.clone(), ctx.project_id)
     };
-    let (_, secret_values) = resolve_secret_env(&db, project_id)
-        .await
-        .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+    let secret_values = load_redaction_secrets(&db, project_id).await;
     create_notification_row(
         &db,
         emitter,
@@ -3210,7 +3687,7 @@ pub async fn list_registered_commands() -> Result<Vec<RegisteredCommand>, String
 
 pub async fn execute_registered_command(
     input: ExecuteRegisteredCommandInput,
-    emitter: &Arc<dyn EventEmitter>,
+    _emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<serde_json::Value, String> {
     if !default_registry().contains(&input.id) {
@@ -3218,82 +3695,36 @@ pub async fn execute_registered_command(
     }
 
     let command_id = input.id.clone();
+    let mut params = serde_json::Map::new();
+    for (key, value) in &input.args {
+        params.insert(key.clone(), json_value_from_arg(value));
+    }
+
+    if input.id == "task.new" {
+        params
+            .entry("scope".to_string())
+            .or_insert_with(|| json!([]));
+        params
+            .entry("acceptance_criteria".to_string())
+            .or_insert_with(|| json!(["manual review"]));
+        params
+            .entry("constraints".to_string())
+            .or_insert_with(|| json!([]));
+        params
+            .entry("dependencies".to_string())
+            .or_insert_with(|| json!([]));
+    }
+
     let result = match input.id.as_str() {
-        "environment.readiness" => {
-            let path = optional_arg(&input.args, "path");
-            let readiness =
-                get_environment_readiness(Some(EnvironmentReadinessInput { path }), state).await?;
-            Ok(json!(readiness))
-        }
-        "environment.init_global_config" => {
-            let default_provider = optional_arg(&input.args, "default_provider");
-            let result = initialize_global_config(
-                Some(InitializeGlobalConfigInput { default_provider }),
-                state,
-            )
-            .await?;
-            Ok(json!(result))
-        }
-        "project.initialize_scaffold" => {
-            let path = required_arg(&input.args, "path")?;
-            let result = initialize_project_scaffold(
-                InitializeProjectScaffoldInput {
-                    path,
-                    project_name: optional_arg(&input.args, "project_name"),
-                    project_brief: optional_arg(&input.args, "project_brief"),
-                    default_provider: optional_arg(&input.args, "default_provider"),
-                },
-                state,
-            )
-            .await?;
-            Ok(json!(result))
-        }
-        "project.open" => {
-            let path = required_arg(&input.args, "path")?;
-            let project_id = open_project(path, emitter, state).await?;
-            let status = project_status(state).await?;
-            Ok(json!({"project_id": project_id, "status": status}))
-        }
-        "session.new" => {
-            let name = optional_arg(&input.args, "name").unwrap_or_else(|| "session".to_string());
-            let cwd = optional_arg(&input.args, "cwd").unwrap_or_else(|| ".".to_string());
-            let command = optional_arg(&input.args, "command").unwrap_or_else(|| "zsh".to_string());
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let session_id = create_session(
-                SessionInput {
-                    name: name.clone(),
-                    cwd,
-                    command,
-                },
-                state,
-            )
-            .await?;
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: Some(session_id.clone()),
-                    r#type: "terminal".to_string(),
-                    position,
-                    label: name,
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"session_id": session_id, "pane_id": pane.id}))
-        }
         "session.reattach_active" => {
-            let active_session_id = required_arg(&input.args, "active_session_id")?;
-            reattach_session(active_session_id.clone(), state).await?;
-            Ok(json!({"session_id": active_session_id}))
+            let session_id = required_arg(&input.args, "active_session_id")?;
+            reattach_session(session_id.clone(), state).await?;
+            Ok(json!({ "session_id": session_id }))
         }
         "session.restart_active" => {
-            let active_session_id = required_arg(&input.args, "active_session_id")?;
+            let session_id = required_arg(&input.args, "active_session_id")?;
             let active_pane_id = required_arg(&input.args, "active_pane_id")?;
-            let new_session_id = restart_session(active_session_id.clone(), state).await?;
+            let new_session_id = restart_session(session_id.clone(), state).await?;
             if let Some(active) = list_panes(state)
                 .await?
                 .into_iter()
@@ -3312,7 +3743,10 @@ pub async fn execute_registered_command(
                 )
                 .await?;
             }
-            Ok(json!({"old_session_id": active_session_id, "new_session_id": new_session_id}))
+            Ok(json!({
+                "old_session_id": session_id,
+                "new_session_id": new_session_id
+            }))
         }
         "pane.split_horizontal" | "pane.split_vertical" => {
             let suffix = if input.id.ends_with("horizontal") {
@@ -3340,7 +3774,7 @@ pub async fn execute_registered_command(
                 state,
             )
             .await?;
-            Ok(json!({"pane_id": new_pane.id}))
+            Ok(json!({ "pane_id": new_pane.id }))
         }
         "pane.close" => {
             let active_pane_id = required_arg(&input.args, "active_pane_id")?;
@@ -3349,241 +3783,49 @@ pub async fn execute_registered_command(
                 .into_iter()
                 .find(|pane| pane.id == active_pane_id)
                 .ok_or_else(|| format!("pane not found: {active_pane_id}"))?;
-            if active.r#type == "task-board" {
-                return Ok(json!({"closed": false, "reason": "task-board"}));
-            }
             remove_pane(active.id.clone(), state).await?;
-            Ok(json!({"closed": true, "pane_id": active.id}))
+            Ok(json!({ "closed": true, "pane_id": active.id }))
         }
-        "pane.open_review" => {
+        "pane.open_review"
+        | "pane.open_notifications"
+        | "pane.open_merge_queue"
+        | "pane.open_replay"
+        | "pane.open_daily_brief"
+        | "pane.open_search"
+        | "pane.open_diff"
+        | "pane.open_file_browser"
+        | "pane.open_rules_manager"
+        | "pane.open_settings" => {
             let active_pane_id = optional_arg(&input.args, "active_pane_id");
             let position = active_pane_id
                 .map(|id| format!("after:{id}"))
                 .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "review".to_string(),
-                    position,
-                    label: "Review".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_notifications" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "notifications".to_string(),
-                    position,
-                    label: "Notifications".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_merge_queue" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "merge-queue".to_string(),
-                    position,
-                    label: "Merge Queue".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_replay" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "replay".to_string(),
-                    position,
-                    label: "Replay".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_daily_brief" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "daily-brief".to_string(),
-                    position,
-                    label: "Daily Brief".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_search" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "search".to_string(),
-                    position,
-                    label: "Search".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_diff" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "diff".to_string(),
-                    position,
-                    label: "Diff".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_file_browser" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "file-browser".to_string(),
-                    position,
-                    label: "Files".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_rules_manager" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "rules-manager".to_string(),
-                    position,
-                    label: "Rules".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "pane.open_settings" => {
-            let active_pane_id = optional_arg(&input.args, "active_pane_id");
-            let position = active_pane_id
-                .map(|id| format!("after:{id}"))
-                .unwrap_or_else(|| "after:root".to_string());
-            let pane = upsert_pane(
-                PaneInput {
-                    id: None,
-                    session_id: None,
-                    r#type: "settings".to_string(),
-                    position,
-                    label: "Settings".to_string(),
-                    metadata_json: None,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"pane_id": pane.id}))
-        }
-        "task.new" => {
-            let title = optional_arg(&input.args, "title").unwrap_or_else(|| "Task".to_string());
-            let goal =
-                optional_arg(&input.args, "goal").unwrap_or_else(|| "Ship value".to_string());
-            let priority =
-                optional_arg(&input.args, "priority").unwrap_or_else(|| "P1".to_string());
-            let id = create_task(
-                CreateTaskInput {
-                    title,
-                    goal,
-                    scope: Vec::new(),
-                    acceptance_criteria: vec!["manual review".to_string()],
-                    constraints: Vec::new(),
-                    dependencies: Vec::new(),
-                    priority,
-                    auto_dispatch: None,
-                    agent_profile_override: None,
-                    execution_mode: None,
-                    timeout_minutes: None,
-                    max_retries: None,
-                },
-                emitter,
-                state,
-            )
-            .await?;
-            Ok(json!({"task_id": id}))
-        }
-        "task.dispatch_next_ready" => {
-            let next = list_tasks(state)
-                .await?
-                .into_iter()
-                .filter(|task| task.status == "Ready")
-                .min_by(|a, b| a.created_at.cmp(&b.created_at))
-                .map(|task| task.id);
-            let Some(task_id) = next else {
-                return Ok(json!({"dispatched": false}));
+            let (pane_type, label) = match input.id.as_str() {
+                "pane.open_review" => ("review", "Review"),
+                "pane.open_notifications" => ("notifications", "Notifications"),
+                "pane.open_merge_queue" => ("merge_queue", "Merge Queue"),
+                "pane.open_replay" => ("replay", "Replay"),
+                "pane.open_daily_brief" => ("daily_brief", "Daily Brief"),
+                "pane.open_search" => ("search", "Search"),
+                "pane.open_diff" => ("diff", "Diff"),
+                "pane.open_file_browser" => ("file_browser", "Files"),
+                "pane.open_rules_manager" => ("rules", "Rules"),
+                "pane.open_settings" => ("settings", "Settings"),
+                _ => unreachable!(),
             };
-            let status = dispatch_task(task_id.clone(), emitter, state).await?;
-            Ok(json!({"dispatched": true, "task_id": task_id, "status": status}))
+            let pane = upsert_pane(
+                PaneInput {
+                    id: None,
+                    session_id: None,
+                    r#type: pane_type.to_string(),
+                    position,
+                    label: label.to_string(),
+                    metadata_json: None,
+                },
+                state,
+            )
+            .await?;
+            Ok(json!({ "pane_id": pane.id }))
         }
         "task.delete_ready" => {
             let ready = list_tasks(state)
@@ -3591,63 +3833,33 @@ pub async fn execute_registered_command(
                 .into_iter()
                 .find(|task| task.status == "Ready");
             let Some(ready) = ready else {
-                return Ok(json!({"deleted": false}));
+                return Ok(json!({ "deleted": false }));
             };
-            delete_task(ready.id.clone(), emitter, state).await?;
-            Ok(json!({"deleted": true, "task_id": ready.id}))
+            delete_task(ready.id.clone(), &state.emitter, state).await?;
+            Ok(json!({ "deleted": true, "task_id": ready.id }))
         }
-        "review.approve_next" => {
-            let next = list_tasks(state)
-                .await?
-                .into_iter()
-                .filter(|task| task.status == "Review")
-                .min_by(|a, b| a.created_at.cmp(&b.created_at))
-                .map(|task| task.id);
-            let Some(task_id) = next else {
-                return Ok(json!({"approved": false}));
-            };
-            approve_review(
-                ReviewDecisionInput {
-                    task_id: task_id.clone(),
-                    note: Some("approved via quick action".to_string()),
-                },
-                emitter,
-                state,
-            )
-            .await?;
-            Ok(json!({"approved": true, "task_id": task_id}))
-        }
-        "review.approve_task" => {
-            let task_id = required_arg(&input.args, "task_id")?;
-            let note = optional_arg(&input.args, "note");
-            approve_review(ReviewDecisionInput { task_id, note }, emitter, state).await?;
-            Ok(json!({"ok": true}))
-        }
+        "review.approve_task" => crate::control::route_method(
+            state,
+            "review.approve",
+            &serde_json::Value::Object(params),
+        )
+        .await
+        .map_err(|(_code, msg)| msg),
         "review.reject_task" => {
-            let task_id = required_arg(&input.args, "task_id")?;
-            let note = optional_arg(&input.args, "note");
-            reject_review(ReviewDecisionInput { task_id, note }, emitter, state).await?;
-            Ok(json!({"ok": true}))
+            crate::control::route_method(state, "review.reject", &serde_json::Value::Object(params))
+                .await
+                .map_err(|(_code, msg)| msg)
         }
-        "merge.execute_task" => {
-            let task_id = required_arg(&input.args, "task_id")?;
-            merge_queue_execute(task_id, emitter, state).await?;
-            Ok(json!({"ok": true}))
-        }
-        "checkpoint.create" => {
-            let description = optional_arg(&input.args, "description");
-            let task_id = optional_arg(&input.args, "task_id");
-            let checkpoint = checkpoint_create(
-                CheckpointInput {
-                    description,
-                    task_id,
-                },
-                state,
-            )
-            .await?;
-            Ok(json!({"checkpoint_id": checkpoint.id}))
-        }
-        _ => Err(format!("command not implemented: {}", input.id)),
+        "merge.execute_task" => crate::control::route_method(
+            state,
+            "merge.queue.execute",
+            &serde_json::Value::Object(params),
+        )
+        .await
+        .map_err(|(_code, msg)| msg),
+        _ => crate::control::route_method(state, &input.id, &serde_json::Value::Object(params))
+            .await
+            .map_err(|(_code, msg)| msg),
     };
 
     if result.is_ok() {
@@ -3683,6 +3895,14 @@ pub async fn check_action_risk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_emitter::NullEmitter;
+    use pnevma_agents::AdapterRegistry;
+    use pnevma_core::config::{
+        AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
+        RetentionSection,
+    };
+    use pnevma_core::RemoteSection;
+    use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn open_test_db() -> Db {
@@ -3720,6 +3940,87 @@ mod tests {
             timeout_minutes: None,
             max_retries: None,
         }
+    }
+
+    fn make_project_config() -> ProjectConfig {
+        ProjectConfig {
+            project: ProjectSection {
+                name: "test-project".to_string(),
+                brief: String::new(),
+            },
+            agents: AgentsSection {
+                default_provider: "claude-code".to_string(),
+                max_concurrent: 1,
+                claude_code: None,
+                codex: None,
+            },
+            automation: AutomationSection::default(),
+            retention: RetentionSection::default(),
+            branches: BranchesSection {
+                target: "main".to_string(),
+                naming: "task/{slug}".to_string(),
+            },
+            rules: PathSection::default(),
+            conventions: PathSection::default(),
+            remote: RemoteSection::default(),
+        }
+    }
+
+    fn make_session_metadata(
+        project_id: Uuid,
+        session_id: Uuid,
+        cwd: &Path,
+        status: SessionStatus,
+    ) -> SessionMetadata {
+        SessionMetadata {
+            id: session_id,
+            project_id,
+            name: "shell".to_string(),
+            status: status.clone(),
+            health: match status {
+                SessionStatus::Running => SessionHealth::Active,
+                SessionStatus::Waiting => SessionHealth::Waiting,
+                SessionStatus::Error => SessionHealth::Error,
+                SessionStatus::Complete => SessionHealth::Complete,
+            },
+            pid: Some(42),
+            cwd: cwd.to_string_lossy().to_string(),
+            command: "/bin/zsh".to_string(),
+            branch: None,
+            worktree_id: None,
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+            scrollback_path: cwd
+                .join(".pnevma/data/scrollback")
+                .join(format!("{session_id}.log"))
+                .to_string_lossy()
+                .to_string(),
+            exit_code: (status == SessionStatus::Complete).then_some(0),
+            ended_at: (status == SessionStatus::Complete).then_some(Utc::now()),
+        }
+    }
+
+    async fn make_state_with_project(
+        project_id: Uuid,
+        project_root: &Path,
+        db: Db,
+        sessions: SessionSupervisor,
+    ) -> AppState {
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+        *state.current.lock().await = Some(ProjectContext {
+            project_id,
+            project_path: project_root.to_path_buf(),
+            config: make_project_config(),
+            global_config: GlobalConfig::default(),
+            db,
+            sessions,
+            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
+            git: Arc::new(GitService::new(project_root)),
+            adapters: AdapterRegistry::default(),
+            pool: DispatchPool::new(1),
+        });
+        state
     }
 
     #[tokio::test]
@@ -3910,5 +4211,394 @@ mod tests {
         assert!(validate_path_component("foo\0bar", "test").is_err());
         assert!(validate_path_component("valid-name", "test").is_ok());
         assert!(validate_path_component("task-123", "test").is_ok());
+    }
+
+    #[tokio::test]
+    async fn cleanup_project_data_prunes_old_files_and_updates_rows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path();
+        let data_root = project_root.join(".pnevma").join("data");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        db.upsert_project(
+            &project_id,
+            "retention-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let old = Utc::now() - chrono::Duration::days(45);
+
+        let artifact_rel = ".pnevma/data/artifacts/knowledge.md";
+        let artifact_path = project_root.join(artifact_rel);
+        std::fs::create_dir_all(artifact_path.parent().expect("artifact parent")).unwrap();
+        std::fs::write(&artifact_path, "knowledge").unwrap();
+        db.create_artifact(&ArtifactRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: None,
+            r#type: "knowledge".to_string(),
+            path: artifact_rel.to_string(),
+            description: Some("old knowledge".to_string()),
+            created_at: old,
+        })
+        .await
+        .unwrap();
+
+        let feedback_rel = ".pnevma/data/feedback/ux.md";
+        let feedback_path = project_root.join(feedback_rel);
+        std::fs::create_dir_all(feedback_path.parent().expect("feedback parent")).unwrap();
+        std::fs::write(&feedback_path, "feedback").unwrap();
+        db.create_feedback(&FeedbackRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            category: "ux".to_string(),
+            body: "old feedback".to_string(),
+            contact: None,
+            artifact_path: Some(feedback_rel.to_string()),
+            created_at: old,
+        })
+        .await
+        .unwrap();
+
+        let mut done_task = make_task(&project_id, "completed task");
+        done_task.status = "Done".to_string();
+        done_task.created_at = old;
+        done_task.updated_at = old;
+        db.create_task(&done_task).await.unwrap();
+
+        let review_dir = data_root.join("reviews").join(&done_task.id);
+        std::fs::create_dir_all(&review_dir).unwrap();
+        let review_pack_path = review_dir.join("review-pack.json");
+        std::fs::write(&review_pack_path, "{}").unwrap();
+        std::fs::write(review_dir.join("diff.patch"), "diff").unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO reviews (id, task_id, status, review_pack_path, reviewer_notes, approved_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&done_task.id)
+        .bind("Ready")
+        .bind(review_pack_path.to_string_lossy().to_string())
+        .bind(Option::<String>::None)
+        .bind(Option::<DateTime<Utc>>::None)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let session_id = Uuid::new_v4().to_string();
+        let scrollback_dir = data_root.join("scrollback");
+        std::fs::create_dir_all(&scrollback_dir).unwrap();
+        std::fs::write(
+            scrollback_dir.join(format!("{session_id}.log")),
+            "scrollback",
+        )
+        .unwrap();
+        std::fs::write(scrollback_dir.join(format!("{session_id}.idx")), "0").unwrap();
+        db.upsert_session(&SessionRow {
+            id: session_id.clone(),
+            project_id: project_id.clone(),
+            name: "shell".to_string(),
+            r#type: Some("terminal".to_string()),
+            status: "complete".to_string(),
+            pid: None,
+            cwd: project_root.to_string_lossy().to_string(),
+            command: "zsh".to_string(),
+            branch: None,
+            worktree_id: None,
+            started_at: old,
+            last_heartbeat: old,
+        })
+        .await
+        .unwrap();
+
+        let retention = pnevma_core::RetentionSection {
+            enabled: true,
+            artifact_days: 30,
+            review_days: 30,
+            scrollback_days: 14,
+        };
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let response = cleanup_project_data_retention_inner(
+            &db,
+            Uuid::parse_str(&project_id).unwrap(),
+            project_root,
+            &retention,
+            &emitter,
+            false,
+        )
+        .await
+        .expect("cleanup succeeds");
+
+        assert_eq!(response.artifacts_pruned, 1);
+        assert_eq!(response.feedback_artifacts_cleared, 1);
+        assert_eq!(response.review_packs_pruned, 1);
+        assert_eq!(response.scrollback_sessions_pruned, 1);
+        assert_eq!(response.telemetry_exports_pruned, 0);
+        assert_eq!(response.files_deleted, 6);
+
+        assert!(db.list_artifacts(&project_id).await.unwrap().is_empty());
+        assert_eq!(
+            db.list_feedback(&project_id, 100).await.unwrap()[0].artifact_path,
+            None
+        );
+        assert!(db
+            .get_review_by_task(&done_task.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!artifact_path.exists());
+        assert!(!feedback_path.exists());
+        assert!(!review_dir.exists());
+        assert!(!scrollback_dir.join(format!("{session_id}.log")).exists());
+        assert!(!scrollback_dir.join(format!("{session_id}.idx")).exists());
+    }
+
+    #[tokio::test]
+    async fn get_session_binding_reports_live_and_archived_modes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback")).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "binding-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let live_session_id = Uuid::new_v4();
+        let archived_session_id = Uuid::new_v4();
+        sessions
+            .register_restored(make_session_metadata(
+                project_id,
+                live_session_id,
+                &project_root,
+                SessionStatus::Waiting,
+            ))
+            .await;
+        sessions
+            .register_restored(make_session_metadata(
+                project_id,
+                archived_session_id,
+                &project_root,
+                SessionStatus::Complete,
+            ))
+            .await;
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+        *state.current.lock().await = Some(ProjectContext {
+            project_id,
+            project_path: project_root.clone(),
+            config: make_project_config(),
+            global_config: GlobalConfig::default(),
+            db,
+            sessions: sessions.clone(),
+            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
+            git: Arc::new(GitService::new(&project_root)),
+            adapters: AdapterRegistry::default(),
+            pool: DispatchPool::new(1),
+        });
+
+        let live = get_session_binding(live_session_id.to_string(), &state)
+            .await
+            .expect("live binding");
+        assert_eq!(live.mode, "live_attach");
+        assert_eq!(live.cwd, project_root.to_string_lossy());
+        assert!(live
+            .env
+            .iter()
+            .any(|env| env.key == "TMUX_TMPDIR" && !env.value.is_empty()));
+
+        let archived = get_session_binding(archived_session_id.to_string(), &state)
+            .await
+            .expect("archived binding");
+        assert_eq!(archived.mode, "archived");
+        assert!(archived.env.is_empty());
+        assert!(archived
+            .recovery_options
+            .iter()
+            .any(|option| option.id == "restart" && option.enabled));
+    }
+
+    #[tokio::test]
+    async fn get_scrollback_defaults_to_tail_when_offset_is_omitted() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        let scrollback_dir = project_root.join(".pnevma/data/scrollback");
+        std::fs::create_dir_all(&scrollback_dir).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "scrollback-tail-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let session_id = Uuid::new_v4();
+        let scrollback_path = scrollback_dir.join(format!("{session_id}.log"));
+        std::fs::write(&scrollback_path, "alpha\nbeta\ngamma\n").unwrap();
+        sessions
+            .register_restored(make_session_metadata(
+                project_id,
+                session_id,
+                &project_root,
+                SessionStatus::Complete,
+            ))
+            .await;
+
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let slice = get_scrollback(
+            ScrollbackInput {
+                session_id: session_id.to_string(),
+                offset: None,
+                limit: Some(6),
+            },
+            &state,
+        )
+        .await
+        .expect("tail scrollback should load");
+
+        assert_eq!(slice.data, "gamma\n");
+        assert_eq!(slice.end_offset, slice.total_bytes);
+    }
+
+    #[tokio::test]
+    async fn get_session_timeline_uses_scrollback_tail_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        let scrollback_dir = project_root.join(".pnevma/data/scrollback");
+        std::fs::create_dir_all(&scrollback_dir).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "timeline-tail-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let session_id = Uuid::new_v4();
+        let scrollback_path = scrollback_dir.join(format!("{session_id}.log"));
+        let body = format!(
+            "HEAD-MARKER\n{}TAIL-MARKER\n",
+            "middle-line\n".repeat(14_000)
+        );
+        assert!(body.len() > 128 * 1024);
+        std::fs::write(&scrollback_path, body).unwrap();
+        sessions
+            .register_restored(make_session_metadata(
+                project_id,
+                session_id,
+                &project_root,
+                SessionStatus::Complete,
+            ))
+            .await;
+
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let timeline = get_session_timeline(
+            SessionTimelineInput {
+                session_id: session_id.to_string(),
+                limit: Some(10),
+            },
+            &state,
+        )
+        .await
+        .expect("timeline should load");
+
+        let snapshot = timeline
+            .iter()
+            .find(|entry| entry.kind == "ScrollbackSnapshot")
+            .expect("timeline should include a scrollback snapshot");
+        let data: &str = snapshot
+            .payload
+            .get("data")
+            .and_then(Value::as_str)
+            .expect("snapshot payload should contain data");
+
+        assert!(data.contains("TAIL-MARKER"));
+        assert!(!data.contains("HEAD-MARKER"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_project_data_dry_run_does_not_delete_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path();
+        let data_root = project_root.join(".pnevma").join("data");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        db.upsert_project(
+            &project_id,
+            "retention-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let old = Utc::now() - chrono::Duration::days(45);
+        let artifact_rel = ".pnevma/data/artifacts/knowledge.md";
+        let artifact_path = project_root.join(artifact_rel);
+        std::fs::create_dir_all(artifact_path.parent().expect("artifact parent")).unwrap();
+        std::fs::write(&artifact_path, "knowledge").unwrap();
+        db.create_artifact(&ArtifactRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: None,
+            r#type: "knowledge".to_string(),
+            path: artifact_rel.to_string(),
+            description: Some("old knowledge".to_string()),
+            created_at: old,
+        })
+        .await
+        .unwrap();
+
+        let retention = pnevma_core::RetentionSection {
+            enabled: true,
+            artifact_days: 30,
+            review_days: 30,
+            scrollback_days: 14,
+        };
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let response = cleanup_project_data_retention_inner(
+            &db,
+            Uuid::parse_str(&project_id).unwrap(),
+            project_root,
+            &retention,
+            &emitter,
+            true,
+        )
+        .await
+        .expect("cleanup succeeds");
+
+        assert_eq!(response.artifacts_pruned, 1);
+        assert_eq!(response.files_deleted, 1);
+        assert!(artifact_path.exists());
+        assert_eq!(db.list_artifacts(&project_id).await.unwrap().len(), 1);
+        assert!(data_root.exists());
     }
 }

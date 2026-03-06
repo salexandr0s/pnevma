@@ -732,6 +732,14 @@ impl Db {
         Ok(())
     }
 
+    pub async fn delete_artifact(&self, artifact_id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM artifacts WHERE id = ?1")
+            .bind(artifact_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn upsert_rule(&self, row: &RuleRow) -> Result<(), DbError> {
         sqlx::query(
             r#"
@@ -1001,6 +1009,20 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    pub async fn clear_feedback_artifact_path(&self, feedback_id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE feedback_entries
+            SET artifact_path = NULL
+            WHERE id = ?1
+            "#,
+        )
+        .bind(feedback_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn remove_worktree_by_task(&self, task_id: &str) -> Result<(), DbError> {
@@ -1321,6 +1343,14 @@ impl Db {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    pub async fn delete_review_by_task(&self, task_id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM reviews WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn upsert_merge_queue_item(&self, row: &MergeQueueRow) -> Result<(), DbError> {

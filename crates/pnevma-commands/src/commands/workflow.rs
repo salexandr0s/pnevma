@@ -679,6 +679,7 @@ mod tests {
     use pnevma_agents::{AdapterRegistry, DispatchPool};
     use pnevma_core::config::{
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
+        RetentionSection,
     };
     use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection};
     use pnevma_db::Db;
@@ -713,6 +714,7 @@ mod tests {
                 codex: None,
             },
             automation: AutomationSection::default(),
+            retention: RetentionSection::default(),
             branches: BranchesSection {
                 target: "main".to_string(),
                 naming: "feat/{slug}".to_string(),
@@ -751,17 +753,22 @@ mod tests {
             global_config: GlobalConfig::default(),
             db: db.clone(),
             sessions: supervisor,
+            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
             git,
             adapters,
             pool,
         };
 
+        let (remote_events, _rx) = tokio::sync::broadcast::channel(2048);
+
         let state = AppState {
             current: Mutex::new(Some(ctx)),
+            current_runtime: Mutex::new(None),
             recents: Mutex::new(Vec::new()),
             control_plane: Mutex::new(None),
             merge_branch_locks: Mutex::new(std::collections::HashMap::new()),
             remote_handle: Mutex::new(None),
+            remote_events,
             emitter: Arc::new(NullEmitter),
         };
 

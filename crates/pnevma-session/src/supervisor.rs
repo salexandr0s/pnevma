@@ -2,7 +2,7 @@ use crate::error::SessionError;
 use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
 use chrono::{Duration, Utc};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -66,7 +66,56 @@ fn redaction_connection_string_regex() -> &'static Regex {
     })
 }
 
-fn redact_stream_chunk(input: &str) -> String {
+fn redaction_partial_authorization_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)authorization\s*:\s*(?:(?:b|be|bea|bear|beare|bearer)(?:\s+[^\s]*)?)?$")
+            .expect("partial authorization redaction regex must compile")
+    })
+}
+
+fn redaction_partial_key_value_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*|'[^']*|[^\s,;]*)$"#,
+        )
+        .expect("partial key-value redaction regex must compile")
+    })
+}
+
+fn redaction_partial_aws_key_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"AKIA[0-9A-Z]{0,15}$").expect("partial AWS key redaction regex must compile")
+    })
+}
+
+fn redaction_partial_github_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{0,255}$")
+            .expect("partial GitHub token redaction regex must compile")
+    })
+}
+
+fn redaction_partial_slack_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]*$")
+            .expect("partial Slack token redaction regex must compile")
+    })
+}
+
+fn redaction_partial_connection_string_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^:@\s]+:[^@\s]*$")
+            .expect("partial connection string redaction regex must compile")
+    })
+}
+
+fn redact_stream_text(input: &str, secrets: &[String]) -> String {
     let mut result = redaction_authorization_regex()
         .replace_all(input, "$1[REDACTED]")
         .to_string();
@@ -88,7 +137,178 @@ fn redact_stream_chunk(input: &str) -> String {
     result = redaction_connection_string_regex()
         .replace_all(&result, "://[REDACTED]@")
         .to_string();
+    for secret in secrets {
+        if secret.is_empty() {
+            continue;
+        }
+        result = result.replace(secret, "[REDACTED]");
+    }
     result
+}
+
+#[cfg(test)]
+fn redact_stream_chunk(input: &str) -> String {
+    redact_stream_text(input, &[])
+}
+
+fn normalize_redaction_secrets(secrets: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .filter_map(|secret| {
+            if seen.insert(secret.clone()) {
+                Some(secret.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    normalized
+}
+
+const STREAM_REDACTION_TAIL_BYTES: usize = 256;
+
+fn minimum_partial_match_bytes(literal: &str) -> usize {
+    if literal.len() <= 4 {
+        2
+    } else {
+        3
+    }
+}
+
+fn partial_literal_start(
+    input: &str,
+    literal: &str,
+    retain_full_match: bool,
+    min_match_bytes: usize,
+) -> Option<usize> {
+    if input.is_empty() || literal.is_empty() {
+        return None;
+    }
+
+    let mut retain_start = None;
+    for (idx, _) in literal.char_indices().skip(1) {
+        if idx < min_match_bytes {
+            continue;
+        }
+        if input.ends_with(&literal[..idx]) {
+            retain_start = Some(input.len() - idx);
+        }
+    }
+
+    if retain_full_match && literal.len() >= min_match_bytes && input.ends_with(literal) {
+        return Some(input.len() - literal.len());
+    }
+
+    retain_start
+}
+
+fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
+    const PEM_PREFIX_MARKERS: &[&str] = &[
+        "-----BEGIN ",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+        "-----BEGIN DSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+    ];
+
+    let mut retain_start = None;
+
+    for marker in PEM_PREFIX_MARKERS {
+        let candidate =
+            partial_literal_start(input, marker, false, minimum_partial_match_bytes(marker));
+        if let Some(start) = candidate {
+            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
+        }
+    }
+
+    for secret in secrets {
+        if let Some(start) =
+            partial_literal_start(input, secret, false, minimum_partial_match_bytes(secret))
+        {
+            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
+        }
+    }
+
+    for regex in [
+        redaction_partial_authorization_regex(),
+        redaction_partial_key_value_regex(),
+        redaction_partial_aws_key_regex(),
+        redaction_partial_github_token_regex(),
+        redaction_partial_slack_token_regex(),
+        redaction_partial_connection_string_regex(),
+    ] {
+        if let Some(found) = regex.find(input) {
+            retain_start = Some(
+                retain_start.map_or(found.start(), |current: usize| current.min(found.start())),
+            );
+        }
+    }
+
+    retain_start
+}
+
+fn drain_to_retained_tail(input: &str, retain_bytes: usize) -> usize {
+    if input.len() <= retain_bytes {
+        return input.len();
+    }
+
+    let mut split_at = input.len() - retain_bytes;
+    while split_at > 0 && !input.is_char_boundary(split_at) {
+        split_at -= 1;
+    }
+    split_at
+}
+
+#[derive(Debug, Clone)]
+struct StreamRedactor {
+    pending: String,
+    secrets: Arc<RwLock<Vec<String>>>,
+}
+
+impl StreamRedactor {
+    fn new(secrets: Arc<RwLock<Vec<String>>>) -> Self {
+        Self {
+            pending: String::new(),
+            secrets,
+        }
+    }
+
+    async fn push_chunk(&mut self, chunk: &str) -> Option<String> {
+        self.pending.push_str(chunk);
+        self.drain(false).await
+    }
+
+    async fn finish(&mut self) -> Option<String> {
+        self.drain(true).await
+    }
+
+    async fn drain(&mut self, flush_all: bool) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+
+        let secrets = self.secrets.read().await.clone();
+        let drain_to = if flush_all {
+            self.pending.len()
+        } else {
+            let tail_boundary = drain_to_retained_tail(&self.pending, STREAM_REDACTION_TAIL_BYTES);
+            partial_redaction_start(&self.pending, &secrets).map_or(tail_boundary, |retain_start| {
+                tail_boundary.min(retain_start)
+            })
+        };
+
+        if drain_to == 0 {
+            return None;
+        }
+
+        let chunk = self.pending[..drain_to].to_string();
+        self.pending.replace_range(..drain_to, "");
+        Some(redact_stream_text(&chunk, &secrets))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,10 +337,17 @@ pub struct ScrollbackSlice {
     pub data: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ScrollbackReadStart {
+    Offset(u64),
+    Tail,
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionSupervisor {
     sessions: Arc<RwLock<HashMap<Uuid, SessionMetadata>>>,
     inputs: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChildStdin>>>>>,
+    redaction_secrets: Arc<RwLock<Vec<String>>>,
     tx: broadcast::Sender<SessionEvent>,
     idle_after: Duration,
     stuck_after: Duration,
@@ -136,6 +363,7 @@ impl SessionSupervisor {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             inputs: Arc::new(RwLock::new(HashMap::new())),
+            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
             tx,
             idle_after: Duration::minutes(2),
             stuck_after: Duration::minutes(10),
@@ -147,6 +375,14 @@ impl SessionSupervisor {
 
     pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
         self.tx.subscribe()
+    }
+
+    pub fn tmux_tmpdir(&self) -> PathBuf {
+        self.tmux_tmpdir.clone()
+    }
+
+    pub async fn set_redaction_secrets(&self, secrets: Vec<String>) {
+        *self.redaction_secrets.write().await = normalize_redaction_secrets(&secrets);
     }
 
     pub async fn spawn_shell(
@@ -406,6 +642,7 @@ impl SessionSupervisor {
                 stdout,
                 scrollback_path.clone(),
                 scrollback_index_path.clone(),
+                self.redaction_secrets.clone(),
             );
         }
         if let Some(stderr) = stderr {
@@ -414,6 +651,7 @@ impl SessionSupervisor {
                 stderr,
                 scrollback_path.clone(),
                 scrollback_index_path.clone(),
+                self.redaction_secrets.clone(),
             );
         }
         self.spawn_exit_task(session_id, child);
@@ -427,6 +665,7 @@ impl SessionSupervisor {
         mut reader: R,
         scrollback_path: PathBuf,
         scrollback_index_path: PathBuf,
+        redaction_secrets: Arc<RwLock<Vec<String>>>,
     ) where
         R: AsyncRead + Send + Unpin + 'static,
     {
@@ -456,6 +695,7 @@ impl SessionSupervisor {
                 .await
                 .map(|m| m.len())
                 .unwrap_or(0);
+            let mut redactor = StreamRedactor::new(redaction_secrets);
 
             let mut buf = [0u8; 4096];
             loop {
@@ -465,23 +705,6 @@ impl SessionSupervisor {
                     Err(_) => break,
                 };
                 let raw_chunk = String::from_utf8_lossy(&buf[..read]).to_string();
-                let chunk = redact_stream_chunk(&raw_chunk);
-                let chunk_bytes = chunk.as_bytes();
-
-                {
-                    let mut out = file.lock().await;
-                    if out.write_all(chunk_bytes).await.is_err() {
-                        break;
-                    }
-                    let _ = out.flush().await;
-                }
-                total = total.saturating_add(chunk_bytes.len() as u64);
-                {
-                    let mut idx = index.lock().await;
-                    let _ = idx.write_all(format!("{total}\n").as_bytes()).await;
-                    let _ = idx.flush().await;
-                }
-
                 {
                     let mut guard = sessions.write().await;
                     if let Some(meta) = guard.get_mut(&session_id) {
@@ -496,6 +719,41 @@ impl SessionSupervisor {
                     session_id,
                     health: SessionHealth::Active,
                 });
+                if let Some(chunk) = redactor.push_chunk(&raw_chunk).await {
+                    let chunk_bytes = chunk.as_bytes();
+
+                    {
+                        let mut out = file.lock().await;
+                        if out.write_all(chunk_bytes).await.is_err() {
+                            break;
+                        }
+                        let _ = out.flush().await;
+                    }
+                    total = total.saturating_add(chunk_bytes.len() as u64);
+                    {
+                        let mut idx = index.lock().await;
+                        let _ = idx.write_all(format!("{total}\n").as_bytes()).await;
+                        let _ = idx.flush().await;
+                    }
+
+                    let _ = tx.send(SessionEvent::Output { session_id, chunk });
+                }
+            }
+
+            if let Some(chunk) = redactor.finish().await {
+                let chunk_bytes = chunk.as_bytes();
+                {
+                    let mut out = file.lock().await;
+                    if out.write_all(chunk_bytes).await.is_ok() {
+                        let _ = out.flush().await;
+                    }
+                }
+                total = total.saturating_add(chunk_bytes.len() as u64);
+                {
+                    let mut idx = index.lock().await;
+                    let _ = idx.write_all(format!("{total}\n").as_bytes()).await;
+                    let _ = idx.flush().await;
+                }
                 let _ = tx.send(SessionEvent::Output { session_id, chunk });
             }
         });
@@ -627,6 +885,25 @@ impl SessionSupervisor {
         offset: u64,
         limit: usize,
     ) -> Result<ScrollbackSlice, SessionError> {
+        self.read_scrollback_slice(session_id, ScrollbackReadStart::Offset(offset), limit)
+            .await
+    }
+
+    pub async fn read_scrollback_tail(
+        &self,
+        session_id: Uuid,
+        limit: usize,
+    ) -> Result<ScrollbackSlice, SessionError> {
+        self.read_scrollback_slice(session_id, ScrollbackReadStart::Tail, limit)
+            .await
+    }
+
+    async fn read_scrollback_slice(
+        &self,
+        session_id: Uuid,
+        start: ScrollbackReadStart,
+        limit: usize,
+    ) -> Result<ScrollbackSlice, SessionError> {
         const MAX_SCROLLBACK_READ_BYTES: usize = 10 * 1024 * 1024; // 10 MB
         const MAX_READ_LIMIT: usize = 1024 * 1024; // 1 MB per read
 
@@ -652,7 +929,10 @@ impl SessionSupervisor {
         }
 
         let capped_limit = limit.min(MAX_READ_LIMIT);
-        let start = offset.min(total);
+        let start = match start {
+            ScrollbackReadStart::Offset(offset) => offset.min(total),
+            ScrollbackReadStart::Tail => total.saturating_sub(capped_limit as u64),
+        };
         file.seek(std::io::SeekFrom::Start(start)).await?;
         let mut buf = vec![0u8; capped_limit];
         let read = file.read(&mut buf).await?;
@@ -765,9 +1045,12 @@ async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path) -> bool {
 mod tests {
     use super::redact_stream_chunk;
     use super::SessionSupervisor;
+    use super::StreamRedactor;
     use crate::error::SessionError;
     use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
     use chrono::Utc;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
     use uuid::Uuid;
 
     #[test]
@@ -777,6 +1060,53 @@ mod tests {
         assert!(!redacted.contains("abc123"));
         assert!(!redacted.contains("swordfish"));
         assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn stream_redactor_redacts_secret_split_across_chunks() {
+        let secrets = Arc::new(RwLock::new(vec!["supersecret123".to_string()]));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        let first = redactor
+            .push_chunk("prefix super")
+            .await
+            .expect("safe prefix should flush");
+        assert_eq!(first, "prefix ");
+
+        let second = redactor
+            .push_chunk("secret123 suffix")
+            .await
+            .expect("completed secret should flush");
+        assert_eq!(second, "[REDACTED] suffix");
+    }
+
+    #[tokio::test]
+    async fn stream_redactor_redacts_pattern_split_across_chunks() {
+        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        assert!(
+            redactor.push_chunk("Authorization: Bea").await.is_none(),
+            "partial auth prefix should be retained"
+        );
+
+        let output = redactor
+            .push_chunk("rer abc123\n")
+            .await
+            .expect("completed auth header should flush");
+        assert_eq!(output, "Authorization: Bearer [REDACTED]\n");
+    }
+
+    #[tokio::test]
+    async fn stream_redactor_flushes_safe_marker_words_immediately() {
+        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        let output = redactor
+            .push_chunk("enter password\n")
+            .await
+            .expect("safe text should flush immediately");
+        assert_eq!(output, "enter password\n");
     }
 
     #[tokio::test]
@@ -878,6 +1208,49 @@ mod tests {
         assert_eq!(slice.start_offset, slice.total_bytes);
         assert_eq!(slice.end_offset, slice.total_bytes);
         assert!(slice.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_scrollback_tail_returns_latest_bytes() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        tokio::fs::create_dir_all(scrollback_path.parent().expect("scrollback parent"))
+            .await
+            .expect("create scrollback dir");
+        tokio::fs::write(&scrollback_path, b"alpha\nbeta\ngamma\n")
+            .await
+            .expect("write scrollback");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let slice = supervisor
+            .read_scrollback_tail(session_id, 6)
+            .await
+            .expect("tail read should succeed");
+        assert_eq!(slice.start_offset, slice.total_bytes - 6);
+        assert_eq!(slice.end_offset, slice.total_bytes);
+        assert_eq!(slice.data, "gamma\n");
     }
 
     #[tokio::test]

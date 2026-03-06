@@ -1,3 +1,4 @@
+use crate::auth_secret::load_socket_password;
 use crate::commands;
 use crate::state::AppState;
 use pnevma_core::{GlobalConfig, ProjectConfig};
@@ -93,12 +94,13 @@ pub fn resolve_control_plane_settings(
     let auth_mode = match auth_mode_name.as_str() {
         "same-user" => ControlAuthMode::SameUser,
         "password" => {
-            let password = std::env::var("PNEVMA_SOCKET_PASSWORD")
-                .ok()
-                .or_else(|| read_password_file(global.socket_password_file.as_deref()).ok())
-                .filter(|raw| !raw.trim().is_empty())
+            let password = load_socket_password(global.socket_password_file.as_deref())?
                 .ok_or_else(|| {
-                    "socket auth mode is password but no password is configured".to_string()
+                    format!(
+                        "socket auth mode is password but no password is configured (set PNEVMA_SOCKET_PASSWORD, store Keychain item {}/{}, or provide socket_password_file with mode 0600)",
+                        crate::auth_secret::SOCKET_KEYCHAIN_SERVICE,
+                        crate::auth_secret::SOCKET_KEYCHAIN_ACCOUNT
+                    )
                 })?;
             ControlAuthMode::Password { password }
         }
@@ -114,14 +116,6 @@ pub fn resolve_control_plane_settings(
         socket_path,
         auth_mode,
     })
-}
-
-fn read_password_file(path: Option<&str>) -> Result<String, String> {
-    let Some(path) = path else {
-        return Err("no password file configured".to_string());
-    };
-    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    Ok(raw.trim().to_string())
 }
 
 pub struct ControlServerHandle {
@@ -291,6 +285,17 @@ fn parse_string_param(params: &Value, key: &str) -> Result<String, String> {
     parse_optional_string_param(params, key)
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| format!("missing required string param: {key}"))
+}
+
+fn parse_string_param_aliases(
+    params: &Value,
+    keys: &[&str],
+    label: &str,
+) -> Result<String, String> {
+    keys.iter()
+        .find_map(|key| parse_optional_string_param(params, key))
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| format!("missing required string param: {label}"))
 }
 
 fn parse_optional_string_param(params: &Value, key: &str) -> Option<String> {
@@ -469,10 +474,44 @@ pub async fn route_method(
             serde_json::to_value(result)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "project.open" => {
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let project_id = commands::open_project(path, &state.emitter, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            let status = commands::project_status(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(commands::ProjectOpenResponse { project_id, status })
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.close" => {
+            commands::close_project(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(commands::OkResponse { ok: true })
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "project.status" => serde_json::to_value(
             commands::project_status(state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.summary" => serde_json::to_value(
+            commands::project_summary(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.cleanup_data" => serde_json::to_value(
+            commands::cleanup_project_data(
+                parse_optional_bool_param(params, "dry_run").unwrap_or(false),
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "task.create" => {
@@ -519,13 +558,47 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "task.update" => {
+            let id = parse_string_param_aliases(params, &["id", "task_id"], "task_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let title = parse_optional_string_param(params, "title");
+            let goal = parse_optional_string_param(params, "goal");
+            let scope = parse_optional_string_list_param(params, "scope");
+            let acceptance_criteria =
+                parse_optional_string_list_param(params, "acceptance_criteria");
+            let constraints = parse_optional_string_list_param(params, "constraints");
+            let dependencies = parse_optional_string_list_param(params, "dependencies");
+            let priority = parse_optional_string_param(params, "priority");
+            let status = parse_optional_string_param(params, "status");
+            let handoff_summary = parse_optional_string_param(params, "handoff_summary");
+            let task = commands::update_task(
+                commands::UpdateTaskInput {
+                    id,
+                    title,
+                    goal,
+                    scope,
+                    acceptance_criteria,
+                    constraints,
+                    dependencies,
+                    priority,
+                    status,
+                    handoff_summary,
+                },
+                &state.emitter,
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(task).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "task.dispatch" => {
-            let task_id = parse_string_param(params, "task_id")
+            let task_id = parse_string_param_aliases(params, &["task_id", "id"], "task_id")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
             let status = commands::dispatch_task(task_id, &state.emitter, state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
-            json!({ "status": status })
+            serde_json::to_value(commands::TaskDispatchResponse { status })
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "task.dispatch_next_ready" => {
             let next = commands::list_tasks(state)
@@ -698,7 +771,14 @@ pub async fn route_method(
                 commands::create_session(commands::SessionInput { name, cwd, command }, state)
                     .await
                     .map_err(|e| ("internal_error".to_string(), e))?;
-            json!({"session_id": session_id})
+            let binding = commands::get_session_binding(session_id.clone(), state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(commands::SessionNewResponse {
+                session_id,
+                binding,
+            })
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "session.list" => serde_json::to_value(
             commands::list_sessions(state)
@@ -706,15 +786,91 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "session.binding" => {
+            let session_id =
+                parse_string_param_aliases(params, &["session_id", "id"], "session_id")
+                    .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::get_session_binding(session_id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "session.send_input" => {
-            let session_id = parse_string_param(params, "session_id")
-                .map_err(|e| ("invalid_params".to_string(), e))?;
-            let input = parse_string_param(params, "input")
+            let session_id =
+                parse_string_param_aliases(params, &["session_id", "id"], "session_id")
+                    .map_err(|e| ("invalid_params".to_string(), e))?;
+            let input = parse_string_param_aliases(params, &["input", "data"], "input")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
             commands::send_session_input(session_id, input, state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
-            json!({"ok": true})
+            serde_json::to_value(commands::OkResponse { ok: true })
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "session.resize" => {
+            let session_id =
+                parse_string_param_aliases(params, &["session_id", "id"], "session_id")
+                    .map_err(|e| ("invalid_params".to_string(), e))?;
+            let cols = parse_optional_i64_param(params, "cols")
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    (
+                        "invalid_params".to_string(),
+                        "missing required positive integer param: cols".to_string(),
+                    )
+                })? as u16;
+            let rows = parse_optional_i64_param(params, "rows")
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    (
+                        "invalid_params".to_string(),
+                        "missing required positive integer param: rows".to_string(),
+                    )
+                })? as u16;
+            commands::resize_session(session_id, cols, rows, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(commands::OkResponse { ok: true })
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "session.scrollback" => {
+            let session_id =
+                parse_string_param_aliases(params, &["session_id", "id"], "session_id")
+                    .map_err(|e| ("invalid_params".to_string(), e))?;
+            let offset = parse_optional_i64_param(params, "offset")
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| {
+                        (
+                            "invalid_params".to_string(),
+                            "offset must be a non-negative integer".to_string(),
+                        )
+                    })
+                })
+                .transpose()?;
+            let limit = parse_optional_i64_param(params, "limit")
+                .map(|value| {
+                    usize::try_from(value).map_err(|_| {
+                        (
+                            "invalid_params".to_string(),
+                            "limit must be a non-negative integer".to_string(),
+                        )
+                    })
+                })
+                .transpose()?;
+            let scrollback = commands::get_scrollback(
+                commands::ScrollbackInput {
+                    session_id,
+                    offset,
+                    limit,
+                },
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(scrollback)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "session.timeline" => {
             let session_id = parse_string_param(params, "session_id")
@@ -1324,7 +1480,9 @@ pub async fn send_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_emitter::NullEmitter;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn request_with_password(password: Option<&str>) -> ControlRequest {
         ControlRequest {
@@ -1379,5 +1537,21 @@ mod tests {
         };
         let request = request_with_password(None);
         authorize_request(&request, &settings).expect("same-user mode should pass");
+    }
+
+    #[tokio::test]
+    async fn session_scrollback_route_is_registered() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(
+            &state,
+            "session.scrollback",
+            &json!({
+                "session_id": Uuid::new_v4().to_string()
+            }),
+        )
+        .await
+        .expect_err("missing project should still route to the session.scrollback handler");
+        assert_eq!(err.0, "internal_error");
+        assert_eq!(err.1, "no open project");
     }
 }

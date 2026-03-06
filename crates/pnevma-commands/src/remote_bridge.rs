@@ -1,3 +1,4 @@
+use crate::auth_secret::load_remote_password;
 use crate::control::route_method;
 use crate::state::AppState;
 use async_trait::async_trait;
@@ -40,19 +41,20 @@ pub async fn maybe_start_remote(state: Arc<AppState>) {
         return;
     }
 
-    let password = std::env::var("PNEVMA_REMOTE_PASSWORD")
-        .ok()
-        .or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let path = std::path::PathBuf::from(home).join(".config/pnevma/remote-password");
-            std::fs::read_to_string(path)
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
-        .filter(|p| !p.is_empty());
+    let password = match load_remote_password() {
+        Ok(password) => password,
+        Err(err) => {
+            tracing::error!(error = %err, "remote access password source is invalid");
+            return;
+        }
+    };
 
     let Some(password) = password else {
-        tracing::warn!("remote access enabled but no password configured (set PNEVMA_REMOTE_PASSWORD or ~/.config/pnevma/remote-password)");
+        tracing::warn!(
+            "remote access enabled but no password configured (set PNEVMA_REMOTE_PASSWORD, store Keychain item {}/{}, or create ~/.config/pnevma/remote-password with mode 0600)",
+            crate::auth_secret::REMOTE_KEYCHAIN_SERVICE,
+            crate::auth_secret::REMOTE_KEYCHAIN_ACCOUNT
+        );
         return;
     };
 
@@ -69,7 +71,15 @@ pub async fn maybe_start_remote(state: Arc<AppState>) {
         tls_allow_self_signed_fallback: config.tls_allow_self_signed_fallback,
     };
 
-    match pnevma_remote::start_remote_server(remote_config, router, &password, None).await {
+    match pnevma_remote::start_remote_server(
+        remote_config,
+        router,
+        state.remote_events.clone(),
+        &password,
+        None,
+    )
+    .await
+    {
         Ok(handle) => {
             tracing::info!(port = config.port, "remote access server started");
             *state.remote_handle.lock().await = Some(handle);

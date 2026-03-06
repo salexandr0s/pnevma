@@ -9,6 +9,7 @@ use axum::{
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::HashSet,
     net::{IpAddr, SocketAddr},
@@ -18,8 +19,10 @@ use std::{
     },
     time::Instant,
 };
+use uuid::Uuid;
 
 use crate::CommandRouter;
+use crate::RemoteEventEnvelope;
 
 /// Shared per-IP WebSocket connection counter.
 pub type WsConnectionCounts = Arc<DashMap<IpAddr, Arc<AtomicUsize>>>;
@@ -28,6 +31,7 @@ pub type WsConnectionCounts = Arc<DashMap<IpAddr, Arc<AtomicUsize>>>;
 #[derive(Clone)]
 pub struct WsState {
     pub router: Arc<dyn CommandRouter>,
+    pub remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
     pub connection_counts: WsConnectionCounts,
     pub max_ws_per_ip: usize,
 }
@@ -53,7 +57,7 @@ pub enum WsClientMessage {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsServerMessage {
     Subscribed {
@@ -77,6 +81,20 @@ pub enum WsServerMessage {
     Error {
         message: String,
     },
+}
+
+const ALLOWED_EVENT_CHANNELS: &[&str] = &[
+    "project_opened",
+    "task_updated",
+    "notification_created",
+    "notification_cleared",
+    "notification_updated",
+    "cost_updated",
+];
+
+#[derive(Debug, Deserialize)]
+struct SessionListEntry {
+    id: String,
 }
 
 pub async fn ws_handler(
@@ -104,7 +122,7 @@ pub async fn ws_handler(
 
     ws.max_message_size(65_536)
         .on_upgrade(move |socket| async move {
-            handle_socket(socket, state.router).await;
+            handle_socket(socket, state.router, state.remote_events).await;
             // Release the slot when the connection closes.
             counter.fetch_sub(1, Ordering::SeqCst);
         })
@@ -135,113 +153,208 @@ fn is_valid_channel(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
 }
 
-async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
+fn session_channel_id(name: &str) -> Option<&str> {
+    name.strip_prefix("session:")
+}
+
+fn is_allowed_channel(name: &str) -> bool {
+    if !is_valid_channel(name) {
+        return false;
+    }
+
+    if let Some(session_id) = session_channel_id(name) {
+        return Uuid::parse_str(session_id).is_ok();
+    }
+
+    ALLOWED_EVENT_CHANNELS.contains(&name)
+}
+
+fn event_channels(event: &RemoteEventEnvelope) -> Vec<String> {
+    let mut channels = vec![event.event.clone()];
+    if event.event == "session_output" {
+        if let Some(session_id) = event.payload.get("session_id").and_then(|v| v.as_str()) {
+            channels.push(format!("session:{session_id}"));
+        }
+    }
+    channels
+}
+
+async fn send_ws_message(
+    sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    message: &WsServerMessage,
+) -> bool {
+    let text = match serde_json::to_string(message) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to serialize WS response: {e}");
+            return true;
+        }
+    };
+
+    sender.send(Message::Text(text.into())).await.is_ok()
+}
+
+async fn authorize_session_channel(
+    router: &Arc<dyn CommandRouter>,
+    session_id: &str,
+) -> Result<(), String> {
+    Uuid::parse_str(session_id)
+        .map_err(|_| format!("invalid session channel: session:{session_id}"))?;
+
+    let value = router.route("session.list", &Value::Null).await?;
+    let sessions: Vec<SessionListEntry> =
+        serde_json::from_value(value).map_err(|e| format!("invalid session.list response: {e}"))?;
+
+    if sessions.iter().any(|session| session.id == session_id) {
+        Ok(())
+    } else {
+        Err(format!("session not found or not authorized: {session_id}"))
+    }
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    router: Arc<dyn CommandRouter>,
+    remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
+) {
     let (mut sender, mut receiver) = socket.split();
     let mut subscribed_sessions: HashSet<String> = HashSet::new();
+    let mut subscribed_channels: HashSet<String> = HashSet::new();
+    let mut event_rx = remote_events.subscribe();
 
     let mut message_count: u32 = 0;
     let mut window_start = Instant::now();
     const MAX_MESSAGES_PER_SECOND: u32 = 60;
 
-    while let Some(Ok(msg)) = receiver.next().await {
-        let text = match msg {
-            Message::Text(t) => t,
-            Message::Close(_) => break,
-            _ => continue,
-        };
-
-        // Rate limit check
-        let now = Instant::now();
-        if now.duration_since(window_start).as_secs() >= 1 {
-            message_count = 0;
-            window_start = now;
-        }
-        message_count += 1;
-        if message_count > MAX_MESSAGES_PER_SECOND {
-            let err = serde_json::to_string(&WsServerMessage::Error {
-                message: "rate limit exceeded: too many messages per second".to_string(),
-            })
-            .unwrap_or_default();
-            let _ = sender.send(Message::Text(err.into())).await;
-            continue;
-        }
-
-        let client_msg: WsClientMessage = match serde_json::from_str(&text) {
-            Ok(m) => m,
-            Err(e) => {
-                let err = serde_json::to_string(&WsServerMessage::Error {
-                    message: format!("invalid message: {e}"),
-                })
-                .unwrap_or_default();
-                let _ = sender.send(Message::Text(err.into())).await;
-                continue;
-            }
-        };
-
-        let response = match client_msg {
-            WsClientMessage::Subscribe { channel } => {
-                if !is_valid_channel(&channel) {
-                    WsServerMessage::Error {
-                        message: format!("invalid channel name: {channel}"),
+    loop {
+        tokio::select! {
+            event = event_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        for channel in event_channels(&event) {
+                            if !subscribed_channels.contains(&channel) {
+                                continue;
+                            }
+                            let message = WsServerMessage::Event {
+                                channel,
+                                payload: event.payload.clone(),
+                            };
+                            if !send_ws_message(&mut sender, &message).await {
+                                return;
+                            }
+                        }
                     }
-                } else {
-                    tracing::debug!(%channel, "WebSocket subscribe");
-                    // Track session subscriptions for access control
-                    if let Some(session_id) = channel.strip_prefix("session:") {
-                        subscribed_sessions.insert(session_id.to_string());
-                    }
-                    WsServerMessage::Subscribed { channel }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
             }
-            WsClientMessage::Unsubscribe { channel } => {
-                if !is_valid_channel(&channel) {
-                    WsServerMessage::Error {
-                        message: format!("invalid channel name: {channel}"),
-                    }
-                } else {
-                    tracing::debug!(%channel, "WebSocket unsubscribe");
-                    if let Some(session_id) = channel.strip_prefix("session:") {
-                        subscribed_sessions.remove(session_id);
-                    }
-                    WsServerMessage::Unsubscribed { channel }
-                }
-            }
-            // SessionInput is a dedicated typed message — it intentionally bypasses
-            // the generic RPC allowlist since the WS connection is already authenticated.
-            WsClientMessage::SessionInput { session_id, data } => {
-                if !subscribed_sessions.contains(&session_id) {
-                    WsServerMessage::Error {
-                        message: format!(
-                            "not subscribed to session {session_id} — subscribe first"
-                        ),
-                    }
-                } else {
-                    let params = serde_json::json!({ "id": session_id, "data": data });
-                    rpc_result(
-                        session_id,
-                        router.route("session.send_input", &params).await,
-                    )
-                }
-            }
-            WsClientMessage::Rpc { id, method, params } => {
-                if !super::rpc_allowlist::is_allowed(&method) {
-                    rpc_result(id, Err(format!("method not allowed via RPC: {method}")))
-                } else {
-                    rpc_result(id, router.route(&method, &params).await)
-                }
-            }
-        };
+            maybe_msg = receiver.next() => {
+                let Some(Ok(msg)) = maybe_msg else {
+                    break;
+                };
 
-        let text = match serde_json::to_string(&response) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("Failed to serialize WS response: {e}");
-                continue;
-            }
-        };
+                let text = match msg {
+                    Message::Text(t) => t,
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
 
-        if sender.send(Message::Text(text.into())).await.is_err() {
-            break;
+                let now = Instant::now();
+                if now.duration_since(window_start).as_secs() >= 1 {
+                    message_count = 0;
+                    window_start = now;
+                }
+                message_count += 1;
+                if message_count > MAX_MESSAGES_PER_SECOND {
+                    let message = WsServerMessage::Error {
+                        message: "rate limit exceeded: too many messages per second".to_string(),
+                    };
+                    if !send_ws_message(&mut sender, &message).await {
+                        break;
+                    }
+                    continue;
+                }
+
+                let client_msg: WsClientMessage = match serde_json::from_str(&text) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let message = WsServerMessage::Error {
+                            message: format!("invalid message: {e}"),
+                        };
+                        if !send_ws_message(&mut sender, &message).await {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                let response = match client_msg {
+                    WsClientMessage::Subscribe { channel } => {
+                        if !is_allowed_channel(&channel) {
+                            WsServerMessage::Error {
+                                message: format!("channel not allowed: {channel}"),
+                            }
+                        } else if let Some(session_id) = session_channel_id(&channel) {
+                            match authorize_session_channel(&router, session_id).await {
+                                Ok(()) => {
+                                    tracing::debug!(%channel, "WebSocket subscribe");
+                                    subscribed_channels.insert(channel.clone());
+                                    subscribed_sessions.insert(session_id.to_string());
+                                    WsServerMessage::Subscribed { channel }
+                                }
+                                Err(message) => WsServerMessage::Error { message },
+                            }
+                        } else {
+                            tracing::debug!(%channel, "WebSocket subscribe");
+                            subscribed_channels.insert(channel.clone());
+                            WsServerMessage::Subscribed { channel }
+                        }
+                    }
+                    WsClientMessage::Unsubscribe { channel } => {
+                        if !is_valid_channel(&channel) {
+                            WsServerMessage::Error {
+                                message: format!("invalid channel name: {channel}"),
+                            }
+                        } else {
+                            tracing::debug!(%channel, "WebSocket unsubscribe");
+                            subscribed_channels.remove(&channel);
+                            if let Some(session_id) = channel.strip_prefix("session:") {
+                                subscribed_sessions.remove(session_id);
+                            }
+                            WsServerMessage::Unsubscribed { channel }
+                        }
+                    }
+                    WsClientMessage::SessionInput { session_id, data } => {
+                        if !subscribed_sessions.contains(&session_id) {
+                            WsServerMessage::Error {
+                                message: format!(
+                                    "not subscribed to session {session_id} — subscribe first"
+                                ),
+                            }
+                        } else {
+                            let params = serde_json::json!({
+                                "session_id": session_id,
+                                "input": data
+                            });
+                            rpc_result(
+                                "session.send_input".to_string(),
+                                router.route("session.send_input", &params).await,
+                            )
+                        }
+                    }
+                    WsClientMessage::Rpc { id, method, params } => {
+                        if !super::rpc_allowlist::is_allowed(&method) {
+                            rpc_result(id, Err(format!("method not allowed via RPC: {method}")))
+                        } else {
+                            rpc_result(id, router.route(&method, &params).await)
+                        }
+                    }
+                };
+
+                if !send_ws_message(&mut sender, &response).await {
+                    break;
+                }
+            }
         }
     }
 }
@@ -249,7 +362,12 @@ async fn handle_socket(socket: WebSocket, router: Arc<dyn CommandRouter>) {
 #[cfg(test)]
 mod tests {
     use super::super::rpc_allowlist;
-    use super::is_valid_channel;
+    use super::{authorize_session_channel, event_channels, is_allowed_channel, is_valid_channel};
+    use crate::CommandRouter;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use uuid::Uuid;
 
     #[test]
     fn ws_rpc_rejects_blocked_methods() {
@@ -280,5 +398,77 @@ mod tests {
         assert!(!is_valid_channel("foo/bar"));
         assert!(!is_valid_channel("foo<bar>"));
         assert!(!is_valid_channel("test\n"));
+    }
+
+    #[test]
+    fn allowed_channels_are_explicitly_bounded() {
+        let session_id = Uuid::new_v4().to_string();
+        assert!(is_allowed_channel("task_updated"));
+        assert!(is_allowed_channel("notification_created"));
+        assert!(is_allowed_channel(&format!("session:{session_id}")));
+        assert!(!is_allowed_channel("session_output"));
+        assert!(!is_allowed_channel("task.deleted"));
+    }
+
+    #[test]
+    fn session_output_events_are_fanned_out_to_scoped_channel() {
+        let session_id = Uuid::new_v4().to_string();
+        let channels = event_channels(&crate::RemoteEventEnvelope {
+            event: "session_output".to_string(),
+            payload: json!({ "session_id": session_id }),
+        });
+        assert!(channels.contains(&"session_output".to_string()));
+        assert!(channels
+            .iter()
+            .any(|channel| channel.starts_with("session:")));
+    }
+
+    #[derive(Clone)]
+    struct StaticRouter {
+        value: Result<Value, String>,
+    }
+
+    #[async_trait]
+    impl CommandRouter for StaticRouter {
+        async fn route(&self, _method: &str, _params: &Value) -> Result<Value, String> {
+            self.value.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn session_channel_authorization_accepts_known_session() {
+        let session_id = Uuid::new_v4().to_string();
+        let router: Arc<dyn CommandRouter> = Arc::new(StaticRouter {
+            value: Ok(json!([{ "id": session_id.clone() }])),
+        });
+
+        authorize_session_channel(&router, &session_id)
+            .await
+            .expect("known session should be authorized");
+    }
+
+    #[tokio::test]
+    async fn session_channel_authorization_rejects_unknown_session() {
+        let session_id = Uuid::new_v4().to_string();
+        let router: Arc<dyn CommandRouter> = Arc::new(StaticRouter {
+            value: Ok(json!([{ "id": Uuid::new_v4().to_string() }])),
+        });
+
+        let err = authorize_session_channel(&router, &session_id)
+            .await
+            .expect_err("unknown session should be rejected");
+        assert!(err.contains("not authorized"));
+    }
+
+    #[tokio::test]
+    async fn session_channel_authorization_rejects_invalid_router_response() {
+        let router: Arc<dyn CommandRouter> = Arc::new(StaticRouter {
+            value: Ok(json!({ "unexpected": true })),
+        });
+
+        let err = authorize_session_channel(&router, &Uuid::new_v4().to_string())
+            .await
+            .expect_err("invalid session list payload should be rejected");
+        assert!(err.contains("invalid session.list response"));
     }
 }

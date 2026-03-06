@@ -19,12 +19,13 @@ use crate::{
         health::health,
         ws::{ws_handler, WsConnectionCounts, WsState},
     },
-    CommandRouter,
+    CommandRouter, RemoteEventEnvelope,
 };
 
 pub async fn build_router(
     config: &RemoteAccessConfig,
     router: Arc<dyn CommandRouter>,
+    remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
     token_store: Arc<TokenStore>,
     frontend_dir: Option<PathBuf>,
 ) -> Router {
@@ -49,6 +50,7 @@ pub async fn build_router(
     let ws_counts: WsConnectionCounts = std::sync::Arc::new(dashmap::DashMap::new());
     let ws_state = WsState {
         router: router.clone(),
+        remote_events,
         connection_counts: ws_counts,
         max_ws_per_ip: config.max_ws_per_ip,
     };

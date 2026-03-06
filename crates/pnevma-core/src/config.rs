@@ -79,13 +79,36 @@ impl Default for AutomationSection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_artifact_retention_days")]
+    pub artifact_days: i64,
+    #[serde(default = "default_review_retention_days")]
+    pub review_days: i64,
+    #[serde(default = "default_scrollback_retention_days")]
+    pub scrollback_days: i64,
+}
+
+impl Default for RetentionSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            artifact_days: default_artifact_retention_days(),
+            review_days: default_review_retention_days(),
+            scrollback_days: default_scrollback_retention_days(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PathSection {
     #[serde(default)]
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSection {
     /// Enable remote access via Tailscale. Off by default.
     #[serde(default)]
@@ -116,6 +139,22 @@ pub struct RemoteSection {
     pub tls_allow_self_signed_fallback: bool,
 }
 
+impl Default for RemoteSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_remote_port(),
+            tls_mode: default_tls_mode(),
+            token_ttl_hours: default_token_ttl(),
+            rate_limit_rpm: default_rate_limit_rpm(),
+            max_ws_per_ip: default_max_ws(),
+            serve_frontend: default_serve_frontend(),
+            allowed_origins: vec![],
+            tls_allow_self_signed_fallback: false,
+        }
+    }
+}
+
 fn default_remote_port() -> u16 {
     8443
 }
@@ -141,6 +180,8 @@ pub struct ProjectConfig {
     pub agents: AgentsSection,
     #[serde(default)]
     pub automation: AutomationSection,
+    #[serde(default)]
+    pub retention: RetentionSection,
     pub branches: BranchesSection,
     #[serde(default)]
     pub rules: PathSection,
@@ -190,11 +231,36 @@ fn default_auto_dispatch_interval() -> u64 {
     30
 }
 
-pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CoreError> {
-    let raw = fs::read_to_string(path)?;
-    let cfg: ProjectConfig = toml::from_str(&raw)
-        .map_err(|e| CoreError::Serialization(format!("invalid project config TOML: {e}")))?;
+fn default_artifact_retention_days() -> i64 {
+    30
+}
 
+fn default_review_retention_days() -> i64 {
+    30
+}
+
+fn default_scrollback_retention_days() -> i64 {
+    14
+}
+
+fn looks_like_valid_origin(origin: &str) -> bool {
+    let trimmed = origin.trim();
+    if trimmed.is_empty() || trimmed.contains('?') || trimmed.contains('#') {
+        return false;
+    }
+
+    let Some((scheme, remainder)) = trimmed.split_once("://") else {
+        return false;
+    };
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+
+    let remainder = remainder.strip_suffix('/').unwrap_or(remainder);
+    !remainder.is_empty() && !remainder.contains('/') && !remainder.contains('@')
+}
+
+fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
     if cfg.project.name.trim().is_empty() {
         return Err(CoreError::InvalidConfig(
             "project.name is required".to_string(),
@@ -225,7 +291,82 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CoreError> {
             "automation.socket_path must not be empty".to_string(),
         ));
     }
+    if cfg.retention.artifact_days <= 0 {
+        return Err(CoreError::InvalidConfig(
+            "retention.artifact_days must be greater than 0".to_string(),
+        ));
+    }
+    if cfg.retention.review_days <= 0 {
+        return Err(CoreError::InvalidConfig(
+            "retention.review_days must be greater than 0".to_string(),
+        ));
+    }
+    if cfg.retention.scrollback_days <= 0 {
+        return Err(CoreError::InvalidConfig(
+            "retention.scrollback_days must be greater than 0".to_string(),
+        ));
+    }
+    if cfg.remote.tls_mode != "tailscale" && cfg.remote.tls_mode != "self-signed" {
+        return Err(CoreError::InvalidConfig(
+            "remote.tls_mode must be either 'tailscale' or 'self-signed'".to_string(),
+        ));
+    }
+    if cfg.remote.token_ttl_hours == 0 {
+        return Err(CoreError::InvalidConfig(
+            "remote.token_ttl_hours must be greater than 0".to_string(),
+        ));
+    }
+    if cfg.remote.rate_limit_rpm == 0 {
+        return Err(CoreError::InvalidConfig(
+            "remote.rate_limit_rpm must be greater than 0".to_string(),
+        ));
+    }
+    if cfg.remote.max_ws_per_ip == 0 {
+        return Err(CoreError::InvalidConfig(
+            "remote.max_ws_per_ip must be greater than 0".to_string(),
+        ));
+    }
+    if cfg.remote.tls_allow_self_signed_fallback && cfg.remote.tls_mode != "tailscale" {
+        return Err(CoreError::InvalidConfig(
+            "remote.tls_allow_self_signed_fallback is only valid when remote.tls_mode = 'tailscale'"
+                .to_string(),
+        ));
+    }
+    for origin in &cfg.remote.allowed_origins {
+        if !looks_like_valid_origin(origin) {
+            return Err(CoreError::InvalidConfig(format!(
+                "remote.allowed_origins contains an invalid origin: {origin}"
+            )));
+        }
+    }
+    Ok(())
+}
 
+fn validate_global_config(cfg: &GlobalConfig) -> Result<(), CoreError> {
+    if let Some(mode) = &cfg.socket_auth_mode {
+        if mode != "same-user" && mode != "password" {
+            return Err(CoreError::InvalidConfig(
+                "socket_auth_mode must be either 'same-user' or 'password'".to_string(),
+            ));
+        }
+    }
+
+    if let Some(path) = &cfg.socket_password_file {
+        if path.trim().is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "socket_password_file must not be empty".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CoreError> {
+    let raw = fs::read_to_string(path)?;
+    let cfg: ProjectConfig = toml::from_str(&raw)
+        .map_err(|e| CoreError::Serialization(format!("invalid project config TOML: {e}")))?;
+    validate_project_config(&cfg)?;
     Ok(cfg)
 }
 
@@ -239,6 +380,7 @@ pub fn load_global_config() -> Result<GlobalConfig, CoreError> {
     let raw = fs::read_to_string(path)?;
     let cfg: GlobalConfig = toml::from_str(&raw)
         .map_err(|e| CoreError::Serialization(format!("invalid global config TOML: {e}")))?;
+    validate_global_config(&cfg)?;
     Ok(cfg)
 }
 
@@ -271,5 +413,89 @@ mod tests {
         assert!(auto.allowed_commands.contains(&"bash".to_string()));
         assert!(auto.allowed_commands.contains(&"claude-code".to_string()));
         assert!(!auto.allowed_commands.contains(&"curl".to_string()));
+    }
+
+    fn valid_project_config() -> ProjectConfig {
+        ProjectConfig {
+            project: ProjectSection {
+                name: "demo".to_string(),
+                brief: "demo".to_string(),
+            },
+            agents: AgentsSection {
+                default_provider: "codex".to_string(),
+                max_concurrent: 1,
+                claude_code: None,
+                codex: None,
+            },
+            automation: AutomationSection::default(),
+            retention: RetentionSection::default(),
+            branches: BranchesSection {
+                target: "main".to_string(),
+                naming: "pnevma/{task_id}/{slug}".to_string(),
+            },
+            rules: PathSection::default(),
+            conventions: PathSection::default(),
+            remote: RemoteSection::default(),
+        }
+    }
+
+    #[test]
+    fn remote_tls_mode_must_be_supported() {
+        let mut cfg = valid_project_config();
+        cfg.remote.tls_mode = "invalid".to_string();
+        let err = validate_project_config(&cfg).expect_err("invalid tls mode");
+        assert!(err.to_string().contains("remote.tls_mode"));
+    }
+
+    #[test]
+    fn remote_allowed_origin_must_be_valid() {
+        let mut cfg = valid_project_config();
+        cfg.remote.allowed_origins = vec!["https://example.com/path".to_string()];
+        let err = validate_project_config(&cfg).expect_err("invalid origin");
+        assert!(err.to_string().contains("remote.allowed_origins"));
+    }
+
+    #[test]
+    fn remote_self_signed_fallback_requires_tailscale_mode() {
+        let mut cfg = valid_project_config();
+        cfg.remote.tls_mode = "self-signed".to_string();
+        cfg.remote.tls_allow_self_signed_fallback = true;
+        let err = validate_project_config(&cfg).expect_err("invalid fallback combination");
+        assert!(err.to_string().contains("tls_allow_self_signed_fallback"));
+    }
+
+    #[test]
+    fn retention_days_must_be_positive() {
+        let mut cfg = valid_project_config();
+        cfg.retention.review_days = 0;
+        let err = validate_project_config(&cfg).expect_err("invalid retention days");
+        assert!(err.to_string().contains("retention.review_days"));
+    }
+
+    #[test]
+    fn origin_validator_accepts_host_port_and_trailing_slash() {
+        assert!(looks_like_valid_origin("https://localhost:8443"));
+        assert!(looks_like_valid_origin("https://localhost:8443/"));
+        assert!(looks_like_valid_origin("http://[::1]:8443"));
+    }
+
+    #[test]
+    fn global_socket_auth_mode_must_be_supported() {
+        let cfg = GlobalConfig {
+            socket_auth_mode: Some("invalid".to_string()),
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid socket auth mode");
+        assert!(err.to_string().contains("socket_auth_mode"));
+    }
+
+    #[test]
+    fn global_socket_password_file_must_not_be_empty() {
+        let cfg = GlobalConfig {
+            socket_password_file: Some("   ".to_string()),
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("empty socket password file");
+        assert!(err.to_string().contains("socket_password_file"));
     }
 }
