@@ -192,6 +192,11 @@ Pnevma ships a supported macOS signing, notarization, and stapling pipeline for 
 | Entitlement check | `scripts/check-entitlements.sh`          |
 | Pre-flight checks | `scripts/release-preflight.sh`           |
 
+If your local notary profile lives in the login keychain rather than the
+current default keychain, set
+`APPLE_NOTARY_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"` before
+running `scripts/release-macos-notarize.sh`.
+
 See the full [macOS release runbook](docs/macos-release.md).
 
 ## Documentation

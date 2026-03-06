@@ -30,6 +30,7 @@ xcrun notarytool store-credentials "pnevma-notary" \
 
 - `APPLE_SIGNING_IDENTITY` (required by signing script)
 - `APPLE_NOTARY_PROFILE` (required by notarization script)
+- `APPLE_NOTARY_KEYCHAIN` (optional override for the keychain containing the notary profile)
 - `APP_PATH` (optional override for app bundle path)
 - `ZIP_PATH` (optional override for notarization archive path)
 
@@ -52,6 +53,7 @@ Then sign, notarize, staple, and verify:
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
 export APPLE_NOTARY_PROFILE="pnevma-notary"
+export APPLE_NOTARY_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 export APP_PATH="native/build/Build/Products/Release/Pnevma.app"
 
 APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
@@ -75,6 +77,10 @@ Each release should preserve:
 
 The GitHub release workflow now uploads a `release-security-evidence` artifact containing the entitlement check, effective entitlements, `codesign`, and `spctl` output.
 Release SBOM and evidence artifacts are retained for 90 days in GitHub Actions.
+
+If the default keychain on a maintainer machine is not the login keychain, pass
+`APPLE_NOTARY_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"` so
+`notarytool` reads the saved `APPLE_NOTARY_PROFILE` from the expected store.
 
 ## Output locations
 

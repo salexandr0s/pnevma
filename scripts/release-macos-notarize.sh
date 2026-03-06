@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="${APP_PATH:-$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app}"
 NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
+NOTARY_KEYCHAIN="${APPLE_NOTARY_KEYCHAIN:-}"
 ZIP_PATH="${ZIP_PATH:-$ROOT_DIR/native/build/Pnevma-notarize.zip}"
 
 if [[ -z "$NOTARY_PROFILE" ]]; then
@@ -23,7 +24,11 @@ rm -f "$ZIP_PATH"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 
 echo "Submitting to Apple notary service"
-xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE" --wait)
+if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+  NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
+fi
+xcrun notarytool submit "$ZIP_PATH" "${NOTARY_ARGS[@]}"
 
 echo "Notarization submitted and accepted."
 echo "Next: run scripts/release-macos-staple-verify.sh"
