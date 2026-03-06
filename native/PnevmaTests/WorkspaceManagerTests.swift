@@ -360,10 +360,51 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(rootPane?.workingDirectory, "/tmp/a")
     }
 
+    func testActivationHubTracksWorkspaceOpenAndScratchClose() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub
+        )
+
+        let workspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        if case .opening(let workspaceID, _) = activationHub.currentState {
+            XCTAssertEqual(workspaceID, workspace.id)
+        } else {
+            XCTFail("Expected activation hub to enter opening state")
+        }
+
+        try await waitUntil {
+            activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
+        }
+
+        let scratch = manager.createWorkspace(name: "Scratch")
+        XCTAssertEqual(activationHub.currentState, .closed(workspaceID: scratch.id))
+    }
+
     func testProjectOpenFailurePostsActionableEvent() async throws {
         let bus = FailingProjectOpenCommandBus(message: "workspace_not_trusted")
+        let activationHub = ActiveWorkspaceActivationHub()
         let bridge = PnevmaBridge()
-        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub
+        )
 
         let eventExpectation = expectation(description: "project_open_failed")
         var receivedPayloadJSON: String?
@@ -393,5 +434,13 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(manager.activeWorkspaceID, workspace.id)
         XCTAssertNil(workspace.gitBranch)
         XCTAssertEqual(workspace.activeTasks, 0)
+        XCTAssertEqual(
+            activationHub.currentState,
+            .failed(
+                workspaceID: workspace.id,
+                generation: decoded.generation ?? 0,
+                message: "Workspace trust is required before this project can open."
+            )
+        )
     }
 }

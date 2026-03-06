@@ -30,6 +30,7 @@ protocol PaneContent: AnyObject {
     var sessionID: String? { get }
     var taskID: String? { get }
     var metadataJSON: String? { get }
+    var shouldPersist: Bool { get }
 
     /// Called when this pane becomes the active (focused) pane.
     func activate()
@@ -55,6 +56,7 @@ extension PaneContent {
     var sessionID: String? { nil }
     var taskID: String? { nil }
     var metadataJSON: String? { nil }
+    var shouldPersist: Bool { true }
 
     func persistedPane() -> PersistedPane {
         PersistedPane(
@@ -98,6 +100,7 @@ private final class RestoredPaneContainer: NSView, PaneContent {
     var sessionID: String? { wrapped.sessionID ?? persisted.sessionID }
     var taskID: String? { wrapped.taskID ?? persisted.taskID }
     var metadataJSON: String? { wrapped.metadataJSON ?? persisted.metadataJSON }
+    var shouldPersist: Bool { wrapped.shouldPersist }
 
     func activate() { wrapped.activate() }
     func deactivate() { wrapped.deactivate() }
@@ -115,10 +118,24 @@ extension RestoredPaneContainer: PanePersistenceObservable {
 @MainActor
 enum PaneFactory {
     static var sessionBridge: SessionBridge?
+    private static func paneTuple(_ view: NSView & PaneContent) -> (PaneID, NSView & PaneContent) {
+        (view.paneID, view)
+    }
 
     static func makeWelcome() -> (PaneID, NSView & PaneContent) {
-        let view = WelcomePaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(WelcomePaneView(frame: .zero))
+    }
+
+    static func makeRestoreError(
+        paneID: PaneID,
+        message: String,
+        detail: String?
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(RestoreErrorPaneView(
+            paneID: paneID,
+            message: message,
+            detail: detail
+        ))
     }
 
     /// Create a terminal pane.
@@ -127,82 +144,67 @@ enum PaneFactory {
         sessionID: String? = nil,
         autoStartIfNeeded: Bool = true
     ) -> (PaneID, NSView & PaneContent) {
-        let view = TerminalPaneView(
+        paneTuple(TerminalPaneView(
             workingDirectory: workingDirectory,
             sessionID: sessionID,
             autoStartIfNeeded: autoStartIfNeeded
-        )
-        return (view.paneID, view)
+        ))
     }
 
     static func makeTaskBoard() -> (PaneID, NSView & PaneContent) {
-        let view = TaskBoardPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(TaskBoardPaneView(frame: .zero))
     }
 
     static func makeReplay() -> (PaneID, NSView & PaneContent) {
-        let view = ReplayPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(ReplayPaneView(frame: .zero))
     }
 
     static func makeFileBrowser() -> (PaneID, NSView & PaneContent) {
-        let view = FileBrowserPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(FileBrowserPaneView(frame: .zero))
     }
 
     static func makeSshManager() -> (PaneID, NSView & PaneContent) {
-        let view = SshManagerPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(SshManagerPaneView(frame: .zero))
     }
 
     static func makeWorkflow() -> (PaneID, NSView & PaneContent) {
-        let view = WorkflowPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(WorkflowPaneView(frame: .zero))
     }
 
     static func makeReview() -> (PaneID, NSView & PaneContent) {
-        let view = ReviewPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(ReviewPaneView(frame: .zero))
     }
 
     static func makeMergeQueue() -> (PaneID, NSView & PaneContent) {
-        let view = MergeQueuePaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(MergeQueuePaneView(frame: .zero))
     }
 
     static func makeDiff() -> (PaneID, NSView & PaneContent) {
-        let view = DiffPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(DiffPaneView(frame: .zero))
     }
 
     static func makeSearch() -> (PaneID, NSView & PaneContent) {
-        let view = SearchPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(SearchPaneView(frame: .zero))
     }
 
     static func makeAnalytics() -> (PaneID, NSView & PaneContent) {
-        let view = AnalyticsPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(AnalyticsPaneView(frame: .zero))
     }
 
     static func makeSettings() -> (PaneID, NSView & PaneContent) {
-        let view = SettingsPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(SettingsPaneView(frame: .zero))
     }
 
     static func makeNotifications() -> (PaneID, NSView & PaneContent) {
-        let view = NotificationsPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(NotificationsPaneView(frame: .zero))
     }
 
     static func makeDailyBrief() -> (PaneID, NSView & PaneContent) {
-        let view = DailyBriefPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(DailyBriefPaneView(frame: .zero))
     }
 
     static func makeRulesManager() -> (PaneID, NSView & PaneContent) {
-        let view = RulesManagerPaneView(frame: .zero)
-        return (view.paneID, view)
+        paneTuple(RulesManagerPaneView(frame: .zero))
     }
 
     static func make(from persistedPane: PersistedPane) -> (PaneID, NSView & PaneContent) {
@@ -290,6 +292,29 @@ final class WelcomePaneView: NSView, PaneContent {
                 title: "Workspace Ready",
                 message: "Open a project to start a backend-managed terminal session.",
                 detail: nil,
+                scrollback: nil,
+                actions: []
+            )
+        )
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+}
+
+final class RestoreErrorPaneView: NSView, PaneContent {
+    let paneID: PaneID
+    let paneType = "restore_error"
+    let shouldPersist = false
+    var title: String { "Restore Error" }
+
+    init(paneID: PaneID, message: String, detail: String?) {
+        self.paneID = paneID
+        super.init(frame: .zero)
+        _ = addSwiftUISubview(
+            TerminalStateView(
+                title: "Pane Restore Failed",
+                message: message,
+                detail: detail,
                 scrollback: nil,
                 actions: []
             )
@@ -544,10 +569,13 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func showArchivedTerminal(_ binding: SessionBindingDescriptor) async {
+        let title = "Session Ended"
+        let message = "This terminal session is no longer live."
+        let detail = "Restored scrollback is available below. Use a recovery action to restart or reattach the backend session."
         showState(
-            title: "Session Ended",
-            message: "This terminal session is no longer live.",
-            detail: "Restored scrollback is available below. Use a recovery action to restart or reattach the backend session.",
+            title: title,
+            message: message,
+            detail: detail,
             scrollback: nil,
             actions: recoveryActionButtons()
         )
@@ -556,9 +584,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         do {
             let scrollback = try await sessionBridge.scrollback(for: binding.sessionID)
             showState(
-                title: "Session Ended",
-                message: "This terminal session is no longer live.",
-                detail: "Restored scrollback is available below. Use a recovery action to restart or reattach the backend session.",
+                title: title,
+                message: message,
+                detail: detail,
                 scrollback: scrollback.data,
                 actions: recoveryActionButtons()
             )

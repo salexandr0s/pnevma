@@ -60,7 +60,17 @@ struct NotificationsView: View {
 
             Divider()
 
-            if viewModel.filteredNotifications.isEmpty {
+            if let statusMessage = viewModel.statusMessage {
+                Spacer()
+                Image(systemName: "bell.badge")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 8)
+                Text(statusMessage)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Spacer()
+            } else if viewModel.filteredNotifications.isEmpty {
                 Spacer()
                 Text("No notifications")
                     .foregroundStyle(.secondary)
@@ -73,7 +83,7 @@ struct NotificationsView: View {
                 .listStyle(.plain)
             }
         }
-        .onAppear { viewModel.load() }
+        .onAppear { viewModel.activate() }
     }
 }
 
@@ -87,8 +97,8 @@ struct NotificationRow: View {
                 .frame(width: 8, height: 8)
                 .padding(.top, 6)
 
-            Image(systemName: iconName)
-                .foregroundStyle(iconColor)
+            Image(systemName: icon.name)
+                .foregroundStyle(icon.color)
                 .frame(width: 16)
                 .padding(.top, 2)
 
@@ -112,48 +122,83 @@ struct NotificationRow: View {
         .padding(.vertical, 4)
     }
 
-    private var iconName: String {
+    private var icon: (name: String, color: Color) {
         switch notification.level {
-        case "error": return "exclamationmark.circle.fill"
-        case "warning": return "exclamationmark.triangle.fill"
-        case "success": return "checkmark.circle.fill"
-        default: return "info.circle.fill"
-        }
-    }
-
-    private var iconColor: Color {
-        switch notification.level {
-        case "error": return .red
-        case "warning": return .orange
-        case "success": return .green
-        default: return .blue
+        case "error": return ("exclamationmark.circle.fill", .red)
+        case "warning": return ("exclamationmark.triangle.fill", .orange)
+        case "success": return ("checkmark.circle.fill", .green)
+        default: return ("info.circle.fill", .blue)
         }
     }
 }
 
+@MainActor
 final class NotificationsViewModel: ObservableObject {
+    private enum ViewState: Equatable {
+        case waiting(String)
+        case loading(String)
+        case ready
+        case failed(String)
+    }
+
     enum Filter: String { case all, unread, errors }
 
     @Published var notifications: [NotificationItem] = []
     @Published var filter: Filter = .all
+    @Published private var viewState: ViewState = .waiting("Open a project to load notifications.")
 
+    private let commandBus: (any CommandCalling)?
+    private let bridgeEventHub: BridgeEventHub
+    private let activationHub: ActiveWorkspaceActivationHub
     private var bridgeObserverID: UUID?
+    private var activationObserverID: UUID?
 
-    init() {
-        bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
+    init(
+        commandBus: (any CommandCalling)? = CommandBus.shared,
+        bridgeEventHub: BridgeEventHub = .shared,
+        activationHub: ActiveWorkspaceActivationHub = .shared
+    ) {
+        self.commandBus = commandBus
+        self.bridgeEventHub = bridgeEventHub
+        self.activationHub = activationHub
+
+        bridgeObserverID = bridgeEventHub.addObserver { [weak self] event in
             switch event.name {
             case "notification_created", "notification_cleared", "notification_updated":
-                self?.load()
+                Task { @MainActor [weak self] in
+                    self?.refreshIfActive()
+                }
             default:
                 break
+            }
+        }
+        activationObserverID = activationHub.addObserver { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.handleActivationState(state)
             }
         }
     }
 
     deinit {
         if let bridgeObserverID {
-            BridgeEventHub.shared.removeObserver(bridgeObserverID)
+            bridgeEventHub.removeObserver(bridgeObserverID)
         }
+        if let activationObserverID {
+            activationHub.removeObserver(activationObserverID)
+        }
+    }
+
+    var statusMessage: String? {
+        switch viewState {
+        case .waiting(let message), .loading(let message), .failed(let message):
+            return message
+        case .ready:
+            return nil
+        }
+    }
+
+    func activate() {
+        handleActivationState(activationHub.currentState)
     }
 
     var filteredNotifications: [NotificationItem] {
@@ -165,8 +210,15 @@ final class NotificationsViewModel: ObservableObject {
     }
 
     func load() {
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = commandBus else {
+            viewState = .failed("Notification loading is unavailable because the command bus is not configured.")
+            return
+        }
+        if notifications.isEmpty {
+            viewState = .loading("Loading notifications...")
+        }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 let items: [BackendNotificationItem] = try await bus.call(
                     method: "notification.list",
@@ -183,11 +235,9 @@ final class NotificationsViewModel: ObservableObject {
                         sourcePaneType: nil
                     )
                 }
-                await MainActor.run {
-                    self.notifications = mapped
-                }
+                self.finishLoading(mapped)
             } catch {
-                // Preserve the existing list when refresh fails.
+                self.handleLoadFailure(error)
             }
         }
     }
@@ -196,15 +246,16 @@ final class NotificationsViewModel: ObservableObject {
         if let idx = notifications.firstIndex(where: { $0.id == id }) {
             notifications[idx].isRead = true
         }
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = commandBus else { return }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 let _: OkResponse = try await bus.call(
                     method: "notification.mark_read",
                     params: NotificationMarkReadParams(notificationID: id)
                 )
             } catch {
-                load()
+                self.refreshAfterMutation()
             }
         }
     }
@@ -217,14 +268,54 @@ final class NotificationsViewModel: ObservableObject {
 
     func clearAll() {
         notifications.removeAll()
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = commandBus else { return }
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                let _: OkResponse = try await bus.call(method: "notification.clear")
+                let _: OkResponse = try await bus.call(method: "notification.clear", params: nil)
             } catch {
-                load()
+                self.refreshAfterMutation()
             }
         }
+    }
+
+    private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        switch state {
+        case .idle:
+            viewState = .waiting("Waiting for project activation...")
+        case .opening:
+            viewState = .waiting("Waiting for project activation...")
+        case .open:
+            load()
+        case .failed(_, _, let message):
+            viewState = .failed(message)
+        case .closed:
+            viewState = .waiting("Open a project to load notifications.")
+        }
+    }
+
+    private func refreshIfActive() {
+        guard activationHub.currentState.isOpen else { return }
+        load()
+    }
+
+    private func finishLoading(_ items: [NotificationItem]) {
+        notifications = items
+        viewState = .ready
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        let message = error.localizedDescription
+        if message.contains("no open project") || message.contains("No active project") {
+            viewState = .waiting("Waiting for project activation...")
+            return
+        }
+        viewState = .failed(message)
+    }
+
+    private func refreshAfterMutation() {
+        guard activationHub.currentState.isOpen else { return }
+        load()
     }
 }
 

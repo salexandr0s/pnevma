@@ -77,6 +77,9 @@ let package = Package(
                 "Core/WorkspaceManager.swift",
                 // Terminal
                 "Terminal/TerminalConfig.swift",
+                "Terminal/GhosttyConfigController.swift",
+                "Terminal/GhosttySchema.swift",
+                "Terminal/GhosttySettingsViewModel.swift",
                 "Terminal/TerminalHostView.swift",
                 "Terminal/TerminalSurface.swift",
                 // Panes

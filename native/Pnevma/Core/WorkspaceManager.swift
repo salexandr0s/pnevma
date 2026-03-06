@@ -18,6 +18,7 @@ final class WorkspaceManager: ObservableObject {
     var onActiveWorkspaceChanged: ((PaneLayoutEngine) -> Void)?
 
     private let commandBus: any CommandCalling
+    private let activationHub: ActiveWorkspaceActivationHub
     private var bridgeObserverID: UUID?
 
     private struct PendingActivationTarget {
@@ -32,9 +33,14 @@ final class WorkspaceManager: ObservableObject {
     private var desiredActivationTarget: PendingActivationTarget?
     private var activationTask: Task<Void, Never>?
 
-    init(bridge: PnevmaBridge, commandBus: any CommandCalling) {
+    init(
+        bridge: PnevmaBridge,
+        commandBus: any CommandCalling,
+        activationHub: ActiveWorkspaceActivationHub = .shared
+    ) {
         _ = bridge
         self.commandBus = commandBus
+        self.activationHub = activationHub
         bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleBridgeEvent(event)
@@ -146,8 +152,8 @@ final class WorkspaceManager: ObservableObject {
 
         if let workspace = workspace(withID: id) {
             ensurePlaceholderPaneIfNeeded(for: workspace)
-            onActiveWorkspaceChanged?(workspace.layoutEngine)
             scheduleActivation(for: workspace)
+            onActiveWorkspaceChanged?(workspace.layoutEngine)
         } else {
             scheduleBackendClose()
         }
@@ -160,6 +166,13 @@ final class WorkspaceManager: ObservableObject {
             path: workspace.projectPath,
             generation: generation
         )
+        if workspace.projectPath != nil {
+            activationHub.update(
+                .opening(workspaceID: workspace.id, generation: generation)
+            )
+        } else {
+            activationHub.update(.closed(workspaceID: workspace.id))
+        }
         startActivationLoopIfNeeded()
     }
 
@@ -170,6 +183,7 @@ final class WorkspaceManager: ObservableObject {
             path: nil,
             generation: nextRequestGeneration
         )
+        activationHub.update(.closed(workspaceID: nil))
         startActivationLoopIfNeeded()
     }
 
@@ -215,6 +229,9 @@ final class WorkspaceManager: ObservableObject {
 
             liveWorkspace.projectPath = response.status.projectPath
             workspaceProjectIDs[workspace.id] = response.projectID
+            activationHub.update(
+                .open(workspaceID: workspace.id, projectID: response.projectID)
+            )
 
             if seedInitialTerminalIfNeeded(for: liveWorkspace) {
                 onActiveWorkspaceChanged?(liveWorkspace.layoutEngine)
@@ -229,6 +246,13 @@ final class WorkspaceManager: ObservableObject {
 
             workspaceProjectIDs.removeValue(forKey: workspace.id)
             resetMetadata(for: liveWorkspace)
+            activationHub.update(
+                .failed(
+                    workspaceID: workspace.id,
+                    generation: generation,
+                    message: error.localizedDescription
+                )
+            )
             Log.workspace.error(
                 "Failed to open project for workspace \(workspace.id, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
@@ -255,6 +279,7 @@ final class WorkspaceManager: ObservableObject {
 
         workspaceProjectIDs.removeValue(forKey: workspace.id)
         resetMetadata(for: liveWorkspace)
+        activationHub.update(.closed(workspaceID: workspace.id))
         if ensurePlaceholderPaneIfNeeded(for: liveWorkspace) {
             onActiveWorkspaceChanged?(liveWorkspace.layoutEngine)
         }
@@ -266,6 +291,7 @@ final class WorkspaceManager: ObservableObject {
         } catch {
             Log.workspace.error("Failed to close backend project: \(error.localizedDescription, privacy: .public)")
         }
+        activationHub.update(.closed(workspaceID: activeWorkspaceID))
     }
 
     private func handleBridgeEvent(_ event: BridgeEvent) {

@@ -60,8 +60,9 @@ enum ReplayFrameBuilder {
 struct ReplayView: View {
     @StateObject private var viewModel: ReplayViewModel
 
-    init(sessionID: String?) {
-        _viewModel = StateObject(wrappedValue: ReplayViewModel(sessionID: sessionID))
+    @MainActor
+    init(sessionID: String?, viewModel: ReplayViewModel? = nil) {
+        _viewModel = StateObject(wrappedValue: viewModel ?? ReplayViewModel(sessionID: sessionID))
     }
 
     var body: some View {
@@ -141,11 +142,21 @@ struct ReplayView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-        .onAppear { viewModel.load() }
+        .onAppear { viewModel.activate() }
     }
 }
 
+@MainActor
 final class ReplayViewModel: ObservableObject {
+    private enum ViewState: Equatable {
+        case noSession
+        case closed(String)
+        case waiting(String)
+        case loading(String)
+        case ready
+        case failed(String)
+    }
+
     @Published var currentFrame: String?
     @Published var isPlaying = false
     @Published var playbackSpeed: Double = 1.0
@@ -154,52 +165,93 @@ final class ReplayViewModel: ObservableObject {
     var currentTimeLabel: String { formatTime(progress * totalDuration) }
     var totalTimeLabel: String { formatTime(totalDuration) }
     var emptyStateMessage: String {
-        sessionID == nil ? "No session selected for replay" : "No replay data available"
+        switch viewState {
+        case .noSession:
+            return "No session selected for replay"
+        case .closed(let message), .waiting(let message), .loading(let message), .failed(let message):
+            return message
+        case .ready:
+            return "No replay data available"
+        }
     }
 
     private let sessionID: String?
+    private let commandBus: (any CommandCalling)?
+    private let activationHub: ActiveWorkspaceActivationHub
+    private let sessionOutputHub: SessionOutputHub
     private var frames: [String] = []
     private var currentFrameIndex: Int = 0
     private var totalDuration: Double = 0
+    @Published private var viewState: ViewState
     private var sessionObserverID: UUID?
+    private var activationObserverID: UUID?
+    private var bufferedLiveChunks: [String] = []
+    private var isBootstrapping = false
+    private var bootstrapCompleted = false
 
-    init(sessionID: String?) {
+    init(
+        sessionID: String?,
+        commandBus: (any CommandCalling)? = CommandBus.shared,
+        activationHub: ActiveWorkspaceActivationHub = .shared,
+        sessionOutputHub: SessionOutputHub = .shared
+    ) {
         self.sessionID = sessionID
+        self.commandBus = commandBus
+        self.activationHub = activationHub
+        self.sessionOutputHub = sessionOutputHub
+        self.viewState = sessionID == nil ? .noSession : .closed("Open a project to load replay.")
         if let sessionID {
-            sessionObserverID = SessionOutputHub.shared.addObserver(for: sessionID) { [weak self] event in
-                self?.appendLiveChunk(event.chunk)
+            sessionObserverID = sessionOutputHub.addObserver(for: sessionID) { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.handleLiveChunk(event.chunk)
+                }
+            }
+        }
+        activationObserverID = activationHub.addObserver { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.handleActivationState(state)
             }
         }
     }
 
     deinit {
         if let sessionObserverID {
-            SessionOutputHub.shared.removeObserver(sessionObserverID)
+            sessionOutputHub.removeObserver(sessionObserverID)
+        }
+        if let activationObserverID {
+            activationHub.removeObserver(activationObserverID)
         }
     }
 
+    func activate() {
+        handleActivationState(activationHub.currentState)
+    }
+
     func load() {
-        guard let sessionID, let bus = CommandBus.shared else {
+        guard let sessionID else {
             currentFrame = nil
+            viewState = .noSession
             return
         }
+        guard let bus = commandBus else {
+            viewState = .failed("Replay loading is unavailable because the command bus is not configured.")
+            return
+        }
+        guard !isBootstrapping else { return }
 
-        Task {
+        viewState = .loading("Loading replay...")
+        isBootstrapping = true
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 let entries: [ReplayTimelineEvent] = try await bus.call(
                     method: "session.timeline",
                     params: SessionTimelineParams(sessionID: sessionID, limit: 1000)
                 )
                 let rebuiltFrames = ReplayFrameBuilder.buildFrames(from: entries)
-                await MainActor.run {
-                    self.frames = rebuiltFrames
-                    self.currentFrameIndex = max(0, rebuiltFrames.count - 1)
-                    self.currentFrame = rebuiltFrames.last
-                    self.totalDuration = max(Double(max(rebuiltFrames.count - 1, 0)), 1.0)
-                    self.progress = rebuiltFrames.isEmpty ? 0.0 : 1.0
-                }
+                self.finishBootstrap(with: rebuiltFrames)
             } catch {
-                // Keep the last rendered frame if timeline loading fails.
+                self.handleBootstrapFailure(error)
             }
         }
     }
@@ -225,6 +277,67 @@ final class ReplayViewModel: ObservableObject {
         updateFrame(index: index)
     }
 
+    private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        guard sessionID != nil else {
+            viewState = .noSession
+            return
+        }
+
+        switch state {
+        case .idle:
+            if !bootstrapCompleted {
+                viewState = .waiting("Waiting for project activation...")
+            }
+        case .opening:
+            if !bootstrapCompleted {
+                viewState = .waiting("Waiting for project activation...")
+            }
+        case .open:
+            if !bootstrapCompleted {
+                load()
+            }
+        case .failed(_, _, let message):
+            if !bootstrapCompleted {
+                viewState = .failed(message)
+            }
+        case .closed:
+            if !bootstrapCompleted {
+                viewState = .closed("Open a project to load replay.")
+            }
+        }
+    }
+
+    private func handleLiveChunk(_ chunk: String) {
+        guard !chunk.isEmpty else { return }
+        if !bootstrapCompleted || isBootstrapping {
+            bufferedLiveChunks.append(chunk)
+            return
+        }
+        appendLiveChunk(chunk)
+    }
+
+    private func finishBootstrap(with rebuiltFrames: [String]) {
+        isBootstrapping = false
+        bootstrapCompleted = true
+        frames = Self.framesByApplyingBufferedChunks(rebuiltFrames, bufferedChunks: bufferedLiveChunks)
+        bufferedLiveChunks.removeAll()
+        currentFrameIndex = max(0, frames.count - 1)
+        currentFrame = frames.last
+        totalDuration = max(Double(max(frames.count - 1, 0)), 1.0)
+        progress = frames.isEmpty ? 0.0 : 1.0
+        viewState = .ready
+    }
+
+    private func handleBootstrapFailure(_ error: Error) {
+        isBootstrapping = false
+        let message = error.localizedDescription
+        if message.contains("no open project") || message.contains("No active project") {
+            viewState = .waiting("Waiting for project activation...")
+            return
+        }
+        viewState = .failed(message)
+    }
+
     private func updateFrame(index: Int) {
         currentFrameIndex = index
         currentFrame = frames[index]
@@ -239,6 +352,34 @@ final class ReplayViewModel: ObservableObject {
         currentFrame = next
         totalDuration = max(Double(max(frames.count - 1, 0)), 1.0)
         progress = 1.0
+    }
+
+    private static func framesByApplyingBufferedChunks(
+        _ rebuiltFrames: [String],
+        bufferedChunks: [String]
+    ) -> [String] {
+        guard !bufferedChunks.isEmpty else { return rebuiltFrames }
+
+        var mergedFrames = rebuiltFrames
+        var transcript = rebuiltFrames.last ?? ""
+        for chunk in bufferedChunks {
+            let suffix = nonOverlappingSuffix(for: chunk, onto: transcript)
+            guard !suffix.isEmpty else { continue }
+            transcript += suffix
+            mergedFrames.append(transcript)
+        }
+        return mergedFrames
+    }
+
+    private static func nonOverlappingSuffix(for chunk: String, onto transcript: String) -> String {
+        guard !chunk.isEmpty else { return "" }
+        let maxOverlap = min(chunk.count, transcript.count)
+        for length in stride(from: maxOverlap, through: 1, by: -1) {
+            if transcript.hasSuffix(String(chunk.prefix(length))) {
+                return String(chunk.dropFirst(length))
+            }
+        }
+        return chunk
     }
 
     private func formatTime(_ seconds: Double) -> String {

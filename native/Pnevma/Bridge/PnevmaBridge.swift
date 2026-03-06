@@ -11,6 +11,21 @@ struct SessionOutputEvent {
     let chunk: String
 }
 
+enum ActiveWorkspaceActivationState: Equatable {
+    case idle
+    case opening(workspaceID: UUID, generation: UInt64)
+    case open(workspaceID: UUID, projectID: String)
+    case failed(workspaceID: UUID, generation: UInt64, message: String)
+    case closed(workspaceID: UUID?)
+
+    var isOpen: Bool {
+        if case .open = self {
+            return true
+        }
+        return false
+    }
+}
+
 final class BridgeEventHub {
     static let shared = BridgeEventHub()
 
@@ -42,6 +57,46 @@ final class BridgeEventHub {
         DispatchQueue.main.async {
             callbacks.forEach { $0(event) }
         }
+    }
+}
+
+final class ActiveWorkspaceActivationHub {
+    static let shared = ActiveWorkspaceActivationHub()
+
+    typealias Observer = (ActiveWorkspaceActivationState) -> Void
+
+    private let lock = NSLock()
+    private var state: ActiveWorkspaceActivationState = .idle
+    private var observers: [UUID: Observer] = [:]
+
+    var currentState: ActiveWorkspaceActivationState {
+        lock.lock()
+        let current = state
+        lock.unlock()
+        return current
+    }
+
+    @discardableResult
+    func addObserver(_ observer: @escaping Observer) -> UUID {
+        let id = UUID()
+        lock.lock()
+        observers[id] = observer
+        lock.unlock()
+        return id
+    }
+
+    func removeObserver(_ id: UUID) {
+        lock.lock()
+        observers.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func update(_ state: ActiveWorkspaceActivationState) {
+        lock.lock()
+        self.state = state
+        let callbacks = Array(observers.values)
+        lock.unlock()
+        callbacks.forEach { $0(state) }
     }
 }
 

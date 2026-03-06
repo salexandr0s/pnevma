@@ -31,10 +31,6 @@ enum TaskStatus: String, CaseIterable {
         case .blocked: return "Blocked"
         }
     }
-
-    var isBoardColumn: Bool {
-        true
-    }
 }
 
 enum TaskPriority: String {
@@ -70,22 +66,37 @@ struct TaskBoardView: View {
     @StateObject private var viewModel = TaskBoardViewModel()
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(TaskStatus.allCases.filter(\.isBoardColumn), id: \.self) { status in
-                    KanbanColumn(
-                        status: status,
-                        tasks: viewModel.tasks(for: status),
-                        onDispatch: { viewModel.dispatch($0) },
-                        onStatusChange: { task, newStatus in
-                            viewModel.moveTask(task, to: newStatus)
+        Group {
+            if let statusMessage = viewModel.statusMessage {
+                VStack(spacing: 10) {
+                    Image(systemName: "rectangle.stack.badge.person.crop")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text(statusMessage)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(24)
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    HStack(alignment: .top, spacing: 12) {
+                        ForEach(TaskStatus.allCases, id: \.self) { status in
+                            KanbanColumn(
+                                status: status,
+                                tasks: viewModel.tasks(for: status),
+                                onDispatch: { viewModel.dispatch($0) },
+                                onStatusChange: { task, newStatus in
+                                    viewModel.moveTask(task, to: newStatus)
+                                }
+                            )
                         }
-                    )
+                    }
+                    .padding(16)
                 }
             }
-            .padding(16)
         }
-        .onAppear { viewModel.loadTasks() }
+        .onAppear { viewModel.activate() }
     }
 }
 
@@ -173,7 +184,7 @@ struct TaskCard: View {
         .contextMenu {
             Button("Dispatch") { onDispatch() }
             Divider()
-            ForEach(TaskStatus.allCases.filter(\.isBoardColumn), id: \.self) { status in
+            ForEach(TaskStatus.allCases, id: \.self) { status in
                 Button("Move to \(status.displayName)") {
                     onStatusChange(status)
                 }
@@ -183,51 +194,103 @@ struct TaskCard: View {
     }
 }
 
+@MainActor
 final class TaskBoardViewModel: ObservableObject {
+    private enum ViewState: Equatable {
+        case waiting(String)
+        case loading(String)
+        case ready
+        case failed(String)
+    }
+
     @Published var allTasks: [TaskItem] = []
+    @Published private var viewState: ViewState = .waiting("Open a project to load tasks.")
 
+    private let commandBus: (any CommandCalling)?
+    private let bridgeEventHub: BridgeEventHub
+    private let activationHub: ActiveWorkspaceActivationHub
     private var bridgeObserverID: UUID?
+    private var activationObserverID: UUID?
 
-    init() {
-        bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
+    init(
+        commandBus: (any CommandCalling)? = CommandBus.shared,
+        bridgeEventHub: BridgeEventHub = .shared,
+        activationHub: ActiveWorkspaceActivationHub = .shared
+    ) {
+        self.commandBus = commandBus
+        self.bridgeEventHub = bridgeEventHub
+        self.activationHub = activationHub
+
+        bridgeObserverID = bridgeEventHub.addObserver { [weak self] event in
             guard event.name == "task_updated" else { return }
-            self?.loadTasks()
+            Task { @MainActor [weak self] in
+                self?.refreshIfActive()
+            }
+        }
+        activationObserverID = activationHub.addObserver { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.handleActivationState(state)
+            }
         }
     }
 
     deinit {
         if let bridgeObserverID {
-            BridgeEventHub.shared.removeObserver(bridgeObserverID)
+            bridgeEventHub.removeObserver(bridgeObserverID)
         }
+        if let activationObserverID {
+            activationHub.removeObserver(activationObserverID)
+        }
+    }
+
+    var statusMessage: String? {
+        switch viewState {
+        case .waiting(let message), .loading(let message), .failed(let message):
+            return message
+        case .ready:
+            return nil
+        }
+    }
+
+    func activate() {
+        handleActivationState(activationHub.currentState)
     }
 
     func tasks(for status: TaskStatus) -> [TaskItem] {
         allTasks.filter { $0.status == status }
     }
 
-    func loadTasks() {
-        guard let bus = CommandBus.shared else { return }
-        Task {
+    func loadTasks(showLoadingState: Bool = true) {
+        guard let bus = commandBus else {
+            viewState = .failed("Task loading is unavailable because the command bus is not configured.")
+            return
+        }
+        if showLoadingState, allTasks.isEmpty {
+            viewState = .loading("Loading tasks...")
+        }
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                let tasks: [BackendTask] = try await bus.call(method: "task.list")
+                let tasks: [BackendTask] = try await bus.call(method: "task.list", params: nil)
                 let mapped = tasks.compactMap(Self.mapBackendTask)
-                await MainActor.run { self.allTasks = mapped }
+                self.finishLoading(mapped)
             } catch {
-                // Keep the current board state if refresh fails.
+                self.handleLoadFailure(error)
             }
         }
     }
 
     func dispatch(_ task: TaskItem) {
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = commandBus else { return }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 struct Params: Encodable { let taskID: String }
                 let _: TaskDispatchResponse = try await bus.call(
                     method: "task.dispatch",
                     params: Params(taskID: task.id)
                 )
-                loadTasks()
+                self.refreshAfterMutation()
             } catch {
                 // Keep existing state when dispatch fails.
             }
@@ -238,18 +301,58 @@ final class TaskBoardViewModel: ObservableObject {
         if let idx = allTasks.firstIndex(where: { $0.id == task.id }) {
             allTasks[idx].status = status
         }
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = commandBus else { return }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 let _: BackendTask = try await bus.call(
                     method: "task.update",
                     params: UpdateTaskParams(taskID: task.id, status: status.rawValue)
                 )
-                loadTasks()
+                self.refreshAfterMutation()
             } catch {
-                loadTasks()
+                self.refreshAfterMutation()
             }
         }
+    }
+
+    private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        switch state {
+        case .idle:
+            viewState = .waiting("Waiting for project activation...")
+        case .opening:
+            viewState = .waiting("Waiting for project activation...")
+        case .open:
+            loadTasks(showLoadingState: allTasks.isEmpty)
+        case .failed(_, _, let message):
+            viewState = .failed(message)
+        case .closed:
+            viewState = .waiting("Open a project to load tasks.")
+        }
+    }
+
+    private func refreshIfActive() {
+        guard activationHub.currentState.isOpen else { return }
+        loadTasks(showLoadingState: false)
+    }
+
+    private func finishLoading(_ tasks: [TaskItem]) {
+        allTasks = tasks
+        viewState = .ready
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        let message = error.localizedDescription
+        if message.contains("no open project") || message.contains("No active project") {
+            viewState = .waiting("Waiting for project activation...")
+            return
+        }
+        viewState = .failed(message)
+    }
+
+    private func refreshAfterMutation() {
+        guard activationHub.currentState.isOpen else { return }
+        loadTasks(showLoadingState: false)
     }
 
     private static func mapBackendTask(_ task: BackendTask) -> TaskItem? {

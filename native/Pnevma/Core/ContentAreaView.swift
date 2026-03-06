@@ -105,8 +105,10 @@ final class ContentAreaView: NSView {
         view.autoresizingMask = []
         addSubview(view)
         paneViews[view.paneID] = view
-        layoutEngine.upsertPersistedPane(view.persistedPane())
-        if let observablePane = view as? PanePersistenceObservable {
+        if view.shouldPersist {
+            layoutEngine.upsertPersistedPane(view.persistedPane())
+        }
+        if view.shouldPersist, let observablePane = view as? PanePersistenceObservable {
             observablePane.onPersistedStateChange = { [weak self] pane in
                 self?.layoutEngine.upsertPersistedPane(pane)
                 self?.onPanePersistenceChanged?()
@@ -198,16 +200,16 @@ final class ContentAreaView: NSView {
 
         if let root = engine.root {
             for paneID in root.allPaneIDs {
-                let persistedPane = engine.persistedPane(for: paneID)
-                    ?? PersistedPane(
+                let pane: NSView & PaneContent
+                if let persistedPane = engine.persistedPane(for: paneID) {
+                    (_, pane) = PaneFactory.make(from: persistedPane)
+                } else {
+                    (_, pane) = PaneFactory.makeRestoreError(
                         paneID: paneID,
-                        type: "replay",
-                        workingDirectory: nil,
-                        sessionID: nil,
-                        taskID: nil,
-                        metadataJSON: "{\"fallback\":\"missing_descriptor\"}"
+                        message: "Restore metadata for this pane is missing.",
+                        detail: "The pane could not be reconstructed and will not be saved back into session state."
                     )
-                let (_, pane) = PaneFactory.make(from: persistedPane)
+                }
                 registerPaneView(pane)
             }
         }
@@ -242,6 +244,7 @@ final class ContentAreaView: NSView {
 
     func syncPersistedPanes() {
         for view in paneViews.values {
+            guard view.shouldPersist else { continue }
             layoutEngine.upsertPersistedPane(view.persistedPane())
         }
     }

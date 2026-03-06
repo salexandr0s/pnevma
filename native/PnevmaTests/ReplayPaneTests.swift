@@ -1,6 +1,36 @@
 import XCTest
 @testable import Pnevma
 
+private actor ReplayCommandBus: CommandCalling {
+    private let timelineJSON: String
+    private let delayNanos: UInt64
+    private var callCountValue = 0
+
+    init(timelineJSON: String, delayNanos: UInt64 = 0) {
+        self.timelineJSON = timelineJSON
+        self.delayNanos = delayNanos
+    }
+
+    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+        switch method {
+        case "session.timeline":
+            callCountValue += 1
+            if delayNanos > 0 {
+                try await Task.sleep(nanoseconds: delayNanos)
+            }
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(T.self, from: Data(timelineJSON.utf8))
+        default:
+            throw NSError(domain: "ReplayCommandBus", code: 1)
+        }
+    }
+
+    func callCount() -> Int {
+        callCountValue
+    }
+}
+
 final class ReplayPaneTests: XCTestCase {
 
     func testBuildFramesSkipsDuplicateScrollbackSnapshot() {
@@ -79,5 +109,98 @@ final class ReplayPaneTests: XCTestCase {
         let frames = ReplayFrameBuilder.buildFrames(from: entries)
 
         XCTAssertTrue(frames.isEmpty)
+    }
+}
+
+@MainActor
+final class ReplayViewModelTests: XCTestCase {
+    private func waitUntil(
+        timeoutNanos: UInt64 = 1_000_000_000,
+        pollIntervalNanos: UInt64 = 10_000_000,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: @escaping () async -> Bool
+    ) async throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanos
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if await condition() {
+                return
+            }
+            try await Task.sleep(nanoseconds: pollIntervalNanos)
+        }
+        XCTFail("Timed out waiting for async condition", file: file, line: line)
+    }
+
+    func testReplayViewModelWaitsForActivationBeforeLoadingTimeline() async throws {
+        let bus = ReplayCommandBus(
+            timelineJSON: #"[{"timestamp":"2026-03-06T08:00:00Z","kind":"ScrollbackSnapshot","summary":"snapshot","payload":{"data":"restored\n","chunk":null}}]"#
+        )
+        let activationHub = ActiveWorkspaceActivationHub()
+        let sessionOutputHub = SessionOutputHub()
+        let viewModel = ReplayViewModel(
+            sessionID: "session-1",
+            commandBus: bus,
+            activationHub: activationHub,
+            sessionOutputHub: sessionOutputHub
+        )
+
+        viewModel.activate()
+        XCTAssertEqual(viewModel.emptyStateMessage, "Waiting for project activation...")
+        let initialCallCount = await bus.callCount()
+        XCTAssertEqual(initialCallCount, 0)
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        try await waitUntil {
+            await bus.callCount() == 1
+                && viewModel.currentFrame == "restored\n"
+        }
+    }
+
+    func testReplayViewModelBuffersLiveOutputDuringBootstrap() async throws {
+        let bus = ReplayCommandBus(
+            timelineJSON: #"[{"timestamp":"2026-03-06T08:00:00Z","kind":"ScrollbackSnapshot","summary":"snapshot","payload":{"data":"restored\n","chunk":null}}]"#,
+            delayNanos: 200_000_000
+        )
+        let activationHub = ActiveWorkspaceActivationHub()
+        let sessionOutputHub = SessionOutputHub()
+        let viewModel = ReplayViewModel(
+            sessionID: "session-1",
+            commandBus: bus,
+            activationHub: activationHub,
+            sessionOutputHub: sessionOutputHub
+        )
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+        viewModel.activate()
+        sessionOutputHub.publish(sessionID: "session-1", chunk: "live\n")
+
+        try await waitUntil {
+            viewModel.currentFrame == "restored\nlive\n"
+        }
+    }
+
+    func testReplayViewModelDeduplicatesBufferedChunkAlreadyPresentInTimeline() async throws {
+        let bus = ReplayCommandBus(
+            timelineJSON: #"[{"timestamp":"2026-03-06T08:00:00Z","kind":"ScrollbackSnapshot","summary":"snapshot","payload":{"data":"restored\nlive\n","chunk":null}}]"#,
+            delayNanos: 200_000_000
+        )
+        let activationHub = ActiveWorkspaceActivationHub()
+        let sessionOutputHub = SessionOutputHub()
+        let viewModel = ReplayViewModel(
+            sessionID: "session-1",
+            commandBus: bus,
+            activationHub: activationHub,
+            sessionOutputHub: sessionOutputHub
+        )
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+        viewModel.activate()
+        sessionOutputHub.publish(sessionID: "session-1", chunk: "live\n")
+
+        try await waitUntil {
+            viewModel.currentFrame == "restored\nlive\n"
+        }
+        XCTAssertEqual(viewModel.currentFrame, "restored\nlive\n")
     }
 }
