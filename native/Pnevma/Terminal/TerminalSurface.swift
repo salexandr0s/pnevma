@@ -1,6 +1,29 @@
 import Cocoa
 import os
 
+struct TerminalSurfaceEnvironmentVariable: Equatable {
+    let key: String
+    let value: String
+}
+
+struct TerminalSurfaceLaunchConfiguration: Equatable {
+    let workingDirectory: String?
+    let command: String?
+    let env: [TerminalSurfaceEnvironmentVariable]
+    let waitAfterCommand: Bool
+    let initialInput: String?
+
+    static func shell(workingDirectory: String? = nil) -> Self {
+        Self(
+            workingDirectory: workingDirectory,
+            command: nil,
+            env: [],
+            waitAfterCommand: false,
+            initialInput: nil
+        )
+    }
+}
+
 // MARK: - TerminalSurface
 
 /// Wraps a libghostty surface for GPU-rendered terminal output.
@@ -10,12 +33,22 @@ import os
 /// is shared across all surfaces and lives for the application lifetime.
 class TerminalSurface {
 
+    static var clipboardStringProvider: () -> String = {
+        NSPasteboard.general.string(forType: .string) ?? ""
+    }
+
+    static func clipboardStringForRequest(confirmed: Bool) -> String {
+        _ = confirmed
+        return clipboardStringProvider()
+    }
+
     #if canImport(GhosttyKit)
 
     // MARK: - Static App Singleton
 
     /// Internal so TerminalHostView can relay focus events via ghostty_app_set_focus.
     static var ghosttyApp: ghostty_app_t?
+    private static var ghosttyConfigOwner: TerminalConfig?
     private static var isAppInitialized = false
 
     /// Create the ghostty app singleton. Call once at launch from AppDelegate.
@@ -23,18 +56,18 @@ class TerminalSurface {
         guard !isAppInitialized else { return }
 
         let termConfig = TerminalConfig()
+        ghosttyConfigOwner = termConfig
         guard let ghosttyConfig = termConfig.config else {
             Log.terminal.error("Failed to load ghostty config")
+            emitSmokeDiagnostic("failed to load ghostty config")
+            ghosttyConfigOwner = nil
             return
         }
 
-        // Runtime config — userdata is nil at the app level; per-surface userdata
-        // is stored in ghostty_surface_config_s.userdata and surfaced via close_surface_cb.
         var runtimeConfig = ghostty_runtime_config_s(
             userdata: nil,
-            supports_selection_clipboard: true,
+            supports_selection_clipboard: false,
             wakeup_cb: { _ in
-                // ghostty calls this from any thread to request a main-thread tick.
                 DispatchQueue.main.async {
                     if let app = TerminalSurface.ghosttyApp {
                         ghostty_app_tick(app)
@@ -42,33 +75,25 @@ class TerminalSurface {
                 }
             },
             action_cb: { _, _, _ in
-                // Phase 1: let ghostty use its own defaults for all actions.
-                return false
+                // Pnevma does not yet expose Ghostty window-management actions.
+                true
             },
-            read_clipboard_cb: { _, _, statePtr in
-                // Deliver pasteboard contents through the ghostty state callback.
-                // ghostty passes a state pointer we call back with the string.
-                guard let statePtr = statePtr else { return }
-                let content = NSPasteboard.general.string(forType: .string) ?? ""
-                content.withCString { cstr in
-                    ghostty_runtime_clipboard_read_set_string(statePtr, cstr, UInt(content.utf8.count))
-                }
+            read_clipboard_cb: { userdata, _, statePtr in
+                guard let surface = TerminalSurface.surface(from: userdata) else { return }
+                surface.completeClipboardRead(state: statePtr, confirmed: false)
             },
-            confirm_read_clipboard_cb: { _, _, _, statePtr in
-                // Deny OSC 52 clipboard reads by default for security.
-                // TODO: Add user preference to control clipboard read access.
-                guard let statePtr = statePtr else { return }
-                ghostty_runtime_clipboard_confirm_request(statePtr, false)
+            confirm_read_clipboard_cb: { userdata, _, statePtr, _ in
+                guard let surface = TerminalSurface.surface(from: userdata) else { return }
+                surface.completeClipboardRead(state: statePtr, confirmed: true)
             },
-            write_clipboard_cb: { _, loc, content, count, confirm in
-                guard let content = content, count > 0 else { return }
-                let str = String(bytes: UnsafeBufferPointer(start: content, count: Int(count)), encoding: .utf8) ?? ""
+            write_clipboard_cb: { _, content, _, confirm in
+                guard !confirm, let content else { return }
+                let string = String(cString: content)
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(str, forType: .string)
+                NSPasteboard.general.setString(string, forType: .string)
             },
             close_surface_cb: { userdata, processAlive in
-                guard let userdata = userdata else { return }
-                // userdata is the retained TerminalSurface set in ghostty_surface_config_s.
+                guard let userdata else { return }
                 let surface = Unmanaged<TerminalSurface>.fromOpaque(userdata).takeRetainedValue()
                 DispatchQueue.main.async {
                     surface.handleClose(processAlive: processAlive)
@@ -79,10 +104,21 @@ class TerminalSurface {
         ghosttyApp = ghostty_app_new(&runtimeConfig, ghosttyConfig)
         if ghosttyApp == nil {
             Log.terminal.error("ghostty_app_new() returned nil")
+            emitSmokeDiagnostic("ghostty_app_new returned nil")
+            ghosttyConfigOwner = nil
         } else {
             isAppInitialized = true
             Log.terminal.info("ghostty app initialized")
         }
+    }
+
+    static func shutdownGhostty() {
+        if let app = ghosttyApp {
+            ghostty_app_free(app)
+        }
+        ghosttyApp = nil
+        ghosttyConfigOwner = nil
+        isAppInitialized = false
     }
 
     // MARK: - Instance
@@ -90,55 +126,94 @@ class TerminalSurface {
     private var surface: ghostty_surface_t?
     private let hostView: NSView
 
+    var isRendererReady: Bool {
+        surface != nil
+    }
+
+    static var isRealRendererAvailable: Bool {
+        ghosttyApp != nil
+    }
+
     /// Called when ghostty requests the surface to close.
     var onClose: (() -> Void)?
 
-    init(hostView: NSView, workingDirectory: String? = nil, command: String? = nil) {
+    init(
+        hostView: NSView,
+        launchConfiguration: TerminalSurfaceLaunchConfiguration = .shell()
+    ) {
         self.hostView = hostView
 
         guard let app = TerminalSurface.ghosttyApp else {
-            Log.terminal.error("ghostty app not initialized — call initializeGhostty() first")
+            Log.terminal.error("ghostty app not initialized - call initializeGhostty() first")
+            Self.emitSmokeDiagnostic("ghostty app was not initialized before surface creation")
             return
         }
 
-        // Retain self so close_surface_cb can recover us via userdata.
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
-        // NSView raw pointer — ghostty attaches its CAMetalLayer to this view.
         let nsviewPtr = Unmanaged.passUnretained(hostView).toOpaque()
 
-        // Use ghostty_surface_config_new() to get zero-initialised defaults,
-        // then override the fields we care about.
         var surfaceConfig = ghostty_surface_config_new()
         surfaceConfig.userdata = selfPtr
         surfaceConfig.platform_tag = GHOSTTY_PLATFORM_MACOS
         surfaceConfig.platform = ghostty_platform_u(
             macos: ghostty_platform_macos_s(nsview: nsviewPtr)
         )
-        surfaceConfig.scale_factor = NSScreen.main?.backingScaleFactor ?? 2.0
+        surfaceConfig.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2.0)
         surfaceConfig.font_size = 13.0
 
-        // Bind NSString to locals so they outlive surfaceConfig usage below.
         var wdNSString: NSString?
         var cmdNSString: NSString?
-        if let wd = workingDirectory {
-            wdNSString = wd as NSString
-            surfaceConfig.working_directory = wdNSString!.utf8String
+        var initialInputNSString: NSString?
+        var envKeys: [NSString] = []
+        var envValues: [NSString] = []
+        var envVars: [ghostty_env_var_s] = []
+        if let workingDirectory = launchConfiguration.workingDirectory {
+            wdNSString = workingDirectory as NSString
+            surfaceConfig.working_directory = wdNSString?.utf8String
         }
-        if let cmd = command {
-            cmdNSString = cmd as NSString
-            surfaceConfig.command = cmdNSString!.utf8String
+        if let command = launchConfiguration.command {
+            cmdNSString = command as NSString
+            surfaceConfig.command = cmdNSString?.utf8String
+        }
+        if let initialInput = launchConfiguration.initialInput {
+            initialInputNSString = initialInput as NSString
+            surfaceConfig.initial_input = initialInputNSString?.utf8String
+        }
+        surfaceConfig.wait_after_command = launchConfiguration.waitAfterCommand
+
+        if !launchConfiguration.env.isEmpty {
+            for item in launchConfiguration.env {
+                let key = item.key as NSString
+                let value = item.value as NSString
+                envKeys.append(key)
+                envValues.append(value)
+            }
+            for index in envKeys.indices {
+                envVars.append(
+                    ghostty_env_var_s(
+                        key: envKeys[index].utf8String,
+                        value: envValues[index].utf8String
+                    )
+                )
+            }
+            envVars.withUnsafeMutableBufferPointer { buffer in
+                surfaceConfig.env_vars = buffer.baseAddress
+                surfaceConfig.env_var_count = buffer.count
+                surface = ghostty_surface_new(app, &surfaceConfig)
+            }
+        } else {
+            surface = ghostty_surface_new(app, &surfaceConfig)
         }
 
-        surface = ghostty_surface_new(app, &surfaceConfig)
         if surface == nil {
             Log.terminal.error("ghostty_surface_new() returned nil")
-            // Balance the passRetained — close_surface_cb will never fire.
+            Self.emitSmokeDiagnostic("ghostty_surface_new returned nil")
             Unmanaged<TerminalSurface>.fromOpaque(selfPtr).release()
         }
     }
 
     deinit {
-        if let surface = surface {
+        if let surface {
             ghostty_surface_free(surface)
         }
     }
@@ -146,61 +221,78 @@ class TerminalSurface {
     // MARK: - Rendering
 
     func refresh() {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_refresh(surface)
     }
 
     func draw() {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_draw(surface)
     }
 
     // MARK: - Layout
 
     func resize(width: UInt32, height: UInt32) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_set_size(surface, width, height)
     }
 
+    func size() -> (columns: UInt16, rows: UInt16)? {
+        guard let surface else { return nil }
+        let size = ghostty_surface_size(surface)
+        return (size.columns, size.rows)
+    }
+
     func setContentScale(_ scale: Double) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_set_content_scale(surface, scale, scale)
     }
 
+    func setFocus(_ focused: Bool) {
+        guard let surface else { return }
+        ghostty_surface_set_focus(surface, focused)
+    }
+
+    func setDisplayID(_ displayID: UInt32) {
+        guard let surface else { return }
+        ghostty_surface_set_display_id(surface, displayID)
+    }
+
     func setOcclusion(_ occluded: Bool) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_set_occlusion(surface, occluded)
     }
 
     // MARK: - Keyboard Input
 
-    /// Returns true if ghostty consumed the key event.
     @discardableResult
     func sendKey(_ event: ghostty_input_key_s) -> Bool {
-        guard let surface = surface else { return false }
-        var e = event
-        return ghostty_surface_key(surface, e)
+        guard let surface else { return false }
+        return ghostty_surface_key(surface, event)
     }
 
     func sendText(_ text: String) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         text.withCString { ptr in
             ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
         }
     }
 
     func sendPreedit(_ text: String) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         text.withCString { ptr in
             ghostty_surface_preedit(surface, ptr, UInt(text.utf8.count))
         }
     }
 
     func imePoint() -> (x: Double, y: Double, width: Double, height: Double) {
-        guard let surface = surface else { return (0, 0, 0, 0) }
-        var x: Double = 0, y: Double = 0, w: Double = 0, h: Double = 0
-        ghostty_surface_ime_point(surface, &x, &y, &w, &h)
-        return (x, y, w, h)
+        guard let surface else { return (0, 0, 0, 0) }
+        var x: Double = 0
+        var y: Double = 0
+        var width: Double = 0
+        var height: Double = 0
+        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+        return (x, y, width, height)
     }
 
     // MARK: - Mouse Input
@@ -211,44 +303,76 @@ class TerminalSurface {
         button: ghostty_input_mouse_button_e,
         mods: ghostty_input_mods_e
     ) -> Bool {
-        guard let surface = surface else { return false }
+        guard let surface else { return false }
         return ghostty_surface_mouse_button(surface, state, button, mods)
     }
 
     func sendMousePos(x: Double, y: Double, mods: ghostty_input_mods_e) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_mouse_pos(surface, x, y, mods)
     }
 
     func sendMouseScroll(x: Double, y: Double, scrollMods: ghostty_input_scroll_mods_t) {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
     }
 
     // MARK: - Selection
 
     func hasSelection() -> Bool {
-        guard let surface = surface else { return false }
+        guard let surface else { return false }
         return ghostty_surface_has_selection(surface)
     }
 
     func getSelection() -> String? {
-        guard let surface = surface else { return nil }
+        guard let surface else { return nil }
         var text = ghostty_text_s()
         guard ghostty_surface_read_selection(surface, &text) else { return nil }
-        guard let ptr = text.ptr, text.len > 0 else { return nil }
-        return String(bytes: UnsafeBufferPointer(start: ptr, count: Int(text.len)), encoding: .utf8)
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let ptr = text.text else { return nil }
+        let selection = String(cString: ptr)
+        return selection.isEmpty ? nil : selection
     }
 
     func requestClose() {
-        guard let surface = surface else { return }
+        guard let surface else { return }
         ghostty_surface_request_close(surface)
     }
 
     // MARK: - Callbacks
 
     private func handleClose(processAlive: Bool) {
+        _ = processAlive
         onClose?()
+    }
+
+    private func completeClipboardRead(state: UnsafeMutableRawPointer?, confirmed: Bool) {
+        let content = Self.clipboardStringForRequest(confirmed: confirmed)
+        completeClipboardRequest(content, state: state, confirmed: confirmed)
+    }
+
+    private func completeClipboardRequest(
+        _ data: String,
+        state: UnsafeMutableRawPointer?,
+        confirmed: Bool = false
+    ) {
+        guard let surface, let state else { return }
+        data.withCString { ptr in
+            ghostty_surface_complete_clipboard_request(surface, ptr, state, confirmed)
+        }
+    }
+
+    private static func surface(from userdata: UnsafeMutableRawPointer?) -> TerminalSurface? {
+        guard let userdata else { return nil }
+        return Unmanaged<TerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
+    }
+
+    private static func emitSmokeDiagnostic(_ message: String) {
+        guard AppSmokeMode.current != nil else { return }
+        let line = "Smoke diagnostic: \(message)\n"
+        if let data = line.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
     }
 
     #else
@@ -258,11 +382,20 @@ class TerminalSurface {
     private let hostView: NSView
     var onClose: (() -> Void)?
 
+    var isRendererReady: Bool { false }
+
+    static var isRealRendererAvailable: Bool { false }
+
     static func initializeGhostty() {
-        Log.terminal.info("GhosttyKit not available — placeholder mode active")
+        Log.terminal.info("GhosttyKit not available - placeholder mode active")
     }
 
-    init(hostView: NSView, workingDirectory: String? = nil, command: String? = nil) {
+    static func shutdownGhostty() {}
+
+    init(
+        hostView: NSView,
+        launchConfiguration: TerminalSurfaceLaunchConfiguration = .shell()
+    ) {
         self.hostView = hostView
         Log.terminal.info("Placeholder: no ghostty surface created")
     }
@@ -270,7 +403,10 @@ class TerminalSurface {
     func refresh() {}
     func draw() {}
     func resize(width: UInt32, height: UInt32) {}
+    func size() -> (columns: UInt16, rows: UInt16)? { nil }
     func setContentScale(_ scale: Double) {}
+    func setFocus(_ focused: Bool) {}
+    func setDisplayID(_ displayID: UInt32) {}
     func setOcclusion(_ occluded: Bool) {}
     @discardableResult func sendKey(_ event: Any) -> Bool { false }
     func sendText(_ text: String) {}

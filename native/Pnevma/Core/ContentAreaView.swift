@@ -18,6 +18,9 @@ final class ContentAreaView: NSView {
     /// Called when the active pane changes.
     var onActivePaneChanged: ((PaneID?) -> Void)?
 
+    /// Called when a pane updates persisted metadata such as session attachment.
+    var onPanePersistenceChanged: (() -> Void)?
+
     // MARK: - Init
 
     init(frame: NSRect, rootPaneView: NSView & PaneContent) {
@@ -102,6 +105,13 @@ final class ContentAreaView: NSView {
         view.autoresizingMask = []
         addSubview(view)
         paneViews[view.paneID] = view
+        layoutEngine.upsertPersistedPane(view.persistedPane())
+        if let observablePane = view as? PanePersistenceObservable {
+            observablePane.onPersistedStateChange = { [weak self] pane in
+                self?.layoutEngine.upsertPersistedPane(pane)
+                self?.onPanePersistenceChanged?()
+            }
+        }
     }
 
     /// Split the active pane. The new pane view is added to the layout.
@@ -130,6 +140,7 @@ final class ContentAreaView: NSView {
             view.dispose()
             view.removeFromSuperview()
         }
+        layoutEngine.removePersistedPane(paneID)
 
         if layoutEngine.root == nil {
             onAllPanesClosed?()
@@ -168,7 +179,11 @@ final class ContentAreaView: NSView {
 
     /// Remove all pane and divider subviews and clear their tracking collections.
     private func teardownAllViews() {
-        for (_, v) in paneViews { v.removeFromSuperview() }
+        syncPersistedPanes()
+        for (_, v) in paneViews {
+            v.dispose()
+            v.removeFromSuperview()
+        }
         paneViews.removeAll()
         dividerViews.forEach { $0.removeFromSuperview() }
         dividerViews.removeAll()
@@ -176,17 +191,23 @@ final class ContentAreaView: NSView {
 
     /// Replace the layout engine (used when switching workspaces).
     func setLayoutEngine(_ engine: PaneLayoutEngine) {
+        syncPersistedPanes()
         teardownAllViews()
 
         layoutEngine = engine
 
-        // TODO: Recreate pane views from the new engine's tree using stored pane type metadata.
-        // PaneLayoutEngine does not yet store pane type per node, so all panes fall back to terminals.
-        // TODO: Store pane type in PaneLayoutEngine nodes and call PaneFactory.make(type:) here
-        //       to fully support non-terminal pane recreation on layout restore.
         if let root = engine.root {
-            for _ in root.allPaneIDs {
-                let (_, pane) = PaneFactory.makeTerminal()
+            for paneID in root.allPaneIDs {
+                let persistedPane = engine.persistedPane(for: paneID)
+                    ?? PersistedPane(
+                        paneID: paneID,
+                        type: "replay",
+                        workingDirectory: nil,
+                        sessionID: nil,
+                        taskID: nil,
+                        metadataJSON: "{\"fallback\":\"missing_descriptor\"}"
+                    )
+                let (_, pane) = PaneFactory.make(from: persistedPane)
                 registerPaneView(pane)
             }
         }
@@ -200,6 +221,7 @@ final class ContentAreaView: NSView {
     /// Replace the entire layout with a single root pane.
     /// Used when all panes have been closed and we need a fresh start.
     func setRootPane(_ view: NSView & PaneContent) {
+        syncPersistedPanes()
         teardownAllViews()
 
         layoutEngine = PaneLayoutEngine(rootPaneID: view.paneID)
@@ -217,6 +239,12 @@ final class ContentAreaView: NSView {
 
     /// Number of panes currently in the layout.
     var paneCount: Int { paneViews.count }
+
+    func syncPersistedPanes() {
+        for view in paneViews.values {
+            layoutEngine.upsertPersistedPane(view.persistedPane())
+        }
+    }
 }
 
 // MARK: - DividerView

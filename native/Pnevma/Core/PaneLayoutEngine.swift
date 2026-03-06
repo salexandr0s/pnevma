@@ -98,6 +98,7 @@ class PaneLayoutEngine {
 
     /// Cached layout frames, recomputed on every `layout(in:)` call.
     private(set) var paneFrames: [PaneID: NSRect] = [:]
+    private(set) var paneDescriptors: [PaneID: PersistedPane] = [:]
 
     // MARK: - Init
 
@@ -298,6 +299,18 @@ class PaneLayoutEngine {
         }
     }
 
+    func upsertPersistedPane(_ pane: PersistedPane) {
+        paneDescriptors[pane.paneID] = pane
+    }
+
+    func removePersistedPane(_ paneID: PaneID) {
+        paneDescriptors.removeValue(forKey: paneID)
+    }
+
+    func persistedPane(for paneID: PaneID) -> PersistedPane? {
+        paneDescriptors[paneID]
+    }
+
     /// Navigate from the active pane in the given direction.
     /// Returns the newly focused pane ID, or nil if no neighbor exists.
     @discardableResult
@@ -347,7 +360,8 @@ class PaneLayoutEngine {
 
     func serialize() -> Data? {
         guard let root = root else { return nil }
-        let payload = SerializedLayout(root: root, activePaneID: activePaneID)
+        let panes = root.allPaneIDs.compactMap { paneDescriptors[$0] }
+        let payload = SerializedLayout(root: root, activePaneID: activePaneID, panes: panes)
         return try? JSONEncoder().encode(payload)
     }
 
@@ -356,6 +370,7 @@ class PaneLayoutEngine {
         let engine = PaneLayoutEngine()
         engine.root = payload.root
         engine.activePaneID = payload.activePaneID
+        engine.paneDescriptors = Dictionary(uniqueKeysWithValues: payload.panes.map { ($0.paneID, $0) })
         return engine
     }
 }
@@ -365,4 +380,5 @@ class PaneLayoutEngine {
 private struct SerializedLayout: Codable {
     let root: SplitNode
     let activePaneID: PaneID?
+    let panes: [PersistedPane]
 }

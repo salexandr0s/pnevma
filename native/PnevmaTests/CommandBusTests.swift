@@ -98,4 +98,24 @@ final class CommandBusTests: XCTestCase {
             // Any error from a missing Rust backend is acceptable.
         }
     }
+
+    func testBackendErrorLocalizedDescriptionMapsWorkspaceTrustFailures() {
+        let trustError = PnevmaError.backendError(
+            method: "project.open",
+            message: "workspace_not_trusted"
+        )
+        XCTAssertEqual(
+            trustError.localizedDescription,
+            "Workspace trust is required before this project can open."
+        )
+
+        let changedError = PnevmaError.backendError(
+            method: "project.open",
+            message: "workspace_config_changed"
+        )
+        XCTAssertEqual(
+            changedError.localizedDescription,
+            "The workspace configuration changed and must be trusted again before opening."
+        )
+    }
 }

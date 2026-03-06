@@ -12,6 +12,29 @@ settings:
     SWIFT_VERSION: "5.9"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_APP_INTENTS_METADATA_GENERATION: NO
+
+schemes:
+  Pnevma:
+    build:
+      targets:
+        Pnevma: all
+    run:
+      config: Debug
+      executable: Pnevma
+    test:
+      config: Debug
+      targets:
+        - PnevmaTests
+  PnevmaTests:
+    build:
+      targets:
+        Pnevma: [test]
+        PnevmaTests: [test]
+    test:
+      config: Debug
+      targets:
+        - PnevmaTests
 
 targets:
   Pnevma:
@@ -31,12 +54,16 @@ targets:
         # Rust staticlib — path is relative to the Xcode project file (native/)
         # Debug: ../target/aarch64-apple-darwin/debug/libpnevma_bridge.a
         # Release: ../target/aarch64-apple-darwin/release/libpnevma_bridge.a
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge -lstdc++
       debug:
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/debug/ -lpnevma_bridge
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/debug/ -lpnevma_bridge -lstdc++
       release:
-        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/release/ -lpnevma_bridge
+        OTHER_LDFLAGS: $(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/release/ -lpnevma_bridge -lstdc++
     dependencies:
+      - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: AppIntents.framework
+      - sdk: Carbon.framework
       - sdk: Cocoa.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
@@ -51,6 +78,10 @@ targets:
       - path: PnevmaTests
     dependencies:
       - target: Pnevma
+      - sdk: AppIntents.framework
     settings:
       base:
+        PRODUCT_NAME: PnevmaTests
+        PRODUCT_MODULE_NAME: PnevmaTests
         PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.tests
+        GENERATE_INFOPLIST_FILE: YES

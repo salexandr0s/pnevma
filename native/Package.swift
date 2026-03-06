@@ -5,32 +5,71 @@
 //
 // Prerequisites before building:
 //   just rust-build          # produces target/aarch64-apple-darwin/debug/libpnevma_bridge.a
-//   just ghostty-build       # produces vendor/ghostty/zig-out/lib/libghostty.xcframework
+//   just ghostty-build       # produces vendor/ghostty/macos/GhosttyKit.xcframework
 //                            #   and vendor/ghostty/include/ghostty.h
 
 import PackageDescription
+import Foundation
+
+let fileManager = FileManager.default
+let ghosttyLibraryPath = "../vendor/ghostty/macos/GhosttyKit.xcframework/macos-arm64_x86_64"
+
+var pnevmaLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags([
+        "-L", "../target/aarch64-apple-darwin/debug",
+    ]),
+    .linkedLibrary("pnevma_bridge"),
+    .linkedLibrary("c++"),
+
+    .linkedFramework("AppIntents"),
+    .linkedFramework("Carbon"),
+    .linkedFramework("Cocoa"),
+    .linkedFramework("Security"),
+    .linkedFramework("SwiftUI"),
+    .linkedFramework("SystemConfiguration"),
+    .linkedFramework("Metal"),
+    .linkedFramework("MetalKit"),
+    .linkedFramework("QuartzCore"),
+
+    .linkedLibrary("resolv"),
+    .linkedLibrary("sqlite3"),
+]
+
+if fileManager.fileExists(atPath: ghosttyLibraryPath) {
+    pnevmaLinkerSettings.append(
+        contentsOf: [
+            .unsafeFlags([
+                "-L", ghosttyLibraryPath,
+            ]),
+            .linkedLibrary("ghostty"),
+        ]
+    )
+}
 
 let package = Package(
     name: "Pnevma",
     platforms: [
         .macOS(.v14),
     ],
+    products: [
+        .library(name: "Pnevma", targets: ["Pnevma"]),
+    ],
     targets: [
-        .executableTarget(
+        .target(
             name: "Pnevma",
             path: "Pnevma",
             exclude: [
                 "Pnevma.entitlements",
+                "App/PnevmaApp.swift",
             ],
             sources: [
-                // App
-                "App/PnevmaApp.swift",
                 "App/AppDelegate.swift",
                 // Bridge
                 "Bridge/PnevmaBridge.swift",
                 // Core
                 "Core/CommandBus.swift",
                 "Core/ContentAreaView.swift",
+                "Core/Log.swift",
                 "Core/PaneLayoutEngine.swift",
                 "Core/SessionBridge.swift",
                 "Core/SessionPersistence.swift",
@@ -69,44 +108,16 @@ let package = Package(
             ],
             swiftSettings: [
                 .unsafeFlags([
+                    "-disable-bridging-pch",
                     "-import-objc-header", "Pnevma/Bridge/Pnevma-Bridging-Header.h",
                 ]),
             ],
-            linkerSettings: [
-                // Rust staticlib — built by `just rust-build`
-                .unsafeFlags([
-                    "-L", "../target/aarch64-apple-darwin/debug",
-                ]),
-                .linkedLibrary("pnevma_bridge"),
-
-                // Ghostty static library — built by `just ghostty-build`
-                // The XCFramework is at vendor/ghostty/zig-out/lib/libghostty.xcframework
-                // For SPM builds we link the inner .a directly.
-                .unsafeFlags([
-                    "-L", "../vendor/ghostty/zig-out/lib",
-                    // XCFramework inner path for Apple Silicon macOS slice:
-                    "-F", "../vendor/ghostty/zig-out/lib/libghostty.xcframework/macos-arm64",
-                ]),
-                .linkedLibrary("ghostty"),
-
-                // System frameworks
-                .linkedFramework("Cocoa"),
-                .linkedFramework("Security"),
-                .linkedFramework("SystemConfiguration"),
-                // Metal — required by ghostty's GPU renderer
-                .linkedFramework("Metal"),
-                .linkedFramework("MetalKit"),
-                .linkedFramework("QuartzCore"),
-
-                // System libraries
-                .linkedLibrary("resolv"),
-                .linkedLibrary("sqlite3"),
-            ]
+            linkerSettings: pnevmaLinkerSettings
         ),
         .testTarget(
             name: "PnevmaTests",
-            dependencies: [],
-            path: "../PnevmaTests"
+            dependencies: ["Pnevma"],
+            path: "PnevmaTests"
         ),
     ]
 )

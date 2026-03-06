@@ -301,6 +301,12 @@ final class WelcomePaneView: NSView, PaneContent {
 
 // MARK: - TerminalPaneView
 
+private struct ProjectOpenFailureEventPayload: Decodable {
+    let workspaceID: UUID?
+    let generation: UInt64?
+    let message: String
+}
+
 /// Wraps TerminalHostView to conform to PaneContent.
 final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
@@ -338,9 +344,17 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             actions: []
         )
         bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
-            guard event.name == "project_opened" else { return }
-            Task { @MainActor [weak self] in
-                self?.retryAfterProjectActivation()
+            switch event.name {
+            case "project_opened":
+                Task { @MainActor [weak self] in
+                    self?.retryAfterProjectActivation()
+                }
+            case "project_open_failed":
+                Task { @MainActor [weak self] in
+                    self?.showProjectActivationFailure(event)
+                }
+            default:
+                break
             }
         }
         loadOrRestoreSession()
@@ -385,6 +399,22 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         guard awaitingProjectActivation else { return }
         awaitingProjectActivation = false
         loadOrRestoreSession()
+    }
+
+    private func showProjectActivationFailure(_ event: BridgeEvent) {
+        guard awaitingProjectActivation else { return }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = event.payloadJSON.data(using: .utf8).flatMap {
+            try? decoder.decode(ProjectOpenFailureEventPayload.self, from: $0)
+        }
+        showState(
+            title: "Project Activation Failed",
+            message: payload?.message ?? "The workspace project could not be activated.",
+            detail: "The terminal will retry automatically after the workspace activates successfully.",
+            scrollback: nil,
+            actions: []
+        )
     }
 
     private func loadOrRestoreSession() {

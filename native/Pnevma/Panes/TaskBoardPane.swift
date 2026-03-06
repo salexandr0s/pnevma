@@ -1,20 +1,25 @@
 import SwiftUI
 import Cocoa
 
-// MARK: - Data Models
-
-struct TaskItem: Identifiable, Codable {
+struct TaskItem: Identifiable {
     let id: String
     var title: String
     var status: TaskStatus
     var priority: TaskPriority
     var agentName: String?
     var cost: Double?
-    var storyProgress: Double?  // 0.0–1.0
+    var storyProgress: Double?
 }
 
-enum TaskStatus: String, Codable, CaseIterable {
-    case planned, ready, inProgress = "in_progress", review, done
+enum TaskStatus: String, CaseIterable {
+    case planned = "Planned"
+    case ready = "Ready"
+    case inProgress = "InProgress"
+    case review = "Review"
+    case done = "Done"
+    case failed = "Failed"
+    case blocked = "Blocked"
+
     var displayName: String {
         switch self {
         case .planned: return "Planned"
@@ -22,23 +27,44 @@ enum TaskStatus: String, Codable, CaseIterable {
         case .inProgress: return "In Progress"
         case .review: return "Review"
         case .done: return "Done"
+        case .failed: return "Failed"
+        case .blocked: return "Blocked"
         }
+    }
+
+    var isBoardColumn: Bool {
+        true
     }
 }
 
-enum TaskPriority: String, Codable {
-    case low, medium, high, critical
+enum TaskPriority: String {
+    case p0 = "P0"
+    case p1 = "P1"
+    case p2 = "P2"
+    case p3 = "P3"
+
     var color: Color {
         switch self {
-        case .low: return .secondary
-        case .medium: return .blue
-        case .high: return .orange
-        case .critical: return .red
+        case .p0: return .red
+        case .p1: return .orange
+        case .p2: return .blue
+        case .p3: return .secondary
         }
     }
 }
 
-// MARK: - TaskBoardPane (SwiftUI)
+private struct BackendTask: Decodable {
+    let id: String
+    let title: String
+    let status: String
+    let priority: String
+    let costUsd: Double?
+}
+
+private struct UpdateTaskParams: Encodable {
+    let taskID: String
+    let status: String
+}
 
 struct TaskBoardView: View {
     @StateObject private var viewModel = TaskBoardViewModel()
@@ -46,7 +72,7 @@ struct TaskBoardView: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(alignment: .top, spacing: 12) {
-                ForEach(TaskStatus.allCases, id: \.self) { status in
+                ForEach(TaskStatus.allCases.filter(\.isBoardColumn), id: \.self) { status in
                     KanbanColumn(
                         status: status,
                         tasks: viewModel.tasks(for: status),
@@ -62,8 +88,6 @@ struct TaskBoardView: View {
         .onAppear { viewModel.loadTasks() }
     }
 }
-
-// MARK: - KanbanColumn
 
 struct KanbanColumn: View {
     let status: TaskStatus
@@ -87,7 +111,11 @@ struct KanbanColumn: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 6) {
                     ForEach(tasks) { task in
-                        TaskCard(task: task, onDispatch: { onDispatch(task) })
+                        TaskCard(
+                            task: task,
+                            onDispatch: { onDispatch(task) },
+                            onStatusChange: { onStatusChange(task, $0) }
+                        )
                     }
                 }
             }
@@ -101,11 +129,10 @@ struct KanbanColumn: View {
     }
 }
 
-// MARK: - TaskCard
-
 struct TaskCard: View {
     let task: TaskItem
     let onDispatch: () -> Void
+    let onStatusChange: (TaskStatus) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -146,17 +173,33 @@ struct TaskCard: View {
         .contextMenu {
             Button("Dispatch") { onDispatch() }
             Divider()
-            ForEach(TaskStatus.allCases, id: \.self) { status in
-                Button("Move to \(status.displayName)") {}
+            ForEach(TaskStatus.allCases.filter(\.isBoardColumn), id: \.self) { status in
+                Button("Move to \(status.displayName)") {
+                    onStatusChange(status)
+                }
+                .disabled(status == task.status)
             }
         }
     }
 }
 
-// MARK: - ViewModel
-
 final class TaskBoardViewModel: ObservableObject {
     @Published var allTasks: [TaskItem] = []
+
+    private var bridgeObserverID: UUID?
+
+    init() {
+        bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
+            guard event.name == "task_updated" else { return }
+            self?.loadTasks()
+        }
+    }
+
+    deinit {
+        if let bridgeObserverID {
+            BridgeEventHub.shared.removeObserver(bridgeObserverID)
+        }
+    }
 
     func tasks(for status: TaskStatus) -> [TaskItem] {
         allTasks.filter { $0.status == status }
@@ -166,10 +209,11 @@ final class TaskBoardViewModel: ObservableObject {
         guard let bus = CommandBus.shared else { return }
         Task {
             do {
-                let tasks: [TaskItem] = try await bus.call(method: "task.list")
-                await MainActor.run { self.allTasks = tasks }
+                let tasks: [BackendTask] = try await bus.call(method: "task.list")
+                let mapped = tasks.compactMap(Self.mapBackendTask)
+                await MainActor.run { self.allTasks = mapped }
             } catch {
-                // Log error, keep existing state
+                // Keep the current board state if refresh fails.
             }
         }
     }
@@ -178,10 +222,14 @@ final class TaskBoardViewModel: ObservableObject {
         guard let bus = CommandBus.shared else { return }
         Task {
             do {
-                struct Params: Encodable { let taskId: String }
-                let _: [String: Bool] = try await bus.call(method: "task.dispatch", params: Params(taskId: task.id))
+                struct Params: Encodable { let taskID: String }
+                let _: TaskDispatchResponse = try await bus.call(
+                    method: "task.dispatch",
+                    params: Params(taskID: task.id)
+                )
+                loadTasks()
             } catch {
-                // Log error
+                // Keep existing state when dispatch fails.
             }
         }
     }
@@ -193,16 +241,33 @@ final class TaskBoardViewModel: ObservableObject {
         guard let bus = CommandBus.shared else { return }
         Task {
             do {
-                struct Params: Encodable { let taskId: String; let status: String }
-                let _: [String: Bool] = try await bus.call(method: "task.update", params: Params(taskId: task.id, status: status.rawValue))
+                let _: BackendTask = try await bus.call(
+                    method: "task.update",
+                    params: UpdateTaskParams(taskID: task.id, status: status.rawValue)
+                )
+                loadTasks()
             } catch {
-                // Log error
+                loadTasks()
             }
         }
     }
-}
 
-// MARK: - NSView Wrapper
+    private static func mapBackendTask(_ task: BackendTask) -> TaskItem? {
+        guard let status = TaskStatus(rawValue: task.status),
+              let priority = TaskPriority(rawValue: task.priority) else {
+            return nil
+        }
+        return TaskItem(
+            id: task.id,
+            title: task.title,
+            status: status,
+            priority: priority,
+            agentName: nil,
+            cost: task.costUsd,
+            storyProgress: nil
+        )
+    }
+}
 
 final class TaskBoardPaneView: NSView, PaneContent {
     let paneID = PaneID()

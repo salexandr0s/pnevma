@@ -13,8 +13,10 @@ class TerminalConfig {
             print("[TerminalConfig] ERROR: ghostty_config_new() returned nil")
             return
         }
-        ghostty_config_load_default_files(config)
-        ghostty_config_load_recursive_files(config)
+        if AppSmokeMode.current == nil {
+            ghostty_config_load_default_files(config)
+            ghostty_config_load_recursive_files(config)
+        }
         ghostty_config_finalize(config)
     }
 

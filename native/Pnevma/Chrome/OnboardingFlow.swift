@@ -51,6 +51,10 @@ struct OnboardingView: View {
                             .font(.body)
                             .foregroundStyle(.secondary)
 
+                        Text("Agents run in isolated git worktrees, not in an OS sandbox. They keep this macOS user's filesystem and network access.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
                         HStack(spacing: 12) {
                             Button("Open Existing Project") {
                                 viewModel.openProject()

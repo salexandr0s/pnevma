@@ -1,28 +1,77 @@
 import SwiftUI
 import Cocoa
 
-// MARK: - Data Models
-
-struct TimelineEntry: Codable {
-    let timestamp: Double
-    let content: String
+struct ReplayTimelinePayload: Decodable {
+    let data: String?
+    let chunk: String?
 }
 
-// MARK: - ReplayView
+struct ReplayTimelineEvent: Decodable {
+    let timestamp: String
+    let kind: String
+    let summary: String
+    let payload: ReplayTimelinePayload
+}
+
+private struct SessionTimelineParams: Encodable {
+    let sessionID: String
+    let limit: Int
+}
+
+enum ReplayFrameBuilder {
+    private static let incrementalOutputKinds: Set<String> = ["session_output"]
+
+    static func buildFrames(from entries: [ReplayTimelineEvent]) -> [String] {
+        var frames: [String] = []
+        var transcript = ""
+
+        for entry in entries {
+            if entry.kind == "ScrollbackSnapshot" {
+                guard let snapshot = entry.payload.data, !snapshot.isEmpty else { continue }
+                if frames.isEmpty || transcript != snapshot {
+                    transcript = snapshot
+                    frames.append(snapshot)
+                } else {
+                    transcript = snapshot
+                }
+                continue
+            }
+
+            let nextChunk: String?
+            if let chunk = entry.payload.chunk, !chunk.isEmpty {
+                nextChunk = chunk
+            } else if incrementalOutputKinds.contains(entry.kind),
+                      let data = entry.payload.data,
+                      !data.isEmpty {
+                nextChunk = data
+            } else {
+                nextChunk = nil
+            }
+
+            guard let nextChunk else { continue }
+            transcript += nextChunk
+            frames.append(transcript)
+        }
+
+        return frames
+    }
+}
 
 struct ReplayView: View {
-    @StateObject private var viewModel = ReplayViewModel()
+    @StateObject private var viewModel: ReplayViewModel
+
+    init(sessionID: String?) {
+        _viewModel = StateObject(wrappedValue: ReplayViewModel(sessionID: sessionID))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Toolbar
             HStack(spacing: 12) {
                 Text("Session Replay")
                     .font(.headline)
 
                 Spacer()
 
-                // Playback controls
                 Button(action: { viewModel.stepBackward() }) {
                     Image(systemName: "backward.frame.fill")
                 }
@@ -38,7 +87,6 @@ struct ReplayView: View {
                 }
                 .buttonStyle(.plain)
 
-                // Speed control
                 Picker("Speed", selection: $viewModel.playbackSpeed) {
                     Text("0.5x").tag(0.5)
                     Text("1x").tag(1.0)
@@ -51,7 +99,6 @@ struct ReplayView: View {
 
             Divider()
 
-            // Terminal replay area (placeholder — would use read-only ghostty surface)
             ZStack {
                 Color(nsColor: .textBackgroundColor)
 
@@ -68,7 +115,7 @@ struct ReplayView: View {
                         Image(systemName: "play.rectangle")
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
-                        Text("No session selected for replay")
+                        Text(viewModel.emptyStateMessage)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -76,7 +123,6 @@ struct ReplayView: View {
 
             Divider()
 
-            // Timeline scrubber
             HStack(spacing: 8) {
                 Text(viewModel.currentTimeLabel)
                     .font(.caption)
@@ -99,8 +145,6 @@ struct ReplayView: View {
     }
 }
 
-// MARK: - ViewModel
-
 final class ReplayViewModel: ObservableObject {
     @Published var currentFrame: String?
     @Published var isPlaying = false
@@ -109,26 +153,53 @@ final class ReplayViewModel: ObservableObject {
 
     var currentTimeLabel: String { formatTime(progress * totalDuration) }
     var totalTimeLabel: String { formatTime(totalDuration) }
+    var emptyStateMessage: String {
+        sessionID == nil ? "No session selected for replay" : "No replay data available"
+    }
 
-    private var frames: [TimelineEntry] = []
+    private let sessionID: String?
+    private var frames: [String] = []
     private var currentFrameIndex: Int = 0
     private var totalDuration: Double = 0
+    private var sessionObserverID: UUID?
+
+    init(sessionID: String?) {
+        self.sessionID = sessionID
+        if let sessionID {
+            sessionObserverID = SessionOutputHub.shared.addObserver(for: sessionID) { [weak self] event in
+                self?.appendLiveChunk(event.chunk)
+            }
+        }
+    }
+
+    deinit {
+        if let sessionObserverID {
+            SessionOutputHub.shared.removeObserver(sessionObserverID)
+        }
+    }
 
     func load() {
-        guard let bus = CommandBus.shared else { return }
+        guard let sessionID, let bus = CommandBus.shared else {
+            currentFrame = nil
+            return
+        }
+
         Task {
             do {
-                struct Params: Encodable { let limit: Int }
-                let entries: [TimelineEntry] = try await bus.call(method: "session.timeline", params: Params(limit: 1000))
+                let entries: [ReplayTimelineEvent] = try await bus.call(
+                    method: "session.timeline",
+                    params: SessionTimelineParams(sessionID: sessionID, limit: 1000)
+                )
+                let rebuiltFrames = ReplayFrameBuilder.buildFrames(from: entries)
                 await MainActor.run {
-                    self.frames = entries
-                    self.totalDuration = entries.last?.timestamp ?? 0
-                    self.currentFrameIndex = 0
-                    self.currentFrame = entries.first?.content
-                    self.progress = 0.0
+                    self.frames = rebuiltFrames
+                    self.currentFrameIndex = max(0, rebuiltFrames.count - 1)
+                    self.currentFrame = rebuiltFrames.last
+                    self.totalDuration = max(Double(max(rebuiltFrames.count - 1, 0)), 1.0)
+                    self.progress = rebuiltFrames.isEmpty ? 0.0 : 1.0
                 }
             } catch {
-                // Log error, keep existing state
+                // Keep the last rendered frame if timeline loading fails.
             }
         }
     }
@@ -138,25 +209,36 @@ final class ReplayViewModel: ObservableObject {
     func stepForward() {
         guard !frames.isEmpty else { return }
         let newIndex = min(frames.count - 1, currentFrameIndex + 1)
-        currentFrameIndex = newIndex
-        currentFrame = frames[newIndex].content
-        progress = totalDuration > 0 ? frames[newIndex].timestamp / totalDuration : 0
+        updateFrame(index: newIndex)
     }
 
     func stepBackward() {
         guard !frames.isEmpty else { return }
         let newIndex = max(0, currentFrameIndex - 1)
-        currentFrameIndex = newIndex
-        currentFrame = frames[newIndex].content
-        progress = totalDuration > 0 ? frames[newIndex].timestamp / totalDuration : 0
+        updateFrame(index: newIndex)
     }
 
     func seekToProgress() {
-        guard !frames.isEmpty, totalDuration > 0 else { return }
-        let targetTime = progress * totalDuration
-        let index = frames.lastIndex(where: { $0.timestamp <= targetTime }) ?? 0
+        guard !frames.isEmpty else { return }
+        let maxIndex = max(frames.count - 1, 0)
+        let index = min(maxIndex, Int(round(progress * Double(maxIndex))))
+        updateFrame(index: index)
+    }
+
+    private func updateFrame(index: Int) {
         currentFrameIndex = index
-        currentFrame = frames[index].content
+        currentFrame = frames[index]
+        let maxIndex = max(frames.count - 1, 1)
+        progress = Double(index) / Double(maxIndex)
+    }
+
+    private func appendLiveChunk(_ chunk: String) {
+        let next = (frames.last ?? "") + chunk
+        frames.append(next)
+        currentFrameIndex = frames.count - 1
+        currentFrame = next
+        totalDuration = max(Double(max(frames.count - 1, 0)), 1.0)
+        progress = 1.0
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -166,16 +248,16 @@ final class ReplayViewModel: ObservableObject {
     }
 }
 
-// MARK: - NSView Wrapper
-
 final class ReplayPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "replay"
+    let sessionID: String?
     var title: String { "Replay" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, sessionID: String? = nil) {
+        self.sessionID = sessionID
         super.init(frame: frame)
-        _ = addSwiftUISubview(ReplayView())
+        _ = addSwiftUISubview(ReplayView(sessionID: sessionID))
     }
 
     required init?(coder: NSCoder) { fatalError() }

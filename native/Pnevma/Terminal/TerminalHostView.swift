@@ -5,7 +5,7 @@ import Cocoa
 ///
 /// Layout lifecycle:
 ///   1. The view becomes layer-backed (ghostty requires Metal on a CALayer).
-///   2. On first `viewDidMoveToWindow` a TerminalSurface is created pointing at self.
+///   2. Surface creation is deferred until the view has a window, screen, and non-zero backing size.
 ///   3. Every resize / scale change propagates to the surface immediately.
 final class TerminalHostView: NSView, NSTextInputClient {
 
@@ -14,11 +14,26 @@ final class TerminalHostView: NSView, NSTextInputClient {
     /// The terminal surface managed by this view.
     private(set) var terminalSurface: TerminalSurface?
 
-    /// Working directory passed to the shell on first launch.
-    var workingDirectory: String?
+    /// Launch configuration passed to Ghostty when the surface is created.
+    var launchConfiguration: TerminalSurfaceLaunchConfiguration = .shell()
+
+    /// Backend session bound to this surface, if any.
+    var attachedSessionID: String?
 
     /// Called when the terminal process exits and ghostty requests the view close.
     var onTerminalClose: (() -> Void)?
+
+    /// Called once a real terminal surface is attached to the host view.
+    var onSurfaceReady: (() -> Void)?
+
+    /// Called when the visible terminal grid size changes.
+    var onTerminalResize: ((UInt16, UInt16) -> Void)?
+
+    // MARK: - Private
+
+    private var surfaceCreateScheduled = false
+    private var windowObservers: [NSObjectProtocol] = []
+    private var lastReportedGridSize: (columns: UInt16, rows: UInt16)?
 
     // MARK: - Init
 
@@ -32,22 +47,66 @@ final class TerminalHostView: NSView, NSTextInputClient {
         commonInit()
     }
 
+    deinit {
+        removeWindowObservers()
+    }
+
     private func commonInit() {
-        // ghostty attaches a CAMetalLayer to the view — must be layer-backed.
+        // ghostty attaches a CAMetalLayer to the view, so the view must be layer-backed.
         wantsLayer = true
+    }
+
+    func ensureSurfaceCreated() {
+        guard terminalSurface == nil else { return }
+        guard let window else { return }
+        guard window.screen != nil else {
+            scheduleEnsureSurfaceCreated()
+            return
+        }
+
+        let backingBounds = convertToBacking(bounds)
+        guard backingBounds.width > 0, backingBounds.height > 0 else {
+            scheduleEnsureSurfaceCreated()
+            return
+        }
+
+        createSurface()
+    }
+
+    func teardownSurface() {
+        terminalSurface = nil
+        lastReportedGridSize = nil
+        removeWindowObservers()
     }
 
     // MARK: - NSView Lifecycle
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, terminalSurface == nil else { return }
+        updateWindowObservers()
+        guard window != nil else { return }
         window?.acceptsMouseMovedEvents = true
-        createSurface()
+        scheduleEnsureSurfaceCreated()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        updateSurfaceLayout()
+    }
+
+    override func layout() {
+        super.layout()
+        if terminalSurface == nil {
+            scheduleEnsureSurfaceCreated()
+        }
+        updateSurfaceLayout()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if terminalSurface == nil {
+            scheduleEnsureSurfaceCreated()
+        }
         updateSurfaceLayout()
     }
 
@@ -61,6 +120,9 @@ final class TerminalHostView: NSView, NSTextInputClient {
         if result, let app = TerminalSurface.ghosttyApp {
             ghostty_app_set_focus(app, true)
         }
+        if result {
+            terminalSurface?.setFocus(true)
+        }
         #endif
         return result
     }
@@ -71,6 +133,9 @@ final class TerminalHostView: NSView, NSTextInputClient {
         if result, let app = TerminalSurface.ghosttyApp {
             ghostty_app_set_focus(app, false)
         }
+        if result {
+            terminalSurface?.setFocus(false)
+        }
         #endif
         return result
     }
@@ -78,14 +143,13 @@ final class TerminalHostView: NSView, NSTextInputClient {
     // MARK: - Keyboard Events
 
     override func keyDown(with event: NSEvent) {
-        // interpretKeyEvents FIRST — this drives NSTextInputClient (IME, dead keys,
-        // key equivalents). The input manager may call insertText or setMarkedText.
-        // We also send the raw key to ghostty for non-printable keys (arrows, Ctrl+C, etc.)
-        // by forwarding inside insertText after IME resolution.
+        // interpretKeyEvents FIRST. This drives NSTextInputClient for IME, dead keys,
+        // and key equivalents. Raw key events still go to ghostty for non-printable keys.
         #if canImport(GhosttyKit)
-        let ghosttyEvent = makeGhosttyKeyEvent(from: event, action: GHOSTTY_ACTION_PRESS)
-        // Send to ghostty first; if not consumed, let the input system handle it.
-        if terminalSurface?.sendKey(ghosttyEvent) == false {
+        let consumed = withGhosttyKeyEvent(from: event, action: GHOSTTY_ACTION_PRESS) {
+            terminalSurface?.sendKey($0) ?? false
+        }
+        if !consumed {
             interpretKeyEvents([event])
         }
         #else
@@ -95,31 +159,36 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     override func keyUp(with event: NSEvent) {
         #if canImport(GhosttyKit)
-        let ghosttyEvent = makeGhosttyKeyEvent(from: event, action: GHOSTTY_ACTION_RELEASE)
-        terminalSurface?.sendKey(ghosttyEvent)
+        withGhosttyKeyEvent(from: event, action: GHOSTTY_ACTION_RELEASE) {
+            terminalSurface?.sendKey($0)
+        }
         #endif
     }
 
     override func flagsChanged(with event: NSEvent) {
         #if canImport(GhosttyKit)
-        // Determine press vs release from whether a relevant flag is newly set.
         let relevantFlags: NSEvent.ModifierFlags = [.shift, .control, .option, .command, .capsLock]
         let active = event.modifierFlags.intersection(relevantFlags)
         let action: ghostty_input_action_e = active.isEmpty ? GHOSTTY_ACTION_RELEASE : GHOSTTY_ACTION_PRESS
-        let ghosttyEvent = makeGhosttyKeyEvent(from: event, action: action)
-        terminalSurface?.sendKey(ghosttyEvent)
+        withGhosttyKeyEvent(from: event, action: action) {
+            terminalSurface?.sendKey($0)
+        }
         #endif
     }
 
     // MARK: - Mouse Events
 
     #if canImport(GhosttyKit)
-    private func forwardMouseButton(state: ghostty_input_mouse_state_e,
-                                    button: ghostty_input_mouse_button_e,
-                                    event: NSEvent) {
+    private func forwardMouseButton(
+        state: ghostty_input_mouse_state_e,
+        button: ghostty_input_mouse_button_e,
+        event: NSEvent
+    ) {
         terminalSurface?.sendMouseButton(
-            state: state, button: button,
-            mods: ghosttyMods(from: event.modifierFlags))
+            state: state,
+            button: button,
+            mods: ghosttyMods(from: event.modifierFlags)
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -147,21 +216,23 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
     #endif
 
-    override func mouseMoved(with event: NSEvent)      { forwardMousePosition(event) }
-    override func mouseDragged(with event: NSEvent)    { forwardMousePosition(event) }
+    override func mouseMoved(with event: NSEvent) { forwardMousePosition(event) }
+    override func mouseDragged(with event: NSEvent) { forwardMousePosition(event) }
     override func rightMouseDragged(with event: NSEvent) { forwardMousePosition(event) }
     override func otherMouseDragged(with event: NSEvent) { forwardMousePosition(event) }
 
     override func scrollWheel(with event: NSEvent) {
         #if canImport(GhosttyKit)
-        var scrollMods = ghostty_input_scroll_mods_t(rawValue: 0)
+        var x = event.scrollingDeltaX
+        var y = event.scrollingDeltaY
         if event.hasPreciseScrollingDeltas {
-            scrollMods.insert(ghostty_input_scroll_mods_t(rawValue: GHOSTTY_SCROLL_PRECISE))
+            x *= 2
+            y *= 2
         }
         terminalSurface?.sendMouseScroll(
-            x: event.scrollingDeltaX,
-            y: -event.scrollingDeltaY, // ghostty: positive Y = scroll down; AppKit: inverse
-            scrollMods: scrollMods
+            x: x,
+            y: y,
+            scrollMods: ghosttyScrollMods(from: event)
         )
         #endif
     }
@@ -210,14 +281,10 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     func characterIndex(for point: NSPoint) -> Int { NSNotFound }
 
-    private func extractText(_ string: Any) -> String? {
-        (string as? NSAttributedString)?.string ?? (string as? String)
-    }
-
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        // ghostty renders via Metal into the layer — no AppKit drawing needed.
+        // ghostty renders via Metal into the layer. AppKit only paints a fallback.
         #if !canImport(GhosttyKit)
         NSColor.black.setFill()
         dirtyRect.fill()
@@ -226,9 +293,9 @@ final class TerminalHostView: NSView, NSTextInputClient {
             .foregroundColor: NSColor.white,
             .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
         ]
-        let sz = (message as NSString).size(withAttributes: attrs)
+        let size = (message as NSString).size(withAttributes: attrs)
         (message as NSString).draw(
-            at: NSPoint(x: (bounds.width - sz.width) / 2, y: (bounds.height - sz.height) / 2),
+            at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2),
             withAttributes: attrs
         )
         #endif
@@ -237,73 +304,183 @@ final class TerminalHostView: NSView, NSTextInputClient {
     // MARK: - Private helpers
 
     private func createSurface() {
-        let surface = TerminalSurface(hostView: self, workingDirectory: workingDirectory)
+        guard let window else { return }
+        window.displayIfNeeded()
+
+        let surface = TerminalSurface(hostView: self, launchConfiguration: launchConfiguration)
         surface.onClose = { [weak self] in self?.onTerminalClose?() }
-        self.terminalSurface = surface
+        terminalSurface = surface
         updateSurfaceLayout()
+
+        if surface.isRendererReady {
+            updateSurfaceDisplayID()
+            onSurfaceReady?()
+        } else if AppSmokeMode.current != nil {
+            let message = "Smoke diagnostic: terminal surface was not ready after creation\n"
+            if let data = message.data(using: .utf8) {
+                FileHandle.standardError.write(data)
+            }
+        }
     }
 
     private func updateSurfaceLayout() {
         guard terminalSurface != nil else { return }
-        // Use convertToBacking to get pixel dimensions — handles retina scaling correctly.
         let backing = convertToBacking(bounds)
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        layer?.contentsScale = scale
         terminalSurface?.setContentScale(scale)
         terminalSurface?.resize(width: UInt32(backing.width), height: UInt32(backing.height))
+        if let size = terminalSurface?.size(),
+           size.columns > 0,
+           size.rows > 0,
+           lastReportedGridSize.map({ $0.columns != size.columns || $0.rows != size.rows }) ?? true {
+            lastReportedGridSize = size
+            onTerminalResize?(size.columns, size.rows)
+        }
+    }
+
+    private func updateSurfaceDisplayID() {
+        guard let screen = window?.screen else { return }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        let screenNumber = screen.deviceDescription[key] as? NSNumber
+        terminalSurface?.setDisplayID(screenNumber?.uint32Value ?? 0)
+    }
+
+    private func scheduleEnsureSurfaceCreated() {
+        guard terminalSurface == nil, !surfaceCreateScheduled else { return }
+        surfaceCreateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.surfaceCreateScheduled = false
+            self.ensureSurfaceCreated()
+        }
+    }
+
+    private func updateWindowObservers() {
+        removeWindowObservers()
+        guard let window else { return }
+
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didBecomeMainNotification,
+            NSWindow.didChangeScreenNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ]
+
+        for name in names {
+            let observer = center.addObserver(
+                forName: name,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.updateSurfaceDisplayID()
+                self?.scheduleEnsureSurfaceCreated()
+            }
+            windowObservers.append(observer)
+        }
+    }
+
+    private func removeWindowObservers() {
+        let center = NotificationCenter.default
+        for observer in windowObservers {
+            center.removeObserver(observer)
+        }
+        windowObservers.removeAll()
     }
 
     private func forwardMousePosition(_ event: NSEvent) {
         #if canImport(GhosttyKit)
         let pos = convert(event.locationInWindow, from: nil)
-        // ghostty uses top-left origin; AppKit uses bottom-left — flip Y.
         let flippedY = frame.height - pos.y
         terminalSurface?.sendMousePos(
-            x: pos.x, y: flippedY,
+            x: pos.x,
+            y: flippedY,
             mods: ghosttyMods(from: event.modifierFlags)
         )
         #endif
     }
+
+    private func extractText(_ string: Any) -> String? {
+        (string as? NSAttributedString)?.string ?? (string as? String)
+    }
 }
 
-// MARK: - NSEvent → Ghostty Conversion
+// MARK: - NSEvent -> Ghostty Conversion
 
 #if canImport(GhosttyKit)
 
-private func makeGhosttyKeyEvent(from event: NSEvent, action: ghostty_input_action_e) -> ghostty_input_key_s {
+@discardableResult
+private func withGhosttyKeyEvent<T>(
+    from event: NSEvent,
+    action: ghostty_input_action_e,
+    execute: (ghostty_input_key_s) -> T
+) -> T {
     var key = ghostty_input_key_s()
     key.action = action
     key.mods = ghosttyMods(from: event.modifierFlags)
-    key.consumed_mods = ghostty_input_mods_e(rawValue: 0)
+    key.consumed_mods = ghostty_input_mods_e(GHOSTTY_MODS_NONE.rawValue)
     key.keycode = UInt32(event.keyCode)
     key.composing = false
 
-    // text: characters as typed (with shift/option applied).
-    // Bind NSString to local so it outlives the key struct usage.
-    var charsNSString: NSString?
     if let chars = event.characters, !chars.isEmpty {
-        charsNSString = chars as NSString
-        key.text = charsNSString!.utf8String
+        return chars.withCString { ptr in
+            key.text = ptr
+            applyUnshiftedCodepoint(to: &key, event: event)
+            return execute(key)
+        }
     }
 
-    // unshifted_codepoint: the base key without shift/option modifiers.
-    // characters(byApplyingModifiers:[]) strips shift+option to give the hardware key value.
+    key.text = nil
+    applyUnshiftedCodepoint(to: &key, event: event)
+    return execute(key)
+}
+
+private func applyUnshiftedCodepoint(to key: inout ghostty_input_key_s, event: NSEvent) {
     if let base = event.characters(byApplyingModifiers: []),
        let scalar = base.unicodeScalars.first {
         key.unshifted_codepoint = scalar.value
     }
-
-    return key
 }
 
 private func ghosttyMods(from flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
-    var mods = ghostty_input_mods_e(rawValue: 0)
-    if flags.contains(.shift)      { mods.insert(GHOSTTY_MODS_SHIFT) }
-    if flags.contains(.control)    { mods.insert(GHOSTTY_MODS_CTRL) }
-    if flags.contains(.option)     { mods.insert(GHOSTTY_MODS_ALT) }
-    if flags.contains(.command)    { mods.insert(GHOSTTY_MODS_SUPER) }
-    if flags.contains(.capsLock)   { mods.insert(GHOSTTY_MODS_CAPS) }
-    if flags.contains(.numericPad) { mods.insert(GHOSTTY_MODS_NUM) }
-    return mods
+    var mods: UInt32 = GHOSTTY_MODS_NONE.rawValue
+    if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+    if flags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
+    if flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+    if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
+    if flags.contains(.capsLock) { mods |= GHOSTTY_MODS_CAPS.rawValue }
+    if flags.contains(.numericPad) { mods |= GHOSTTY_MODS_NUM.rawValue }
+
+    let rawFlags = flags.rawValue
+    if rawFlags & UInt(NX_DEVICERSHIFTKEYMASK) != 0 { mods |= GHOSTTY_MODS_SHIFT_RIGHT.rawValue }
+    if rawFlags & UInt(NX_DEVICERCTLKEYMASK) != 0 { mods |= GHOSTTY_MODS_CTRL_RIGHT.rawValue }
+    if rawFlags & UInt(NX_DEVICERALTKEYMASK) != 0 { mods |= GHOSTTY_MODS_ALT_RIGHT.rawValue }
+    if rawFlags & UInt(NX_DEVICERCMDKEYMASK) != 0 { mods |= GHOSTTY_MODS_SUPER_RIGHT.rawValue }
+
+    return ghostty_input_mods_e(mods)
+}
+
+private func ghosttyScrollMods(from event: NSEvent) -> ghostty_input_scroll_mods_t {
+    var rawValue: Int32 = 0
+    if event.hasPreciseScrollingDeltas {
+        rawValue |= 0b0000_0001
+    }
+
+    rawValue |= Int32(ghosttyMomentum(from: event.momentumPhase)) << 1
+    return rawValue
+}
+
+private func ghosttyMomentum(from phase: NSEvent.Phase) -> UInt8 {
+    switch phase {
+    case .began: return 1
+    case .stationary: return 2
+    case .changed: return 3
+    case .ended: return 4
+    case .cancelled: return 5
+    case .mayBegin: return 6
+    default: return 0
+    }
 }
 
 #endif

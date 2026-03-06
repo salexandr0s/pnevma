@@ -1,28 +1,36 @@
-# ADR 001: Terminal Rendering in Tauri
+# ADR 001: Native Terminal Rendering With Ghostty
 
 ## Status
+
 Accepted
 
 ## Decision
-Use xterm.js in the Tauri webview for terminal rendering.
+
+Use embedded Ghostty (`libghostty` xcframework) for interactive terminal rendering inside the native Swift/AppKit app. Rust remains the source of truth for PTY/tmux supervision, scrollback persistence, and task/session orchestration.
 
 ## Context
-Pnevma needs a terminal renderer that supports high throughput output, keyboard interaction, and coexistence with rich UI panes.
+
+Pnevma needs terminal rendering that can keep up with long-lived CLI sessions, coexist with dense AppKit panes, and avoid the latency and lifecycle mismatch of a webview bridge. The earlier Tauri/xterm.js spike is now historical and no longer describes the shipped product.
 
 ## Consequences
-- Positive: battle-tested terminal emulator, straightforward frontend integration, no platform-specific FFI layer.
-- Negative: webview performance constraints must be watched and benchmarked.
+
+- Positive: native Metal-backed rendering, no webview IPC for terminal I/O, better fit for session restore and multi-pane desktop workflows.
+- Positive: Ghostty behavior is close to the terminal experience users already trust.
+- Negative: macOS build complexity increases because the app now depends on Zig-built Ghostty artifacts, XcodeGen, and a C FFI bridge into Rust.
+- Negative: release entitlements must be reviewed regularly because Ghostty currently requires a small hardened-runtime exception set.
 
 ## Follow-up
-Validate perceived input latency under target threshold (<50ms perceived) during Phase 0 and phase-gate progression on benchmark results.
 
-## Evidence Snapshot (March 1, 2026)
-- Rust backend and frontend integration is now production scaffolding (`pnevma-app` + `frontend`) with xterm.js wiring and PTY event stream.
-- Session restart and reattach flows are implemented with tmux-backed runtime supervision.
-- Scrollback persistence is append-only with indexed offsets and seek-based retrieval.
-- In this headless environment, interactive typing latency cannot be directly measured; GUI/manual verification is still required on a local desktop run.
+Validate perceived input latency under the target threshold (<50ms perceived) on real hardware before each external release milestone.
+
+## Evidence Snapshot (March 6, 2026)
+
+- The shipped app is Swift/AppKit plus `libpnevma_bridge.a`, not Tauri.
+- Interactive terminal panes are backed by Ghostty, while Rust owns session lifecycle, scrollback, and event persistence.
+- CI and release automation now validate the checked-in entitlement allowlist for the native app bundle.
 
 ## Remaining Manual Verification
-- Launch `cargo tauri dev` and measure interactive keypress-to-render response in the xterm pane.
-- Confirm side-pane coexistence under active stream load.
-- Record observed latency in `spike/tauri-terminal/latency-notes.md`.
+
+- Build a native release app via Xcode or `just xcode-build-release`.
+- Measure typing latency while a terminal pane and at least one non-terminal pane are both visible.
+- Record the result in the release evidence bundle or the associated release ticket.

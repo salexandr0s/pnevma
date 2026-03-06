@@ -1,0 +1,704 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02E6F538894460C4C00E0928 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C867176B0B0B77C7E95830B1 /* AppDelegate.swift */; };
+		0F0E3BEDE1D8B511FC992193 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 2E52F41573A608565E5F0B7E /* libsqlite3.tbd */; };
+		103DA42DF7FDE17BF2693456 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */; };
+		109F9D05A5E2B5CF691F0EC6 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 90FF1D203A58F68A24C128E4 /* GhosttyKit.xcframework */; };
+		20C398F420BCA879DB9D469D /* SettingsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 669EF3C93EAF867EF325DFE6 /* SettingsPane.swift */; };
+		26ECDCE314120B77635D0905 /* ReviewPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2ABF5369D15A88A22276EB /* ReviewPane.swift */; };
+		32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5CF35C36EC51718FA8D0DAE /* TerminalConfig.swift */; };
+		40F4C483EED0254A1A42CD74 /* PaneLayoutEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */; };
+		44D5E0CD0BF7689EDBC69C2C /* SshManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = E583CFB106DF6039794D692B /* SshManagerPane.swift */; };
+		468E8EF67D617BBBF721468C /* SessionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */; };
+		49023C532DCD5386EE7E200C /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */; };
+		52E723C42B9C37D51D0EDD0F /* TerminalSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */; };
+		587B9ADBC09AF402EDB4AA2E /* TerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD5834BFD442AB5715E1FDD5 /* TerminalSurface.swift */; };
+		5D4E03537DA6F4288E6FF820 /* StatusBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 288B31EA70DBB7C2215B829A /* StatusBar.swift */; };
+		640E0CC350D44AD25C4A5D12 /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7128B807BE64773097BA36E6 /* CommandPalette.swift */; };
+		64A5B1853D5A6CBC37B01E5A /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20D11B7F1496ED9ECFE4003 /* Log.swift */; };
+		70DA668AC08F26BFFD6F9CD5 /* ContentAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */; };
+		753D941D6A6DB7CC268661B8 /* SessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F9720138A2A8A983D4E084B /* SessionPersistence.swift */; };
+		75A882CE240EFB18166C4C66 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 478DE8D1E7E9FD77FAE43F0E /* Security.framework */; };
+		8DFFD6BE13FCA68D148972DF /* AnalyticsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */; };
+		8EDFEC8F919D2DDBA67989C0 /* PnevmaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9439B284463792B5897069AB /* PnevmaTests.swift */; };
+		911D8778472DAA448B2A5B9F /* PnevmaBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828FFB7F22FC420210D6AC17 /* PnevmaBridge.swift */; };
+		9BE6B5F16C1F813061224208 /* ProtectedActionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504D628AFBF0820CEF6ADF77 /* ProtectedActionSheet.swift */; };
+		A2335A9E3C912412ED893B0B /* DiffPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F702FFFF0544A91FC6A1F77 /* DiffPane.swift */; };
+		A2A544ABE917368E81A3D33F /* NotificationsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B834396916F6473B7B5042 /* NotificationsPane.swift */; };
+		A843622C355A177FDBB1CA66 /* OnboardingFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EAFB00C7B89DEB874995841 /* OnboardingFlow.swift */; };
+		AE007582CBF3C4581B178237 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF3059187ECC603279A0295F /* AppIntents.framework */; };
+		AE5CA31938B9D16EFE90FEBC /* WorkspaceRestoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D71B68BEE350AEDC1D733A86 /* WorkspaceRestoreTests.swift */; };
+		AE83524320AA333EAA20E7AF /* TaskBoardPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBA0CB4E50F6B5BF2AE464D0 /* TaskBoardPane.swift */; };
+		AEA93CF0DAA6DB23141C7C4E /* SessionPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB471570010013AF3EF6D96 /* SessionPersistenceTests.swift */; };
+		B3B39DFE7D69A7391CC3A519 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D239E4D9D6D2BBEFCE9CDD /* Workspace.swift */; };
+		BF980285DCD2037C225FDBD4 /* PnevmaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3CFF02A2EB2BE337EC00ED /* PnevmaApp.swift */; };
+		C03D2547C25174593CC629C5 /* ReplayPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */; };
+		C48A433DE9B9CF2EA6C307AF /* WorkflowPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 873A3669AAA8C9FB4AC6ADC6 /* WorkflowPane.swift */; };
+		C74C3EE42DE1143A1DAF19DE /* SearchPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC4EC21E4177F36EDFF80F09 /* SearchPane.swift */; };
+		C835AD707B86071BCC2AA70C /* CommandBusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00AC90491564E38CEE6DD40F /* CommandBusTests.swift */; };
+		C857F379F52F9DA89E537FEB /* WorkspaceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C74EF113130554E3621B315 /* WorkspaceManager.swift */; };
+		C87A8F088134A69F820C428A /* WorkspaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DE8468190157901DC6F08A /* WorkspaceManagerTests.swift */; };
+		D5E2354A1C8BA741399DAD00 /* RulesManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FD33CAEC39395235510E3AD /* RulesManagerPane.swift */; };
+		DF1FC44CD8DE86E7C623F142 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE25F54B8A1F8B9127954934 /* Carbon.framework */; };
+		DF5402B68DCC8A9F24A0656D /* CommandBus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67EDEB7FE9D4D7AC1922DEE3 /* CommandBus.swift */; };
+		E23397115C16E1C3806152AF /* DailyBriefPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA8DEADC71098F70420D35 /* DailyBriefPane.swift */; };
+		E23C8FB1988C5983AA68BDE4 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C296C61E24606F14100C9700 /* libresolv.tbd */; };
+		E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */; };
+		E8746B9089C92661A666AB73 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF3059187ECC603279A0295F /* AppIntents.framework */; };
+		EE32C0DC4310751E92C25777 /* FileBrowserPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2FFA5B423F3AFEF4E067E4 /* FileBrowserPane.swift */; };
+		EF8FDB10727CFB9047386340 /* MergeQueuePane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */; };
+		F5CB679F6B9C87400DA3AD42 /* PaneProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */; };
+		F5F79F02C1F4D95DC5B3F83B /* ReplayPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FEF7CEEB10962C75ABA7BC2 /* ReplayPane.swift */; };
+		F7639F1CCAAFC84BEA4BBD4E /* PaneLayoutEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */; };
+		F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0504F30FC49F942FD7AD3F1B /* TerminalHostView.swift */; };
+		FA0E47CF4F1FA87498D54927 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB3422024FC4975E1C7FBB3C /* Cocoa.framework */; };
+		FC909B27A07721ABC7737BF5 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2384B2D98B340A6F16B39955 /* Extensions.swift */; };
+		FDC8844621411857E295DE18 /* SessionOutputHubTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424DB32A4274D56423BCFDA7 /* SessionOutputHubTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8415CCA9014F90B47414464E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0E36EF5A153E2C8F9E73F0F7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8C49E62DAF419010764E16C6;
+			remoteInfo = Pnevma;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		00AC90491564E38CEE6DD40F /* CommandBusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBusTests.swift; sourceTree = "<group>"; };
+		0504F30FC49F942FD7AD3F1B /* TerminalHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHostView.swift; sourceTree = "<group>"; };
+		0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBridge.swift; sourceTree = "<group>"; };
+		0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
+		1EAFB00C7B89DEB874995841 /* OnboardingFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlow.swift; sourceTree = "<group>"; };
+		2384B2D98B340A6F16B39955 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
+		288B31EA70DBB7C2215B829A /* StatusBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBar.swift; sourceTree = "<group>"; };
+		2E52F41573A608565E5F0B7E /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngineTests.swift; sourceTree = "<group>"; };
+		31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceTests.swift; sourceTree = "<group>"; };
+		424DB32A4274D56423BCFDA7 /* SessionOutputHubTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionOutputHubTests.swift; sourceTree = "<group>"; };
+		468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		478DE8D1E7E9FD77FAE43F0E /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsPane.swift; sourceTree = "<group>"; };
+		504D628AFBF0820CEF6ADF77 /* ProtectedActionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtectedActionSheet.swift; sourceTree = "<group>"; };
+		5F9720138A2A8A983D4E084B /* SessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPersistence.swift; sourceTree = "<group>"; };
+		669EF3C93EAF867EF325DFE6 /* SettingsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPane.swift; sourceTree = "<group>"; };
+		67EDEB7FE9D4D7AC1922DEE3 /* CommandBus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBus.swift; sourceTree = "<group>"; };
+		7128B807BE64773097BA36E6 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
+		77B834396916F6473B7B5042 /* NotificationsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsPane.swift; sourceTree = "<group>"; };
+		7F702FFFF0544A91FC6A1F77 /* DiffPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffPane.swift; sourceTree = "<group>"; };
+		7FD33CAEC39395235510E3AD /* RulesManagerPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RulesManagerPane.swift; sourceTree = "<group>"; };
+		7FEF7CEEB10962C75ABA7BC2 /* ReplayPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplayPane.swift; sourceTree = "<group>"; };
+		828FFB7F22FC420210D6AC17 /* PnevmaBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaBridge.swift; sourceTree = "<group>"; };
+		873A3669AAA8C9FB4AC6ADC6 /* WorkflowPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowPane.swift; sourceTree = "<group>"; };
+		8B2FFA5B423F3AFEF4E067E4 /* FileBrowserPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserPane.swift; sourceTree = "<group>"; };
+		8C74EF113130554E3621B315 /* WorkspaceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManager.swift; sourceTree = "<group>"; };
+		90FF1D203A58F68A24C128E4 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyKit.xcframework; path = ../vendor/ghostty/macos/GhosttyKit.xcframework; sourceTree = "<group>"; };
+		9439B284463792B5897069AB /* PnevmaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaTests.swift; sourceTree = "<group>"; };
+		94DE8468190157901DC6F08A /* WorkspaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManagerTests.swift; sourceTree = "<group>"; };
+		980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngine.swift; sourceTree = "<group>"; };
+		A20D11B7F1496ED9ECFE4003 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
+		A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeQueuePane.swift; sourceTree = "<group>"; };
+		A8D239E4D9D6D2BBEFCE9CDD /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
+		AB2ABF5369D15A88A22276EB /* ReviewPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewPane.swift; sourceTree = "<group>"; };
+		B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneProtocol.swift; sourceTree = "<group>"; };
+		BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		BD5834BFD442AB5715E1FDD5 /* TerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurface.swift; sourceTree = "<group>"; };
+		BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentAreaView.swift; sourceTree = "<group>"; };
+		BF3059187ECC603279A0295F /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		C0328F893897EF1EF5953456 /* Pnevma.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pnevma.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C296C61E24606F14100C9700 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
+		C867176B0B0B77C7E95830B1 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		CD3CFF02A2EB2BE337EC00ED /* PnevmaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaApp.swift; sourceTree = "<group>"; };
+		CE25F54B8A1F8B9127954934 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
+		D5CF35C36EC51718FA8D0DAE /* TerminalConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalConfig.swift; sourceTree = "<group>"; };
+		D5EA8DEADC71098F70420D35 /* DailyBriefPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyBriefPane.swift; sourceTree = "<group>"; };
+		D71B68BEE350AEDC1D733A86 /* WorkspaceRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRestoreTests.swift; sourceTree = "<group>"; };
+		DB3422024FC4975E1C7FBB3C /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
+		DC4EC21E4177F36EDFF80F09 /* SearchPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchPane.swift; sourceTree = "<group>"; };
+		E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplayPaneTests.swift; sourceTree = "<group>"; };
+		E583CFB106DF6039794D692B /* SshManagerPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshManagerPane.swift; sourceTree = "<group>"; };
+		E6D9D8FCAEFD159352C6540E /* PnevmaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PnevmaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EAB471570010013AF3EF6D96 /* SessionPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPersistenceTests.swift; sourceTree = "<group>"; };
+		FBA0CB4E50F6B5BF2AE464D0 /* TaskBoardPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskBoardPane.swift; sourceTree = "<group>"; };
+		FFC7D5AA27FD6FE6D8299EF6 /* Pnevma-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Pnevma-Bridging-Header.h"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		59CE2FE693B4E9D149AD0FD7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				109F9D05A5E2B5CF691F0EC6 /* GhosttyKit.xcframework in Frameworks */,
+				E8746B9089C92661A666AB73 /* AppIntents.framework in Frameworks */,
+				DF1FC44CD8DE86E7C623F142 /* Carbon.framework in Frameworks */,
+				FA0E47CF4F1FA87498D54927 /* Cocoa.framework in Frameworks */,
+				75A882CE240EFB18166C4C66 /* Security.framework in Frameworks */,
+				49023C532DCD5386EE7E200C /* SystemConfiguration.framework in Frameworks */,
+				E23C8FB1988C5983AA68BDE4 /* libresolv.tbd in Frameworks */,
+				0F0E3BEDE1D8B511FC992193 /* libsqlite3.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E6543215412AA45FDA5B3F35 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AE007582CBF3C4581B178237 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1EA06238672B6DE8F5FD3450 /* Bridge */ = {
+			isa = PBXGroup;
+			children = (
+				FFC7D5AA27FD6FE6D8299EF6 /* Pnevma-Bridging-Header.h */,
+				828FFB7F22FC420210D6AC17 /* PnevmaBridge.swift */,
+			);
+			path = Bridge;
+			sourceTree = "<group>";
+		};
+		1EA819F1B0B8556B8197BC79 /* Panes */ = {
+			isa = PBXGroup;
+			children = (
+				49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */,
+				D5EA8DEADC71098F70420D35 /* DailyBriefPane.swift */,
+				7F702FFFF0544A91FC6A1F77 /* DiffPane.swift */,
+				8B2FFA5B423F3AFEF4E067E4 /* FileBrowserPane.swift */,
+				A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */,
+				77B834396916F6473B7B5042 /* NotificationsPane.swift */,
+				B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */,
+				7FEF7CEEB10962C75ABA7BC2 /* ReplayPane.swift */,
+				AB2ABF5369D15A88A22276EB /* ReviewPane.swift */,
+				7FD33CAEC39395235510E3AD /* RulesManagerPane.swift */,
+				DC4EC21E4177F36EDFF80F09 /* SearchPane.swift */,
+				669EF3C93EAF867EF325DFE6 /* SettingsPane.swift */,
+				E583CFB106DF6039794D692B /* SshManagerPane.swift */,
+				FBA0CB4E50F6B5BF2AE464D0 /* TaskBoardPane.swift */,
+				873A3669AAA8C9FB4AC6ADC6 /* WorkflowPane.swift */,
+			);
+			path = Panes;
+			sourceTree = "<group>";
+		};
+		3E641921799B1A7EC7293323 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */,
+				2384B2D98B340A6F16B39955 /* Extensions.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		4AE6453B4139F8749E14329E /* Sidebar */ = {
+			isa = PBXGroup;
+			children = (
+				BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */,
+			);
+			path = Sidebar;
+			sourceTree = "<group>";
+		};
+		6C2A0F13813BE5E6307584BB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C0328F893897EF1EF5953456 /* Pnevma.app */,
+				E6D9D8FCAEFD159352C6540E /* PnevmaTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6DD8F8E5E92E16DCDA4AD29F /* App */ = {
+			isa = PBXGroup;
+			children = (
+				C867176B0B0B77C7E95830B1 /* AppDelegate.swift */,
+				CD3CFF02A2EB2BE337EC00ED /* PnevmaApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		862EE0D0EE779191692D97D5 /* Pnevma */ = {
+			isa = PBXGroup;
+			children = (
+				6DD8F8E5E92E16DCDA4AD29F /* App */,
+				1EA06238672B6DE8F5FD3450 /* Bridge */,
+				B1DAB0346C4A52FB5F0E1569 /* Chrome */,
+				8B7404900B8C5E0A806E5915 /* Core */,
+				1EA819F1B0B8556B8197BC79 /* Panes */,
+				3E641921799B1A7EC7293323 /* Shared */,
+				4AE6453B4139F8749E14329E /* Sidebar */,
+				B94C59576F2A4104AD398EC1 /* Terminal */,
+			);
+			path = Pnevma;
+			sourceTree = "<group>";
+		};
+		8B7404900B8C5E0A806E5915 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				67EDEB7FE9D4D7AC1922DEE3 /* CommandBus.swift */,
+				BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */,
+				A20D11B7F1496ED9ECFE4003 /* Log.swift */,
+				980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */,
+				0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */,
+				5F9720138A2A8A983D4E084B /* SessionPersistence.swift */,
+				A8D239E4D9D6D2BBEFCE9CDD /* Workspace.swift */,
+				8C74EF113130554E3621B315 /* WorkspaceManager.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		A730B687549039C16E92E7E1 /* PnevmaTests */ = {
+			isa = PBXGroup;
+			children = (
+				00AC90491564E38CEE6DD40F /* CommandBusTests.swift */,
+				309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */,
+				9439B284463792B5897069AB /* PnevmaTests.swift */,
+				E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */,
+				424DB32A4274D56423BCFDA7 /* SessionOutputHubTests.swift */,
+				EAB471570010013AF3EF6D96 /* SessionPersistenceTests.swift */,
+				31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */,
+				94DE8468190157901DC6F08A /* WorkspaceManagerTests.swift */,
+				D71B68BEE350AEDC1D733A86 /* WorkspaceRestoreTests.swift */,
+			);
+			path = PnevmaTests;
+			sourceTree = "<group>";
+		};
+		B180F257220A8BE019AF6012 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				BF3059187ECC603279A0295F /* AppIntents.framework */,
+				CE25F54B8A1F8B9127954934 /* Carbon.framework */,
+				DB3422024FC4975E1C7FBB3C /* Cocoa.framework */,
+				90FF1D203A58F68A24C128E4 /* GhosttyKit.xcframework */,
+				C296C61E24606F14100C9700 /* libresolv.tbd */,
+				2E52F41573A608565E5F0B7E /* libsqlite3.tbd */,
+				478DE8D1E7E9FD77FAE43F0E /* Security.framework */,
+				468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		B1DAB0346C4A52FB5F0E1569 /* Chrome */ = {
+			isa = PBXGroup;
+			children = (
+				7128B807BE64773097BA36E6 /* CommandPalette.swift */,
+				1EAFB00C7B89DEB874995841 /* OnboardingFlow.swift */,
+				504D628AFBF0820CEF6ADF77 /* ProtectedActionSheet.swift */,
+				288B31EA70DBB7C2215B829A /* StatusBar.swift */,
+			);
+			path = Chrome;
+			sourceTree = "<group>";
+		};
+		B94C59576F2A4104AD398EC1 /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				D5CF35C36EC51718FA8D0DAE /* TerminalConfig.swift */,
+				0504F30FC49F942FD7AD3F1B /* TerminalHostView.swift */,
+				BD5834BFD442AB5715E1FDD5 /* TerminalSurface.swift */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
+		C3267E5CA0BEB6461BD355EA = {
+			isa = PBXGroup;
+			children = (
+				862EE0D0EE779191692D97D5 /* Pnevma */,
+				A730B687549039C16E92E7E1 /* PnevmaTests */,
+				B180F257220A8BE019AF6012 /* Frameworks */,
+				6C2A0F13813BE5E6307584BB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		847F36B446EC99E0A02AD68D /* PnevmaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EBE5E9530B257E95F1BADFE1 /* Build configuration list for PBXNativeTarget "PnevmaTests" */;
+			buildPhases = (
+				2D59E671072C1AD248BBC8D9 /* Sources */,
+				E6543215412AA45FDA5B3F35 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6DE328E117830DA327604FB4 /* PBXTargetDependency */,
+			);
+			name = PnevmaTests;
+			packageProductDependencies = (
+			);
+			productName = PnevmaTests;
+			productReference = E6D9D8FCAEFD159352C6540E /* PnevmaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		8C49E62DAF419010764E16C6 /* Pnevma */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5948A3AF9B25FB971310FB9D /* Build configuration list for PBXNativeTarget "Pnevma" */;
+			buildPhases = (
+				A696CFEA5784697437BE6EFB /* Sources */,
+				59CE2FE693B4E9D149AD0FD7 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Pnevma;
+			packageProductDependencies = (
+			);
+			productName = Pnevma;
+			productReference = C0328F893897EF1EF5953456 /* Pnevma.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0E36EF5A153E2C8F9E73F0F7 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 79B8999A15D22D9F4AE803E5 /* Build configuration list for PBXProject "Pnevma" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = C3267E5CA0BEB6461BD355EA;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 6C2A0F13813BE5E6307584BB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8C49E62DAF419010764E16C6 /* Pnevma */,
+				847F36B446EC99E0A02AD68D /* PnevmaTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2D59E671072C1AD248BBC8D9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C835AD707B86071BCC2AA70C /* CommandBusTests.swift in Sources */,
+				40F4C483EED0254A1A42CD74 /* PaneLayoutEngineTests.swift in Sources */,
+				8EDFEC8F919D2DDBA67989C0 /* PnevmaTests.swift in Sources */,
+				C03D2547C25174593CC629C5 /* ReplayPaneTests.swift in Sources */,
+				FDC8844621411857E295DE18 /* SessionOutputHubTests.swift in Sources */,
+				AEA93CF0DAA6DB23141C7C4E /* SessionPersistenceTests.swift in Sources */,
+				52E723C42B9C37D51D0EDD0F /* TerminalSurfaceTests.swift in Sources */,
+				C87A8F088134A69F820C428A /* WorkspaceManagerTests.swift in Sources */,
+				AE5CA31938B9D16EFE90FEBC /* WorkspaceRestoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A696CFEA5784697437BE6EFB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8DFFD6BE13FCA68D148972DF /* AnalyticsPane.swift in Sources */,
+				02E6F538894460C4C00E0928 /* AppDelegate.swift in Sources */,
+				DF5402B68DCC8A9F24A0656D /* CommandBus.swift in Sources */,
+				640E0CC350D44AD25C4A5D12 /* CommandPalette.swift in Sources */,
+				70DA668AC08F26BFFD6F9CD5 /* ContentAreaView.swift in Sources */,
+				E23397115C16E1C3806152AF /* DailyBriefPane.swift in Sources */,
+				103DA42DF7FDE17BF2693456 /* DesignTokens.swift in Sources */,
+				A2335A9E3C912412ED893B0B /* DiffPane.swift in Sources */,
+				FC909B27A07721ABC7737BF5 /* Extensions.swift in Sources */,
+				EE32C0DC4310751E92C25777 /* FileBrowserPane.swift in Sources */,
+				64A5B1853D5A6CBC37B01E5A /* Log.swift in Sources */,
+				EF8FDB10727CFB9047386340 /* MergeQueuePane.swift in Sources */,
+				A2A544ABE917368E81A3D33F /* NotificationsPane.swift in Sources */,
+				A843622C355A177FDBB1CA66 /* OnboardingFlow.swift in Sources */,
+				F7639F1CCAAFC84BEA4BBD4E /* PaneLayoutEngine.swift in Sources */,
+				F5CB679F6B9C87400DA3AD42 /* PaneProtocol.swift in Sources */,
+				BF980285DCD2037C225FDBD4 /* PnevmaApp.swift in Sources */,
+				911D8778472DAA448B2A5B9F /* PnevmaBridge.swift in Sources */,
+				9BE6B5F16C1F813061224208 /* ProtectedActionSheet.swift in Sources */,
+				F5F79F02C1F4D95DC5B3F83B /* ReplayPane.swift in Sources */,
+				26ECDCE314120B77635D0905 /* ReviewPane.swift in Sources */,
+				D5E2354A1C8BA741399DAD00 /* RulesManagerPane.swift in Sources */,
+				C74C3EE42DE1143A1DAF19DE /* SearchPane.swift in Sources */,
+				468E8EF67D617BBBF721468C /* SessionBridge.swift in Sources */,
+				753D941D6A6DB7CC268661B8 /* SessionPersistence.swift in Sources */,
+				20C398F420BCA879DB9D469D /* SettingsPane.swift in Sources */,
+				E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */,
+				44D5E0CD0BF7689EDBC69C2C /* SshManagerPane.swift in Sources */,
+				5D4E03537DA6F4288E6FF820 /* StatusBar.swift in Sources */,
+				AE83524320AA333EAA20E7AF /* TaskBoardPane.swift in Sources */,
+				32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */,
+				F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */,
+				587B9ADBC09AF402EDB4AA2E /* TerminalSurface.swift in Sources */,
+				C48A433DE9B9CF2EA6C307AF /* WorkflowPane.swift in Sources */,
+				B3B39DFE7D69A7391CC3A519 /* Workspace.swift in Sources */,
+				C857F379F52F9DA89E537FEB /* WorkspaceManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		6DE328E117830DA327604FB4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8C49E62DAF419010764E16C6 /* Pnevma */;
+			targetProxy = 8415CCA9014F90B47414464E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		011A9DBEC2D909F6143EAB6D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.tests;
+				PRODUCT_MODULE_NAME = PnevmaTests;
+				PRODUCT_NAME = PnevmaTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pnevma.app/Contents/MacOS/Pnevma";
+			};
+			name = Debug;
+		};
+		34B56C5319BDF7A698D15558 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.tests;
+				PRODUCT_MODULE_NAME = PnevmaTests;
+				PRODUCT_NAME = PnevmaTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pnevma.app/Contents/MacOS/Pnevma";
+			};
+			name = Release;
+		};
+		C75F915280CC605D5510F307 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Pnevma/Pnevma.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"../vendor/ghostty/macos\"",
+				);
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				OTHER_LDFLAGS = "$(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge -lstdc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.app;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Pnevma/Bridge/Pnevma-Bridging-Header.h";
+			};
+			name = Release;
+		};
+		CD1976796123927E3FE6707B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Pnevma/Pnevma.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"../vendor/ghostty/macos\"",
+				);
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				OTHER_LDFLAGS = "$(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge -lstdc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.app;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Pnevma/Bridge/Pnevma-Bridging-Header.h";
+			};
+			name = Debug;
+		};
+		D7DF247198A6B814B9BAC0C2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_APP_INTENTS_METADATA_GENERATION = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = Pnevma;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		DA7DB4026EB67BF4BB25B648 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_APP_INTENTS_METADATA_GENERATION = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = Pnevma;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5948A3AF9B25FB971310FB9D /* Build configuration list for PBXNativeTarget "Pnevma" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CD1976796123927E3FE6707B /* Debug */,
+				C75F915280CC605D5510F307 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		79B8999A15D22D9F4AE803E5 /* Build configuration list for PBXProject "Pnevma" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DA7DB4026EB67BF4BB25B648 /* Debug */,
+				D7DF247198A6B814B9BAC0C2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		EBE5E9530B257E95F1BADFE1 /* Build configuration list for PBXNativeTarget "PnevmaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				011A9DBEC2D909F6143EAB6D /* Debug */,
+				34B56C5319BDF7A698D15558 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0E36EF5A153E2C8F9E73F0F7 /* Project object */;
+}

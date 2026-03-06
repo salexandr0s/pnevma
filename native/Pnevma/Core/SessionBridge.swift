@@ -1,90 +1,162 @@
 import Foundation
-import Cocoa
+import os
 
-/// Lightweight coordinator for terminal pane lifecycle.
-///
-/// Since ghostty manages its own PTY internally (one per surface), SessionBridge
-/// does not route PTY I/O. Its job is to:
-///   - Track which TerminalHostView instances are active.
-///   - Provide a factory method to spawn new terminal panes with a working directory.
-///   - Relay ghostty close_surface events back to the UI layer.
-///
-/// The Rust session layer (via PnevmaBridge) remains a separate concern used for
-/// agent tasks, not for interactive terminal I/O.
+struct SessionBindingEnvVar: Decodable, Equatable {
+    let key: String
+    let value: String
+}
+
+struct SessionRecoveryOption: Decodable, Equatable, Identifiable {
+    let id: String
+    let label: String
+    let description: String
+    let enabled: Bool
+}
+
+struct SessionBindingDescriptor: Decodable, Equatable {
+    let sessionID: String
+    let mode: String
+    let cwd: String
+    let env: [SessionBindingEnvVar]
+    let waitAfterCommand: Bool
+    let recoveryOptions: [SessionRecoveryOption]
+
+    var isLiveAttach: Bool { mode == "live_attach" }
+
+    func makeLaunchConfiguration() -> TerminalSurfaceLaunchConfiguration {
+        TerminalSurfaceLaunchConfiguration(
+            workingDirectory: cwd,
+            command: "/bin/sh -lc 'exec tmux attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
+            env: env.map { TerminalSurfaceEnvironmentVariable(key: $0.key, value: $0.value) },
+            waitAfterCommand: waitAfterCommand,
+            initialInput: nil
+        )
+    }
+}
+
+struct SessionRecoveryResult: Decodable, Equatable {
+    let ok: Bool
+    let action: String
+    let newSessionID: String?
+}
+
+struct SessionScrollbackSlice: Decodable, Equatable {
+    let sessionID: String
+    let startOffset: UInt64
+    let endOffset: UInt64
+    let totalBytes: UInt64
+    let data: String
+}
+
+private struct SessionCreateParams: Encodable {
+    let name: String
+    let cwd: String
+    let command: String
+}
+
+private struct SessionCreateResponse: Decodable {
+    let sessionID: String
+    let binding: SessionBindingDescriptor
+}
+
+private struct SessionBindingParams: Encodable {
+    let sessionID: String
+}
+
+private struct SessionResizeParams: Encodable {
+    let sessionID: String
+    let cols: Int
+    let rows: Int
+}
+
+private struct SessionRecoveryParams: Encodable {
+    let sessionID: String
+    let action: String
+}
+
+private struct SessionScrollbackParams: Encodable {
+    let sessionID: String
+    let limit: Int
+}
+
+enum SessionBridgeError: LocalizedError {
+    case missingProjectPath
+
+    var errorDescription: String? {
+        switch self {
+        case .missingProjectPath:
+            return "No active project is available for terminal session creation."
+        }
+    }
+}
+
+/// Native coordinator for backend-managed terminal sessions.
 final class SessionBridge {
+    static var shared: SessionBridge?
 
-    // MARK: - Types
+    private let commandBus: any CommandCalling
+    private let activeWorkspacePath: () -> String?
 
-    struct TerminalEntry {
-        let id: UUID
-        weak var hostView: TerminalHostView?
-        let workingDirectory: String?
-        let createdAt: Date
+    init(
+        commandBus: any CommandCalling,
+        activeWorkspacePath: @escaping () -> String?
+    ) {
+        self.commandBus = commandBus
+        self.activeWorkspacePath = activeWorkspacePath
     }
 
-    // MARK: - State
-
-    private var terminals: [UUID: TerminalEntry] = [:]
-    private let lock = NSLock()
-
-    /// Called when a terminal pane has exited (process exited or user closed).
-    var onTerminalClosed: ((UUID) -> Void)?
-
-    // MARK: - Init
-
-    init() {}
-
-    // MARK: - Public API
-
-    /// Create a new TerminalHostView and begin tracking it.
-    /// The view is returned; the caller is responsible for adding it to the view hierarchy.
-    @discardableResult
-    func createTerminal(workingDirectory: String? = nil) -> TerminalHostView {
-        let view = TerminalHostView()
-        view.workingDirectory = workingDirectory
-
-        let id = UUID()
-        let entry = TerminalEntry(
-            id: id,
-            hostView: view,
-            workingDirectory: workingDirectory,
-            createdAt: Date()
-        )
-
-        lock.lock()
-        terminals[id] = entry
-        lock.unlock()
-
-        view.onTerminalClose = { [weak self, id] in
-            self?.handleTerminalClose(id: id)
+    func createSession(workingDirectory requestedWorkingDirectory: String?) async throws -> SessionBindingDescriptor {
+        let cwd = requestedWorkingDirectory ?? activeWorkspacePath()
+        guard let cwd else {
+            throw SessionBridgeError.missingProjectPath
         }
 
-        print("[SessionBridge] Created terminal \(id) cwd=\(workingDirectory ?? "~")")
-        return view
+        let response: SessionCreateResponse = try await commandBus.call(
+            method: "session.new",
+            params: SessionCreateParams(
+                name: "Terminal",
+                cwd: cwd,
+                command: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            )
+        )
+        return response.binding
     }
 
-    /// Returns the number of active (non-deallocated) terminal panes.
-    var activeCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return terminals.values.filter { $0.hostView != nil }.count
+    func binding(for sessionID: String) async throws -> SessionBindingDescriptor {
+        try await commandBus.call(
+            method: "session.binding",
+            params: SessionBindingParams(sessionID: sessionID)
+        )
     }
 
-    /// Remove a terminal entry explicitly (e.g. when its window/pane is torn down by UI).
-    func removeTerminal(id: UUID) {
-        lock.lock()
-        terminals.removeValue(forKey: id)
-        lock.unlock()
-        print("[SessionBridge] Removed terminal \(id)")
+    func scrollback(for sessionID: String, limit: Int = 128 * 1024) async throws -> SessionScrollbackSlice {
+        try await commandBus.call(
+            method: "session.scrollback",
+            params: SessionScrollbackParams(sessionID: sessionID, limit: limit)
+        )
     }
 
-    // MARK: - Callbacks
+    func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult {
+        try await commandBus.call(
+            method: "session.recovery.execute",
+            params: SessionRecoveryParams(sessionID: sessionID, action: action)
+        )
+    }
 
-    private func handleTerminalClose(id: UUID) {
-        print("[SessionBridge] Terminal \(id) closed (process exited)")
-        lock.lock()
-        terminals.removeValue(forKey: id)
-        lock.unlock()
-        onTerminalClosed?(id)
+    func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async {
+        do {
+            let _: OkResponse = try await commandBus.call(
+                method: "session.resize",
+                params: SessionResizeParams(
+                    sessionID: sessionID,
+                    cols: Int(columns),
+                    rows: Int(rows)
+                )
+            )
+        } catch {
+            Log.workspace.debug(
+                "Ignoring terminal resize update for session \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 }

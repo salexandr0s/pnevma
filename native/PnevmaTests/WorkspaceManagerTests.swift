@@ -109,6 +109,31 @@ private actor MockCommandBus: CommandCalling {
     }
 }
 
+private actor FailingProjectOpenCommandBus: CommandCalling {
+    let message: String
+
+    init(message: String) {
+        self.message = message
+    }
+
+    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+        switch method {
+        case "project.open":
+            throw PnevmaError.backendError(method: method, message: message)
+        case "project.close":
+            return OkResponse(ok: true) as! T
+        default:
+            throw NSError(domain: "FailingProjectOpenCommandBus", code: 1)
+        }
+    }
+}
+
+private struct ProjectOpenFailurePayload: Decodable {
+    let workspaceId: UUID?
+    let generation: UInt64?
+    let message: String
+}
+
 @MainActor
 final class WorkspaceManagerTests: XCTestCase {
     private func waitUntil(
@@ -333,5 +358,40 @@ final class WorkspaceManagerTests: XCTestCase {
 
         XCTAssertEqual(rootPane?.type, "terminal")
         XCTAssertEqual(rootPane?.workingDirectory, "/tmp/a")
+    }
+
+    func testProjectOpenFailurePostsActionableEvent() async throws {
+        let bus = FailingProjectOpenCommandBus(message: "workspace_not_trusted")
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+
+        let eventExpectation = expectation(description: "project_open_failed")
+        var receivedPayloadJSON: String?
+        let observerID = BridgeEventHub.shared.addObserver { event in
+            guard event.name == "project_open_failed" else {
+                return
+            }
+            receivedPayloadJSON = event.payloadJSON
+            eventExpectation.fulfill()
+        }
+        defer { BridgeEventHub.shared.removeObserver(observerID) }
+
+        let workspace = manager.createWorkspace(name: "Untrusted", projectPath: "/tmp/untrusted")
+
+        await fulfillment(of: [eventExpectation], timeout: 3.0)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payloadJSON = try XCTUnwrap(receivedPayloadJSON)
+        let payloadData = try XCTUnwrap(payloadJSON.data(using: .utf8))
+        let decoded = try decoder.decode(ProjectOpenFailurePayload.self, from: payloadData)
+
+        XCTAssertEqual(
+            decoded.message,
+            "Workspace trust is required before this project can open."
+        )
+        XCTAssertEqual(decoded.workspaceId, workspace.id)
+        XCTAssertEqual(manager.activeWorkspaceID, workspace.id)
+        XCTAssertNil(workspace.gitBranch)
+        XCTAssertEqual(workspace.activeTasks, 0)
     }
 }

@@ -1,5 +1,9 @@
 import Cocoa
 
+#if SWIFT_PACKAGE
+import Pnevma
+#endif
+
 @main
 struct PnevmaApp {
     static func main() {

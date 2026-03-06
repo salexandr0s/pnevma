@@ -20,11 +20,17 @@ final class Workspace: ObservableObject, Identifiable {
     /// When this workspace was created.
     let createdAt: Date
 
-    init(name: String, projectPath: String? = nil, rootPaneID: PaneID = PaneID()) {
-        self.id = UUID()
+    init(
+        id: UUID = UUID(),
+        name: String,
+        projectPath: String? = nil,
+        layoutEngine: PaneLayoutEngine? = nil,
+        rootPaneID: PaneID = PaneID()
+    ) {
+        self.id = id
         self.name = name
         self.projectPath = projectPath
-        self.layoutEngine = PaneLayoutEngine(rootPaneID: rootPaneID)
+        self.layoutEngine = layoutEngine ?? PaneLayoutEngine(rootPaneID: rootPaneID)
         self.createdAt = Date()
     }
 }
@@ -45,6 +51,16 @@ extension Workspace {
             name: name,
             projectPath: projectPath,
             layoutData: layoutEngine.serialize()
+        )
+    }
+
+    convenience init(snapshot: Snapshot) {
+        let restoredLayout = snapshot.layoutData.flatMap(PaneLayoutEngine.deserialize(from:))
+        self.init(
+            id: snapshot.id,
+            name: snapshot.name,
+            projectPath: snapshot.projectPath,
+            layoutEngine: restoredLayout
         )
     }
 }

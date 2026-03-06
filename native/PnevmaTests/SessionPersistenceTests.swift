@@ -75,6 +75,24 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(result, "restore should return nil when no session file exists")
     }
 
+    func testSaveAndRestorePreservesWorkspaceSnapshots() {
+        let workspace = Workspace(name: "Persisted")
+        let state = SessionPersistence.SessionState(
+            windowFrame: SessionPersistence.CodableRect(NSRect(x: 10, y: 20, width: 900, height: 700)),
+            workspaces: [workspace.snapshot()],
+            activeWorkspaceID: workspace.id,
+            sidebarVisible: false
+        )
+
+        persistence.save(state: state)
+
+        let restored = persistence.restore()
+        XCTAssertEqual(restored?.workspaces.count, 1)
+        XCTAssertEqual(restored?.workspaces.first?.name, "Persisted")
+        XCTAssertEqual(restored?.activeWorkspaceID, workspace.id)
+        XCTAssertEqual(restored?.sidebarVisible, false)
+    }
+
     func testMarkDirtyFromMultipleThreads() {
         // Verify thread-safety of markDirty — should not crash or race.
         let group = DispatchGroup()

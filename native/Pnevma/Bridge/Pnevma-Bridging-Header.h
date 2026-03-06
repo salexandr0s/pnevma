@@ -1,10 +1,10 @@
 // Bridging header — imports the Rust FFI header and the Ghostty C API.
 #include "../../../crates/pnevma-bridge/pnevma-bridge.h"
 
-// Ghostty library header — from vendor/ghostty/include/
-// This file is produced by `just ghostty-build` which compiles ghostty via Zig
-// and emits the XCFramework + header at vendor/ghostty/zig-out/lib/libghostty.xcframework
-// and vendor/ghostty/include/ghostty.h respectively.
+// Ghostty library header — from the vendored Ghostty source tree.
+// `just ghostty-build` compiles the xcframework at
+// vendor/ghostty/macos/GhosttyKit.xcframework, and the vendored checkout
+// provides the matching C header at vendor/ghostty/include/ghostty.h.
 //
 // The #include below is guarded at the preprocessor level: if the file does not
 // exist yet (e.g. before the ghostty build step has run), the Swift compiler will

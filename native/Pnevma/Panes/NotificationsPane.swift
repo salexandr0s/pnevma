@@ -1,11 +1,28 @@
 import SwiftUI
 import Cocoa
 
-// MARK: - Data Models
-
-struct NotificationItem: Identifiable, Codable {
+private struct BackendNotificationItem: Identifiable, Decodable {
     let id: String
-    let level: String  // info, warning, error, success
+    let level: String
+    let title: String
+    let body: String
+    let unread: Bool
+    let createdAt: String
+    let taskID: String?
+    let sessionID: String?
+}
+
+private struct NotificationListParams: Encodable {
+    let unreadOnly: Bool
+}
+
+private struct NotificationMarkReadParams: Encodable {
+    let notificationID: String
+}
+
+struct NotificationItem: Identifiable {
+    let id: String
+    let level: String
     let title: String
     let body: String?
     let timestamp: String
@@ -13,14 +30,11 @@ struct NotificationItem: Identifiable, Codable {
     let sourcePaneType: String?
 }
 
-// MARK: - NotificationsView
-
 struct NotificationsView: View {
     @StateObject private var viewModel = NotificationsViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with actions
             HStack {
                 Text("Notifications")
                     .font(.headline)
@@ -46,7 +60,6 @@ struct NotificationsView: View {
 
             Divider()
 
-            // Notification list
             if viewModel.filteredNotifications.isEmpty {
                 Spacer()
                 Text("No notifications")
@@ -64,20 +77,16 @@ struct NotificationsView: View {
     }
 }
 
-// MARK: - NotificationRow
-
 struct NotificationRow: View {
     let notification: NotificationItem
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            // Unread indicator
             Circle()
                 .fill(notification.isRead ? Color.clear : Color.accentColor)
                 .frame(width: 8, height: 8)
                 .padding(.top, 6)
 
-            // Level icon
             Image(systemName: iconName)
                 .foregroundStyle(iconColor)
                 .frame(width: 16)
@@ -122,13 +131,30 @@ struct NotificationRow: View {
     }
 }
 
-// MARK: - ViewModel
-
 final class NotificationsViewModel: ObservableObject {
     enum Filter: String { case all, unread, errors }
 
     @Published var notifications: [NotificationItem] = []
     @Published var filter: Filter = .all
+
+    private var bridgeObserverID: UUID?
+
+    init() {
+        bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
+            switch event.name {
+            case "notification_created", "notification_cleared", "notification_updated":
+                self?.load()
+            default:
+                break
+            }
+        }
+    }
+
+    deinit {
+        if let bridgeObserverID {
+            BridgeEventHub.shared.removeObserver(bridgeObserverID)
+        }
+    }
 
     var filteredNotifications: [NotificationItem] {
         switch filter {
@@ -139,25 +165,68 @@ final class NotificationsViewModel: ObservableObject {
     }
 
     func load() {
-        // pnevma_call("notification.list", "{}")
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                let items: [BackendNotificationItem] = try await bus.call(
+                    method: "notification.list",
+                    params: NotificationListParams(unreadOnly: false)
+                )
+                let mapped = items.map {
+                    NotificationItem(
+                        id: $0.id,
+                        level: $0.level,
+                        title: $0.title,
+                        body: $0.body,
+                        timestamp: $0.createdAt,
+                        isRead: !$0.unread,
+                        sourcePaneType: nil
+                    )
+                }
+                await MainActor.run {
+                    self.notifications = mapped
+                }
+            } catch {
+                // Preserve the existing list when refresh fails.
+            }
+        }
     }
 
     func markRead(_ id: String) {
         if let idx = notifications.firstIndex(where: { $0.id == id }) {
             notifications[idx].isRead = true
         }
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                let _: OkResponse = try await bus.call(
+                    method: "notification.mark_read",
+                    params: NotificationMarkReadParams(notificationID: id)
+                )
+            } catch {
+                load()
+            }
+        }
     }
 
     func markAllRead() {
-        for i in notifications.indices { notifications[i].isRead = true }
+        for notification in notifications where !notification.isRead {
+            markRead(notification.id)
+        }
     }
 
     func clearAll() {
         notifications.removeAll()
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                let _: OkResponse = try await bus.call(method: "notification.clear")
+            } catch {
+                load()
+            }
+        }
     }
 }
-
-// MARK: - NSView Wrapper
 
 final class NotificationsPaneView: NSView, PaneContent {
     let paneID = PaneID()
