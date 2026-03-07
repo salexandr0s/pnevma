@@ -24,7 +24,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var workspaceManager: WorkspaceManager?
     private var contentAreaView: ContentAreaView?
     private var tabBarView: TabBarView?
-    private var tabBarAccessory: NSTitlebarAccessoryViewController?
     private var statusBar: StatusBar?
     private var sidebarHostView: NSView?
     private var sidebarWidthConstraint: NSLayoutConstraint?
@@ -187,7 +186,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
-        win.toolbarStyle = .unifiedCompact
+        win.toolbarStyle = .unified
+
+        // Create tab bar before toolbar so it's available when the delegate is called
+        let tabBar = TabBarView()
+        tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
+        tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
+        tabBar.onAddTab = { [weak self] in self?.newTab() }
+        self.tabBarView = tabBar
 
         let toolbar = NSToolbar(identifier: "MainToolbar")
         toolbar.delegate = self
@@ -257,20 +263,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
 
-        // Tab bar (lives in the titlebar as an accessory)
-        let tabBar = TabBarView()
-        tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
-        tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
-        tabBar.onAddTab = { [weak self] in self?.newTab() }
-        self.tabBarView = tabBar
-
-        let tabBarAccessory = NSTitlebarAccessoryViewController()
-        tabBarAccessory.view = tabBar
-        tabBarAccessory.layoutAttribute = .bottom
-        tabBarAccessory.fullScreenMinHeight = DesignTokens.Layout.tabBarHeight
-        tabBar.frame = NSRect(x: 0, y: 0, width: 0, height: DesignTokens.Layout.tabBarHeight)
-        self.tabBarAccessory = tabBarAccessory
-
         for view in [sidebarBacking, contentAreaView!, statusBar!] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
@@ -321,8 +313,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             win.backgroundColor = theme.backgroundColor
         }
-
-        win.addTitlebarAccessoryViewController(tabBarAccessory)
 
         self.window = win
         if showWindow {
@@ -610,11 +600,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTabBar() {
         guard let workspace = workspaceManager?.activeWorkspace else {
             tabBarView?.tabs = []
-            tabBarAccessory?.isHidden = true
+            tabBarView?.isHidden = true
             return
         }
         let showTabBar = workspace.tabs.count > 1
-        tabBarAccessory?.isHidden = !showTabBar
+        tabBarView?.isHidden = !showTabBar
         tabBarView?.tabs = workspace.tabs.enumerated().map { (i, tab) in
             TabBarView.Tab(id: tab.id, title: tab.title, isActive: i == workspace.activeTabIndex)
         }
@@ -956,6 +946,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSToolbarDelegate {
     static let sidebarToggleIdentifier = NSToolbarItem.Identifier("sidebarToggle")
+    static let tabBarIdentifier = NSToolbarItem.Identifier("tabBar")
     static let notificationsIdentifier = NSToolbarItem.Identifier("notifications")
     static let addWorkspaceIdentifier = NSToolbarItem.Identifier("addWorkspace")
 
@@ -969,6 +960,15 @@ extension AppDelegate: NSToolbarDelegate {
             item.target = self
             item.action = #selector(toggleSidebar)
             item.isBordered = true
+            return item
+        case Self.tabBarIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            if let tabBar = tabBarView {
+                item.view = tabBar
+            }
+            item.label = "Tabs"
+            item.minSize = NSSize(width: 100, height: DesignTokens.Layout.tabBarHeight)
+            item.maxSize = NSSize(width: 10000, height: DesignTokens.Layout.tabBarHeight)
             return item
         case Self.notificationsIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -998,11 +998,11 @@ extension AppDelegate: NSToolbarDelegate {
     }
 
     public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggleIdentifier, .flexibleSpace, Self.notificationsIdentifier, Self.addWorkspaceIdentifier]
+        [Self.sidebarToggleIdentifier, Self.tabBarIdentifier, .flexibleSpace, Self.notificationsIdentifier, Self.addWorkspaceIdentifier]
     }
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
+        [Self.sidebarToggleIdentifier, Self.tabBarIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
     }
 }
 
