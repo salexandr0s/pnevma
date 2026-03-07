@@ -536,6 +536,15 @@ pub async fn route_method(
             serde_json::to_value(commands::OkResponse { ok: true })
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "project.trust" => {
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::trust_workspace(path)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(commands::OkResponse { ok: true })
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "project.status" => serde_json::to_value(
             commands::project_status(state)
                 .await
@@ -808,8 +817,9 @@ pub async fn route_method(
             let name = parse_optional_string_param(params, "name")
                 .unwrap_or_else(|| "session".to_string());
             let cwd = parse_optional_string_param(params, "cwd").unwrap_or_else(|| ".".to_string());
-            let command =
-                parse_optional_string_param(params, "command").unwrap_or_else(|| "zsh".to_string());
+            let command = parse_optional_string_param(params, "command")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "zsh".to_string());
             let session_id =
                 commands::create_session(commands::SessionInput { name, cwd, command }, state)
                     .await

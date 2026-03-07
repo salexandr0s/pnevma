@@ -375,6 +375,7 @@ final class TaskBoardViewModel: ObservableObject {
 final class TaskBoardPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "taskboard"
+    let shouldPersist = false
     var title: String { "Task Board" }
 
     override init(frame: NSRect) {

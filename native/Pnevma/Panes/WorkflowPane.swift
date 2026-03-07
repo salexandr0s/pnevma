@@ -1085,6 +1085,7 @@ final class WorkflowViewModel: ObservableObject {
 final class WorkflowPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "workflow"
+    let shouldPersist = false
     var title: String { "Workflow" }
 
     override init(frame: NSRect) {

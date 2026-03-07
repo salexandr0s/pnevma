@@ -272,6 +272,7 @@ final class SshManagerViewModel: ObservableObject {
 final class SshManagerPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "ssh"
+    let shouldPersist = false
     var title: String { "SSH" }
 
     override init(frame: NSRect) {

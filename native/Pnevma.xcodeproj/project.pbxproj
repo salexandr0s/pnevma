@@ -52,6 +52,7 @@
 		D5E2354A1C8BA741399DAD00 /* RulesManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FD33CAEC39395235510E3AD /* RulesManagerPane.swift */; };
 		DF1FC44CD8DE86E7C623F142 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE25F54B8A1F8B9127954934 /* Carbon.framework */; };
 		DF5402B68DCC8A9F24A0656D /* CommandBus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67EDEB7FE9D4D7AC1922DEE3 /* CommandBus.swift */; };
+		E1E490755E98A577E0440CC5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 333D11EDDE0496EAC9BAEE47 /* Assets.xcassets */; };
 		E23397115C16E1C3806152AF /* DailyBriefPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA8DEADC71098F70420D35 /* DailyBriefPane.swift */; };
 		E23C8FB1988C5983AA68BDE4 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C296C61E24606F14100C9700 /* libresolv.tbd */; };
 		E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */; };
@@ -88,6 +89,7 @@
 		2E52F41573A608565E5F0B7E /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngineTests.swift; sourceTree = "<group>"; };
 		31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceTests.swift; sourceTree = "<group>"; };
+		333D11EDDE0496EAC9BAEE47 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		424DB32A4274D56423BCFDA7 /* SessionOutputHubTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionOutputHubTests.swift; sourceTree = "<group>"; };
 		468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		478DE8D1E7E9FD77FAE43F0E /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
@@ -236,6 +238,7 @@
 		862EE0D0EE779191692D97D5 /* Pnevma */ = {
 			isa = PBXGroup;
 			children = (
+				333D11EDDE0496EAC9BAEE47 /* Assets.xcassets */,
 				6DD8F8E5E92E16DCDA4AD29F /* App */,
 				1EA06238672B6DE8F5FD3450 /* Bridge */,
 				B1DAB0346C4A52FB5F0E1569 /* Chrome */,
@@ -356,6 +359,7 @@
 			buildConfigurationList = 5948A3AF9B25FB971310FB9D /* Build configuration list for PBXNativeTarget "Pnevma" */;
 			buildPhases = (
 				A696CFEA5784697437BE6EFB /* Sources */,
+				F8E1F120DC096D8201D31417 /* Resources */,
 				59CE2FE693B4E9D149AD0FD7 /* Frameworks */,
 			);
 			buildRules = (
@@ -399,6 +403,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F8E1F120DC096D8201D31417 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1E490755E98A577E0440CC5 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		2D59E671072C1AD248BBC8D9 /* Sources */ = {

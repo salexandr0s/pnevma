@@ -322,6 +322,7 @@ final class NotificationsViewModel: ObservableObject {
 final class NotificationsPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "notifications"
+    let shouldPersist = false
     var title: String { "Notifications" }
 
     override init(frame: NSRect) {

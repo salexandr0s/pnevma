@@ -139,6 +139,7 @@ final class DailyBriefViewModel: ObservableObject {
 final class DailyBriefPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "daily_brief"
+    let shouldPersist = false
     var title: String { "Daily Brief" }
 
     override init(frame: NSRect) {

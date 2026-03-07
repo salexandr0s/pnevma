@@ -42,6 +42,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         initializeRuntime()
 
         let restoredState = persistence?.restore()
@@ -52,6 +53,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create and show main window
         createMainWindow(showWindow: true)
+
+        // Reload ghostty config now that window exists so appearance-conditional
+        // themes (e.g. light:X,dark:Y) resolve correctly.
+        let reloadedConfig = TerminalConfig()
+        TerminalSurface.applyGhosttyConfig(reloadedConfig)
 
         if let restoredState {
             applyRestoredState(restoredState)
@@ -155,7 +161,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        win.title = "Pnevma"
+        win.title = ""
+        win.titleVisibility = .hidden
+        win.appearance = NSAppearance(named: .darkAqua)
+        win.toolbarStyle = .unifiedCompact
+
+        let toolbar = NSToolbar(identifier: "MainToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.showsBaselineSeparator = false
+        win.toolbar = toolbar
         win.center()
         win.minSize = NSSize(width: 800, height: 500)
 
@@ -192,8 +207,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let mgr = workspaceManager ?? WorkspaceManager(bridge: bridge, commandBus: commandBus)
         let sidebarView = SidebarView(
             workspaceManager: mgr,
-            onOpenProject: { [weak self] in self?.openProject() },
-            onOpenSettings: { [weak self] in self?.openSettingsPane() }
+            onAddWorkspace: { [weak self] in self?.openProject() },
+            onOpenSettings: { [weak self] in self?.openSettingsPane() },
+            onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView)
         let sidebarEffect = NSVisualEffectView()
@@ -430,11 +446,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
 
     @objc private func newTerminal() {
-        guard let workspace = workspaceManager?.activeWorkspace,
-              let projectPath = workspace.projectPath else {
-            Log.workspace.info("Ignoring terminal request because no project is active")
-            return
-        }
+        let projectPath = workspaceManager?.activeWorkspace?.projectPath
         let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
         contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
     }
@@ -446,11 +458,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func splitRightAction() { newTerminal() }
 
     @objc private func splitDownAction() {
-        guard let workspace = workspaceManager?.activeWorkspace,
-              let projectPath = workspace.projectPath else {
-            Log.workspace.info("Ignoring terminal split because no project is active")
-            return
-        }
+        let projectPath = workspaceManager?.activeWorkspace?.projectPath
         let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
         contentAreaView?.splitActivePane(direction: .vertical, newPaneView: pane)
     }
@@ -518,7 +526,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 shortcut: shortcut
             ) { [weak self] in
                 let pane = factory()
-                self?.contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+                if self?.contentAreaView?.replaceActivePane(with: pane) == nil {
+                    self?.contentAreaView?.setRootPane(pane)
+                }
             })
         }
 
@@ -539,7 +549,51 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openSettingsPane() {
         let pane = SettingsPaneView()
-        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        if contentAreaView?.replaceActivePane(with: pane) == nil {
+            contentAreaView?.setRootPane(pane)
+        }
+    }
+
+    private func openToolPane(_ toolID: String) {
+        let pane: (NSView & PaneContent)?
+        switch toolID {
+        case "terminal":
+            let projectPath = workspaceManager?.activeWorkspace?.projectPath
+            pane = PaneFactory.makeTerminal(workingDirectory: projectPath).1
+        case "tasks":
+            pane = TaskBoardPaneView()
+        case "workflow":
+            pane = WorkflowPaneView()
+        case "review":
+            pane = ReviewPaneView()
+        case "merge":
+            pane = MergeQueuePaneView()
+        case "diff":
+            pane = DiffPaneView()
+        case "search":
+            pane = SearchPaneView()
+        case "files":
+            pane = FileBrowserPaneView()
+        case "analytics":
+            pane = AnalyticsPaneView()
+        case "brief":
+            pane = DailyBriefPaneView()
+        case "notifications":
+            pane = NotificationsPaneView()
+        case "rules":
+            pane = RulesManagerPaneView()
+        case "ssh":
+            pane = SshManagerPaneView()
+        case "replay":
+            pane = ReplayPaneView(frame: .zero)
+        default:
+            return
+        }
+        if let pane {
+            if contentAreaView?.replaceActivePane(with: pane) == nil {
+                contentAreaView?.setRootPane(pane)
+            }
+        }
     }
 
     private func buildSessionState() -> SessionPersistence.SessionState {
@@ -582,6 +636,60 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return PaneFactory.makeTerminal(workingDirectory: projectPath).1
         }
         return PaneFactory.makeWelcome().1
+    }
+
+    @objc private func showNotifications() {
+        // TODO: Show notifications popover
+    }
+}
+
+// MARK: - NSToolbarDelegate
+
+extension AppDelegate: NSToolbarDelegate {
+    static let sidebarToggleIdentifier = NSToolbarItem.Identifier("sidebarToggle")
+    static let notificationsIdentifier = NSToolbarItem.Identifier("notifications")
+    static let addWorkspaceIdentifier = NSToolbarItem.Identifier("addWorkspace")
+
+    public func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        switch itemIdentifier {
+        case Self.sidebarToggleIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
+            item.label = "Sidebar"
+            item.toolTip = "Toggle Sidebar"
+            item.target = self
+            item.action = #selector(toggleSidebar)
+            item.isBordered = true
+            return item
+        case Self.notificationsIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "bell", accessibilityDescription: "Notifications")
+            item.label = "Notifications"
+            item.toolTip = "Notifications"
+            item.target = self
+            item.action = #selector(showNotifications)
+            item.isBordered = true
+            return item
+        case Self.addWorkspaceIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Workspace")
+            item.label = "New"
+            item.toolTip = "Open Project"
+            item.target = self
+            item.action = #selector(openProjectAction)
+            item.isBordered = true
+            return item
+        default:
+            return nil
+        }
+    }
+
+    public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.sidebarToggleIdentifier, .flexibleSpace, Self.notificationsIdentifier, Self.addWorkspaceIdentifier]
+    }
+
+    public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
     }
 }
 

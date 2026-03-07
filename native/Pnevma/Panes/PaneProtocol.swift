@@ -283,6 +283,7 @@ enum PaneFactory {
 final class WelcomePaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "welcome"
+    let shouldPersist = false
     var title: String { "Welcome" }
 
     override init(frame: NSRect) {
@@ -399,10 +400,18 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     func activate() {
         if let hostView {
             window?.makeFirstResponder(hostView)
+            hostView.setPaneFocused(true)
         }
     }
 
-    func deactivate() {}
+    func deactivate() {
+        if let hostView {
+            if window?.firstResponder === hostView {
+                window?.makeFirstResponder(nil)
+            }
+            hostView.setPaneFocused(false)
+        }
+    }
 
     func dispose() {
         loadTask?.cancel()
@@ -509,14 +518,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private func handleSessionLoadFailure(_ error: Error) async {
         let message = error.localizedDescription
         if message.contains("no open project") || message.contains("No active project") {
-            awaitingProjectActivation = true
-            showState(
-                title: "Waiting For Project",
-                message: "The workspace project is still activating.",
-                detail: "The terminal will retry automatically when the backend finishes opening the project.",
-                scrollback: nil,
-                actions: []
-            )
+            showLocalTerminal()
             return
         }
 
@@ -527,6 +529,21 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             scrollback: nil,
             actions: makeFallbackActions()
         )
+    }
+
+    /// Launch a plain local terminal (no backend session) when no project is open.
+    private func showLocalTerminal() {
+        let cwd = currentWorkingDirectory ?? NSHomeDirectory()
+        let hostView = TerminalHostView()
+        hostView.launchConfiguration = .shell(workingDirectory: cwd)
+        hostView.onTerminalClose = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.loadOrRestoreSession()
+            }
+        }
+        replaceContent(with: hostView)
+        self.hostView = hostView
+        hostView.ensureSurfaceCreated()
     }
 
     private func apply(binding: SessionBindingDescriptor) async {

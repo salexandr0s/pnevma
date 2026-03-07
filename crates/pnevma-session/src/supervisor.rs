@@ -343,6 +343,25 @@ enum ScrollbackReadStart {
     Tail,
 }
 
+/// Resolve a binary name to its full path, searching common macOS locations
+/// in addition to the inherited PATH (which may be minimal for GUI apps).
+fn resolve_binary(name: &str) -> PathBuf {
+    let extra_dirs = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ];
+    for dir in &extra_dirs {
+        let candidate = PathBuf::from(dir).join(name);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // Fall back to bare name (rely on PATH)
+    PathBuf::from(name)
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionSupervisor {
     sessions: Arc<RwLock<HashMap<Uuid, SessionMetadata>>>,
@@ -354,6 +373,8 @@ pub struct SessionSupervisor {
     data_dir: PathBuf,
     tmux_tmpdir: PathBuf,
     max_sessions: usize,
+    tmux_bin: PathBuf,
+    script_bin: PathBuf,
 }
 
 impl SessionSupervisor {
@@ -370,6 +391,8 @@ impl SessionSupervisor {
             tmux_tmpdir: data_dir.join("tmux"),
             data_dir,
             max_sessions: 16,
+            tmux_bin: resolve_binary("tmux"),
+            script_bin: resolve_binary("script"),
         }
     }
 
@@ -545,8 +568,25 @@ impl SessionSupervisor {
             )));
         }
 
-        // Send the command as literal keystrokes to prevent shell injection
-        if !command.trim().is_empty() {
+        // Hide the tmux status bar so only the shell content is visible
+        let _ = self
+            .tmux_command()
+            .args(["set", "-t", &name, "status", "off"])
+            .output()
+            .await;
+
+        // Send the command as literal keystrokes to prevent shell injection.
+        // Skip bare shell names — tmux already starts a default shell.
+        let bare_shells = ["zsh", "bash", "sh", "fish"];
+        let is_bare_shell = bare_shells.iter().any(|s| {
+            let trimmed = command.trim();
+            trimmed == *s
+                || std::path::Path::new(trimmed)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map_or(false, |n| n == *s)
+        });
+        if !command.trim().is_empty() && !is_bare_shell {
             let send_out = self
                 .tmux_command()
                 .args(["send-keys", "-t", &name, "-l", command])
@@ -589,12 +629,13 @@ impl SessionSupervisor {
         };
         let scrollback_index_path = scrollback_path.with_extension("idx");
 
+        let tmux_bin_str = self.tmux_bin.to_string_lossy().to_string();
         let mut child = self
             .script_command()
             .args([
                 "-q",
                 "/dev/null",
-                "tmux",
+                &tmux_bin_str,
                 "attach-session",
                 "-t",
                 &tmux_target,
@@ -1004,13 +1045,13 @@ impl SessionSupervisor {
     }
 
     fn tmux_command(&self) -> Command {
-        let mut cmd = Command::new("tmux");
+        let mut cmd = Command::new(&self.tmux_bin);
         cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
         cmd
     }
 
     fn script_command(&self) -> Command {
-        let mut cmd = Command::new("script");
+        let mut cmd = Command::new(&self.script_bin);
         cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
         cmd
     }
@@ -1032,7 +1073,7 @@ fn tmux_name(session_id: Uuid) -> String {
 async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path) -> bool {
     let _ = tokio::fs::create_dir_all(tmux_tmpdir).await;
 
-    Command::new("tmux")
+    Command::new(resolve_binary("tmux"))
         .env("TMUX_TMPDIR", tmux_tmpdir)
         .args(["has-session", "-t", name])
         .status()

@@ -216,10 +216,7 @@ final class WorkspaceManager: ObservableObject {
 
     private func openWorkspaceProject(path: String, for workspace: Workspace, generation: UInt64) async {
         do {
-            let response: ProjectOpenResponse = try await commandBus.call(
-                method: "project.open",
-                params: OpenProjectParams(path: path)
-            )
+            let response: ProjectOpenResponse = try await openOrTrust(path: path)
 
             guard workspaceGenerations[workspace.id] == generation,
                   activeWorkspaceID == workspace.id,
@@ -260,6 +257,30 @@ final class WorkspaceManager: ObservableObject {
                 message: error.localizedDescription,
                 workspaceID: workspace.id,
                 generation: generation
+            )
+        }
+    }
+
+    /// Try to open a project; if trust is required, auto-trust and retry once.
+    private func openOrTrust(path: String) async throws -> ProjectOpenResponse {
+        do {
+            return try await commandBus.call(
+                method: "project.open",
+                params: OpenProjectParams(path: path)
+            )
+        } catch let error as PnevmaError {
+            guard case .backendError(_, let message) = error,
+                  message == "workspace_not_trusted" || message == "workspace_config_changed" else {
+                throw error
+            }
+            Log.workspace.info("Auto-trusting workspace at \(path, privacy: .public)")
+            let _: OkResponse = try await commandBus.call(
+                method: "project.trust",
+                params: OpenProjectParams(path: path)
+            )
+            return try await commandBus.call(
+                method: "project.open",
+                params: OpenProjectParams(path: path)
             )
         }
     }

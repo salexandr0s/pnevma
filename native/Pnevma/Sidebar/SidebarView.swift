@@ -1,20 +1,62 @@
 import SwiftUI
 
+/// Sidebar tool items — each opens a feature pane.
+struct SidebarToolItem: Identifiable {
+    let id: String
+    let title: String
+    let icon: String
+}
+
+let sidebarTools: [SidebarToolItem] = [
+    SidebarToolItem(id: "terminal", title: "Terminal", icon: "terminal"),
+    SidebarToolItem(id: "tasks", title: "Task Board", icon: "checklist"),
+    SidebarToolItem(id: "workflow", title: "Workflow", icon: "arrow.triangle.branch"),
+    SidebarToolItem(id: "review", title: "Review", icon: "eye"),
+    SidebarToolItem(id: "merge", title: "Merge Queue", icon: "arrow.triangle.merge"),
+    SidebarToolItem(id: "diff", title: "Diff Viewer", icon: "doc.text.magnifyingglass"),
+    SidebarToolItem(id: "search", title: "Search", icon: "magnifyingglass"),
+    SidebarToolItem(id: "files", title: "File Browser", icon: "folder"),
+    SidebarToolItem(id: "analytics", title: "Analytics", icon: "chart.bar"),
+    SidebarToolItem(id: "brief", title: "Daily Brief", icon: "newspaper"),
+    SidebarToolItem(id: "notifications", title: "Notifications", icon: "bell"),
+    SidebarToolItem(id: "rules", title: "Rules Manager", icon: "list.bullet.rectangle"),
+    SidebarToolItem(id: "ssh", title: "SSH Manager", icon: "network"),
+    SidebarToolItem(id: "replay", title: "Session Replay", icon: "play.rectangle"),
+]
+
 /// SwiftUI sidebar listing workspaces, projects, and quick actions.
 /// Embedded in the main window via NSHostingView + NSVisualEffectView.
 struct SidebarView: View {
     @ObservedObject var workspaceManager: WorkspaceManager
 
-    /// Called when the user wants to open a new project.
-    var onOpenProject: (() -> Void)?
+    /// Called when the user wants to add a new workspace.
+    var onAddWorkspace: (() -> Void)?
     /// Called when the user wants to open settings.
     var onOpenSettings: (() -> Void)?
+    /// Called when the user wants to open a tool pane.
+    var onOpenTool: ((String) -> Void)?
+
+    @State private var activeToolID: String?
+    @State private var isToolsExpanded: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Workspace tabs
+            // 1. Workspaces (top, scrollable)
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 2) {
+                    // Header with + button
+                    HStack {
+                        Text("WORKSPACES")
+                            .font(.system(size: 11))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        AddButton { onAddWorkspace?() }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.top, 8)
+                    .padding(.bottom, 2)
+
                     ForEach(workspaceManager.workspaces) { workspace in
                         WorkspaceTab(
                             workspace: workspace,
@@ -28,31 +70,94 @@ struct SidebarView: View {
                 .padding(.top, 8)
             }
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Bottom actions
-            VStack(spacing: 4) {
+            // 2. Tools (collapsible)
+            VStack(spacing: 0) {
                 Divider()
 
-                Button(action: { onOpenProject?() }) {
-                    Label("Open Project", systemImage: "folder.badge.plus")
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                // Collapsible header
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) { isToolsExpanded.toggle() }
+                }) {
+                    HStack {
+                        Text("TOOLS")
+                            .font(.system(size: 11))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isToolsExpanded ? 0 : 180))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
 
-                Button(action: { onOpenSettings?() }) {
-                    Label("Settings", systemImage: "gear")
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                if isToolsExpanded {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(sidebarTools) { tool in
+                            SidebarToolButton(tool: tool, isActive: activeToolID == tool.id) {
+                                activeToolID = tool.id
+                                onOpenTool?(tool.id)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 4)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .padding(.bottom, 8)
             }
+            .padding(.horizontal, 8)
+
+            // 3. Settings (bottom)
+            VStack(spacing: 0) {
+                Divider()
+                SidebarToolButton(
+                    tool: SidebarToolItem(id: "settings", title: "Settings", icon: "gear"),
+                    isActive: activeToolID == "settings"
+                ) {
+                    activeToolID = "settings"
+                    onOpenSettings?()
+                }
+                .padding(.vertical, 4)
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
         }
         .frame(width: DesignTokens.Layout.sidebarWidth)
+    }
+}
+
+// MARK: - SidebarToolButton
+
+struct SidebarToolButton: View {
+    let tool: SidebarToolItem
+    var isActive: Bool = false
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: tool.icon)
+                    .font(.callout)
+                    .frame(width: 20, alignment: .center)
+                Text(tool.title)
+                    .font(.callout)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(isActive ? Color.primary.opacity(0.10) :
+                          isHovering ? Color.primary.opacity(0.06) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }
 
@@ -103,12 +208,7 @@ struct WorkspaceTab: View {
 
             // Close button on hover
             if isHovering {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
+                CloseButton(action: onClose)
             }
         }
         .padding(.horizontal, 8)
@@ -136,6 +236,40 @@ struct NotificationBadge: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .background(Capsule().fill(Color.red))
+    }
+}
+
+// MARK: - AddButton
+
+private struct AddButton: View {
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus")
+                .font(.system(size: 11))
+                .foregroundStyle(isHovering ? Color.green : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - CloseButton
+
+private struct CloseButton: View {
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.caption2)
+                .foregroundStyle(isHovering ? Color.red : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }
 

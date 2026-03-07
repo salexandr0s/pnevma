@@ -28,9 +28,14 @@ final class ContentAreaView: NSView {
         super.init(frame: frame)
         registerPaneView(rootPaneView)
         rootPaneView.activate()
+        installClickMonitor()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    deinit {
+        removeClickMonitor()
+    }
 
     /// Use flipped coordinate system (top-left origin) so vertical splits
     /// render correctly: first=top, second=bottom.
@@ -40,10 +45,18 @@ final class ContentAreaView: NSView {
 
     override func layout() {
         super.layout()
-        relayout()
+        repositionPanes()
+        repositionDividers()
     }
 
+    /// Full relayout: reposition panes + rebuild dividers. For structural changes.
     private func relayout() {
+        repositionPanes()
+        rebuildDividers()
+    }
+
+    /// Recompute and apply pane frames. Safe to call during drag.
+    private func repositionPanes() {
         layoutEngine.layout(in: bounds)
         for (id, frame) in layoutEngine.paneFrames {
             if let view = paneViews[id] {
@@ -52,12 +65,55 @@ final class ContentAreaView: NSView {
                 view.needsDisplay = true
             }
         }
+    }
 
+    /// Tear down and recreate all divider views.
+    private func rebuildDividers() {
         dividerViews.forEach { $0.removeFromSuperview() }
         dividerViews.removeAll()
         if let root = layoutEngine.root {
             createDividers(node: root, rect: bounds)
         }
+    }
+
+    /// Reposition existing divider views without creating/destroying any.
+    private func repositionDividers() {
+        var index = 0
+        if let root = layoutEngine.root {
+            repositionDividersInNode(root, rect: bounds, index: &index)
+        }
+    }
+
+    private func repositionDividersInNode(_ node: SplitNode, rect: NSRect, index: inout Int) {
+        guard case .split(let direction, let ratio, let first, let second) = node else { return }
+
+        let dw = DesignTokens.Layout.dividerWidth
+        let dividerRect: NSRect
+        let firstRect: NSRect
+        let secondRect: NSRect
+
+        switch direction {
+        case .horizontal:
+            let fw = (rect.width - dw) * ratio
+            dividerRect = NSRect(x: rect.minX + fw, y: rect.minY, width: dw, height: rect.height)
+            firstRect = NSRect(x: rect.minX, y: rect.minY, width: fw, height: rect.height)
+            secondRect = NSRect(x: rect.minX + fw + dw, y: rect.minY,
+                                width: rect.width - fw - dw, height: rect.height)
+        case .vertical:
+            let fh = (rect.height - dw) * ratio
+            let sh = rect.height - fh - dw
+            firstRect = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: fh)
+            dividerRect = NSRect(x: rect.minX, y: rect.minY + fh, width: rect.width, height: dw)
+            secondRect = NSRect(x: rect.minX, y: rect.minY + fh + dw, width: rect.width, height: sh)
+        }
+
+        if index < dividerViews.count {
+            dividerViews[index].frame = dividerRect
+        }
+        index += 1
+
+        repositionDividersInNode(first, rect: firstRect, index: &index)
+        repositionDividersInNode(second, rect: secondRect, index: &index)
     }
 
     private func createDividers(node: SplitNode, rect: NSRect) {
@@ -91,7 +147,8 @@ final class ContentAreaView: NSView {
             guard size > 0 else { return }
             if let targetID = first.allPaneIDs.first {
                 self.layoutEngine.resizeSplit(containing: targetID, delta: delta / size)
-                self.relayout()
+                self.repositionPanes()
+                self.repositionDividers()
             }
         }
         addSubview(divider)
@@ -99,6 +156,35 @@ final class ContentAreaView: NSView {
 
         createDividers(node: first, rect: firstRect)
         createDividers(node: second, rect: secondRect)
+    }
+
+    // MARK: - Click-to-Focus
+
+    private var clickMonitor: Any?
+
+    private func installClickMonitor() {
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.handleClickToFocus(event)
+            return event
+        }
+    }
+
+    private func removeClickMonitor() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+    }
+
+    private func handleClickToFocus(_ event: NSEvent) {
+        guard let eventWindow = event.window, eventWindow == window else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        for (id, view) in paneViews {
+            if view.frame.contains(point), id != layoutEngine.activePaneID {
+                focusPane(id)
+                break
+            }
+        }
     }
 
     // MARK: - Pane Management
@@ -131,6 +217,27 @@ final class ContentAreaView: NSView {
 
         registerPaneView(newPaneView)
         paneViews[activeID]?.deactivate()
+        newPaneView.activate()
+        onActivePaneChanged?(newID)
+        relayout()
+        return newID
+    }
+
+    /// Replace the active pane's view without changing the tree structure.
+    @discardableResult
+    func replaceActivePane(with newPaneView: NSView & PaneContent) -> PaneID? {
+        guard let activeID = layoutEngine.activePaneID else { return nil }
+
+        let newID = newPaneView.paneID
+        guard layoutEngine.replacePane(activeID, with: newID) else { return nil }
+
+        if let oldView = paneViews.removeValue(forKey: activeID) {
+            oldView.dispose()
+            oldView.removeFromSuperview()
+        }
+        layoutEngine.removePersistedPane(activeID)
+
+        registerPaneView(newPaneView)
         newPaneView.activate()
         onActivePaneChanged?(newID)
         relayout()

@@ -54,6 +54,14 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private func commonInit() {
         // ghostty attaches a CAMetalLayer to the view, so the view must be layer-backed.
         wantsLayer = true
+        // Track mouse movement so ghostty always has up-to-date cursor position.
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
     }
 
     func ensureSurfaceCreated() {
@@ -140,6 +148,12 @@ final class TerminalHostView: NSView, NSTextInputClient {
         return result
     }
 
+    /// Dim this terminal when its pane loses focus (mirrors Ghostty's unfocused-split-opacity).
+    func setPaneFocused(_ focused: Bool) {
+        let opacity: Float = focused ? 1.0 : 0.9
+        layer?.opacity = opacity
+    }
+
     // MARK: - Keyboard Events
 
     override func keyDown(with event: NSEvent) {
@@ -192,26 +206,32 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
+        forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func mouseUp(with event: NSEvent) {
+        forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event)
     }
 
     override func rightMouseUp(with event: NSEvent) {
+        forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, event: event)
     }
 
     override func otherMouseDown(with event: NSEvent) {
+        forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
     #endif
@@ -392,7 +412,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private func forwardMousePosition(_ event: NSEvent) {
         #if canImport(GhosttyKit)
         let pos = convert(event.locationInWindow, from: nil)
-        let flippedY = frame.height - pos.y
+        let flippedY = bounds.height - pos.y
         terminalSurface?.sendMousePos(
             x: pos.x,
             y: flippedY,

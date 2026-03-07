@@ -127,6 +127,7 @@ final class ReviewViewModel: ObservableObject {
 final class ReviewPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "review"
+    let shouldPersist = false
     var title: String { "Review" }
 
     override init(frame: NSRect) {

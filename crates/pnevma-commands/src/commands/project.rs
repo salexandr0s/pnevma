@@ -694,10 +694,25 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
 
     ensure_bounded_text_field(&input.name, "session name", MAX_SESSION_NAME_BYTES)?;
     ensure_safe_path_input(&input.cwd, "session cwd")?;
-    ensure_bounded_text_field(&input.command, "session command", MAX_SESSION_COMMAND_BYTES)?;
+
+    // Default empty command to the user's shell so validation passes.
+    let command = if input.command.trim().is_empty() {
+        std::env::var("SHELL")
+            .ok()
+            .and_then(|s| {
+                std::path::Path::new(&s)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.to_string())
+            })
+            .unwrap_or_else(|| "zsh".to_string())
+    } else {
+        input.command.clone()
+    };
+    ensure_bounded_text_field(&command, "session command", MAX_SESSION_COMMAND_BYTES)?;
 
     // H2: Validate command against the configured allowlist.
-    let base_cmd = input.command.split_whitespace().next().unwrap_or("");
+    let base_cmd = command.split_whitespace().next().unwrap_or("");
     let cmd_name = std::path::Path::new(base_cmd)
         .file_name()
         .and_then(|n| n.to_str())
@@ -734,7 +749,7 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
             ctx.project_id,
             input.name.clone(),
             cwd.clone(),
-            input.command.clone(),
+            command.clone(),
         )
         .await
         .map_err(|e| e.to_string())?;

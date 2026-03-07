@@ -127,6 +127,7 @@ final class MergeQueueViewModel: ObservableObject {
 final class MergeQueuePaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "merge_queue"
+    let shouldPersist = false
     var title: String { "Merge Queue" }
 
     override init(frame: NSRect) {

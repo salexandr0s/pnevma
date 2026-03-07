@@ -186,6 +186,7 @@ final class DiffViewModel: ObservableObject {
 final class DiffPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "diff"
+    let shouldPersist = false
     var title: String { "Diff" }
 
     override init(frame: NSRect) {

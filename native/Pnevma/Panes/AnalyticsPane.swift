@@ -99,6 +99,7 @@ final class AnalyticsViewModel: ObservableObject {
 final class AnalyticsPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "analytics"
+    let shouldPersist = false
     var title: String { "Analytics" }
 
     override init(frame: NSRect) {

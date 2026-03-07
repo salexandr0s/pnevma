@@ -23,10 +23,21 @@ struct SessionBindingDescriptor: Decodable, Equatable {
 
     var isLiveAttach: Bool { mode == "live_attach" }
 
+    private static let tmuxPath: String = {
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+            let path = "\(dir)/tmux"
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        return "tmux"
+    }()
+
     func makeLaunchConfiguration() -> TerminalSurfaceLaunchConfiguration {
-        TerminalSurfaceLaunchConfiguration(
+        let tmux = Self.tmuxPath
+        return TerminalSurfaceLaunchConfiguration(
             workingDirectory: cwd,
-            command: "/bin/sh -lc 'exec tmux attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
+            command: "/bin/sh -lc '\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
             env: env.map { TerminalSurfaceEnvironmentVariable(key: $0.key, value: $0.value) },
             waitAfterCommand: waitAfterCommand,
             initialInput: nil
@@ -116,7 +127,7 @@ final class SessionBridge {
             params: SessionCreateParams(
                 name: "Terminal",
                 cwd: cwd,
-                command: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+                command: ""
             )
         )
         return response.binding

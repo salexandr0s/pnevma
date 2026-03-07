@@ -1185,11 +1185,21 @@ fn tmux_tmpdir_for_project(project_path: &Path) -> PathBuf {
     project_path.join(".pnevma").join("data").join("tmux")
 }
 
+fn resolve_tmux_binary() -> PathBuf {
+    for dir in &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        let candidate = PathBuf::from(dir).join("tmux");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("tmux")
+}
+
 async fn session_backend_alive(project_path: &Path, session_id: &str) -> bool {
     let name = tmux_name_from_session_id(session_id);
     let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
     let _ = tokio::fs::create_dir_all(&tmux_tmpdir).await;
-    TokioCommand::new("tmux")
+    TokioCommand::new(resolve_tmux_binary())
         .env("TMUX_TMPDIR", &tmux_tmpdir)
         .args(["has-session", "-t", &name])
         .status()

@@ -168,6 +168,7 @@ final class FileBrowserViewModel: ObservableObject {
 final class FileBrowserPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "file_browser"
+    let shouldPersist = false
     var title: String { "Files" }
 
     override init(frame: NSRect) {

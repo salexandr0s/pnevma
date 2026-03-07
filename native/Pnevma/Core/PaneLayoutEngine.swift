@@ -79,6 +79,45 @@ extension SplitNode {
             return first.contains(paneID) || second.contains(paneID)
         }
     }
+
+    /// Replace a single leaf node's ID, preserving the tree structure.
+    /// Returns nil if the target leaf was not found.
+    func replacingLeaf(_ target: PaneID, with newID: PaneID) -> SplitNode? {
+        switch self {
+        case .leaf(let id):
+            return id == target ? .leaf(newID) : nil
+        case .split(let dir, let ratio, let first, let second):
+            if let newFirst = first.replacingLeaf(target, with: newID) {
+                return .split(direction: dir, ratio: ratio, first: newFirst, second: second)
+            }
+            if let newSecond = second.replacingLeaf(target, with: newID) {
+                return .split(direction: dir, ratio: ratio, first: first, second: newSecond)
+            }
+            return nil
+        }
+    }
+
+    /// Remove leaf nodes whose IDs aren't in `keeping`.
+    /// Returns nil if the entire subtree was pruned.
+    func strippingOrphanedLeaves(keeping validIDs: Set<PaneID>) -> SplitNode? {
+        switch self {
+        case .leaf(let id):
+            return validIDs.contains(id) ? self : nil
+        case .split(let dir, let ratio, let first, let second):
+            let prunedFirst = first.strippingOrphanedLeaves(keeping: validIDs)
+            let prunedSecond = second.strippingOrphanedLeaves(keeping: validIDs)
+            switch (prunedFirst, prunedSecond) {
+            case let (f?, s?):
+                return .split(direction: dir, ratio: ratio, first: f, second: s)
+            case let (f?, nil):
+                return f
+            case let (nil, s?):
+                return s
+            case (nil, nil):
+                return nil
+            }
+        }
+    }
 }
 
 // MARK: - PaneLayoutEngine
@@ -199,6 +238,22 @@ class PaneLayoutEngine {
             }
             return nil
         }
+    }
+
+    // MARK: - Replace Operations
+
+    /// Replace a leaf pane's ID in the tree without changing the structure.
+    @discardableResult
+    func replacePane(_ oldID: PaneID, with newID: PaneID) -> Bool {
+        guard let root = root,
+              let newRoot = root.replacingLeaf(oldID, with: newID) else {
+            return false
+        }
+        self.root = newRoot
+        if activePaneID == oldID {
+            activePaneID = newID
+        }
+        return true
     }
 
     // MARK: - Close Operations
@@ -368,9 +423,19 @@ class PaneLayoutEngine {
     static func deserialize(from data: Data) -> PaneLayoutEngine? {
         guard let payload = try? JSONDecoder().decode(SerializedLayout.self, from: data) else { return nil }
         let engine = PaneLayoutEngine()
-        engine.root = payload.root
-        engine.activePaneID = payload.activePaneID
-        engine.paneDescriptors = Dictionary(uniqueKeysWithValues: payload.panes.map { ($0.paneID, $0) })
+        let descriptorMap = Dictionary(uniqueKeysWithValues: payload.panes.map { ($0.paneID, $0) })
+        engine.paneDescriptors = descriptorMap
+
+        // Strip leaf nodes that have no matching descriptor (orphaned panes).
+        let validIDs = Set(descriptorMap.keys)
+        engine.root = payload.root.strippingOrphanedLeaves(keeping: validIDs)
+
+        // Validate activePaneID still exists in the pruned tree.
+        if let active = payload.activePaneID, engine.root?.contains(active) == true {
+            engine.activePaneID = active
+        } else {
+            engine.activePaneID = engine.root?.allPaneIDs.first
+        }
         return engine
     }
 }
