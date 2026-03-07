@@ -638,8 +638,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return PaneFactory.makeWelcome().1
     }
 
+    private var notificationsPopover: NSPopover?
+    private weak var notificationToolbarButton: NSButton?
+
     @objc private func showNotifications() {
-        // TODO: Show notifications popover
+        if let popover = notificationsPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 340, height: 280)
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(rootView: NotificationsPopoverView())
+
+        if let button = notificationToolbarButton {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+        notificationsPopover = popover
     }
 }
 
@@ -663,12 +680,16 @@ extension AppDelegate: NSToolbarDelegate {
             return item
         case Self.notificationsIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.image = NSImage(systemSymbolName: "bell", accessibilityDescription: "Notifications")
+            let button = NSButton(frame: NSRect(x: 0, y: 0, width: 28, height: 22))
+            button.bezelStyle = .texturedRounded
+            button.image = NSImage(systemSymbolName: "bell", accessibilityDescription: "Notifications")
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(showNotifications)
+            button.toolTip = "Notifications"
+            item.view = button
             item.label = "Notifications"
-            item.toolTip = "Notifications"
-            item.target = self
-            item.action = #selector(showNotifications)
-            item.isBordered = true
+            notificationToolbarButton = button
             return item
         case Self.addWorkspaceIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -690,6 +711,42 @@ extension AppDelegate: NSToolbarDelegate {
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
+    }
+}
+
+// MARK: - Notifications Popover
+
+import SwiftUI
+
+struct NotificationsPopoverView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Notifications")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            Spacer()
+
+            VStack(spacing: 10) {
+                Image(systemName: "bell.slash")
+                    .font(.system(size: 32))
+                    .foregroundStyle(.secondary.opacity(0.5))
+                Text("No notifications yet")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text("Desktop notifications will appear here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
     }
 }
 
