@@ -30,6 +30,7 @@ var pnevmaLinkerSettings: [LinkerSetting] = [
     .linkedFramework("Metal"),
     .linkedFramework("MetalKit"),
     .linkedFramework("QuartzCore"),
+    .linkedFramework("WebKit"),
 
     .linkedLibrary("resolv"),
     .linkedLibrary("sqlite3"),
@@ -61,6 +62,10 @@ let package = Package(
             exclude: [
                 "Pnevma.entitlements",
                 "App/PnevmaApp.swift",
+            ],
+            resources: [
+                .copy("Resources/readability.min.js"),
+                .copy("Resources/turndown.min.js"),
             ],
             sources: [
                 "App/AppDelegate.swift",
@@ -99,6 +104,9 @@ let package = Package(
                 "Panes/WorkflowPane.swift",
                 "Panes/SshManagerPane.swift",
                 "Panes/ReplayPane.swift",
+                "Panes/BrowserPane.swift",
+                "Panes/BrowserFind.swift",
+                "Panes/BrowserMarkdown.swift",
                 // Sidebar
                 "Sidebar/SidebarView.swift",
                 // Chrome

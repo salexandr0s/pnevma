@@ -207,6 +207,10 @@ enum PaneFactory {
         paneTuple(RulesManagerPaneView(frame: .zero))
     }
 
+    static func makeBrowser(url: URL? = nil) -> (PaneID, NSView & PaneContent) {
+        paneTuple(BrowserPaneView(frame: .zero, url: url))
+    }
+
     static func make(from persistedPane: PersistedPane) -> (PaneID, NSView & PaneContent) {
         let inner: (NSView & PaneContent)
         switch persistedPane.type {
@@ -246,6 +250,8 @@ enum PaneFactory {
             inner = DailyBriefPaneView(frame: .zero)
         case "rules":
             inner = RulesManagerPaneView(frame: .zero)
+        case "browser":
+            inner = BrowserPaneView.fromMetadata(persistedPane.metadataJSON)
         default:
             inner = ReplayPaneView(frame: .zero, sessionID: persistedPane.sessionID)
         }
@@ -273,6 +279,7 @@ enum PaneFactory {
         case "notifications": return makeNotifications()
         case "daily_brief":   return makeDailyBrief()
         case "rules":         return makeRulesManager()
+        case "browser":       return makeBrowser()
         default:              return nil
         }
     }

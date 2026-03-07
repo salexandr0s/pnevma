@@ -394,6 +394,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Find in Page", action: #selector(browserFindInPage), keyEquivalent: "f"))
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -455,6 +457,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openProjectAction() { openProject() }
     @objc private func openSettingsAction() { openSettingsPane() }
 
+    @objc private func browserFindInPage() {
+        NotificationCenter.default.post(name: .browserToggleFind, object: nil)
+    }
+
     @objc private func splitRightAction() { newTerminal() }
 
     @objc private func splitDownAction() {
@@ -497,6 +503,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Open Workflow", "pane", nil, { WorkflowPaneView() }),
             ("Open SSH Manager", "pane", nil, { SshManagerPaneView() }),
             ("Open Session Replay", "pane", nil, { ReplayPaneView(frame: .zero) }),
+            ("Open Browser", "pane", nil, { BrowserPaneView(frame: .zero, url: nil) }),
             ("Open Settings", "pane", "Cmd+,", { SettingsPaneView() }),
         ]
 
@@ -586,6 +593,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             pane = SshManagerPaneView()
         case "replay":
             pane = ReplayPaneView(frame: .zero)
+        case "browser":
+            pane = BrowserPaneView(frame: .zero, url: nil)
         default:
             return
         }

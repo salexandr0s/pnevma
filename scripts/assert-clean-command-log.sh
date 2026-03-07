@@ -43,9 +43,14 @@ if [[ $status -ne 0 ]]; then
   exit "$status"
 fi
 
-if grep -nE 'warning:|error:|IDERunDestination:' "$log_path" >/dev/null; then
+# Filter out known harmless system warnings before checking.
+filtered=$(grep -nE 'warning:|error:|IDERunDestination:' "$log_path" \
+  | grep -v 'failed to load toolchain: toolchain .* already registered' \
+  || true)
+
+if [[ -n "$filtered" ]]; then
   echo "error: disallowed warning/error output detected in $log_path" >&2
-  grep -nE 'warning:|error:|IDERunDestination:' "$log_path" >&2 || true
+  echo "$filtered" >&2
   exit 1
 fi
 

@@ -68,6 +68,7 @@ targets:
       - sdk: Cocoa.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
+      - sdk: WebKit.framework
       - sdk: libresolv.tbd
       - sdk: libsqlite3.tbd
 

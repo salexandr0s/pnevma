@@ -22,6 +22,7 @@ let sidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "rules", title: "Rules Manager", icon: "list.bullet.rectangle"),
     SidebarToolItem(id: "ssh", title: "SSH Manager", icon: "network"),
     SidebarToolItem(id: "replay", title: "Session Replay", icon: "play.rectangle"),
+    SidebarToolItem(id: "browser", title: "Browser", icon: "globe"),
 ]
 
 /// SwiftUI sidebar listing workspaces, projects, and quick actions.

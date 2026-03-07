@@ -6,5 +6,7 @@
          Ghostty's own macOS app also retains this entitlement in its checked-in release/local profiles. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
 </dict>
 </plist>
