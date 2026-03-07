@@ -148,11 +148,21 @@ final class TerminalHostView: NSView, NSTextInputClient {
         return result
     }
 
-    /// Dim this terminal when its pane loses focus (mirrors Ghostty's unfocused-split-opacity).
+    /// Dim this terminal when its pane loses focus, using the user's
+    /// ghostty `unfocused-split-opacity` setting (default 0.85).
     func setPaneFocused(_ focused: Bool) {
-        let opacity: Float = focused ? 1.0 : 0.9
+        let opacity: Float = focused ? 1.0 : Self.unfocusedSplitOpacity
         layer?.opacity = opacity
     }
+
+    private static let unfocusedSplitOpacity: Float = {
+        let config = TerminalConfig()
+        if let raw = config.scalarRawValue(for: "unfocused-split-opacity", rawType: "f64"),
+           let value = Float(raw), value > 0, value <= 1 {
+            return value
+        }
+        return 0.85
+    }()
 
     // MARK: - Keyboard Events
 

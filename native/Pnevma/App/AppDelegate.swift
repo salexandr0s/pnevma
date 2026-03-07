@@ -646,16 +646,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
             return
         }
+        guard let button = notificationToolbarButton else { return }
 
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 340, height: 280)
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = NSHostingController(rootView: NotificationsPopoverView())
-
-        if let button = notificationToolbarButton {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         notificationsPopover = popover
     }
 }

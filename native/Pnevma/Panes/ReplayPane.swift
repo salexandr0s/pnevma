@@ -392,6 +392,7 @@ final class ReplayViewModel: ObservableObject {
 final class ReplayPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "replay"
+    let shouldPersist = false
     let sessionID: String?
     var title: String { "Replay" }
 

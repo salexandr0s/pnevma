@@ -96,7 +96,15 @@ final class PaneLayoutEngineTests: XCTestCase {
     func testSerializeDeserializeRoundTrip() {
         let rootID = PaneID()
         let engine = PaneLayoutEngine(rootPaneID: rootID)
-        let _ = engine.splitPane(rootID, direction: .horizontal)
+        let rightID = engine.splitPane(rootID, direction: .horizontal)!
+
+        // Register descriptors so deserialization doesn't prune as orphans.
+        for id in [rootID, rightID] {
+            engine.upsertPersistedPane(PersistedPane(
+                paneID: id, type: "terminal",
+                workingDirectory: nil, sessionID: nil, taskID: nil, metadataJSON: nil
+            ))
+        }
 
         guard let data = engine.serialize() else {
             XCTFail("serialize should succeed")
@@ -109,5 +117,159 @@ final class PaneLayoutEngineTests: XCTestCase {
         }
 
         XCTAssertEqual(engine.root?.allPaneIDs, restored.root?.allPaneIDs)
+    }
+
+    // MARK: - replacingLeaf
+
+    func testReplacingLeafFindsTarget() {
+        let oldID = PaneID()
+        let newID = PaneID()
+        let node = SplitNode.leaf(oldID)
+        let result = node.replacingLeaf(oldID, with: newID)
+        XCTAssertEqual(result?.allPaneIDs, [newID])
+    }
+
+    func testReplacingLeafReturnsNilWhenNotFound() {
+        let a = PaneID()
+        let b = PaneID()
+        let node = SplitNode.leaf(a)
+        XCTAssertNil(node.replacingLeaf(b, with: PaneID()))
+    }
+
+    func testReplacingLeafInSplitTree() {
+        let a = PaneID()
+        let b = PaneID()
+        let c = PaneID()
+        let tree = SplitNode.split(
+            direction: .horizontal, ratio: 0.5,
+            first: .leaf(a), second: .leaf(b)
+        )
+        let result = tree.replacingLeaf(b, with: c)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(Set(result!.allPaneIDs), [a, c])
+    }
+
+    // MARK: - strippingOrphanedLeaves
+
+    func testStrippingOrphanedLeavesKeepsValid() {
+        let a = PaneID()
+        let b = PaneID()
+        let tree = SplitNode.split(
+            direction: .horizontal, ratio: 0.5,
+            first: .leaf(a), second: .leaf(b)
+        )
+        let result = tree.strippingOrphanedLeaves(keeping: [a, b])
+        XCTAssertEqual(Set(result!.allPaneIDs), [a, b])
+    }
+
+    func testStrippingOrphanedLeavesRemovesOrphan() {
+        let a = PaneID()
+        let b = PaneID()
+        let tree = SplitNode.split(
+            direction: .horizontal, ratio: 0.5,
+            first: .leaf(a), second: .leaf(b)
+        )
+        let result = tree.strippingOrphanedLeaves(keeping: [a])
+        XCTAssertEqual(result?.allPaneIDs, [a])
+        // Should collapse to a leaf since only one child survives
+        if case .leaf(let id) = result {
+            XCTAssertEqual(id, a)
+        } else {
+            XCTFail("Expected leaf after pruning one side")
+        }
+    }
+
+    func testStrippingOrphanedLeavesAllOrphans() {
+        let a = PaneID()
+        let b = PaneID()
+        let tree = SplitNode.split(
+            direction: .horizontal, ratio: 0.5,
+            first: .leaf(a), second: .leaf(b)
+        )
+        let result = tree.strippingOrphanedLeaves(keeping: [])
+        XCTAssertNil(result)
+    }
+
+    func testStrippingOrphanedLeavesIdentity() {
+        let a = PaneID()
+        let node = SplitNode.leaf(a)
+        let result = node.strippingOrphanedLeaves(keeping: [a])
+        XCTAssertEqual(result?.allPaneIDs, [a])
+    }
+
+    // MARK: - replacePane (engine level)
+
+    func testReplacePaneUpdatesActiveID() {
+        let rootID = PaneID()
+        let engine = PaneLayoutEngine(rootPaneID: rootID)
+        let newID = PaneID()
+
+        XCTAssertTrue(engine.replacePane(rootID, with: newID))
+        XCTAssertEqual(engine.activePaneID, newID)
+        XCTAssertEqual(engine.root?.allPaneIDs, [newID])
+    }
+
+    func testReplacePaneReturnsFalseForMissingID() {
+        let rootID = PaneID()
+        let engine = PaneLayoutEngine(rootPaneID: rootID)
+
+        XCTAssertFalse(engine.replacePane(PaneID(), with: PaneID()))
+        // Original state unchanged
+        XCTAssertEqual(engine.activePaneID, rootID)
+    }
+
+    func testReplacePanePreservesInactiveID() {
+        let rootID = PaneID()
+        let engine = PaneLayoutEngine(rootPaneID: rootID)
+        let rightID = engine.splitPane(rootID, direction: .horizontal)!
+        engine.setActivePane(rightID)
+
+        let replacement = PaneID()
+        XCTAssertTrue(engine.replacePane(rootID, with: replacement))
+        // Active pane should stay on rightID, not jump to replacement
+        XCTAssertEqual(engine.activePaneID, rightID)
+        XCTAssertTrue(engine.root!.contains(replacement))
+    }
+
+    // MARK: - deserialize with orphans
+
+    func testDeserializeStripsOrphanedPanes() {
+        let rootID = PaneID()
+        let engine = PaneLayoutEngine(rootPaneID: rootID)
+        let rightID = engine.splitPane(rootID, direction: .horizontal)!
+
+        // Persist descriptors for both panes
+        engine.upsertPersistedPane(PersistedPane(
+            paneID: rootID, type: "terminal",
+            workingDirectory: nil, sessionID: nil, taskID: nil, metadataJSON: nil
+        ))
+        engine.upsertPersistedPane(PersistedPane(
+            paneID: rightID, type: "terminal",
+            workingDirectory: nil, sessionID: nil, taskID: nil, metadataJSON: nil
+        ))
+
+        guard let data = engine.serialize() else {
+            XCTFail("serialize should succeed")
+            return
+        }
+
+        // Tamper: remove one pane descriptor from the JSON to simulate an orphan.
+        guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var panes = json["panes"] as? [[String: Any]] else {
+            XCTFail("should be valid JSON")
+            return
+        }
+        panes.removeAll { ($0["paneID"] as? String) == rightID.uuidString }
+        json["panes"] = panes
+        let tamperedData = try! JSONSerialization.data(withJSONObject: json)
+
+        guard let restored = PaneLayoutEngine.deserialize(from: tamperedData) else {
+            XCTFail("deserialize should handle orphans gracefully")
+            return
+        }
+
+        // Only rootID should remain, as a leaf
+        XCTAssertEqual(restored.root?.allPaneIDs, [rootID])
+        XCTAssertEqual(restored.activePaneID, rootID)
     }
 }

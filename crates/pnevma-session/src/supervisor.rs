@@ -345,7 +345,7 @@ enum ScrollbackReadStart {
 
 /// Resolve a binary name to its full path, searching common macOS locations
 /// in addition to the inherited PATH (which may be minimal for GUI apps).
-fn resolve_binary(name: &str) -> PathBuf {
+pub fn resolve_binary(name: &str) -> PathBuf {
     let extra_dirs = [
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -805,10 +805,11 @@ impl SessionSupervisor {
         let inputs = self.inputs.clone();
         let tx = self.tx.clone();
         let tmux_tmpdir = self.tmux_tmpdir.clone();
+        let tmux_bin = self.tmux_bin.clone();
 
         tokio::spawn(async move {
             let code = child.wait().await.ok().and_then(|status| status.code());
-            let tmux_alive = tmux_has_session_name(&tmux_name(session_id), &tmux_tmpdir).await;
+            let tmux_alive = tmux_has_session_name(&tmux_name(session_id), &tmux_tmpdir, &tmux_bin).await;
 
             {
                 let mut guard = sessions.write().await;
@@ -1062,7 +1063,7 @@ impl SessionSupervisor {
     }
 
     async fn tmux_has_session(&self, name: &str) -> bool {
-        tmux_has_session_name(name, &self.tmux_tmpdir).await
+        tmux_has_session_name(name, &self.tmux_tmpdir, &self.tmux_bin).await
     }
 }
 
@@ -1070,10 +1071,10 @@ fn tmux_name(session_id: Uuid) -> String {
     format!("pnevma_{}", session_id.simple())
 }
 
-async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path) -> bool {
+async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) -> bool {
     let _ = tokio::fs::create_dir_all(tmux_tmpdir).await;
 
-    Command::new(resolve_binary("tmux"))
+    Command::new(tmux_bin)
         .env("TMUX_TMPDIR", tmux_tmpdir)
         .args(["has-session", "-t", name])
         .status()

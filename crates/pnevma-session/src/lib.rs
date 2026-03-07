@@ -4,4 +4,4 @@ pub mod supervisor;
 
 pub use error::SessionError;
 pub use model::{SessionHealth, SessionMetadata, SessionStatus};
-pub use supervisor::{ScrollbackSlice, SessionEvent, SessionSupervisor};
+pub use supervisor::{resolve_binary, ScrollbackSlice, SessionEvent, SessionSupervisor};
