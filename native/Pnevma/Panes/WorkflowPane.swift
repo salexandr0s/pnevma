@@ -280,8 +280,10 @@ struct InstanceDetailView: View {
             depths[step.taskId] = 0
         }
         var changed = true
-        while changed {
+        var iterations = 0
+        while changed && iterations < detail.steps.count {
             changed = false
+            iterations += 1
             for step in detail.steps where depths[step.taskId] == nil {
                 let depDepths = step.dependsOn.compactMap { depths[$0] }
                 if depDepths.count == step.dependsOn.count {
@@ -679,8 +681,10 @@ struct MiniDagPreview: View {
             depths[i] = 0
         }
         var changed = true
-        while changed {
+        var iterations = 0
+        while changed && iterations < steps.count {
             changed = false
+            iterations += 1
             for (i, step) in steps.enumerated() where depths[i] == nil {
                 let depDepths = step.dependsOn.compactMap { depths[$0] }
                 if depDepths.count == step.dependsOn.count {
@@ -737,7 +741,10 @@ final class WorkflowViewModel: ObservableObject {
     var editingWorkflowId: String?
 
     func load() {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            error = "Backend connection unavailable"
+            return
+        }
         isLoading = true
         Task {
             do {
@@ -761,7 +768,10 @@ final class WorkflowViewModel: ObservableObject {
     }
 
     func loadInstanceDetail(_ id: String) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            error = "Backend connection unavailable"
+            return
+        }
         Task {
             do {
                 struct Params: Encodable { let id: String }
@@ -774,7 +784,10 @@ final class WorkflowViewModel: ObservableObject {
     }
 
     func instantiate(_ name: String) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            error = "Backend connection unavailable"
+            return
+        }
         Task {
             do {
                 struct Params: Encodable { let workflowName: String }
@@ -787,7 +800,10 @@ final class WorkflowViewModel: ObservableObject {
     }
 
     func save(completion: @escaping () -> Void) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            error = "Backend connection unavailable"
+            return
+        }
         let yaml = serializeToYAML()
         Task {
             do {
@@ -823,7 +839,10 @@ final class WorkflowViewModel: ObservableObject {
     }
 
     func deleteWorkflow(_ id: String) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            error = "Backend connection unavailable"
+            return
+        }
         Task {
             do {
                 struct Params: Encodable { let id: String }
@@ -880,18 +899,26 @@ final class WorkflowViewModel: ObservableObject {
 
     // MARK: YAML Sync
 
+    private func yamlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+         .replacingOccurrences(of: "\n", with: "\\n")
+         .replacingOccurrences(of: "\r", with: "\\r")
+         .replacingOccurrences(of: "\t", with: "\\t")
+    }
+
     func serializeToYAML() -> String {
         var lines: [String] = []
-        lines.append("name: \"\(builderName)\"")
+        lines.append("name: \"\(yamlEscape(builderName))\"")
         if !builderDescription.isEmpty {
-            lines.append("description: \"\(builderDescription)\"")
+            lines.append("description: \"\(yamlEscape(builderDescription))\"")
         }
         lines.append("steps:")
         for step in builderSteps {
-            lines.append("  - title: \"\(step.title)\"")
-            lines.append("    goal: \"\(step.goal)\"")
+            lines.append("  - title: \"\(yamlEscape(step.title))\"")
+            lines.append("    goal: \"\(yamlEscape(step.goal))\"")
             if let profile = step.agentProfile {
-                lines.append("    agent_profile: \"\(profile)\"")
+                lines.append("    agent_profile: \"\(yamlEscape(profile))\"")
             }
             lines.append("    execution_mode: \(step.executionMode)")
             lines.append("    priority: \(step.priority)")
@@ -909,18 +936,18 @@ final class WorkflowViewModel: ObservableObject {
                 lines.append("    on_failure: \(step.onFailure.lowercased())")
             }
             if !step.scope.isEmpty {
-                lines.append("    scope: [\(step.scope.map { "\"\($0)\"" }.joined(separator: ", "))]")
+                lines.append("    scope: [\(step.scope.map { "\"\(yamlEscape($0))\"" }.joined(separator: ", "))]")
             }
             if !step.acceptanceCriteria.isEmpty {
                 lines.append("    acceptance_criteria:")
                 for c in step.acceptanceCriteria {
-                    lines.append("      - \"\(c)\"")
+                    lines.append("      - \"\(yamlEscape(c))\"")
                 }
             }
             if !step.constraints.isEmpty {
                 lines.append("    constraints:")
                 for c in step.constraints {
-                    lines.append("      - \"\(c)\"")
+                    lines.append("      - \"\(yamlEscape(c))\"")
                 }
             }
         }

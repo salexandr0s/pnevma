@@ -125,6 +125,7 @@ struct SidebarView: View {
                     .padding(.vertical, 6)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isToolsExpanded ? "Collapse tools section" : "Expand tools section")
 
                 if isToolsExpanded {
                     VStack(alignment: .leading, spacing: 2) {
@@ -395,6 +396,7 @@ private struct AddButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .accessibilityLabel("Add workspace")
     }
 }
 
@@ -412,6 +414,7 @@ private struct CloseButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .accessibilityLabel("Close workspace")
     }
 }
 

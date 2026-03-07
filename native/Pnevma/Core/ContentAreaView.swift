@@ -28,6 +28,8 @@ final class ContentAreaView: NSView {
 
     // MARK: - Init
 
+    private var themeObserver: NSObjectProtocol?
+
     init(frame: NSRect, rootPaneView: NSView & PaneContent) {
         layoutEngine = PaneLayoutEngine(rootPaneID: rootPaneView.paneID)
         super.init(frame: frame)
@@ -41,6 +43,13 @@ final class ContentAreaView: NSView {
         ) { [weak self] _ in
             self?.updateFocusBorder()
         }
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateNonTerminalPaneBackgrounds()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
@@ -49,6 +58,9 @@ final class ContentAreaView: NSView {
         removeClickMonitor()
         if let focusBorderObserver {
             NotificationCenter.default.removeObserver(focusBorderObserver)
+        }
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
         }
     }
 
@@ -162,15 +174,14 @@ final class ContentAreaView: NSView {
 
         let divider = DividerView(frame: dividerRect, direction: direction)
         divider.parentSize = direction == .horizontal ? rect.width : rect.height
+        let firstPaneIDs = Set(first.allPaneIDs)
         divider.onDrag = { [weak self, weak divider] delta in
             guard let self = self, let divider = divider else { return }
             let size = divider.parentSize
             guard size > 0 else { return }
-            if let targetID = first.allPaneIDs.first {
-                self.layoutEngine.resizeSplit(containing: targetID, delta: delta / size)
-                self.repositionPanes()
-                self.repositionDividers()
-            }
+            self.layoutEngine.resizeSplit(firstChildPaneIDs: firstPaneIDs, delta: delta / size)
+            self.repositionPanes()
+            self.repositionDividers()
         }
         addSubview(divider)
         dividerViews.append(divider)
@@ -232,6 +243,15 @@ final class ContentAreaView: NSView {
                 self?.layoutEngine.upsertPersistedPane(pane)
                 self?.onPanePersistenceChanged?()
             }
+        }
+    }
+
+    /// Update background color for all non-terminal pane views after a theme change.
+    private func updateNonTerminalPaneBackgrounds() {
+        let theme = GhosttyThemeProvider.shared
+        let bg = theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).cgColor
+        for (_, view) in paneViews where view.paneType != "terminal" {
+            view.layer?.backgroundColor = bg
         }
     }
 
@@ -480,24 +500,21 @@ final class ContentAreaView: NSView {
 
         let menu = NSMenu()
 
-        let closeItem = NSMenuItem(title: "Close Pane", action: nil, keyEquivalent: "")
+        let closeItem = NSMenuItem(title: "Close Pane", action: #selector(contextMenuClosePane(_:)), keyEquivalent: "")
         closeItem.target = self
         closeItem.representedObject = paneID
-        closeItem.action = #selector(contextMenuClosePane(_:))
         menu.addItem(closeItem)
 
         menu.addItem(.separator())
 
-        let splitRightItem = NSMenuItem(title: "Split Right", action: nil, keyEquivalent: "")
+        let splitRightItem = NSMenuItem(title: "Split Right", action: #selector(contextMenuSplitRight(_:)), keyEquivalent: "")
         splitRightItem.target = self
         splitRightItem.representedObject = paneID
-        splitRightItem.action = #selector(contextMenuSplitRight(_:))
         menu.addItem(splitRightItem)
 
-        let splitDownItem = NSMenuItem(title: "Split Down", action: nil, keyEquivalent: "")
+        let splitDownItem = NSMenuItem(title: "Split Down", action: #selector(contextMenuSplitDown(_:)), keyEquivalent: "")
         splitDownItem.target = self
         splitDownItem.representedObject = paneID
-        splitDownItem.action = #selector(contextMenuSplitDown(_:))
         menu.addItem(splitDownItem)
 
         return menu

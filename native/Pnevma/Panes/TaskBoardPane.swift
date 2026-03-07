@@ -90,6 +90,17 @@ struct TaskBoardView: View {
                 }
             }
         }
+        .overlay(alignment: .bottom) {
+            if let error = viewModel.actionError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .windowBackgroundColor))
+            }
+        }
         .onAppear { viewModel.activate() }
     }
 }
@@ -198,6 +209,7 @@ final class TaskBoardViewModel: ObservableObject {
     }
 
     @Published var allTasks: [TaskItem] = []
+    @Published var actionError: String?
     @Published private var viewState: ViewState = .waiting("Open a project to load tasks.")
 
     private let commandBus: (any CommandCalling)?
@@ -275,7 +287,11 @@ final class TaskBoardViewModel: ObservableObject {
     }
 
     func dispatch(_ task: TaskItem) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -286,7 +302,8 @@ final class TaskBoardViewModel: ObservableObject {
                 )
                 self.refreshAfterMutation()
             } catch {
-                // Keep existing state when dispatch fails.
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
@@ -295,7 +312,11 @@ final class TaskBoardViewModel: ObservableObject {
         if let idx = allTasks.firstIndex(where: { $0.id == task.id }) {
             allTasks[idx].status = status
         }
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -305,8 +326,17 @@ final class TaskBoardViewModel: ObservableObject {
                 )
                 self.refreshAfterMutation()
             } catch {
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
                 self.refreshAfterMutation()
             }
+        }
+    }
+
+    private func scheduleDismissActionError() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.actionError = nil
         }
     }
 

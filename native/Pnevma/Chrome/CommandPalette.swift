@@ -139,11 +139,14 @@ final class CommandPalette: NSPanel {
         case 36: // Return
             executeSelected()
         case 125: // Down arrow
-            let next = min(tableView.selectedRow + 1, filteredCommands.count - 1)
+            guard filteredCommands.count > 0 else { break }
+            let next = (tableView.selectedRow + 1) % filteredCommands.count
             tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
             tableView.scrollRowToVisible(next)
         case 126: // Up arrow
-            let prev = max(tableView.selectedRow - 1, 0)
+            guard filteredCommands.count > 0 else { break }
+            let current = tableView.selectedRow < 0 ? 0 : tableView.selectedRow
+            let prev = (current - 1 + filteredCommands.count) % filteredCommands.count
             tableView.selectRowIndexes(IndexSet(integer: prev), byExtendingSelection: false)
             tableView.scrollRowToVisible(prev)
         default:

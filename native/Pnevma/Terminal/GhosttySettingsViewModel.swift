@@ -27,6 +27,7 @@ final class GhosttySettingsViewModel: ObservableObject {
     @Published var keybinds: [GhosttyManagedKeybind] = []
     @Published var searchText = ""
     @Published var filterMode: FilterMode = .common
+    @Published var selectedCategory: GhosttyConfigCategory = .appearance
     @Published var isLoading = false
     @Published var statusMessage: String?
     @Published var errorMessage: String?
@@ -106,7 +107,18 @@ final class GhosttySettingsViewModel: ObservableObject {
     }
 
     func shouldShowCategory(_ category: GhosttyConfigCategory) -> Bool {
-        !descriptors(for: category).isEmpty
+        if category == .keybindings { return shouldShowKeybinds() }
+        return !descriptors(for: category).isEmpty
+    }
+
+    func changedCount(for category: GhosttyConfigCategory) -> Int {
+        if category == .keybindings {
+            return sanitizedKeybinds() != snapshot?.keybinds ? 1 : 0
+        }
+        return GhosttySchema.descriptors
+            .filter { $0.valueKind != .keybinds && $0.category == category }
+            .filter { isChanged($0.key) }
+            .count
     }
 
     func shouldShowKeybinds() -> Bool {

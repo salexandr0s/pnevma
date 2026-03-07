@@ -97,6 +97,7 @@ struct SearchView: View {
                         }
                         Text(result.lineContent)
                             .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
                             .lineLimit(1)
                     }
                     .padding(.vertical, 2)

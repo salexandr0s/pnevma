@@ -77,16 +77,19 @@ struct ReplayView: View {
                     Image(systemName: "backward.frame.fill")
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Step backward")
 
                 Button(action: { viewModel.togglePlayback() }) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
                 Button(action: { viewModel.stepForward() }) {
                     Image(systemName: "forward.frame.fill")
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Step forward")
 
                 Picker("Speed", selection: $viewModel.playbackSpeed) {
                     Text("0.5x").tag(0.5)
@@ -95,6 +98,7 @@ struct ReplayView: View {
                     Text("4x").tag(4.0)
                 }
                 .frame(width: 100)
+                .accessibilityLabel("Playback speed")
             }
             .padding(12)
 
@@ -130,6 +134,7 @@ struct ReplayView: View {
                 Slider(value: $viewModel.progress, in: 0...1) { editing in
                     if !editing { viewModel.seekToProgress() }
                 }
+                .accessibilityLabel("Replay progress")
 
                 Text(viewModel.totalTimeLabel)
                     .font(.caption)
@@ -183,8 +188,10 @@ final class ReplayViewModel: ObservableObject {
     private var sessionObserverID: UUID?
     private var activationObserverID: UUID?
     private var bufferedLiveChunks: [String] = []
-    private var isBootstrapping = false
-    private var bootstrapCompleted = false
+    private enum BootstrapPhase {
+        case idle, inProgress, completed
+    }
+    private var bootstrapPhase: BootstrapPhase = .idle
 
     init(
         sessionID: String?,
@@ -234,10 +241,10 @@ final class ReplayViewModel: ObservableObject {
             viewState = .failed("Replay loading is unavailable because the command bus is not configured.")
             return
         }
-        guard !isBootstrapping else { return }
+        guard bootstrapPhase != .inProgress else { return }
 
         viewState = .loading("Loading replay...")
-        isBootstrapping = true
+        bootstrapPhase = .inProgress
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -282,31 +289,31 @@ final class ReplayViewModel: ObservableObject {
 
         switch state {
         case .idle:
-            if !bootstrapCompleted {
+            if bootstrapPhase != .completed {
                 viewState = .waiting("Waiting for project activation...")
             }
         case .opening:
-            if !bootstrapCompleted {
+            if bootstrapPhase != .completed {
                 viewState = .waiting("Waiting for project activation...")
             }
         case .open:
-            if !bootstrapCompleted {
+            if bootstrapPhase != .completed {
                 load()
             }
         case .failed(_, _, let message):
-            if !bootstrapCompleted {
+            if bootstrapPhase != .completed {
                 viewState = .failed(message)
             }
         case .closed:
-            if !bootstrapCompleted {
-                viewState = .closed("Open a project to load replay.")
-            }
+            bootstrapPhase = .idle
+            bufferedLiveChunks.removeAll()
+            viewState = .closed("Open a project to load replay.")
         }
     }
 
     private func handleLiveChunk(_ chunk: String) {
         guard !chunk.isEmpty else { return }
-        if !bootstrapCompleted || isBootstrapping {
+        if bootstrapPhase != .completed {
             bufferedLiveChunks.append(chunk)
             return
         }
@@ -314,8 +321,7 @@ final class ReplayViewModel: ObservableObject {
     }
 
     private func finishBootstrap(with rebuiltFrames: [String]) {
-        isBootstrapping = false
-        bootstrapCompleted = true
+        bootstrapPhase = .completed
         frames = Self.framesByApplyingBufferedChunks(rebuiltFrames, bufferedChunks: bufferedLiveChunks)
         bufferedLiveChunks.removeAll()
         currentFrameIndex = max(0, frames.count - 1)
@@ -326,7 +332,7 @@ final class ReplayViewModel: ObservableObject {
     }
 
     private func handleBootstrapFailure(_ error: Error) {
-        isBootstrapping = false
+        bootstrapPhase = .idle
         if PnevmaError.isProjectNotReady(error) {
             viewState = .waiting("Waiting for project activation...")
             return

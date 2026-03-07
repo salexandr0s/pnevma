@@ -23,10 +23,17 @@ final class ToastManager: ObservableObject {
 
     @Published private(set) var currentToast: ToastMessage?
     private var dismissTask: Task<Void, Never>?
+    private var lastShownText: String?
+    private var lastShownTime: Date?
 
     func show(_ text: String, icon: String? = nil, style: ToastMessage.ToastStyle = .info) {
+        if text == lastShownText, let lastTime = lastShownTime, Date().timeIntervalSince(lastTime) < 1.0 {
+            return
+        }
         dismissTask?.cancel()
         currentToast = ToastMessage(text: text, icon: icon, style: style)
+        lastShownText = text
+        lastShownTime = Date()
         dismissTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             guard !Task.isCancelled else { return }
@@ -39,6 +46,8 @@ final class ToastManager: ObservableObject {
     func dismiss() {
         dismissTask?.cancel()
         currentToast = nil
+        lastShownText = nil
+        lastShownTime = nil
     }
 }
 
@@ -93,6 +102,7 @@ final class ToastWindowController {
     private let manager: ToastManager
     private var cancellables = Set<AnyCancellable>()
     private var resizeObserver: NSObjectProtocol?
+    private var moveObserver: NSObjectProtocol?
 
     init(manager: ToastManager? = nil) {
         self.manager = manager ?? .shared
@@ -102,11 +112,14 @@ final class ToastWindowController {
         if let resizeObserver {
             NotificationCenter.default.removeObserver(resizeObserver)
         }
+        if let moveObserver {
+            NotificationCenter.default.removeObserver(moveObserver)
+        }
     }
 
     func attach(to parentWindow: NSWindow) {
         let overlay = NSPanel(
-            contentRect: parentWindow.contentView?.frame ?? .zero,
+            contentRect: parentWindow.frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -134,6 +147,15 @@ final class ToastWindowController {
         // Keep overlay sized to parent
         resizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification,
+            object: parentWindow,
+            queue: .main
+        ) { [weak overlay, weak parentWindow] _ in
+            guard let parentWindow, let overlay else { return }
+            overlay.setFrame(parentWindow.frame, display: true)
+        }
+
+        moveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
             object: parentWindow,
             queue: .main
         ) { [weak overlay, weak parentWindow] _ in

@@ -90,7 +90,8 @@ final class BrowserHistoryStore {
         var id: String { url }
 
         var frecencyScore: Double {
-            let recency = max(0, 1.0 - Date().timeIntervalSince(lastVisited) / (30 * 24 * 3600))
+            let effectiveLastVisited = min(lastVisited, Date())
+            let recency = max(0, 1.0 - Date().timeIntervalSince(effectiveLastVisited) / (30 * 24 * 3600))
             return Double(visitCount) * (0.3 + 0.7 * recency)
         }
     }
@@ -171,9 +172,9 @@ final class BrowserViewModel: NSObject, ObservableObject {
     @Published var showSuggestions: Bool = false
     @Published var searchEngine: BrowserSearchEngine = .current
     @Published var shouldRenderWebView: Bool = false
+    @Published var navigatedURL: URL?
 
     let webView: PnevmaWebView
-    var onURLChange: ((URL?) -> Void)?
 
     private var observations: [NSKeyValueObservation] = []
 
@@ -204,7 +205,16 @@ final class BrowserViewModel: NSObject, ObservableObject {
         )
         config.userContentController.addUserScript(bootstrap)
 
+        let darkModeHint = WKUserScript(
+            source: "document.documentElement.style.colorScheme = 'dark light';",
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(darkModeHint)
+
         webView = PnevmaWebView(frame: .zero, configuration: config)
+        webView.appearance = NSAppearance(named: .darkAqua)
+        webView.underPageBackgroundColor = NSColor(white: 0.15, alpha: 1.0)
         webView.allowsBackForwardNavigationGestures = true
 
         // Safari user agent to avoid bot checks
@@ -227,7 +237,6 @@ final class BrowserViewModel: NSObject, ObservableObject {
                 Task { @MainActor [weak self] in
                     self?.currentURL = wv.url
                     self?.omnibarText = wv.url?.absoluteString ?? ""
-                    self?.onURLChange?(wv.url)
                 }
             },
             webView.observe(\.title) { [weak self] wv, _ in
@@ -261,6 +270,7 @@ final class BrowserViewModel: NSObject, ObservableObject {
     // KVO observations are automatically invalidated when their tokens are deallocated.
 
     func navigate(to url: URL) {
+        navigatedURL = url
         shouldRenderWebView = true
         webView.load(URLRequest(url: url))
     }
@@ -483,6 +493,13 @@ struct BrowserView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .browserToggleReaderMode)) { _ in
             readerState.toggle(webView: viewModel.webView)
+        }
+        .onChange(of: viewModel.currentURL) { _, _ in
+            if let findState {
+                findState.totalMatches = 0
+                findState.currentMatch = 0
+                BrowserFindJavaScript.clear(in: viewModel.webView)
+            }
         }
     }
 
@@ -761,7 +778,7 @@ final class BrowserPaneView: NSView, PaneContent {
     private var initialURL: URL?
 
     var metadataJSON: String? {
-        guard let url = viewModel.currentURL else { return nil }
+        guard let url = viewModel.navigatedURL ?? viewModel.currentURL else { return nil }
         guard let data = try? JSONSerialization.data(
             withJSONObject: ["url": url.absoluteString],
             options: []

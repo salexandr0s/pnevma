@@ -524,7 +524,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSidebar() {
         isSidebarVisible.toggle()
-        let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
+        let sidebarWidth = DesignTokens.Layout.sidebarWidth
+        let paneMinWidth: CGFloat = 800 - sidebarWidth
+        window?.minSize.width = isSidebarVisible ? (sidebarWidth + paneMinWidth) : paneMinWidth
+        let width = isSidebarVisible ? sidebarWidth : 0
         if isSidebarVisible { sidebarHostView?.isHidden = false }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.Motion.normal
@@ -722,6 +725,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
         sidebarWidthConstraint?.constant = width
         sidebarHostView?.isHidden = !isSidebarVisible
+        let paneMinWidth: CGFloat = 800 - DesignTokens.Layout.sidebarWidth
+        window?.minSize.width = isSidebarVisible ? 800 : paneMinWidth
 
         workspaceManager?.restore(
             snapshots: state.workspaces,

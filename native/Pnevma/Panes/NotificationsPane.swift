@@ -47,14 +47,17 @@ struct NotificationsView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 200)
+                .accessibilityLabel("Filter notifications")
 
                 Button("Mark All Read") { viewModel.markAllRead() }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
+                    .accessibilityLabel("Mark all notifications as read")
 
                 Button("Clear") { viewModel.clearAll() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear all notifications")
             }
             .padding(12)
 
@@ -77,6 +80,17 @@ struct NotificationsView: View {
                         .onTapGesture { viewModel.markRead(notification.id) }
                 }
                 .listStyle(.plain)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let error = viewModel.actionError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .windowBackgroundColor))
             }
         }
         .onAppear { viewModel.activate() }
@@ -116,6 +130,7 @@ struct NotificationRow: View {
             Spacer()
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
     }
 
     private var icon: (name: String, color: Color) {
@@ -141,7 +156,9 @@ final class NotificationsViewModel: ObservableObject {
 
     @Published var notifications: [NotificationItem] = []
     @Published var filter: Filter = .all
+    @Published var actionError: String?
     @Published private var viewState: ViewState = .waiting("Open a project to load notifications.")
+    private var isMarkingAllRead = false
 
     private let commandBus: (any CommandCalling)?
     private let bridgeEventHub: BridgeEventHub
@@ -242,7 +259,11 @@ final class NotificationsViewModel: ObservableObject {
         if let idx = notifications.firstIndex(where: { $0.id == id }) {
             notifications[idx].isRead = true
         }
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -251,27 +272,72 @@ final class NotificationsViewModel: ObservableObject {
                     params: NotificationMarkReadParams(notificationID: id)
                 )
             } catch {
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
                 self.refreshAfterMutation()
             }
         }
     }
 
     func markAllRead() {
-        for notification in notifications where !notification.isRead {
-            markRead(notification.id)
+        guard !isMarkingAllRead else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
+        isMarkingAllRead = true
+        // Optimistic batch flip
+        for i in notifications.indices where !notifications[i].isRead {
+            notifications[i].isRead = true
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isMarkingAllRead = false }
+            var hadError = false
+            for notification in self.notifications {
+                do {
+                    let _: OkResponse = try await bus.call(
+                        method: "notification.mark_read",
+                        params: NotificationMarkReadParams(notificationID: notification.id)
+                    )
+                } catch {
+                    if !hadError {
+                        hadError = true
+                        self.actionError = error.localizedDescription
+                        self.scheduleDismissActionError()
+                    }
+                }
+            }
+            if hadError {
+                self.refreshAfterMutation()
+            }
         }
     }
 
     func clearAll() {
         notifications.removeAll()
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let _: OkResponse = try await bus.call(method: "notification.clear", params: nil)
             } catch {
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
                 self.refreshAfterMutation()
             }
+        }
+    }
+
+    private func scheduleDismissActionError() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.actionError = nil
         }
     }
 

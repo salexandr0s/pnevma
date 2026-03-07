@@ -309,9 +309,19 @@ class PaneLayoutEngine {
 
     /// Adjust the split ratio of the parent of the given pane.
     /// `delta` is added to the ratio (positive = first child grows).
+    /// Only works correctly for simple (leaf-child) splits. For nested
+    /// splits, use `resizeSplit(firstChildPaneIDs:delta:)` instead.
     func resizeSplit(containing paneID: PaneID, delta: CGFloat) {
         guard let root = root else { return }
         self.root = adjustRatio(in: root, target: paneID, delta: delta)
+    }
+
+    /// Adjust the split ratio of the split node whose first child contains
+    /// exactly the given set of pane IDs. This correctly identifies the
+    /// target split even in deeply nested trees.
+    func resizeSplit(firstChildPaneIDs: Set<PaneID>, delta: CGFloat) {
+        guard let root = root else { return }
+        self.root = adjustRatioByFirstChild(in: root, firstChildPaneIDs: firstChildPaneIDs, delta: delta)
     }
 
     private func adjustRatio(in node: SplitNode, target: PaneID, delta: CGFloat) -> SplitNode {
@@ -343,6 +353,23 @@ class PaneLayoutEngine {
         }
 
         return node
+    }
+
+    private func adjustRatioByFirstChild(in node: SplitNode, firstChildPaneIDs: Set<PaneID>, delta: CGFloat) -> SplitNode {
+        guard case .split(let dir, let ratio, let first, let second) = node else {
+            return node
+        }
+
+        // Match: this split's first child has exactly the target pane ID set.
+        if Set(first.allPaneIDs) == firstChildPaneIDs {
+            let newRatio = min(0.9, max(0.1, ratio + delta))
+            return .split(direction: dir, ratio: newRatio, first: first, second: second)
+        }
+
+        // Recurse into both children to find the target split.
+        let newFirst = adjustRatioByFirstChild(in: first, firstChildPaneIDs: firstChildPaneIDs, delta: delta)
+        let newSecond = adjustRatioByFirstChild(in: second, firstChildPaneIDs: firstChildPaneIDs, delta: delta)
+        return .split(direction: dir, ratio: ratio, first: newFirst, second: newSecond)
     }
 
     // MARK: - Navigation

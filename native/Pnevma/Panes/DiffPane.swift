@@ -340,6 +340,7 @@ final class DiffViewModel: ObservableObject {
     }
 
     private var loadTask: Task<Void, Never>?
+    private var diffLoadTask: Task<Void, Never>?
 
     /// Load tasks that may have diffs (Review, InProgress, or Done).
     func load(showLoadingState: Bool = true) {
@@ -370,11 +371,16 @@ final class DiffViewModel: ObservableObject {
 
     /// Fetch the diff for a specific task from the backend.
     func loadDiff(taskId: String) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            isLoadingDiff = false
+            diffError = "Backend connection unavailable"
+            return
+        }
+        diffLoadTask?.cancel()
         isLoadingDiff = true
         diffError = nil
         struct DiffParams: Encodable { let taskId: String }
-        Task { [weak self] in
+        diffLoadTask = Task { [weak self] in
             guard let self else { return }
             defer { self.isLoadingDiff = false }
             do {

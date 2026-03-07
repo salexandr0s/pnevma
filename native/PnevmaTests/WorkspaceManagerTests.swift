@@ -75,7 +75,8 @@ private actor MockCommandBus: CommandCalling {
                 activeTasks: spec.activeTasks,
                 activeAgents: spec.activeAgents,
                 costToday: spec.costToday,
-                unreadNotifications: spec.unreadNotifications
+                unreadNotifications: spec.unreadNotifications,
+                gitDirty: nil
             ) as! T
         case "project.close":
             closeCountValue += 1

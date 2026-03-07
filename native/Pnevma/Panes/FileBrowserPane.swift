@@ -34,12 +34,20 @@ struct FileBrowserView: View {
 
                 Divider()
 
-                if viewModel.rootNodes.isEmpty {
+                if !viewModel.isProjectOpen {
                     EmptyStateView(
                         icon: "folder",
                         title: "No project open",
                         message: "Open a project to browse files"
                     )
+                } else if viewModel.rootNodes.isEmpty {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Loading files...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(viewModel.rootNodes, children: \.optionalChildren) { node in
                         FileRow(node: node, isSelected: viewModel.selectedPath == node.path)
@@ -70,7 +78,18 @@ struct FileBrowserView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onAppear { viewModel.load() }
+        .overlay(alignment: .bottom) {
+            if let error = viewModel.actionError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .windowBackgroundColor))
+            }
+        }
+        .onAppear { viewModel.activate() }
     }
 }
 
@@ -121,20 +140,55 @@ extension FileNode {
 
 // MARK: - ViewModel
 
+@MainActor
 final class FileBrowserViewModel: ObservableObject {
     @Published var rootNodes: [FileNode] = []
     @Published var selectedPath: String?
     @Published var previewContent: String?
+    @Published var actionError: String?
+    @Published private(set) var isProjectOpen = false
+
+    private let activationHub: ActiveWorkspaceActivationHub
+    private var activationObserverID: UUID?
+    private var isLoadingFiles = false
+
+    init(activationHub: ActiveWorkspaceActivationHub = .shared) {
+        self.activationHub = activationHub
+        activationObserverID = activationHub.addObserver { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.handleActivationState(state)
+            }
+        }
+    }
+
+    deinit {
+        if let activationObserverID {
+            activationHub.removeObserver(activationObserverID)
+        }
+    }
+
+    func activate() {
+        handleActivationState(activationHub.currentState)
+    }
 
     func load() {
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard !isLoadingFiles else { return }
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
+        isLoadingFiles = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isLoadingFiles = false }
             do {
                 struct Params: Encodable { let limit: Int }
                 let nodes: [FileNode] = try await bus.call(method: "workspace.files", params: Params(limit: 500))
-                await MainActor.run { self.rootNodes = nodes }
+                self.rootNodes = nodes
             } catch {
-                // Log error, keep existing state
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
@@ -150,16 +204,47 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func loadPreview(path: String) {
         previewContent = nil
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 struct Params: Encodable { let path: String; let mode: String }
                 struct FilePreview: Decodable { let content: String }
                 let preview: FilePreview = try await bus.call(method: "workspace.file.open", params: Params(path: path, mode: "preview"))
-                await MainActor.run { self.previewContent = preview.content }
+                self.previewContent = preview.content
             } catch {
-                // Log error, keep existing state
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
+        }
+    }
+
+    private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        switch state {
+        case .idle, .opening, .closed:
+            isProjectOpen = false
+            rootNodes = []
+            selectedPath = nil
+            previewContent = nil
+        case .open:
+            isProjectOpen = true
+            load()
+        case .failed(_, _, let message):
+            isProjectOpen = false
+            rootNodes = []
+            actionError = message
+            scheduleDismissActionError()
+        }
+    }
+
+    private func scheduleDismissActionError() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.actionError = nil
         }
     }
 }

@@ -73,6 +73,17 @@ struct RulesManagerView: View {
                 .listStyle(.plain)
             }
         }
+        .overlay(alignment: .bottom) {
+            if let error = viewModel.actionError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .windowBackgroundColor))
+            }
+        }
         .sheet(isPresented: $viewModel.showAddSheet) {
             AddRuleSheet(onAdd: { name, content, scope in
                 viewModel.addRule(name: name, description: content, type: scope)
@@ -172,6 +183,7 @@ struct AddRuleSheet: View {
 final class RulesManagerViewModel: ObservableObject {
     @Published var rules: [ProjectRule] = []
     @Published var showAddSheet = false
+    @Published var actionError: String?
     @Published private(set) var isProjectOpen = false
 
     private let commandBus: (any CommandCalling)?
@@ -216,20 +228,30 @@ final class RulesManagerViewModel: ObservableObject {
     }
 
     func load() {
-        guard let bus = commandBus else { return }
+        rulesGeneration &+= 1
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let fetched: [ProjectRule] = try await bus.call(method: "rules.list", params: nil)
                 self.rules = fetched
             } catch {
-                // Leave existing rules in place on failure.
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func addRule(name: String, description: String, type: String) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         let params = UpsertRuleParams(name: name, content: description, scope: type)
         Task { [weak self] in
             guard let self else { return }
@@ -237,13 +259,18 @@ final class RulesManagerViewModel: ObservableObject {
                 let created: ProjectRule = try await bus.call(method: "rules.upsert", params: params)
                 self.rules.append(created)
             } catch {
-                // Ignore — no optimistic insert.
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func deleteRule(id: String) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         guard let index = rules.firstIndex(where: { $0.id == id }) else { return }
         let rule = rules.remove(at: index)
         Task { [weak self] in
@@ -254,6 +281,8 @@ final class RulesManagerViewModel: ObservableObject {
                     params: DeleteRuleParams(id: rule.id)
                 )
             } catch {
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
                 // Re-insert on failure; find the closest valid position.
                 let insertAt = min(index, self.rules.count)
                 self.rules.insert(rule, at: insertAt)
@@ -262,10 +291,16 @@ final class RulesManagerViewModel: ObservableObject {
     }
 
     private var togglingRuleIDs = Set<String>()
+    private var rulesGeneration: UInt64 = 0
 
     func toggleRule(rule: ProjectRule) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         guard togglingRuleIDs.insert(rule.id).inserted else { return }
+        let generation = rulesGeneration
         // Optimistically flip the active state locally.
         if let idx = rules.firstIndex(where: { $0.id == rule.id }) {
             rules[idx].active.toggle()
@@ -279,10 +314,14 @@ final class RulesManagerViewModel: ObservableObject {
                     method: "rules.toggle",
                     params: ToggleRuleParams(id: rule.id, active: newActive)
                 )
+                guard self.rulesGeneration == generation else { return }
                 if let idx = self.rules.firstIndex(where: { $0.id == updated.id }) {
                     self.rules[idx] = updated
                 }
             } catch {
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
+                guard self.rulesGeneration == generation else { return }
                 // Roll back the optimistic flip.
                 if let idx = self.rules.firstIndex(where: { $0.id == rule.id }) {
                     self.rules[idx].active = rule.active
@@ -301,9 +340,18 @@ final class RulesManagerViewModel: ObservableObject {
         case .open:
             isProjectOpen = true
             load()
-        case .failed:
+        case .failed(_, _, let message):
             isProjectOpen = false
             rules = []
+            actionError = message
+            scheduleDismissActionError()
+        }
+    }
+
+    private func scheduleDismissActionError() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.actionError = nil
         }
     }
 

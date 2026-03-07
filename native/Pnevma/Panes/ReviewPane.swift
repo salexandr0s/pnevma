@@ -345,7 +345,11 @@ final class ReviewViewModel: ObservableObject {
     private var packTask: Task<Void, Never>?
 
     func loadReviewPack(taskId: String) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            isLoadingPack = false
+            actionError = "Backend connection unavailable"
+            return
+        }
         packTask?.cancel()
         isLoadingPack = true
         packTask = Task { [weak self] in

@@ -13,6 +13,7 @@ enum GhosttyConfigCategory: String, CaseIterable, Identifiable {
     case quickTerminal
     case notifications
     case advanced
+    case keybindings
 
     var id: String { rawValue }
 
@@ -42,6 +43,26 @@ enum GhosttyConfigCategory: String, CaseIterable, Identifiable {
             return "Notifications"
         case .advanced:
             return "Advanced"
+        case .keybindings:
+            return "Keybindings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .appearance: return "paintbrush"
+        case .font: return "textformat.size"
+        case .cursor: return "cursorarrow"
+        case .mouse: return "computermouse"
+        case .scrolling: return "scroll"
+        case .clipboard: return "doc.on.clipboard"
+        case .shell: return "terminal"
+        case .window: return "macwindow"
+        case .platform: return "desktopcomputer"
+        case .quickTerminal: return "bolt.horizontal"
+        case .notifications: return "bell"
+        case .advanced: return "gearshape.2"
+        case .keybindings: return "command"
         }
     }
 }
@@ -264,6 +285,53 @@ enum GhosttySchema {
         "x11-instance-name": "?[:0]const u8",
     ]
 
+    static let enumOptions: [String: [String]] = [
+        "alpha-blending": ["native", "linear", "linear-corrected"],
+        "background-image-fit": ["contain", "cover", "stretch", "none"],
+        "background-image-position": ["center", "top-left", "top-center", "top-right", "center-left", "center-right", "bottom-left", "bottom-center", "bottom-right"],
+        "clipboard-read": ["allow", "deny", "ask"],
+        "clipboard-write": ["allow", "deny", "ask"],
+        "confirm-close-surface": ["false", "true", "always"],
+        "copy-on-select": ["false", "true", "clipboard"],
+        "cursor-style": ["block", "bar", "underline", "block_hollow"],
+        "custom-shader-animation": ["false", "true", "always"],
+        "grapheme-width-method": ["legacy", "unicode"],
+        "gtk-single-instance": ["false", "true", "detect"],
+        "gtk-tabs-location": ["top", "bottom"],
+        "gtk-titlebar-style": ["native", "tabs"],
+        "gtk-toolbar-style": ["flat", "raised", "raised-border"],
+        "link-previews": ["false", "true", "osc8"],
+        "linux-cgroup": ["never", "always", "single-instance"],
+        "macos-dock-drop-behavior": ["new-tab", "window"],
+        "macos-hidden": ["never", "always"],
+        "macos-icon": ["official", "blueprint", "chalkboard", "microchip", "glass", "holographic", "paper", "retro", "xray", "custom", "custom-style"],
+        "macos-icon-frame": ["aluminum", "beige", "plastic", "chrome"],
+        "macos-non-native-fullscreen": ["false", "true", "visible-menu", "padded-notch"],
+        "macos-option-as-alt": ["false", "true", "left", "right"],
+        "macos-shortcuts": ["allow", "deny", "ask"],
+        "macos-titlebar-proxy-icon": ["visible", "hidden"],
+        "macos-titlebar-style": ["native", "transparent", "tabs", "hidden"],
+        "macos-window-buttons": ["visible", "hidden"],
+        "mouse-shift-capture": ["false", "true", "always", "never"],
+        "osc-color-report-format": ["none", "8-bit", "16-bit"],
+        "quick-terminal-keyboard-interactivity": ["none", "on-demand", "exclusive"],
+        "quick-terminal-position": ["top", "bottom", "left", "right", "center"],
+        "quick-terminal-screen": ["main", "mouse", "macos-menu-bar"],
+        "quick-terminal-space-behavior": ["remain", "move"],
+        "resize-overlay": ["always", "never", "after-first"],
+        "resize-overlay-position": ["center", "top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"],
+        "right-click-action": ["context-menu", "paste", "copy", "copy-or-paste", "ignore"],
+        "shell-integration": ["none", "detect", "bash", "elvish", "fish", "zsh"],
+        "window-colorspace": ["srgb", "display-p3"],
+        "window-decoration": ["auto", "client", "server", "none"],
+        "window-new-tab-position": ["current", "end"],
+        "window-padding-color": ["background", "extend", "extend-always"],
+        "window-save-state": ["default", "never", "always"],
+        "window-show-tab-bar": ["always", "auto", "never"],
+        "window-subtitle": ["false", "working-directory"],
+        "window-theme": ["auto", "system", "light", "dark", "ghostty"],
+    ]
+
     static let keybindActions: [GhosttyKeybindActionDescriptor] = [
         GhosttyKeybindActionDescriptor(name: "ignore", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "unbind", parameterPlaceholder: nil),
@@ -416,6 +484,9 @@ enum GhosttySchema {
     static func valueKind(for key: String, rawType: String) -> GhosttyValueKind {
         if key == "keybind" {
             return .keybinds
+        }
+        if enumOptions[key] != nil {
+            return .string
         }
         if rawType == "bool" || rawType == "?bool" {
             return .toggle

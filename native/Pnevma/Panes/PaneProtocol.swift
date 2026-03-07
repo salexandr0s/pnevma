@@ -253,7 +253,11 @@ enum PaneFactory {
         case "browser":
             inner = BrowserPaneView.fromMetadata(persistedPane.metadataJSON)
         default:
-            inner = ReplayPaneView(frame: .zero, sessionID: persistedPane.sessionID)
+            inner = RestoreErrorPaneView(
+                paneID: persistedPane.paneID,
+                message: "Unknown pane type: \(persistedPane.type)",
+                detail: "This pane could not be restored and will not be saved."
+            )
         }
 
         let wrapped = RestoredPaneContainer(persisted: persistedPane, wrapped: inner)

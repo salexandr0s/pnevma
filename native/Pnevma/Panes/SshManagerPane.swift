@@ -60,6 +60,17 @@ struct SshManagerView: View {
             }
             .listStyle(.sidebar)
         }
+        .overlay(alignment: .bottom) {
+            if let error = viewModel.actionError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .windowBackgroundColor))
+            }
+        }
         .sheet(isPresented: $viewModel.showAddSheet) {
             AddSshProfileSheet(onAdd: { viewModel.addProfile($0) })
         }
@@ -178,32 +189,43 @@ struct AddSshProfileSheet: View {
 
 // MARK: - ViewModel
 
+@MainActor
 final class SshManagerViewModel: ObservableObject {
     @Published var profiles: [SshProfile] = []
     @Published var tailscaleDevices: [TailscaleDevice] = []
     @Published var showAddSheet = false
+    @Published var actionError: String?
 
     func load() {
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 async let profilesResult: [SshProfile] = bus.call(method: "ssh.list_profiles")
                 async let devicesResult: [TailscaleDevice] = bus.call(method: "ssh.discover_tailscale")
                 let (p, d) = try await (profilesResult, devicesResult)
-                await MainActor.run {
-                    self.profiles = p
-                    self.tailscaleDevices = d
-                }
+                self.profiles = p
+                self.tailscaleDevices = d
             } catch {
-                // Log error, keep existing state
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func addProfile(_ profile: SshProfile) {
         profiles.append(profile)
-        guard let bus = CommandBus.shared else { return }
-        Task {
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 struct Params: Encodable {
                     let name: String; let host: String; let port: Int
@@ -215,54 +237,73 @@ final class SshManagerViewModel: ObservableObject {
                                    user: profile.user, identityFile: profile.identityFile)
                 )
             } catch {
-                // Log error
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func connect(_ profile: SshProfile) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task {
             do {
                 struct Params: Encodable { let profileId: String }
                 let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(profileId: profile.id))
-                await MainActor.run {
-                    if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
-                        self.profiles[idx].isConnected = true
-                    }
+                if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
+                    self.profiles[idx].isConnected = true
                 }
             } catch {
-                // Log error
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func disconnect(_ profile: SshProfile) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task {
             do {
                 struct Params: Encodable { let profileId: String }
                 let _: [String: Bool] = try await bus.call(method: "ssh.disconnect", params: Params(profileId: profile.id))
-                await MainActor.run {
-                    if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
-                        self.profiles[idx].isConnected = false
-                    }
+                if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
+                    self.profiles[idx].isConnected = false
                 }
             } catch {
-                // Log error
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func connectTailscale(_ device: TailscaleDevice) {
-        guard let bus = CommandBus.shared else { return }
+        guard let bus = CommandBus.shared else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task {
             do {
                 struct Params: Encodable { let host: String }
                 let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(host: device.ipAddress))
             } catch {
-                // Log error
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
+        }
+    }
+
+    private func scheduleDismissActionError() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.actionError = nil
         }
     }
 }

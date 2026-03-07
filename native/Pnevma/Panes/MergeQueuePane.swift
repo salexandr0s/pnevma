@@ -236,7 +236,11 @@ final class MergeQueueViewModel: ObservableObject {
     }
 
     func merge(_ item: MergeQueueItem) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         actionError = nil
         Task { [weak self] in
             guard let self else { return }
@@ -249,12 +253,17 @@ final class MergeQueueViewModel: ObservableObject {
                 self.refreshAfterMutation()
             } catch {
                 self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
         }
     }
 
     func reorder(taskId: String, direction: String) {
-        guard let bus = commandBus else { return }
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -265,8 +274,16 @@ final class MergeQueueViewModel: ObservableObject {
                 )
                 self.items = updated
             } catch {
-                // Keep existing order on failure.
+                self.actionError = error.localizedDescription
+                self.scheduleDismissActionError()
             }
+        }
+    }
+
+    private func scheduleDismissActionError() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.actionError = nil
         }
     }
 
