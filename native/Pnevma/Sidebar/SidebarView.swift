@@ -86,7 +86,7 @@ struct SidebarView: View {
                     .padding(.bottom, 2)
 
                     ForEach(sortedWorkspaces) { workspace in
-                        WorkspaceTab(
+                        WorkspaceRow(
                             workspace: workspace,
                             isActive: workspace.id == workspaceManager.activeWorkspaceID,
                             onSelect: { workspaceManager.switchToWorkspace(workspace.id) },
@@ -204,9 +204,9 @@ struct SidebarToolButton: View {
     }
 }
 
-// MARK: - WorkspaceTab
+// MARK: - WorkspaceRow
 
-struct WorkspaceTab: View {
+struct WorkspaceRow: View {
     @ObservedObject var workspace: Workspace
     let isActive: Bool
     let onSelect: () -> Void

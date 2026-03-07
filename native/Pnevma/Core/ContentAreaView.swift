@@ -410,11 +410,13 @@ final class ContentAreaView: NSView {
 
     /// Replace the entire layout with a single root pane.
     /// Used when all panes have been closed and we need a fresh start.
+    /// Resets the existing engine in-place to preserve shared references
+    /// (e.g. WorkspaceTab.layoutEngine identity).
     func setRootPane(_ view: NSView & PaneContent) {
         syncPersistedPanes()
         teardownAllViews()
 
-        layoutEngine = PaneLayoutEngine(rootPaneID: view.paneID)
+        layoutEngine.reset(rootPaneID: view.paneID)
         registerPaneView(view)
         view.activate()
         onActivePaneChanged?(view.paneID)

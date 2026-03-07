@@ -153,6 +153,15 @@ class PaneLayoutEngine {
         self.activePaneID = nil
     }
 
+    /// Reset the engine to a single root pane, clearing all existing state.
+    /// Preserves the object identity (important for shared references).
+    func reset(rootPaneID: PaneID) {
+        root = .leaf(rootPaneID)
+        activePaneID = rootPaneID
+        paneFrames.removeAll()
+        paneDescriptors.removeAll()
+    }
+
     // MARK: - Layout Computation
 
     /// Compute frames for all panes within the given bounding rectangle.

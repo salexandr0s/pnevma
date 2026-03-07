@@ -23,6 +23,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionBridge: SessionBridge?
     private var workspaceManager: WorkspaceManager?
     private var contentAreaView: ContentAreaView?
+    private var tabBarView: TabBarView?
+    private var tabBarHeightConstraint: NSLayoutConstraint?
     private var statusBar: StatusBar?
     private var sidebarHostView: NSView?
     private var sidebarWidthConstraint: NSLayoutConstraint?
@@ -147,6 +149,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.statusBar?.updateBranch(workspace.gitBranch)
                 self?.statusBar?.updateAgents(workspace.activeAgents)
             }
+            self?.updateTabBar()
             self?.persistence?.markDirty()
         }
 
@@ -211,9 +214,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         contentAreaView?.onAllPanesClosed = { [weak self] in
-            let newPane = self?.makeRootPaneForActiveWorkspace() ?? PaneFactory.makeWelcome().1
-            self?.contentAreaView?.setRootPane(newPane)
-            self?.persistence?.markDirty()
+            guard let self else { return }
+            if let workspace = self.workspaceManager?.activeWorkspace, workspace.tabs.count > 1 {
+                // Close this tab and switch to adjacent
+                self.closeTab(at: workspace.activeTabIndex)
+            } else {
+                let newPane = self.makeRootPaneForActiveWorkspace()
+                self.contentAreaView?.setRootPane(newPane)
+            }
+            self.persistence?.markDirty()
         }
 
         // Status bar
@@ -248,21 +257,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
 
-        for view in [sidebarBacking, contentAreaView!, statusBar!] as [NSView] {
+        // Tab bar
+        let tabBar = TabBarView()
+        tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
+        tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
+        tabBar.onAddTab = { [weak self] in self?.newTab() }
+        self.tabBarView = tabBar
+
+        for view in [sidebarBacking, tabBar, contentAreaView!, statusBar!] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let statusHeight = DesignTokens.Layout.statusBarHeight
+        let tabBarHeight = DesignTokens.Layout.tabBarHeight
 
         let swc = sidebarBacking.widthAnchor.constraint(equalToConstant: sidebarWidth)
         let clc = contentAreaView!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let slc = statusBar!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+        let tbhc = tabBar.heightAnchor.constraint(equalToConstant: 0)
 
         sidebarWidthConstraint = swc
         contentLeadingConstraint = clc
         statusLeadingConstraint = slc
+        tabBarHeightConstraint = tbhc
 
         let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
@@ -276,9 +295,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             swc,
 
+            // Tab bar: between safe area and content area
+            tabBar.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            tbhc,
+
             clc,
             contentAreaView!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            contentAreaView!.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            contentAreaView!.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             contentAreaView!.bottomAnchor.constraint(equalTo: statusBar!.topAnchor),
             contentAreaView!.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
 
@@ -540,9 +565,62 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
 
     @objc func newTab() {
-        let projectPath = workspaceManager?.activeWorkspace?.projectPath
-        let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
-        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        contentAreaView?.syncPersistedPanes()
+        let tab = workspace.addTab(title: "Terminal")
+        // Seed the new tab with a terminal pane descriptor
+        if let projectPath = workspace.projectPath,
+           let rootPaneID = tab.layoutEngine.root?.allPaneIDs.first {
+            tab.layoutEngine.upsertPersistedPane(PersistedPane(
+                paneID: rootPaneID,
+                type: "terminal",
+                workingDirectory: projectPath,
+                sessionID: nil,
+                taskID: nil,
+                metadataJSON: nil
+            ))
+        }
+        contentAreaView?.setLayoutEngine(tab.layoutEngine)
+        updateTabBar()
+        persistence?.markDirty()
+    }
+
+    private func switchToTab(_ index: Int) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        guard index != workspace.activeTabIndex else { return }
+        contentAreaView?.syncPersistedPanes()
+        workspace.switchToTab(index)
+        contentAreaView?.setLayoutEngine(workspace.layoutEngine)
+        updateTabBar()
+        persistence?.markDirty()
+    }
+
+    private func closeTab(at index: Int) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        guard workspace.tabs.count > 1 else { return }
+        let wasActive = index == workspace.activeTabIndex
+        contentAreaView?.syncPersistedPanes()
+        workspace.closeTab(at: index)
+        if wasActive {
+            contentAreaView?.setLayoutEngine(workspace.layoutEngine)
+        }
+        updateTabBar()
+        persistence?.markDirty()
+    }
+
+    /// Sync the tab bar view with the active workspace's tabs.
+    private func updateTabBar() {
+        guard let workspace = workspaceManager?.activeWorkspace else {
+            tabBarView?.tabs = []
+            tabBarHeightConstraint?.constant = 0
+            return
+        }
+        let showTabBar = workspace.tabs.count > 1
+        tabBarHeightConstraint?.constant = showTabBar ? DesignTokens.Layout.tabBarHeight : 0
+        tabBarView?.isHidden = !showTabBar
+        tabBarView?.tabs = workspace.tabs.enumerated().map { (i, tab) in
+            TabBarView.Tab(id: tab.id, title: tab.title, isActive: i == workspace.activeTabIndex)
+        }
     }
 
     @objc func newTerminal() {
@@ -847,6 +925,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             workspaceManager?.createWorkspace(name: "Default")
         }
+        updateTabBar()
     }
 
     private func makeRootPaneForActiveWorkspace() -> (NSView & PaneContent) {
