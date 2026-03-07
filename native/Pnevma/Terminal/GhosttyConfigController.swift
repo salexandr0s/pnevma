@@ -377,7 +377,7 @@ final class GhosttyConfigController {
 
     private func buildEffectiveValues(from config: TerminalConfig) -> [String: String] {
         var values: [String: String] = [:]
-        for descriptor in GhosttySchema.descriptors where descriptor.valueKind != .keybinds {
+        for descriptor in GhosttySchema.descriptors where descriptor.valueKind != .keybinds && descriptor.valueKind != .multiLine {
             if let rawValue = config.scalarRawValue(for: descriptor.key, rawType: descriptor.rawType) {
                 values[descriptor.key] = rawValue
             }

@@ -45,9 +45,12 @@ final class ContentAreaView: NSView {
 
     private func relayout() {
         layoutEngine.layout(in: bounds)
-
         for (id, frame) in layoutEngine.paneFrames {
-            paneViews[id]?.frame = frame
+            if let view = paneViews[id] {
+                view.frame = frame
+                view.needsLayout = true
+                view.needsDisplay = true
+            }
         }
 
         dividerViews.forEach { $0.removeFromSuperview() }
@@ -267,7 +270,7 @@ private final class DividerView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
-        dirtyRect.fill()
+        bounds.fill()
     }
 
     override func resetCursorRects() {

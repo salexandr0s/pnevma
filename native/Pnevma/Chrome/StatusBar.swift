@@ -98,10 +98,9 @@ final class StatusBar: NSView {
     }
 
     // MARK: - Drawing
-
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
-        dirtyRect.fill()
+        bounds.fill()
     }
 
     override var intrinsicContentSize: NSSize {

@@ -28,6 +28,8 @@ class TerminalConfig {
         }
     }
 
+    /// Only read types whose C representation we know. Calling ghostty_config_get
+    /// with the wrong output type causes a hard crash, so we whitelist rather than blacklist.
     func scalarRawValue(for key: String, rawType: String) -> String? {
         guard let config else { return nil }
 
@@ -85,11 +87,8 @@ class TerminalConfig {
             guard ghostty_config_get(config, &value, key, UInt(key.count)) else { return nil }
             return String(format: "#%02X%02X%02X", value.r, value.g, value.b)
         default:
-            var value: UnsafePointer<CChar>?
-            guard ghostty_config_get(config, &value, key, UInt(key.count)), let value else {
-                return nil
-            }
-            return String(cString: value)
+            // Unknown C representation — skip to avoid a hard crash in ghostty_config_get.
+            return nil
         }
     }
 

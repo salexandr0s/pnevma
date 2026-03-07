@@ -287,7 +287,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
         // ghostty renders via Metal into the layer. AppKit only paints a fallback.
         #if !canImport(GhosttyKit)
         NSColor.black.setFill()
-        dirtyRect.fill()
+        bounds.fill()
         let message = "Terminal requires GhosttyKit"
         let attrs: [NSAttributedString.Key: Any] = [
             .foregroundColor: NSColor.white,

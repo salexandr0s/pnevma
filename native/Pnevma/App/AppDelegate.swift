@@ -50,7 +50,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Create main window
+        // Create and show main window
         createMainWindow(showWindow: true)
 
         if let restoredState {
@@ -209,7 +209,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.sidebarHostView = sidebarEffect
 
-        // Layout
         for view in [sidebarEffect, contentAreaView!, statusBar!] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
@@ -226,6 +225,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         contentLeadingConstraint = clc
         statusLeadingConstraint = slc
 
+        let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
             sidebarEffect.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
             sidebarEffect.topAnchor.constraint(equalTo: windowContent.topAnchor),
@@ -236,6 +236,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             contentAreaView!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
             contentAreaView!.topAnchor.constraint(equalTo: windowContent.topAnchor),
             contentAreaView!.bottomAnchor.constraint(equalTo: statusBar!.topAnchor),
+            contentAreaView!.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
 
             slc,
             statusBar!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
@@ -243,18 +244,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             statusBar!.heightAnchor.constraint(equalToConstant: statusHeight),
         ])
 
+        self.window = win
         if showWindow {
             win.makeKeyAndOrderFront(nil)
         } else {
             win.orderOut(nil)
         }
-        self.window = win
 
         // Focus the terminal
         if showWindow, let pane = contentAreaView?.activePaneView {
             win.makeFirstResponder(pane)
         }
-
     }
 
     private func runSmoke(
@@ -554,7 +554,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyRestoredState(_ state: SessionPersistence.SessionState) {
-        if let frame = state.windowFrame?.nsRect {
+        if let frame = state.windowFrame?.nsRect,
+           let minSize = window?.minSize,
+           frame.width >= minSize.width, frame.height >= minSize.height {
             window?.setFrame(frame, display: true)
         }
 
@@ -582,3 +584,4 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return PaneFactory.makeWelcome().1
     }
 }
+

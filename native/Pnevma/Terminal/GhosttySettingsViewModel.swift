@@ -33,15 +33,22 @@ final class GhosttySettingsViewModel: ObservableObject {
     @Published var validationMessages: [String] = []
 
     func load() {
+        guard TerminalSurface.isRealRendererAvailable else {
+            errorMessage = "Ghostty runtime is not available. Settings cannot be loaded."
+            return
+        }
         isLoading = true
-        defer { isLoading = false }
-        do {
-            let snapshot = try GhosttyConfigController.shared.loadSnapshot()
-            apply(snapshot: snapshot)
-            errorMessage = nil
-            statusMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try GhosttyConfigController.shared.loadSnapshot()
+                self.apply(snapshot: snapshot)
+                self.errorMessage = nil
+                self.statusMessage = nil
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+            self.isLoading = false
         }
     }
 

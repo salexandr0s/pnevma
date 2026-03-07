@@ -49,6 +49,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.app
         INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: Pnevma/Pnevma.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Pnevma/Bridge/Pnevma-Bridging-Header.h
         # Rust staticlib — path is relative to the Xcode project file (native/)
