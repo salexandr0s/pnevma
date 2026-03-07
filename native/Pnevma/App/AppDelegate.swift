@@ -166,12 +166,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let contentRect = NSRect(x: 0, y: 0, width: 1400, height: 900)
         let win = NSWindow(
             contentRect: contentRect,
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         win.title = ""
         win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
         win.toolbarStyle = .unifiedCompact
 
@@ -232,6 +233,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.sidebarHostView = sidebarBacking
 
+        // Titlebar fill: themed background behind the transparent titlebar
+        let titlebarFill = ThemedTitlebarFillView()
+        titlebarFill.translatesAutoresizingMaskIntoConstraints = false
+        windowContent.addSubview(titlebarFill)
+
         for view in [sidebarBacking, contentAreaView!, statusBar!] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
@@ -250,6 +256,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
+            titlebarFill.topAnchor.constraint(equalTo: windowContent.topAnchor),
+            titlebarFill.bottomAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            titlebarFill.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
+            titlebarFill.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+
             sidebarBacking.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
             sidebarBacking.topAnchor.constraint(equalTo: windowContent.topAnchor),
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
@@ -257,7 +268,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             clc,
             contentAreaView!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            contentAreaView!.topAnchor.constraint(equalTo: windowContent.topAnchor),
+            contentAreaView!.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
             contentAreaView!.bottomAnchor.constraint(equalTo: statusBar!.topAnchor),
             contentAreaView!.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
 
@@ -514,10 +525,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleSidebar() {
         isSidebarVisible.toggle()
         let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
-        NSAnimationContext.runAnimationGroup { ctx in
+        if isSidebarVisible { sidebarHostView?.isHidden = false }
+        NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.Motion.normal
             sidebarWidthConstraint?.animator().constant = width
-        }
+        }, completionHandler: {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if !self.isSidebarVisible { self.sidebarHostView?.isHidden = true }
+            }
+        })
         persistence?.markDirty()
     }
 
@@ -704,6 +721,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         isSidebarVisible = state.sidebarVisible
         let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
         sidebarWidthConstraint?.constant = width
+        sidebarHostView?.isHidden = !isSidebarVisible
 
         workspaceManager?.restore(
             snapshots: state.workspaces,
@@ -799,6 +817,50 @@ extension AppDelegate: NSToolbarDelegate {
     }
 }
 
+// MARK: - ThemedTitlebarFillView
+
+/// Covers the titlebar area with the ghostty theme background so the
+/// transparent titlebar matches the rest of the chrome instead of being clear.
+private final class ThemedTitlebarFillView: NSView {
+    private var themeObserver: NSObjectProtocol?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.isOpaque = true
+        updateBackgroundColor()
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateBackgroundColor()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
+
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let theme = GhosttyThemeProvider.shared
+        theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).setFill()
+        bounds.fill()
+    }
+
+    private func updateBackgroundColor() {
+        let theme = GhosttyThemeProvider.shared
+        layer?.backgroundColor = theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).cgColor
+        needsDisplay = true
+    }
+}
+
 // MARK: - ThemedSidebarBackingView
 
 /// Sidebar backing view that uses the ghostty theme background color
@@ -806,11 +868,24 @@ extension AppDelegate: NSToolbarDelegate {
 /// the terminal's color scheme.
 private final class ThemedSidebarBackingView: NSView {
     private var themeObserver: NSObjectProtocol?
+    private let rightSeparator = NSView()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.isOpaque = true
+
+        // Right-edge separator matching ghostty split dividers
+        rightSeparator.wantsLayer = true
+        rightSeparator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(rightSeparator)
+        NSLayoutConstraint.activate([
+            rightSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
+            rightSeparator.topAnchor.constraint(equalTo: topAnchor),
+            rightSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            rightSeparator.widthAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
+        ])
+
         updateBackgroundColor()
         themeObserver = NotificationCenter.default.addObserver(
             forName: GhosttyThemeProvider.didChangeNotification,
@@ -854,6 +929,7 @@ private final class ThemedSidebarBackingView: NSView {
             resolved = bg.blended(withFraction: offset, of: .white) ?? bg
         }
         layer?.backgroundColor = resolved.cgColor
+        rightSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
         needsDisplay = true
     }
 }
