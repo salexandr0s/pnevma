@@ -421,19 +421,19 @@ final class GhosttyConfigController {
         let paths = try resolvedPaths()
         let configText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""
         let managedText = (try? String(contentsOf: paths.managedPath, encoding: .utf8)) ?? ""
-        let parsedManaged = GhosttyManagedConfigCodec.parseManagedFile(managedText)
+        let parsedConfig = GhosttyManagedConfigCodec.parseManagedFile(configText)
         let configOwner = runtimeConfigOwner()
-        let effectiveValues = buildEffectiveValues(from: configOwner)
+        let effectiveValues = buildEffectiveValues(from: configOwner, configText: configText, managedText: managedText)
         return GhosttyConfigSnapshot(
             configPath: paths.configPath,
             managedPath: paths.managedPath,
-            includeIntegrated: configText.contains(GhosttyManagedConfigCodec.markerStart),
+            includeIntegrated: true,
             diagnostics: configOwner.diagnostics,
-            managedValues: parsedManaged.values,
-            keybinds: parsedManaged.keybinds,
+            managedValues: parsedConfig.values,
+            keybinds: parsedConfig.keybinds,
             effectiveValues: effectiveValues,
-            manualKeys: GhosttyManagedConfigCodec.manualKeys(from: configText),
-            generatedPreview: managedText
+            manualKeys: [],
+            generatedPreview: configText
         )
     }
 
@@ -442,82 +442,204 @@ final class GhosttyConfigController {
         let baselineDiagnostics = Set(baseline.diagnostics)
         let paths = try resolvedPaths()
 
-        let originalMainText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""
-        let originalManagedText = (try? String(contentsOf: paths.managedPath, encoding: .utf8)) ?? ""
-        let managedExisted = FileManager.default.fileExists(atPath: paths.managedPath.path)
-
-        let includeResult = GhosttyManagedConfigCodec.ensureIncludeBlock(
-            in: originalMainText,
-            managedPath: paths.managedPath
-        )
-        let renderedManagedText = GhosttyManagedConfigCodec.renderManagedFile(
-            values: values,
-            keybinds: keybinds
-        )
+        let originalText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""
+        let updatedText = updateConfigText(originalText, with: values, keybinds: keybinds)
 
         do {
-            try writeAtomically(includeResult.text, to: paths.configPath)
-            try writeAtomically(renderedManagedText, to: paths.managedPath)
+            try writeAtomically(updatedText, to: paths.configPath)
 
             let reloaded = TerminalConfig()
             let introducedDiagnostics = reloaded.diagnostics.filter { !baselineDiagnostics.contains($0) }
             if !introducedDiagnostics.isEmpty {
-                try restoreMainFile(originalMainText, to: paths.configPath)
-                try restoreManagedFile(
-                    originalManagedText,
-                    existed: managedExisted,
-                    to: paths.managedPath
-                )
+                try writeAtomically(originalText, to: paths.configPath)
                 audit(
                     action: "ghostty_settings_apply_failed",
-                    changedKeys: changedKeys(previous: originalManagedText, next: renderedManagedText),
+                    changedKeys: [],
                     diagnostics: introducedDiagnostics,
                     applied: false,
-                    managedPath: paths.managedPath.path
+                    managedPath: paths.configPath.path
                 )
                 throw GhosttyConfigControllerError.invalidConfig(introducedDiagnostics)
             }
 
             activeConfigOwner = reloaded
             TerminalSurface.applyGhosttyConfig(reloaded)
+            TerminalSurface.reapplyColorScheme()
 
             audit(
-                action: includeResult.alreadyIntegrated ? "ghostty_settings_saved" : "ghostty_include_repaired",
-                changedKeys: changedKeys(previous: originalManagedText, next: renderedManagedText),
+                action: "ghostty_settings_saved",
+                changedKeys: [],
                 diagnostics: reloaded.diagnostics,
                 applied: true,
-                managedPath: paths.managedPath.path
+                managedPath: paths.configPath.path
             )
 
             return try loadSnapshot()
         } catch let error as GhosttyConfigControllerError {
             throw error
         } catch {
-            try? restoreMainFile(originalMainText, to: paths.configPath)
-            try? restoreManagedFile(
-                originalManagedText,
-                existed: managedExisted,
-                to: paths.managedPath
-            )
+            try? writeAtomically(originalText, to: paths.configPath)
             audit(
                 action: "ghostty_settings_apply_failed",
                 changedKeys: [],
                 diagnostics: [error.localizedDescription],
                 applied: false,
-                managedPath: paths.managedPath.path
+                managedPath: paths.configPath.path
             )
             throw GhosttyConfigControllerError.saveFailed(error.localizedDescription)
         }
     }
 
-    private func buildEffectiveValues(from config: TerminalConfig) -> [String: String] {
+    /// Update config file text in-place: replace existing keys, append new ones,
+    /// and rebuild keybind lines. Preserves comments and structure.
+    private func updateConfigText(_ text: String, with values: [String: [String]], keybinds: [GhosttyManagedKeybind]) -> String {
+        var remainingValues = values
+        var lines: [String] = []
+        let inputLines = text.components(separatedBy: "\n")
+
+        // Track which keys we've already written (handles duplicate keys)
+        var writtenKeys = Set<String>()
+        var insideManagedBlock = false
+
+        for line in inputLines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Skip the old managed include block if present
+            if trimmed == GhosttyManagedConfigCodec.markerStart {
+                insideManagedBlock = true
+                continue
+            }
+            if insideManagedBlock {
+                if trimmed == GhosttyManagedConfigCodec.markerEnd {
+                    insideManagedBlock = false
+                }
+                continue
+            }
+
+            // Skip existing keybind lines — we'll rewrite all keybinds at the end
+            if !trimmed.isEmpty, !trimmed.hasPrefix("#"), trimmed.contains("=") {
+                let eqIdx = trimmed.firstIndex(of: "=")!
+                let lineKey = trimmed[..<eqIdx].trimmingCharacters(in: .whitespaces)
+                if lineKey == "keybind" {
+                    continue
+                }
+            }
+
+            // Check if this is a key=value line we have a new value for
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+                  let eqIndex = trimmed.firstIndex(of: "=") else {
+                lines.append(line)
+                continue
+            }
+
+            let key = trimmed[..<eqIndex].trimmingCharacters(in: .whitespaces)
+
+            if let newValues = remainingValues[key] {
+                if !writtenKeys.contains(key) {
+                    for val in newValues {
+                        let cleaned = val.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !cleaned.isEmpty {
+                            lines.append("\(key) = \(cleaned)")
+                        }
+                    }
+                    writtenKeys.insert(key)
+                    remainingValues.removeValue(forKey: key)
+                }
+                // Skip duplicate lines of the same key from the original file
+            } else if GhosttySchema.configTypes[key] != nil {
+                // Known schema key was removed from edited values — drop it
+                continue
+            } else {
+                // Unknown key (not in schema) — preserve it
+                lines.append(line)
+            }
+        }
+
+        // Append any new keys that weren't in the original file
+        for (key, vals) in remainingValues.sorted(by: { $0.key < $1.key }) {
+            let cleaned = vals
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleaned.isEmpty {
+                lines.append("")
+                for val in cleaned {
+                    lines.append("\(key) = \(val)")
+                }
+            }
+        }
+
+        // Append keybinds
+        let cleanedBindings = keybinds.filter { !$0.trigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !cleanedBindings.isEmpty {
+            lines.append("")
+            for binding in cleanedBindings {
+                lines.append("keybind = \(binding.rawBinding)")
+            }
+        }
+
+        // Clean up excessive blank lines
+        var result: [String] = []
+        var lastWasBlank = false
+        for line in lines {
+            let isBlank = line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if isBlank && lastWasBlank { continue }
+            result.append(line)
+            lastWasBlank = isBlank
+        }
+
+        // Ensure trailing newline
+        let joined = result.joined(separator: "\n")
+        return joined.hasSuffix("\n") ? joined : joined + "\n"
+    }
+
+    private func buildEffectiveValues(from config: TerminalConfig, configText: String, managedText: String) -> [String: String] {
         var values: [String: String] = [:]
+
+        // First, read values the C API can handle (bool, numbers, Color).
         for descriptor in GhosttySchema.descriptors where descriptor.valueKind != .keybinds && descriptor.valueKind != .multiLine {
             if let rawValue = config.scalarRawValue(for: descriptor.key, rawType: descriptor.rawType) {
                 values[descriptor.key] = rawValue
             }
         }
+
+        // For keys that scalarRawValue can't read (complex types like ?Theme,
+        // ?TerminalColor, RepeatableString, enums, etc.), fall back to parsing
+        // the config files directly. The managed file takes precedence.
+        let fileParsed = parseConfigText(managedText, thenFallback: configText)
+        for descriptor in GhosttySchema.descriptors where descriptor.valueKind != .keybinds {
+            if values[descriptor.key] == nil, let fileValue = fileParsed[descriptor.key] {
+                values[descriptor.key] = fileValue
+            }
+        }
+
         return values
+    }
+
+    /// Parse key=value pairs from config text. If a key appears in both texts,
+    /// the primary text wins (last occurrence of each key wins within a file).
+    private func parseConfigText(_ primary: String, thenFallback fallback: String) -> [String: String] {
+        var values: [String: String] = [:]
+        for line in fallback.components(separatedBy: .newlines) {
+            if let entry = parseSimpleEntry(line) {
+                values[entry.key] = entry.value
+            }
+        }
+        for line in primary.components(separatedBy: .newlines) {
+            if let entry = parseSimpleEntry(line) {
+                values[entry.key] = entry.value
+            }
+        }
+        return values
+    }
+
+    private func parseSimpleEntry(_ line: String) -> (key: String, value: String)? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+              let eqIndex = trimmed.firstIndex(of: "=") else { return nil }
+        let key = trimmed[..<eqIndex].trimmingCharacters(in: .whitespaces)
+        let value = trimmed[trimmed.index(after: eqIndex)...].trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty, !value.isEmpty else { return nil }
+        return (key, value)
     }
 
     private func resolvedPaths() throws -> (configPath: URL, managedPath: URL) {

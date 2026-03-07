@@ -307,6 +307,17 @@ class TerminalSurface {
         }
     }
 
+    /// Re-apply the current color scheme to the ghostty app so that
+    /// conditional themes (e.g. "light:X,dark:Y") resolve correctly
+    /// after a config update.
+    @MainActor
+    static func reapplyColorScheme() {
+        guard let ghosttyApp else { return }
+        let scheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+        ghostty_app_set_color_scheme(ghosttyApp, scheme)
+    }
+
     // MARK: - Keyboard Input
 
     @discardableResult

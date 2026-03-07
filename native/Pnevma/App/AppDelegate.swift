@@ -60,6 +60,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // themes (e.g. light:X,dark:Y) resolve correctly.
         let reloadedConfig = TerminalConfig()
         TerminalSurface.applyGhosttyConfig(reloadedConfig)
+        TerminalSurface.reapplyColorScheme()
         GhosttyConfigController.shared.updateConfigOwner(reloadedConfig)
         GhosttyThemeProvider.shared.refresh()
 
@@ -100,6 +101,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func initializeRuntime() {
+        // Point ghostty at the Ghostty.app resource directory so it can find
+        // built-in themes, terminfo, etc. Without this, the embedded library
+        // looks inside Pnevma's own bundle (which doesn't ship these files).
+        let ghosttyResources = "/Applications/Ghostty.app/Contents/Resources/ghostty"
+        if FileManager.default.fileExists(atPath: ghosttyResources) {
+            setenv("GHOSTTY_RESOURCES_DIR", ghosttyResources, 0)
+        }
+
         // ghostty_init must be the very first ghostty call.
         #if canImport(GhosttyKit)
         let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
