@@ -42,10 +42,9 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 1. Workspaces (top, scrollable)
+            // 1. Workspaces (top, takes remaining space)
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 2) {
-                    // Header with + button
                     HStack {
                         Text("WORKSPACES")
                             .font(.system(size: 11))
@@ -73,11 +72,10 @@ struct SidebarView: View {
 
             Spacer(minLength: 0)
 
-            // 2. Tools (collapsible)
+            // 2. Tools (bottom-aligned, no scroll)
             VStack(spacing: 0) {
                 Divider()
 
-                // Collapsible header
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.15)) { isToolsExpanded.toggle() }
                 }) {
@@ -111,7 +109,7 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 8)
 
-            // 3. Settings (bottom)
+            // 3. Settings (pinned bottom)
             VStack(spacing: 0) {
                 Divider()
                 SidebarToolButton(

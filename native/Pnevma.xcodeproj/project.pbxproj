@@ -68,6 +68,7 @@
 		F5CB679F6B9C87400DA3AD42 /* PaneProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */; };
 		F5F79F02C1F4D95DC5B3F83B /* ReplayPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FEF7CEEB10962C75ABA7BC2 /* ReplayPane.swift */; };
 		F7639F1CCAAFC84BEA4BBD4E /* PaneLayoutEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */; };
+		F7C0A8AEF61DB4E3A0201DB9 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 24C6D98E237464B9CC1F10DD /* AppIcon.icon */; };
 		F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0504F30FC49F942FD7AD3F1B /* TerminalHostView.swift */; };
 		FA0E47CF4F1FA87498D54927 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB3422024FC4975E1C7FBB3C /* Cocoa.framework */; };
 		FC909B27A07721ABC7737BF5 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2384B2D98B340A6F16B39955 /* Extensions.swift */; };
@@ -92,6 +93,7 @@
 		0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		1EAFB00C7B89DEB874995841 /* OnboardingFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlow.swift; sourceTree = "<group>"; };
 		2384B2D98B340A6F16B39955 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
+		24C6D98E237464B9CC1F10DD /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		288B31EA70DBB7C2215B829A /* StatusBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBar.swift; sourceTree = "<group>"; };
 		2E52F41573A608565E5F0B7E /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngineTests.swift; sourceTree = "<group>"; };
@@ -254,6 +256,7 @@
 		85579D09763F3EE2D803E7A8 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				24C6D98E237464B9CC1F10DD /* AppIcon.icon */,
 				9898DF3A58726617A4A1C216 /* readability.min.js */,
 				09D8BD2C701CCA658D16BD21 /* turndown.min.js */,
 			);
@@ -436,6 +439,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F7C0A8AEF61DB4E3A0201DB9 /* AppIcon.icon in Resources */,
 				E1E490755E98A577E0440CC5 /* Assets.xcassets in Resources */,
 				DAAD03813AB4CE200C2969E6 /* readability.min.js in Resources */,
 				B38F42FE0EBEBFB0595FFC33 /* turndown.min.js in Resources */,
@@ -566,6 +570,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Pnevma/Pnevma.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -589,6 +594,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Pnevma/Pnevma.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				FRAMEWORK_SEARCH_PATHS = (
