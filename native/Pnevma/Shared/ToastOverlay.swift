@@ -94,8 +94,8 @@ final class ToastWindowController {
     private var cancellables = Set<AnyCancellable>()
     private var resizeObserver: NSObjectProtocol?
 
-    init(manager: ToastManager = .shared) {
-        self.manager = manager
+    init(manager: ToastManager? = nil) {
+        self.manager = manager ?? .shared
     }
 
     deinit {
