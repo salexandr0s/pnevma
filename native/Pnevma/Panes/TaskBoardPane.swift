@@ -68,16 +68,10 @@ struct TaskBoardView: View {
     var body: some View {
         Group {
             if let statusMessage = viewModel.statusMessage {
-                VStack(spacing: 10) {
-                    Image(systemName: "rectangle.stack.badge.person.crop")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                    Text(statusMessage)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(24)
+                EmptyStateView(
+                    icon: "rectangle.stack.badge.person.crop",
+                    title: statusMessage
+                )
             } else {
                 ScrollView(.horizontal, showsIndicators: true) {
                     HStack(alignment: .top, spacing: 12) {
@@ -342,12 +336,11 @@ final class TaskBoardViewModel: ObservableObject {
     }
 
     private func handleLoadFailure(_ error: Error) {
-        let message = error.localizedDescription
-        if message.contains("no open project") || message.contains("No active project") {
+        if PnevmaError.isProjectNotReady(error) {
             viewState = .waiting("Waiting for project activation...")
             return
         }
-        viewState = .failed(message)
+        viewState = .failed(error.localizedDescription)
     }
 
     private func refreshAfterMutation() {

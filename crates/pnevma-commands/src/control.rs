@@ -1488,6 +1488,39 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "analytics.usage_breakdown" => {
+            let days = parse_optional_i64_param(params, "days");
+            serde_json::to_value(
+                commands::get_usage_breakdown(days, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "analytics.usage_by_model" => serde_json::to_value(
+            commands::get_usage_by_model(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "analytics.usage_daily_trend" => {
+            let days = parse_optional_i64_param(params, "days");
+            serde_json::to_value(
+                commands::get_usage_daily_trend(days, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "analytics.error_signatures" => {
+            let limit = parse_optional_i64_param(params, "limit");
+            serde_json::to_value(
+                commands::list_error_signatures(limit, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         _ => {
             return Err((
                 "method_not_found".to_string(),

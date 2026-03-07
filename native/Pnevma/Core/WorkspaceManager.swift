@@ -71,6 +71,12 @@ final class WorkspaceManager: ObservableObject {
         Log.workspace.info("Switched to workspace \(id)")
     }
 
+    func renameWorkspace(_ id: UUID, to newName: String) {
+        guard let workspace = workspace(withID: id) else { return }
+        workspace.name = newName
+        Log.workspace.info("Renamed workspace \(id) to '\(newName)'")
+    }
+
     func closeWorkspace(_ id: UUID) {
         guard let index = workspaces.firstIndex(where: { $0.id == id }) else { return }
         let closingWasActive = activeWorkspaceID == id

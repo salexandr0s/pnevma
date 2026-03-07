@@ -11,6 +11,7 @@ final class ContentAreaView: NSView {
     /// All live pane views keyed by their PaneID.
     private var paneViews: [PaneID: NSView & PaneContent] = [:]
     private var dividerViews: [NSView] = []
+    private var focusBorderView: NSView?
 
     /// Called when a pane is closed and the layout becomes empty.
     var onAllPanesClosed: (() -> Void)?
@@ -47,12 +48,14 @@ final class ContentAreaView: NSView {
         super.layout()
         repositionPanes()
         repositionDividers()
+        updateFocusBorder()
     }
 
     /// Full relayout: reposition panes + rebuild dividers. For structural changes.
     private func relayout() {
         repositionPanes()
         rebuildDividers()
+        updateFocusBorder()
     }
 
     /// Recompute and apply pane frames. Safe to call during drag.
@@ -278,6 +281,7 @@ final class ContentAreaView: NSView {
         if let old = oldActive { paneViews[old]?.deactivate() }
         paneViews[newActive]?.activate()
         onActivePaneChanged?(newActive)
+        updateFocusBorder()
     }
 
     /// Set focus to a specific pane.
@@ -287,6 +291,7 @@ final class ContentAreaView: NSView {
         layoutEngine.setActivePane(paneID)
         paneViews[paneID]?.activate()
         onActivePaneChanged?(paneID)
+        updateFocusBorder()
     }
 
     /// Remove all pane and divider subviews and clear their tracking collections.
@@ -358,26 +363,179 @@ final class ContentAreaView: NSView {
             layoutEngine.upsertPersistedPane(view.persistedPane())
         }
     }
+
+    // MARK: - Focus Border
+
+    private func updateFocusBorder() {
+        guard paneViews.count > 1,
+              let activeID = layoutEngine.activePaneID,
+              let activeView = paneViews[activeID] else {
+            focusBorderView?.removeFromSuperview()
+            focusBorderView = nil
+            return
+        }
+
+        let border: NSView
+        if let existing = focusBorderView {
+            border = existing
+        } else {
+            border = FocusBorderView(frame: .zero)
+            addSubview(border, positioned: .above, relativeTo: nil)
+            focusBorderView = border
+        }
+
+        border.frame = activeView.frame
+    }
+
+    // MARK: - Pane Context Menu
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let (paneID, _) = paneViews.first(where: { $0.value.frame.contains(point) }) else {
+            return super.menu(for: event)
+        }
+
+        let menu = NSMenu()
+
+        let closeItem = NSMenuItem(title: "Close Pane", action: nil, keyEquivalent: "")
+        closeItem.target = self
+        closeItem.representedObject = paneID
+        closeItem.action = #selector(contextMenuClosePane(_:))
+        menu.addItem(closeItem)
+
+        menu.addItem(.separator())
+
+        let splitRightItem = NSMenuItem(title: "Split Right", action: nil, keyEquivalent: "")
+        splitRightItem.target = self
+        splitRightItem.representedObject = paneID
+        splitRightItem.action = #selector(contextMenuSplitRight(_:))
+        menu.addItem(splitRightItem)
+
+        let splitDownItem = NSMenuItem(title: "Split Down", action: nil, keyEquivalent: "")
+        splitDownItem.target = self
+        splitDownItem.representedObject = paneID
+        splitDownItem.action = #selector(contextMenuSplitDown(_:))
+        menu.addItem(splitDownItem)
+
+        return menu
+    }
+
+    @objc private func contextMenuClosePane(_ sender: NSMenuItem) {
+        guard let paneID = sender.representedObject as? PaneID else { return }
+        closePane(paneID)
+    }
+
+    @objc private func contextMenuSplitRight(_ sender: NSMenuItem) {
+        guard let paneID = sender.representedObject as? PaneID else { return }
+        focusPane(paneID)
+        let (_, newPane) = PaneFactory.makeTerminal()
+        splitActivePane(direction: .horizontal, newPaneView: newPane)
+    }
+
+    @objc private func contextMenuSplitDown(_ sender: NSMenuItem) {
+        guard let paneID = sender.representedObject as? PaneID else { return }
+        focusPane(paneID)
+        let (_, newPane) = PaneFactory.makeTerminal()
+        splitActivePane(direction: .vertical, newPaneView: newPane)
+    }
+}
+
+// MARK: - FocusBorderView
+
+/// Transparent overlay that draws a 2px accent-colored border around the focused pane.
+private final class FocusBorderView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderWidth = DesignTokens.Layout.focusBorderWidth
+        layer?.cornerRadius = 0
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+    }
+
+    override func accessibilityLabel() -> String? { "Active pane indicator" }
 }
 
 // MARK: - DividerView
 
-/// Thin draggable divider between panes.
+/// Draggable divider between panes with expanded hover target for easier discovery.
 private final class DividerView: NSView {
 
     let direction: SplitDirection
     var onDrag: ((CGFloat) -> Void)?
+    private var isHovering = false
+    private var trackingArea: NSTrackingArea?
 
     init(frame: NSRect, direction: SplitDirection) {
         self.direction = direction
         super.init(frame: frame)
+        updateTrackingArea()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
+        let color = isHovering ? NSColor.controlAccentColor.withAlphaComponent(0.6) : NSColor.separatorColor
+        color.setFill()
         bounds.fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        updateTrackingArea()
+    }
+
+    private func updateTrackingArea() {
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        // Expand tracking rect beyond visual bounds for easier hover target
+        let hoverExpansion = DesignTokens.Layout.dividerHoverWidth - DesignTokens.Layout.dividerWidth
+        let expandedRect: NSRect
+        if direction == .horizontal {
+            expandedRect = bounds.insetBy(dx: -hoverExpansion, dy: 0)
+        } else {
+            expandedRect = bounds.insetBy(dx: 0, dy: -hoverExpansion)
+        }
+        let area = NSTrackingArea(
+            rect: expandedRect,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        needsDisplay = true
+        let cursor: NSCursor = direction == .horizontal ? .resizeLeftRight : .resizeUpDown
+        cursor.push()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        needsDisplay = true
+        NSCursor.pop()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if superview == nil, isHovering {
+            isHovering = false
+            // Reset to arrow instead of pop() to avoid corrupting the global cursor
+            // stack if another view also has a pushed cursor.
+            NSCursor.arrow.set()
+            discardCursorRects()
+        }
     }
 
     override func resetCursorRects() {
@@ -403,4 +561,10 @@ private final class DividerView: NSView {
             if next.type == .leftMouseUp { break }
         }
     }
+
+    // MARK: - Accessibility
+    override func accessibilityLabel() -> String? {
+        direction == .horizontal ? "Horizontal pane divider" : "Vertical pane divider"
+    }
+    override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
 }

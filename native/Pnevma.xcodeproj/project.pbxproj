@@ -62,6 +62,7 @@
 		E23397115C16E1C3806152AF /* DailyBriefPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA8DEADC71098F70420D35 /* DailyBriefPane.swift */; };
 		E23C8FB1988C5983AA68BDE4 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C296C61E24606F14100C9700 /* libresolv.tbd */; };
 		E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */; };
+		E4B187C264280A390D3219DD /* ToastOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BACC1D571547055E703921 /* ToastOverlay.swift */; };
 		E8746B9089C92661A666AB73 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF3059187ECC603279A0295F /* AppIntents.framework */; };
 		EE32C0DC4310751E92C25777 /* FileBrowserPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2FFA5B423F3AFEF4E067E4 /* FileBrowserPane.swift */; };
 		EF8FDB10727CFB9047386340 /* MergeQueuePane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */; };
@@ -126,6 +127,7 @@
 		9898DF3A58726617A4A1C216 /* readability.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = readability.min.js; sourceTree = "<group>"; };
 		9C0A1DBF6363C1B411F7A7E4 /* BrowserFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserFind.swift; sourceTree = "<group>"; };
 		A20D11B7F1496ED9ECFE4003 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
+		A2BACC1D571547055E703921 /* ToastOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastOverlay.swift; sourceTree = "<group>"; };
 		A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeQueuePane.swift; sourceTree = "<group>"; };
 		A8D239E4D9D6D2BBEFCE9CDD /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		AB2ABF5369D15A88A22276EB /* ReviewPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewPane.swift; sourceTree = "<group>"; };
@@ -223,6 +225,7 @@
 			children = (
 				0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */,
 				2384B2D98B340A6F16B39955 /* Extensions.swift */,
+				A2BACC1D571547055E703921 /* ToastOverlay.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -509,6 +512,7 @@
 				32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */,
 				F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */,
 				587B9ADBC09AF402EDB4AA2E /* TerminalSurface.swift in Sources */,
+				E4B187C264280A390D3219DD /* ToastOverlay.swift in Sources */,
 				C48A433DE9B9CF2EA6C307AF /* WorkflowPane.swift in Sources */,
 				B3B39DFE7D69A7391CC3A519 /* Workspace.swift in Sources */,
 				C857F379F52F9DA89E537FEB /* WorkspaceManager.swift in Sources */,

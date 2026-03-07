@@ -77,6 +77,21 @@ enum PnevmaError: Error, LocalizedError {
         }
     }
 
+    /// Returns true when the error indicates the project is not open yet — view models
+    /// should show a "waiting" state rather than a hard failure for this.
+    ///
+    /// Prefers a typed check against `PnevmaError.backendError` with the raw Rust message
+    /// `"no open project"` (see `route_method` in `pnevma-commands`). Falls back to
+    /// localized-description string matching for wrapped or non-`PnevmaError` errors.
+    static func isProjectNotReady(_ error: Error) -> Bool {
+        if case .backendError(_, let message) = error as? PnevmaError {
+            return message == "no open project"
+        }
+        // Fallback for errors that may wrap a PnevmaError (e.g. NSError bridging).
+        let desc = error.localizedDescription
+        return desc.contains("No active project") || desc.contains("no open project")
+    }
+
     private static func describeBackendMessage(_ message: String) -> String {
         switch message {
         case "workspace_not_trusted":

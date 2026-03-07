@@ -295,18 +295,151 @@ final class WelcomePaneView: NSView, PaneContent {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(
-            TerminalStateView(
-                title: "Workspace Ready",
-                message: "Open a project to start a backend-managed terminal session.",
-                detail: nil,
-                scrollback: nil,
-                actions: []
-            )
-        )
+        _ = addSwiftUISubview(WelcomeContentView())
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+}
+
+private struct WelcomeContentView: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color(nsColor: .underPageBackgroundColor)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Text("Welcome to Pnevma")
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                    Text("Terminal-first execution workspace for AI-agent-driven software delivery.")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                // Quick actions
+                HStack(spacing: 12) {
+                    WelcomeActionButton(
+                        title: "Open Project",
+                        icon: "folder.badge.plus",
+                        isPrimary: true
+                    ) {
+                        NSApp.sendAction(#selector(AppDelegate.openProjectAction), to: nil, from: nil)
+                    }
+
+                    WelcomeActionButton(
+                        title: "New Terminal",
+                        icon: "terminal",
+                        isPrimary: false
+                    ) {
+                        NSApp.sendAction(#selector(AppDelegate.newTerminal), to: nil, from: nil)
+                    }
+                }
+
+                // Orientation hints
+                VStack(alignment: .leading, spacing: 10) {
+                    WelcomeHint(key: "Cmd+K", label: "Command Palette")
+                    WelcomeHint(key: "Cmd+D", label: "Split Right")
+                    WelcomeHint(key: "Cmd+B", label: "Toggle Sidebar")
+                    WelcomeHint(key: "Opt+Cmd+Arrows", label: "Navigate Panes")
+                }
+                .padding(.top, 8)
+            }
+            .frame(maxWidth: 420)
+        }
+    }
+}
+
+private struct WelcomeActionButton: View {
+    let title: String
+    let icon: String
+    let isPrimary: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if isPrimary {
+            Button(action: action) {
+                Label(title, systemImage: icon)
+                    .frame(minWidth: 140)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        } else {
+            Button(action: action) {
+                Label(title, systemImage: icon)
+                    .frame(minWidth: 140)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+        }
+    }
+}
+
+private struct WelcomeHint: View {
+    let key: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(key)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 130, alignment: .trailing)
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(.primary)
+        }
+    }
+}
+
+// MARK: - EmptyStateView (shared component)
+
+struct EmptyStateView: View {
+    let icon: String
+    let title: String
+    let message: String?
+    let actionTitle: String?
+    let action: (() -> Void)?
+
+    init(icon: String, title: String, message: String? = nil, actionTitle: String? = nil, action: (() -> Void)? = nil) {
+        self.icon = icon
+        self.title = title
+        self.message = message
+        self.actionTitle = actionTitle
+        self.action = action
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary.opacity(0.5))
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
 }
 
 final class RestoreErrorPaneView: NSView, PaneContent {
@@ -324,7 +457,8 @@ final class RestoreErrorPaneView: NSView, PaneContent {
                 message: message,
                 detail: detail,
                 scrollback: nil,
-                actions: []
+                actions: [],
+                isLoadingOverride: false
             )
         )
     }
@@ -453,7 +587,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             message: payload?.message ?? "The workspace project could not be activated.",
             detail: "The terminal will retry automatically after the workspace activates successfully.",
             scrollback: nil,
-            actions: []
+            actions: [],
+            isLoading: false
         )
     }
 
@@ -466,7 +601,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 message: "Terminal session bridge is not configured.",
                 detail: nil,
                 scrollback: nil,
-                actions: []
+                actions: [],
+                isLoading: false
             )
             return
         }
@@ -523,18 +659,19 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func handleSessionLoadFailure(_ error: Error) async {
-        let message = error.localizedDescription
-        if message.contains("no open project") || message.contains("No active project") {
+        if PnevmaError.isProjectNotReady(error) {
             showLocalTerminal()
             return
         }
+        let message = error.localizedDescription
 
         showState(
             title: "Terminal Error",
             message: message,
             detail: nil,
             scrollback: nil,
-            actions: makeFallbackActions()
+            actions: makeFallbackActions(),
+            isLoading: false
         )
     }
 
@@ -600,7 +737,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             message: message,
             detail: detail,
             scrollback: nil,
-            actions: recoveryActionButtons()
+            actions: recoveryActionButtons(),
+            isLoading: false
         )
 
         guard let sessionBridge = PaneFactory.sessionBridge else { return }
@@ -611,7 +749,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 message: message,
                 detail: detail,
                 scrollback: scrollback.data,
-                actions: recoveryActionButtons()
+                actions: recoveryActionButtons(),
+                isLoading: false
             )
         } catch {
             showState(
@@ -619,7 +758,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 message: "Unable to load archived scrollback.",
                 detail: error.localizedDescription,
                 scrollback: nil,
-                actions: recoveryActionButtons()
+                actions: recoveryActionButtons(),
+                isLoading: false
             )
         }
     }
@@ -678,7 +818,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 message: error.localizedDescription,
                 detail: nil,
                 scrollback: nil,
-                actions: recoveryActionButtons()
+                actions: recoveryActionButtons(),
+                isLoading: false
             )
         }
     }
@@ -708,14 +849,16 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         message: String,
         detail: String?,
         scrollback: String?,
-        actions: [TerminalStateAction]
+        actions: [TerminalStateAction],
+        isLoading: Bool? = nil
     ) {
         let rootView = TerminalStateView(
             title: title,
             message: message,
             detail: detail,
             scrollback: scrollback,
-            actions: actions
+            actions: actions,
+            isLoadingOverride: isLoading
         )
         hostView?.removeFromSuperview()
         hostView = nil
@@ -744,6 +887,15 @@ private struct TerminalStateView: View {
     let detail: String?
     let scrollback: String?
     let actions: [TerminalStateAction]
+    var isLoadingOverride: Bool? = nil
+
+    private var isLoading: Bool {
+        if let override = isLoadingOverride { return override }
+        let lower = message.lowercased()
+        return lower.contains("connecting") || lower.contains("creating") ||
+               lower.contains("reattaching") || lower.contains("loading") ||
+               lower.contains("running") || lower.contains("waiting")
+    }
 
     var body: some View {
         ZStack {
@@ -762,9 +914,15 @@ private struct TerminalStateView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(title)
                             .font(.system(size: 24, weight: .semibold, design: .rounded))
-                        Text(message)
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            if isLoading {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(message)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
                         if let detail, !detail.isEmpty {
                             Text(detail)
                                 .font(.system(size: 12, weight: .regular, design: .rounded))

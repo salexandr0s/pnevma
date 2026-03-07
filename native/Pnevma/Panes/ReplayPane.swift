@@ -112,13 +112,10 @@ struct ReplayView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "play.rectangle")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text(viewModel.emptyStateMessage)
-                            .foregroundStyle(.secondary)
-                    }
+                    EmptyStateView(
+                        icon: "play.rectangle",
+                        title: viewModel.emptyStateMessage
+                    )
                 }
             }
 
@@ -330,12 +327,11 @@ final class ReplayViewModel: ObservableObject {
 
     private func handleBootstrapFailure(_ error: Error) {
         isBootstrapping = false
-        let message = error.localizedDescription
-        if message.contains("no open project") || message.contains("No active project") {
+        if PnevmaError.isProjectNotReady(error) {
             viewState = .waiting("Waiting for project activation...")
             return
         }
-        viewState = .failed(message)
+        viewState = .failed(error.localizedDescription)
     }
 
     private func updateFrame(index: Int) {

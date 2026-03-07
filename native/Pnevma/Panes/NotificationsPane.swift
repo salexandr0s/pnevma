@@ -61,20 +61,16 @@ struct NotificationsView: View {
             Divider()
 
             if let statusMessage = viewModel.statusMessage {
-                Spacer()
-                Image(systemName: "bell.badge")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 8)
-                Text(statusMessage)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Spacer()
+                EmptyStateView(
+                    icon: "bell.badge",
+                    title: statusMessage
+                )
             } else if viewModel.filteredNotifications.isEmpty {
-                Spacer()
-                Text("No notifications")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                EmptyStateView(
+                    icon: "bell.slash",
+                    title: "No notifications",
+                    message: "You're all caught up"
+                )
             } else {
                 List(viewModel.filteredNotifications) { notification in
                     NotificationRow(notification: notification)
@@ -305,12 +301,11 @@ final class NotificationsViewModel: ObservableObject {
     }
 
     private func handleLoadFailure(_ error: Error) {
-        let message = error.localizedDescription
-        if message.contains("no open project") || message.contains("No active project") {
+        if PnevmaError.isProjectNotReady(error) {
             viewState = .waiting("Waiting for project activation...")
             return
         }
-        viewState = .failed(message)
+        viewState = .failed(error.localizedDescription)
     }
 
     private func refreshAfterMutation() {

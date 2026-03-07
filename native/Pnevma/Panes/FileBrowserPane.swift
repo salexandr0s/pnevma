@@ -35,10 +35,11 @@ struct FileBrowserView: View {
                 Divider()
 
                 if viewModel.rootNodes.isEmpty {
-                    Spacer()
-                    Text("No project open")
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                    EmptyStateView(
+                        icon: "folder",
+                        title: "No project open",
+                        message: "Open a project to browse files"
+                    )
                 } else {
                     List(viewModel.rootNodes, children: \.optionalChildren) { node in
                         FileRow(node: node, isSelected: viewModel.selectedPath == node.path)

@@ -7,7 +7,17 @@ struct CommandItem {
     let title: String
     let category: String  // "command", "pane", "task", "file"
     let shortcut: String?
+    let description: String?
     let action: () -> Void
+
+    init(id: String, title: String, category: String, shortcut: String? = nil, description: String? = nil, action: @escaping () -> Void) {
+        self.id = id
+        self.title = title
+        self.category = category
+        self.shortcut = shortcut
+        self.description = description
+        self.action = action
+    }
 }
 
 // MARK: - CommandPalette
@@ -70,7 +80,7 @@ final class CommandPalette: NSPanel {
         tableView.headerView = nil
         tableView.delegate = self
         tableView.dataSource = self
-        tableView.rowHeight = 36
+        tableView.rowHeight = 42
         tableView.style = .plain
         tableView.target = self
         tableView.doubleAction = #selector(executeSelected)
@@ -208,7 +218,7 @@ extension CommandPalette: NSTableViewDelegate {
         let cell = tableView.makeView(withIdentifier: cellID, owner: nil) as? CommandCellView
             ?? CommandCellView(identifier: cellID)
 
-        cell.configure(title: item.title, category: item.category, shortcut: item.shortcut)
+        cell.configure(title: item.title, category: item.category, shortcut: item.shortcut, description: item.description)
         return cell
     }
 }
@@ -219,18 +229,23 @@ private final class CommandCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let categoryLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
+    private let descriptionLabel = NSTextField(labelWithString: "")
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
 
         titleLabel.font = .systemFont(ofSize: 13)
+        titleLabel.lineBreakMode = .byTruncatingTail
         categoryLabel.font = .systemFont(ofSize: 10)
         categoryLabel.textColor = .secondaryLabelColor
         shortcutLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         shortcutLabel.textColor = .tertiaryLabelColor
+        descriptionLabel.font = .systemFont(ofSize: 10)
+        descriptionLabel.textColor = .tertiaryLabelColor
+        descriptionLabel.lineBreakMode = .byTruncatingTail
 
-        for label in [titleLabel, categoryLabel, shortcutLabel] {
+        for label in [titleLabel, categoryLabel, shortcutLabel, descriptionLabel] {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.isEditable = false
             label.isBordered = false
@@ -240,21 +255,28 @@ private final class CommandCellView: NSTableCellView {
 
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: categoryLabel.leadingAnchor, constant: -4),
 
-            categoryLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 8),
-            categoryLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            descriptionLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            descriptionLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            descriptionLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
+
+            categoryLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
+            categoryLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
 
             shortcutLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            shortcutLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            shortcutLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(title: String, category: String, shortcut: String?) {
+    func configure(title: String, category: String, shortcut: String?, description: String? = nil) {
         titleLabel.stringValue = title
         categoryLabel.stringValue = category
         shortcutLabel.stringValue = shortcut ?? ""
+        descriptionLabel.stringValue = description ?? ""
+        descriptionLabel.isHidden = (description ?? "").isEmpty
     }
 }

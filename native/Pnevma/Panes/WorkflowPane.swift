@@ -158,13 +158,11 @@ struct LibrarySection: View {
 
     var body: some View {
         if viewModel.definitions.isEmpty {
-            Spacer()
-            Text("No workflows defined")
-                .foregroundStyle(.secondary)
-            Text("Create one with the + button")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Spacer()
+            EmptyStateView(
+                icon: "arrow.triangle.branch",
+                title: "No workflows defined",
+                message: "Create one with the + button"
+            )
         } else {
             List(viewModel.definitions) { def in
                 VStack(alignment: .leading, spacing: 4) {
@@ -214,10 +212,11 @@ struct ActiveSection: View {
 
     var body: some View {
         if viewModel.instances.isEmpty {
-            Spacer()
-            Text("No active workflow instances")
-                .foregroundStyle(.secondary)
-            Spacer()
+            EmptyStateView(
+                icon: "play.circle",
+                title: "No active workflow instances",
+                message: "Run a workflow from the Library tab"
+            )
         } else {
             List(viewModel.instances) { inst in
                 Button(action: { viewModel.loadInstanceDetail(inst.id) }) {

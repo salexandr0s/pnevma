@@ -120,6 +120,8 @@ private actor FailingProjectOpenCommandBus: CommandCalling {
         switch method {
         case "project.open":
             throw PnevmaError.backendError(method: method, message: message)
+        case "project.trust":
+            throw PnevmaError.backendError(method: method, message: message)
         case "project.close":
             return OkResponse(ok: true) as! T
         default:

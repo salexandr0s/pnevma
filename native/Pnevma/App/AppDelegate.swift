@@ -31,6 +31,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandPalette: CommandPalette?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
+    private var toastController: ToastWindowController?
     private var smokeWindow: NSWindow?
     private var smokeHostView: TerminalHostView?
     private var smokeTimeoutWorkItem: DispatchWorkItem?
@@ -67,6 +68,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Build menu bar
         NSApplication.shared.mainMenu = buildMainMenu()
+
+        // Attach toast overlay
+        if let win = window {
+            toastController = ToastWindowController()
+            toastController?.attach(to: win)
+        }
 
         // Build command palette
         commandPalette = CommandPalette()
@@ -438,23 +445,42 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m"))
         windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: ""))
+        windowMenu.addItem(.separator())
+
+        let nextWS = NSMenuItem(title: "Next Workspace", action: #selector(nextWorkspace), keyEquivalent: "]")
+        nextWS.keyEquivalentModifierMask = [.command, .shift]
+        windowMenu.addItem(nextWS)
+
+        let prevWS = NSMenuItem(title: "Previous Workspace", action: #selector(previousWorkspace), keyEquivalent: "[")
+        prevWS.keyEquivalentModifierMask = [.command, .shift]
+        windowMenu.addItem(prevWS)
+
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
+
+        // Help menu
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(NSMenuItem(title: "Keyboard Shortcuts", action: #selector(showKeyboardShortcuts), keyEquivalent: ""))
+        helpMenu.addItem(.separator())
+        helpMenu.addItem(NSMenuItem(title: "Pnevma Documentation", action: #selector(openDocumentation), keyEquivalent: ""))
+        let helpMenuItem = NSMenuItem()
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
 
         return mainMenu
     }
 
     // MARK: - Menu Actions
 
-    @objc private func newTerminal() {
+    @objc func newTerminal() {
         let projectPath = workspaceManager?.activeWorkspace?.projectPath
         let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
         contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
     }
 
-    @objc private func closePaneAction() { contentAreaView?.closeActivePane() }
-    @objc private func openProjectAction() { openProject() }
+    @objc func closePaneAction() { contentAreaView?.closeActivePane() }
+    @objc func openProjectAction() { openProject() }
     @objc private func openSettingsAction() { openSettingsPane() }
 
     @objc private func browserFindInPage() {
@@ -486,51 +512,91 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showCommandPalette() { commandPalette?.show() }
 
+    @objc private func nextWorkspace() {
+        guard let mgr = workspaceManager, !mgr.workspaces.isEmpty else { return }
+        let ids = mgr.workspaces.map(\.id)
+        guard let currentIndex = ids.firstIndex(of: mgr.activeWorkspaceID ?? UUID()) else {
+            mgr.switchToWorkspace(ids[0])
+            return
+        }
+        let next = ids[(currentIndex + 1) % ids.count]
+        mgr.switchToWorkspace(next)
+    }
+
+    @objc private func previousWorkspace() {
+        guard let mgr = workspaceManager, !mgr.workspaces.isEmpty else { return }
+        let ids = mgr.workspaces.map(\.id)
+        guard let currentIndex = ids.firstIndex(of: mgr.activeWorkspaceID ?? UUID()) else {
+            mgr.switchToWorkspace(ids[0])
+            return
+        }
+        let prev = ids[(currentIndex - 1 + ids.count) % ids.count]
+        mgr.switchToWorkspace(prev)
+    }
+
+    @objc private func showKeyboardShortcuts() {
+        // Open command palette pre-filtered — doubles as keyboard shortcut reference
+        commandPalette?.show()
+    }
+
+    @objc private func openDocumentation() {
+        if let url = URL(string: "https://pnevma.dev/docs") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     // MARK: - Command Palette Registration
 
     private func registerPaletteCommands() {
-        let paneCommands: [(String, String, String?, () -> NSView & PaneContent)] = [
-            ("Open Task Board", "pane", nil, { TaskBoardPaneView() }),
-            ("Open Analytics", "pane", nil, { AnalyticsPaneView() }),
-            ("Open Daily Brief", "pane", nil, { DailyBriefPaneView() }),
-            ("Open Notifications", "pane", nil, { NotificationsPaneView() }),
-            ("Open Review", "pane", nil, { ReviewPaneView() }),
-            ("Open Merge Queue", "pane", nil, { MergeQueuePaneView() }),
-            ("Open Diff Viewer", "pane", nil, { DiffPaneView() }),
-            ("Open Search", "pane", nil, { SearchPaneView() }),
-            ("Open File Browser", "pane", nil, { FileBrowserPaneView() }),
-            ("Open Rules Manager", "pane", nil, { RulesManagerPaneView() }),
-            ("Open Workflow", "pane", nil, { WorkflowPaneView() }),
-            ("Open SSH Manager", "pane", nil, { SshManagerPaneView() }),
-            ("Open Session Replay", "pane", nil, { ReplayPaneView(frame: .zero) }),
-            ("Open Browser", "pane", nil, { BrowserPaneView(frame: .zero, url: nil) }),
-            ("Open Settings", "pane", "Cmd+,", { SettingsPaneView() }),
+        let paneCommands: [(String, String, String?, String?, () -> NSView & PaneContent)] = [
+            ("Open Task Board", "pane", nil, "Kanban board for task management", { TaskBoardPaneView() }),
+            ("Open Analytics", "pane", nil, "Cost and usage analytics dashboard", { AnalyticsPaneView() }),
+            ("Open Daily Brief", "pane", nil, "Daily summary of tasks, costs, and events", { DailyBriefPaneView() }),
+            ("Open Notifications", "pane", nil, "View project notifications and alerts", { NotificationsPaneView() }),
+            ("Open Review", "pane", nil, "Review task diffs and acceptance criteria", { ReviewPaneView() }),
+            ("Open Merge Queue", "pane", nil, "Manage branch merge order and conflicts", { MergeQueuePaneView() }),
+            ("Open Diff Viewer", "pane", nil, "View file-level diffs for tasks", { DiffPaneView() }),
+            ("Open Search", "pane", nil, "Search across project files", { SearchPaneView() }),
+            ("Open File Browser", "pane", nil, "Browse and preview project files", { FileBrowserPaneView() }),
+            ("Open Rules Manager", "pane", nil, "Manage project rules and conventions", { RulesManagerPaneView() }),
+            ("Open Workflow", "pane", nil, "Visual workflow state machine", { WorkflowPaneView() }),
+            ("Open SSH Manager", "pane", nil, "Manage SSH keys and remote profiles", { SshManagerPaneView() }),
+            ("Open Session Replay", "pane", nil, "Replay past terminal sessions", { ReplayPaneView(frame: .zero) }),
+            ("Open Browser", "pane", nil, "Built-in web browser", { BrowserPaneView(frame: .zero, url: nil) }),
+            ("Open Settings", "pane", "Cmd+,", "Configure Pnevma preferences", { SettingsPaneView() }),
         ]
 
         var commands: [CommandItem] = [
-            CommandItem(id: "terminal.new", title: "New Terminal", category: "pane", shortcut: "Cmd+N") { [weak self] in
+            CommandItem(id: "terminal.new", title: "New Terminal", category: "pane", shortcut: "Cmd+N", description: "Open a new terminal in the active workspace") { [weak self] in
                 self?.newTerminal()
             },
-            CommandItem(id: "pane.split_right", title: "Split Right", category: "pane", shortcut: "Cmd+D") { [weak self] in
+            CommandItem(id: "pane.split_right", title: "Split Right", category: "pane", shortcut: "Cmd+D", description: "Split the active pane horizontally") { [weak self] in
                 self?.splitRightAction()
             },
-            CommandItem(id: "pane.split_down", title: "Split Down", category: "pane", shortcut: "Shift+Cmd+D") { [weak self] in
+            CommandItem(id: "pane.split_down", title: "Split Down", category: "pane", shortcut: "Shift+Cmd+D", description: "Split the active pane vertically") { [weak self] in
                 self?.splitDownAction()
             },
-            CommandItem(id: "pane.close", title: "Close Pane", category: "pane", shortcut: "Cmd+W") { [weak self] in
+            CommandItem(id: "pane.close", title: "Close Pane", category: "pane", shortcut: "Cmd+W", description: "Close the currently active pane") { [weak self] in
                 self?.closePaneAction()
             },
-            CommandItem(id: "view.sidebar", title: "Toggle Sidebar", category: "view", shortcut: "Cmd+B") { [weak self] in
+            CommandItem(id: "view.sidebar", title: "Toggle Sidebar", category: "view", shortcut: "Cmd+B", description: "Show or hide the sidebar") { [weak self] in
                 self?.toggleSidebar()
+            },
+            CommandItem(id: "workspace.next", title: "Next Workspace", category: "view", shortcut: "Shift+Cmd+]", description: "Switch to the next workspace") { [weak self] in
+                self?.nextWorkspace()
+            },
+            CommandItem(id: "workspace.prev", title: "Previous Workspace", category: "view", shortcut: "Shift+Cmd+[", description: "Switch to the previous workspace") { [weak self] in
+                self?.previousWorkspace()
             },
         ]
 
-        for (idx, (title, cat, shortcut, factory)) in paneCommands.enumerated() {
+        for (idx, (title, cat, shortcut, desc, factory)) in paneCommands.enumerated() {
             commands.append(CommandItem(
                 id: "pane.open_\(idx)",
                 title: title,
                 category: cat,
-                shortcut: shortcut
+                shortcut: shortcut,
+                description: desc
             ) { [weak self] in
                 let pane = factory()
                 if self?.contentAreaView?.replaceActivePane(with: pane) == nil {
@@ -552,6 +618,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.message = "Select a project directory"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         workspaceManager?.createWorkspace(name: url.lastPathComponent, projectPath: url.path)
+        ToastManager.shared.show("Project opened: \(url.lastPathComponent)", icon: "folder.badge.checkmark", style: .success)
     }
 
     private func openSettingsPane() {
@@ -722,8 +789,6 @@ extension AppDelegate: NSToolbarDelegate {
 }
 
 // MARK: - Notifications Popover
-
-import SwiftUI
 
 struct NotificationsPopoverView: View {
     var body: some View {

@@ -3,30 +3,15 @@ import Cocoa
 
 // MARK: - Data Models
 
-struct MergeQueueItem: Identifiable, Codable {
+struct MergeQueueItem: Identifiable, Decodable {
     let id: String
+    let taskId: String
     let taskTitle: String
-    let branchName: String
-    let conflictStatus: ConflictStatus
-    let position: Int
-}
-
-enum ConflictStatus: String, Codable {
-    case clean, conflicts, unknown
-    var color: Color {
-        switch self {
-        case .clean: return .green
-        case .conflicts: return .red
-        case .unknown: return .secondary
-        }
-    }
-    var label: String {
-        switch self {
-        case .clean: return "Clean"
-        case .conflicts: return "Conflicts"
-        case .unknown: return "Unknown"
-        }
-    }
+    let status: String
+    let blockedReason: String?
+    let approvedAt: String
+    let startedAt: String?
+    let completedAt: String?
 }
 
 // MARK: - MergeQueueView
@@ -47,22 +32,42 @@ struct MergeQueueView: View {
 
             Divider()
 
-            if viewModel.items.isEmpty {
-                Spacer()
-                Text("Merge queue is empty")
-                    .foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                List {
-                    ForEach(viewModel.items) { item in
-                        MergeQueueRow(item: item, onMerge: { viewModel.merge(item) })
+            Group {
+                if let statusMessage = viewModel.statusMessage {
+                    EmptyStateView(
+                        icon: "arrow.triangle.merge",
+                        title: statusMessage
+                    )
+                } else if viewModel.items.isEmpty {
+                    EmptyStateView(
+                        icon: "arrow.triangle.merge",
+                        title: "Merge queue is empty",
+                        message: "Completed tasks will appear here for merging"
+                    )
+                } else {
+                    List {
+                        ForEach(viewModel.items) { item in
+                            MergeQueueRow(
+                                item: item,
+                                onMerge: { viewModel.merge(item) },
+                                onMoveUp: { viewModel.reorder(taskId: item.taskId, direction: "up") },
+                                onMoveDown: { viewModel.reorder(taskId: item.taskId, direction: "down") }
+                            )
+                        }
                     }
-                    .onMove { viewModel.reorder(from: $0, to: $1) }
+                    .listStyle(.plain)
                 }
-                .listStyle(.plain)
+            }
+
+            if let error = viewModel.actionError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
             }
         }
-        .onAppear { viewModel.load() }
+        .onAppear { viewModel.activate() }
     }
 }
 
@@ -71,54 +76,226 @@ struct MergeQueueView: View {
 struct MergeQueueRow: View {
     let item: MergeQueueItem
     let onMerge: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("#\(item.position)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 30)
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.taskTitle)
                     .font(.body)
-                Text(item.branchName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                statusLabel
             }
 
             Spacer()
 
-            // Conflict status
-            Label(item.conflictStatus.label, systemImage:
-                    item.conflictStatus == .clean ? "checkmark.circle" : "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(item.conflictStatus.color)
+            HStack(spacing: 4) {
+                Button(action: onMoveUp) {
+                    Image(systemName: "chevron.up")
+                }
+                .buttonStyle(.plain)
+                .help("Move up")
+
+                Button(action: onMoveDown) {
+                    Image(systemName: "chevron.down")
+                }
+                .buttonStyle(.plain)
+                .help("Move down")
+            }
 
             Button("Merge") { onMerge() }
                 .buttonStyle(.bordered)
-                .disabled(item.conflictStatus == .conflicts)
+                .disabled(item.status != "Queued")
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var statusLabel: some View {
+        switch item.status {
+        case "Running":
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Running")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case "Blocked":
+            Label(blockedLabel, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case "Completed":
+            Label("Completed", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.green)
+        default:
+            // "Queued" and any unknown values
+            Text(item.status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var blockedLabel: String {
+        if let reason = item.blockedReason, !reason.isEmpty {
+            return "Blocked: \(reason)"
+        }
+        return "Blocked"
     }
 }
 
 // MARK: - ViewModel
 
+@MainActor
 final class MergeQueueViewModel: ObservableObject {
-    @Published var items: [MergeQueueItem] = []
+    private enum ViewState: Equatable {
+        case waiting(String)
+        case loading(String)
+        case ready
+        case failed(String)
+    }
 
-    func load() {
-        // pnevma_call("merge_queue.list", "{}")
+    @Published var items: [MergeQueueItem] = []
+    @Published var actionError: String?
+    @Published private var viewState: ViewState = .waiting("Open a project to load the merge queue.")
+
+    private let commandBus: (any CommandCalling)?
+    private let bridgeEventHub: BridgeEventHub
+    private let activationHub: ActiveWorkspaceActivationHub
+    private var bridgeObserverID: UUID?
+    private var activationObserverID: UUID?
+
+    init(
+        commandBus: (any CommandCalling)? = CommandBus.shared,
+        bridgeEventHub: BridgeEventHub = .shared,
+        activationHub: ActiveWorkspaceActivationHub = .shared
+    ) {
+        self.commandBus = commandBus
+        self.bridgeEventHub = bridgeEventHub
+        self.activationHub = activationHub
+
+        bridgeObserverID = bridgeEventHub.addObserver { [weak self] event in
+            guard event.name == "merge_queue_updated" else { return }
+            Task { @MainActor [weak self] in
+                self?.refreshIfActive()
+            }
+        }
+        activationObserverID = activationHub.addObserver { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.handleActivationState(state)
+            }
+        }
+    }
+
+    deinit {
+        if let bridgeObserverID {
+            bridgeEventHub.removeObserver(bridgeObserverID)
+        }
+        if let activationObserverID {
+            activationHub.removeObserver(activationObserverID)
+        }
+    }
+
+    var statusMessage: String? {
+        switch viewState {
+        case .waiting(let message), .loading(let message), .failed(let message):
+            return message
+        case .ready:
+            return nil
+        }
+    }
+
+    func activate() {
+        handleActivationState(activationHub.currentState)
+    }
+
+    func load(showLoadingState: Bool = true) {
+        guard let bus = commandBus else {
+            viewState = .failed("Merge queue loading is unavailable because the command bus is not configured.")
+            return
+        }
+        if showLoadingState, items.isEmpty {
+            viewState = .loading("Loading merge queue...")
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let fetched: [MergeQueueItem] = try await bus.call(method: "merge.queue.list", params: nil)
+                self.items = fetched
+                self.viewState = .ready
+            } catch {
+                self.handleLoadFailure(error)
+            }
+        }
     }
 
     func merge(_ item: MergeQueueItem) {
-        // pnevma_call("merge_queue.execute", ...)
+        guard let bus = commandBus else { return }
+        actionError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                struct Params: Encodable { let taskId: String }
+                let _: OkResponse = try await bus.call(
+                    method: "merge.queue.execute",
+                    params: Params(taskId: item.taskId)
+                )
+                self.refreshAfterMutation()
+            } catch {
+                self.actionError = error.localizedDescription
+            }
+        }
     }
 
-    func reorder(from source: IndexSet, to destination: Int) {
-        items.move(fromOffsets: source, toOffset: destination)
-        // pnevma_call("merge_queue.reorder", ...)
+    func reorder(taskId: String, direction: String) {
+        guard let bus = commandBus else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                struct Params: Encodable { let taskId: String; let direction: String }
+                let updated: [MergeQueueItem] = try await bus.call(
+                    method: "merge.queue.reorder",
+                    params: Params(taskId: taskId, direction: direction)
+                )
+                self.items = updated
+            } catch {
+                // Keep existing order on failure.
+            }
+        }
+    }
+
+    private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        switch state {
+        case .idle:
+            viewState = .waiting("Waiting for project activation...")
+        case .opening:
+            viewState = .waiting("Waiting for project activation...")
+        case .open:
+            load(showLoadingState: items.isEmpty)
+        case .failed(_, _, let message):
+            viewState = .failed(message)
+        case .closed:
+            viewState = .waiting("Open a project to load the merge queue.")
+        }
+    }
+
+    private func refreshIfActive() {
+        guard activationHub.currentState.isOpen else { return }
+        load(showLoadingState: false)
+    }
+
+    private func refreshAfterMutation() {
+        guard activationHub.currentState.isOpen else { return }
+        load(showLoadingState: false)
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        if PnevmaError.isProjectNotReady(error) {
+            viewState = .waiting("Waiting for project activation...")
+            return
+        }
+        viewState = .failed(error.localizedDescription)
     }
 }
 

@@ -5,24 +5,33 @@ struct SidebarToolItem: Identifiable {
     let id: String
     let title: String
     let icon: String
+    let isStub: Bool
+
+    init(id: String, title: String, icon: String, isStub: Bool = false) {
+        self.id = id
+        self.title = title
+        self.icon = icon
+        self.isStub = isStub
+    }
 }
 
+/// Tools with working backends are listed first; stubs are marked as "Coming Soon".
 let sidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "terminal", title: "Terminal", icon: "terminal"),
     SidebarToolItem(id: "tasks", title: "Task Board", icon: "checklist"),
     SidebarToolItem(id: "workflow", title: "Workflow", icon: "arrow.triangle.branch"),
-    SidebarToolItem(id: "review", title: "Review", icon: "eye"),
-    SidebarToolItem(id: "merge", title: "Merge Queue", icon: "arrow.triangle.merge"),
-    SidebarToolItem(id: "diff", title: "Diff Viewer", icon: "doc.text.magnifyingglass"),
-    SidebarToolItem(id: "search", title: "Search", icon: "magnifyingglass"),
-    SidebarToolItem(id: "files", title: "File Browser", icon: "folder"),
-    SidebarToolItem(id: "analytics", title: "Analytics", icon: "chart.bar"),
-    SidebarToolItem(id: "brief", title: "Daily Brief", icon: "newspaper"),
     SidebarToolItem(id: "notifications", title: "Notifications", icon: "bell"),
-    SidebarToolItem(id: "rules", title: "Rules Manager", icon: "list.bullet.rectangle"),
+    SidebarToolItem(id: "files", title: "File Browser", icon: "folder"),
     SidebarToolItem(id: "ssh", title: "SSH Manager", icon: "network"),
     SidebarToolItem(id: "replay", title: "Session Replay", icon: "play.rectangle"),
     SidebarToolItem(id: "browser", title: "Browser", icon: "globe"),
+    SidebarToolItem(id: "search", title: "Search", icon: "magnifyingglass"),
+    SidebarToolItem(id: "review", title: "Review", icon: "eye"),
+    SidebarToolItem(id: "merge", title: "Merge Queue", icon: "arrow.triangle.merge"),
+    SidebarToolItem(id: "diff", title: "Diff Viewer", icon: "doc.text.magnifyingglass"),
+    SidebarToolItem(id: "analytics", title: "Analytics", icon: "chart.bar"),
+    SidebarToolItem(id: "brief", title: "Daily Brief", icon: "newspaper"),
+    SidebarToolItem(id: "rules", title: "Rules Manager", icon: "list.bullet.rectangle"),
 ]
 
 /// SwiftUI sidebar listing workspaces, projects, and quick actions.
@@ -62,7 +71,10 @@ struct SidebarView: View {
                             workspace: workspace,
                             isActive: workspace.id == workspaceManager.activeWorkspaceID,
                             onSelect: { workspaceManager.switchToWorkspace(workspace.id) },
-                            onClose: { workspaceManager.closeWorkspace(workspace.id) }
+                            onClose: { workspaceManager.closeWorkspace(workspace.id) },
+                            onRename: { newName in
+                                workspaceManager.renameWorkspace(workspace.id, to: newName)
+                            }
                         )
                     }
                 }
@@ -143,20 +155,31 @@ struct SidebarToolButton: View {
                 Image(systemName: tool.icon)
                     .font(.callout)
                     .frame(width: 20, alignment: .center)
+                    .foregroundStyle(tool.isStub ? .tertiary : .primary)
                 Text(tool.title)
                     .font(.callout)
+                    .foregroundStyle(tool.isStub ? .tertiary : .primary)
                 Spacer()
+                if tool.isStub {
+                    Text("Soon")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(DesignTokens.Opacity.subtle)))
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 5)
-                    .fill(isActive ? Color.primary.opacity(0.10) :
-                          isHovering ? Color.primary.opacity(0.06) : Color.clear)
+                    .fill(isActive ? Color.primary.opacity(DesignTokens.Opacity.light) :
+                          isHovering ? Color.primary.opacity(DesignTokens.Opacity.subtle) : Color.clear)
             )
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .accessibilityLabel(tool.title + (tool.isStub ? ", coming soon" : ""))
     }
 }
 
@@ -167,8 +190,12 @@ struct WorkspaceTab: View {
     let isActive: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    var onRename: ((String) -> Void)?
 
     @State private var isHovering = false
+    @State private var isRenaming = false
+    @State private var renameText = ""
+    @FocusState private var isRenameFieldFocused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -178,12 +205,36 @@ struct WorkspaceTab: View {
                 .frame(width: 8, height: 8)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(workspace.name)
-                    .font(.body)
-                    .fontWeight(isActive ? .semibold : .regular)
-                    .lineLimit(1)
+                if isRenaming {
+                    TextField("Name", text: $renameText)
+                        .textFieldStyle(.plain)
+                        .font(.body)
+                        .fontWeight(.semibold)
+                        .focused($isRenameFieldFocused)
+                        .onSubmit {
+                            let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                            if !trimmed.isEmpty {
+                                onRename?(trimmed)
+                            }
+                            isRenaming = false
+                        }
+                        .onExitCommand {
+                            isRenaming = false
+                        }
+                } else {
+                    Text(workspace.name)
+                        .font(.body)
+                        .fontWeight(isActive ? .semibold : .regular)
+                        .lineLimit(1)
+                }
 
                 HStack(spacing: 6) {
+                    if workspace.projectPath != nil && workspace.gitBranch == nil && isActive {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.7)
+                    }
+
                     if let branch = workspace.gitBranch {
                         Label(branch, systemImage: "arrow.triangle.branch")
                             .font(.caption2)
@@ -219,6 +270,27 @@ struct WorkspaceTab: View {
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .onHover { isHovering = $0 }
+        .onChange(of: isRenaming) { renaming in
+            if renaming {
+                isRenameFieldFocused = true
+            }
+        }
+        .contextMenu {
+            Button("Rename...") {
+                renameText = workspace.name
+                isRenaming = true
+            }
+            if let path = workspace.projectPath {
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+                }
+            }
+            Divider()
+            Button("Close Workspace", role: .destructive) {
+                onClose()
+            }
+        }
+        .accessibilityLabel("Workspace: \(workspace.name)")
     }
 }
 
@@ -272,8 +344,3 @@ private struct CloseButton: View {
     }
 }
 
-// MARK: - DesignTokens bridging for SwiftUI
-
-private extension DesignTokens.Layout {
-    // Already defined in DesignTokens.swift — accessible here via the enum.
-}

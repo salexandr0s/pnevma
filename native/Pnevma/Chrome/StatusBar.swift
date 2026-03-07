@@ -77,6 +77,11 @@ final class StatusBar: NSView {
             paneLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
+        // Accessibility
+        branchLabel.setAccessibilityLabel("Git branch")
+        agentsLabel.setAccessibilityLabel("Active agents")
+        paneLabel.setAccessibilityLabel("Active pane")
+
         // Defaults
         updateBranch(nil)
         updateAgents(0)
@@ -106,4 +111,8 @@ final class StatusBar: NSView {
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: DesignTokens.Layout.statusBarHeight)
     }
+
+    // MARK: - Accessibility
+    override func accessibilityLabel() -> String? { "Status Bar" }
+    override func accessibilityRole() -> NSAccessibility.Role? { .toolbar }
 }
