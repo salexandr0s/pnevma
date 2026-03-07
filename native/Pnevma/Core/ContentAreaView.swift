@@ -141,7 +141,11 @@ final class ContentAreaView: NSView {
         }
 
         if index < dividerViews.count {
-            dividerViews[index].frame = dividerRect
+            let hitPadding = DesignTokens.Layout.dividerHoverWidth - dw
+            let expandedRect: NSRect = direction == .horizontal
+                ? dividerRect.insetBy(dx: -hitPadding, dy: 0)
+                : dividerRect.insetBy(dx: 0, dy: -hitPadding)
+            dividerViews[index].frame = expandedRect
             if let dv = dividerViews[index] as? DividerView {
                 dv.parentSize = direction == .horizontal ? rect.width : rect.height
             }
@@ -176,7 +180,11 @@ final class ContentAreaView: NSView {
             secondRect = NSRect(x: rect.minX, y: rect.minY + fh + dw, width: rect.width, height: sh)
         }
 
-        let divider = DividerView(frame: dividerRect, direction: direction)
+        let hitPadding = DesignTokens.Layout.dividerHoverWidth - dw
+        let expandedRect: NSRect = direction == .horizontal
+            ? dividerRect.insetBy(dx: -hitPadding, dy: 0)
+            : dividerRect.insetBy(dx: 0, dy: -hitPadding)
+        let divider = DividerView(frame: expandedRect, direction: direction)
         divider.parentSize = direction == .horizontal ? rect.width : rect.height
         let firstPaneIDs = Set(first.allPaneIDs)
         divider.onDrag = { [weak self, weak divider] delta in
@@ -715,9 +723,18 @@ private final class DividerView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let baseColor = GhosttyThemeProvider.shared.splitDividerColor ?? NSColor.separatorColor
+        let lineWidth = isHovering ? CGFloat(3) : DesignTokens.Layout.dividerWidth
         let color = isHovering ? NSColor.controlAccentColor.withAlphaComponent(0.6) : baseColor
         color.setFill()
-        bounds.fill()
+        let lineRect: NSRect
+        if direction == .horizontal {
+            lineRect = NSRect(x: (bounds.width - lineWidth) / 2, y: 0,
+                              width: lineWidth, height: bounds.height)
+        } else {
+            lineRect = NSRect(x: 0, y: (bounds.height - lineWidth) / 2,
+                              width: bounds.width, height: lineWidth)
+        }
+        lineRect.fill()
     }
 
     override func updateTrackingAreas() {
@@ -729,16 +746,8 @@ private final class DividerView: NSView {
         if let existing = trackingArea {
             removeTrackingArea(existing)
         }
-        // Expand tracking rect beyond visual bounds for easier hover target
-        let hoverExpansion = DesignTokens.Layout.dividerHoverWidth - DesignTokens.Layout.dividerWidth
-        let expandedRect: NSRect
-        if direction == .horizontal {
-            expandedRect = bounds.insetBy(dx: -hoverExpansion, dy: 0)
-        } else {
-            expandedRect = bounds.insetBy(dx: 0, dy: -hoverExpansion)
-        }
         let area = NSTrackingArea(
-            rect: expandedRect,
+            rect: bounds,
             options: [.mouseEnteredAndExited, .activeInActiveApp],
             owner: self,
             userInfo: nil
@@ -777,11 +786,14 @@ private final class DividerView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        var lastPoint = convert(event.locationInWindow, from: nil)
+        // Convert in the (flipped) superview's coordinate space so that
+        // dragging down produces a positive Y delta matching the layout direction.
+        let coordSpace = superview ?? self
+        var lastPoint = coordSpace.convert(event.locationInWindow, from: nil)
 
         while true {
             guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
-            let current = convert(next.locationInWindow, from: nil)
+            let current = coordSpace.convert(next.locationInWindow, from: nil)
             let delta = direction == .horizontal
                 ? (current.x - lastPoint.x)
                 : (current.y - lastPoint.y)
