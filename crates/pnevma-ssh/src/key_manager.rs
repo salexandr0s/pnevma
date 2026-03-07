@@ -183,9 +183,7 @@ pub fn generate_key(
 
     let passphrase = generate_passphrase();
 
-    // NOTE: The passphrase is passed via `-N` which makes it briefly visible in
-    // `ps` output. This is a local-only, short-lived exposure. A future improvement
-    // could pipe the passphrase via stdin to avoid process-list visibility entirely.
+    // Step 1: Generate key with an empty passphrase (no secret in process args).
     let output = std::process::Command::new("ssh-keygen")
         .args([
             "-t",
@@ -195,7 +193,7 @@ pub fn generate_key(
             "-C",
             comment,
             "-N",
-            &passphrase,
+            "",
         ])
         .output()?;
 
@@ -204,8 +202,52 @@ pub fn generate_key(
         return Err(SshError::Command(stderr.to_string()));
     }
 
-    // Store passphrase in macOS Keychain
-    if let Err(e) = store_passphrase_in_keychain(name, &passphrase) {
+    // Step 2: Re-encrypt with the real passphrase via stdin so it never
+    // appears in `ps` output. `ssh-keygen -p -f <key>` in interactive mode
+    // prompts for: new passphrase, confirm new passphrase (skips old when empty).
+    let rekey_succeeded = {
+        use std::io::Write as _;
+        use std::process::Stdio;
+
+        let mut child = std::process::Command::new("ssh-keygen")
+            .args(["-p", "-f", &key_path_str])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            // When the old passphrase is empty, ssh-keygen skips prompting
+            // for it and goes straight to new + confirm.
+            // New passphrase
+            stdin.write_all(passphrase.as_bytes())?;
+            stdin.write_all(b"\n")?;
+            // Confirm new passphrase
+            stdin.write_all(passphrase.as_bytes())?;
+            stdin.write_all(b"\n")?;
+        }
+
+        let rekey_output = child.wait_with_output()?;
+        if rekey_output.status.success() {
+            true
+        } else {
+            // If interactive re-keying fails (e.g. older OpenSSH version with
+            // different stdin protocol), fall back to the generated key with
+            // an empty passphrase and log a warning.
+            let stderr = String::from_utf8_lossy(&rekey_output.stderr);
+            tracing::warn!(
+                key = %key_path_str,
+                stderr = %stderr,
+                "ssh-keygen -p via stdin failed; key has empty passphrase"
+            );
+            false
+        }
+    };
+
+    // Store passphrase in macOS Keychain. Use the real passphrase only if
+    // re-keying succeeded; otherwise the key still has an empty passphrase.
+    let stored_passphrase = if rekey_succeeded { &passphrase } else { "" };
+    if let Err(e) = store_passphrase_in_keychain(name, stored_passphrase) {
         tracing::warn!(key_name = %name, error = %e, "failed to store passphrase in keychain");
     }
 

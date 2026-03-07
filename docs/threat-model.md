@@ -79,6 +79,36 @@ Assurance target:
 - manual latency validation on release candidates
 - sign/notarize/staple/Gatekeeper verification on release builds
 
+## Accepted risks and design decisions
+
+### No App Sandbox
+
+Pnevma spawns `tmux`, `git`, `ssh-keygen`, and agent CLIs that require unrestricted filesystem and network access. App Sandbox is architecturally incompatible with this execution model. Mitigation: hardened runtime with minimal entitlements, code signing, and notarization.
+
+### No process isolation for Ghostty
+
+The embedded terminal (libghostty/GhosttyKit) runs in-process. A vulnerability in the terminal renderer would have full process access. Mitigation: Ghostty is vendored at a pinned commit with hash verification; updates are deliberate and reviewed.
+
+### OSC 52 clipboard writes
+
+The terminal supports OSC 52 (clipboard write escape sequence), consistent with terminal emulator norms. A malicious program running in the terminal can write to the system clipboard. This is standard terminal behavior; users who run untrusted code in terminals accept this risk.
+
+### `$EDITOR` spawned without validation
+
+When opening files in an external editor, the `$EDITOR` environment variable is used without validation. This is a local-user-only risk — the user controls their own `$EDITOR` value.
+
+### Prompt injection sanitizer gaps
+
+Secret redaction uses regex patterns that cannot catch all possible secret formats. This is defense-in-depth, not a complete solution. Iterative improvement of redaction patterns is expected.
+
+### `npx` in agent command allowlist
+
+The `npx` binary can execute arbitrary npm packages. The current allowlist permits `npx` without restricting which packages it can run. Restricting to known runner patterns (e.g. `npx @anthropic-ai/claude-code`) is a future improvement.
+
+### SBOM not signed or attested
+
+Release SBOMs are generated but not signed with sigstore attestation. Future work: re-add `id-token: write` permission to `release.yml` and implement `actions/attest-build-provenance`.
+
 ## Residual risks to track
 
 - the hardened-runtime exception set is now reduced to `com.apple.security.cs.disable-library-validation` and `com.apple.security.network.client`; validate regularly whether GhosttyKit still requires the library-validation exception on signed release builds

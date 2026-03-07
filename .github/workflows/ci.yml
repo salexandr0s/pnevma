@@ -138,6 +138,14 @@ jobs:
       - name: Install native build tools
         run: brew install xcodegen zig
 
+      - name: Verify xcodegen version
+        run: |
+          EXPECTED_XCODEGEN="$(cat .xcodegen-version)"
+          ACTUAL_XCODEGEN="$(xcodegen version 2>/dev/null || echo unknown)"
+          if [[ "$ACTUAL_XCODEGEN" != *"$EXPECTED_XCODEGEN"* ]]; then
+            echo "WARNING: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
+          fi
+
       - name: Build Ghostty xcframework
         run: just ghostty-build
 
