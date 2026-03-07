@@ -107,25 +107,7 @@ struct SidebarView: View {
             VStack(spacing: 0) {
                 Divider()
 
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) { isToolsExpanded.toggle() }
-                }) {
-                    HStack {
-                        Text("TOOLS")
-                            .font(.system(size: 11))
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .rotationEffect(.degrees(isToolsExpanded ? 0 : 180))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isToolsExpanded ? "Collapse tools section" : "Expand tools section")
+                ToolsSectionHeader(isExpanded: $isToolsExpanded)
 
                 if isToolsExpanded {
                     VStack(alignment: .leading, spacing: 2) {
@@ -391,8 +373,10 @@ private struct AddButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "plus")
-                .font(.system(size: 11))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(isHovering ? Color.green : Color.secondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
@@ -409,12 +393,47 @@ private struct CloseButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(.caption2)
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(isHovering ? Color.red : Color.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel("Close workspace")
+    }
+}
+
+// MARK: - ToolsSectionHeader
+
+private struct ToolsSectionHeader: View {
+    @Binding var isExpanded: Bool
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+        }) {
+            HStack {
+                Text("TOOLS")
+                    .font(.system(size: 11))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isHovering ? Color.accentColor : .secondary)
+                    .rotationEffect(.degrees(isExpanded ? 0 : 180))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .accessibilityLabel(isExpanded ? "Collapse tools section" : "Expand tools section")
     }
 }
 
