@@ -214,6 +214,14 @@ final class ContentAreaView: NSView {
     private func registerPaneView(_ view: NSView & PaneContent) {
         view.translatesAutoresizingMaskIntoConstraints = true
         view.autoresizingMask = []
+        // Non-terminal panes need a themed background so they aren't transparent
+        // when the window is non-opaque (for terminal background-opacity support).
+        // Terminal panes don't need this — ghostty's Metal layer handles their rendering.
+        if view.paneType != "terminal" {
+            let theme = GhosttyThemeProvider.shared
+            view.wantsLayer = true
+            view.layer?.backgroundColor = theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).cgColor
+        }
         addSubview(view)
         paneViews[view.paneID] = view
         if view.shouldPersist {

@@ -45,6 +45,17 @@ struct GeneralSettingsTab: View {
                 Text("/bin/bash").tag("/bin/bash")
             }
 
+            Section("Sidebar") {
+                HStack {
+                    Text("Background tint")
+                    Slider(value: $viewModel.sidebarBackgroundOffset, in: 0.0...0.3, step: 0.01)
+                    Text(viewModel.sidebarBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.sidebarBackgroundOffset * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+
             Section("Focus Border") {
                 Toggle("Show focus border on active pane", isOn: $viewModel.focusBorderEnabled)
 
@@ -526,6 +537,13 @@ final class SettingsViewModel: ObservableObject {
     @Published var terminalFont = "SF Mono"
     @Published var terminalFontSize = 13
     @Published var scrollbackLines = 10000
+    @Published var sidebarBackgroundOffset: Double = SidebarPreferences.backgroundOffset {
+        didSet {
+            guard !isRestoring else { return }
+            SidebarPreferences.backgroundOffset = sidebarBackgroundOffset
+            Task { @MainActor in GhosttyThemeProvider.shared.refresh() }
+        }
+    }
     @Published var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
         didSet {
             guard !isRestoring else { return }
@@ -582,6 +600,7 @@ final class SettingsViewModel: ObservableObject {
             isRestoring = false
             notifyFocusBorderChanged()
         }
+        sidebarBackgroundOffset = SidebarPreferences.backgroundOffset
         focusBorderEnabled = FocusBorderPreferences.enabled
         focusBorderOpacity = FocusBorderPreferences.opacity
         focusBorderWidth = FocusBorderPreferences.width

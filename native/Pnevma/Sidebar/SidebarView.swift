@@ -38,6 +38,7 @@ let sidebarTools: [SidebarToolItem] = [
 /// Embedded in the main window via NSHostingView + NSVisualEffectView.
 struct SidebarView: View {
     @ObservedObject var workspaceManager: WorkspaceManager
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     /// Called when the user wants to add a new workspace.
     var onAddWorkspace: (() -> Void)?
@@ -48,6 +49,17 @@ struct SidebarView: View {
 
     @State private var activeToolID: String?
     @State private var isToolsExpanded: Bool = true
+
+    /// Sidebar background derived from the ghostty terminal theme.
+    private var sidebarBackground: Color {
+        let bg = theme.backgroundColor
+        let offset = SidebarPreferences.backgroundOffset
+        if offset == 0 {
+            return Color(nsColor: bg)
+        }
+        let tinted = bg.blended(withFraction: offset, of: .white) ?? bg
+        return Color(nsColor: tinted)
+    }
 
     /// Workspaces sorted with pinned items first, preserving relative order.
     private var sortedWorkspaces: [Workspace] {
@@ -144,6 +156,7 @@ struct SidebarView: View {
             .padding(.bottom, 8)
         }
         .frame(width: DesignTokens.Layout.sidebarWidth)
+        .background(sidebarBackground)
     }
 }
 
@@ -399,6 +412,22 @@ private struct CloseButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - SidebarPreferences
+
+enum SidebarPreferences {
+    private static let defaults = UserDefaults.standard
+
+    /// How much to lighten the sidebar background relative to the terminal.
+    /// 0.0 = exact terminal color, 0.05 = slight lightening (default).
+    static var backgroundOffset: Double {
+        get {
+            let raw = defaults.object(forKey: "sidebarBackgroundOffset") as? Double ?? 0.05
+            return max(0.0, min(0.3, raw))
+        }
+        set { defaults.set(newValue, forKey: "sidebarBackgroundOffset") }
     }
 }
 

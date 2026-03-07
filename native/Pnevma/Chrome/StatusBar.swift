@@ -31,8 +31,11 @@ final class StatusBar: NSView {
 
     private var themeObserver: NSObjectProtocol?
 
+    override var isOpaque: Bool { true }
+
     private func setupUI() {
         wantsLayer = true
+        layer?.isOpaque = true
 
         let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         let secondaryColor = NSColor.secondaryLabelColor
@@ -112,6 +115,7 @@ final class StatusBar: NSView {
         for label in [branchLabel, agentsLabel, paneLabel] {
             label.textColor = fgColor
         }
+        layer?.backgroundColor = theme.backgroundColor.cgColor
         needsDisplay = true
     }
 

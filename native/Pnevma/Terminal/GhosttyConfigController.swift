@@ -282,6 +282,11 @@ final class GhosttyConfigController {
         return owner
     }
 
+    /// Replace the cached config owner (e.g. after reloading config with correct color scheme).
+    func updateConfigOwner(_ config: TerminalConfig) {
+        activeConfigOwner = config
+    }
+
     struct ThemeSnapshot {
         let background: String?
         let foreground: String?
@@ -293,14 +298,27 @@ final class GhosttyConfigController {
 
     func themeSnapshot() -> ThemeSnapshot {
         let config = runtimeConfigOwner()
-        let bg = config.scalarRawValue(for: "background", rawType: "Color")
-        let fg = config.scalarRawValue(for: "foreground", rawType: "Color")
+
+        // Read non-theme-dependent values from config directly.
         let bgOpacity = config.scalarRawValue(for: "background-opacity", rawType: "f64")
             .flatMap(Double.init) ?? 1.0
         let divider = config.scalarRawValue(for: "split-divider-color", rawType: "?Color")
         let unfocusedFill = config.scalarRawValue(for: "unfocused-split-fill", rawType: "?Color")
         let unfocusedOpacity = config.scalarRawValue(for: "unfocused-split-opacity", rawType: "f64")
             .flatMap(Double.init) ?? 0.85
+
+        // For background/foreground, the config may resolve conditional themes
+        // (e.g. "light:X,dark:Y") to the wrong variant because the standalone
+        // config doesn't know the app's color scheme. Read theme colors from
+        // the theme file directly as a fallback.
+        var bg = config.scalarRawValue(for: "background", rawType: "Color")
+        var fg = config.scalarRawValue(for: "foreground", rawType: "Color")
+
+        // If a theme file overrides bg/fg, prefer those colors.
+        let themeColors = resolvedThemeColors()
+        if let themeBg = themeColors?.background { bg = themeBg }
+        if let themeFg = themeColors?.foreground { fg = themeFg }
+
         return ThemeSnapshot(
             background: bg,
             foreground: fg,
@@ -309,6 +327,94 @@ final class GhosttyConfigController {
             unfocusedSplitFill: unfocusedFill,
             unfocusedSplitOpacity: unfocusedOpacity
         )
+    }
+
+    /// Resolve the active theme file and extract its background/foreground colors.
+    private func resolvedThemeColors() -> (background: String?, foreground: String?)? {
+        // Read the raw theme string from the user's ghostty config file.
+        // ghostty_config_get can't read the theme key as a simple scalar,
+        // so we parse it from the config file directly.
+        let configPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/ghostty/config")
+        guard let configText = try? String(contentsOf: configPath, encoding: .utf8) else {
+            return nil
+        }
+
+        // Find the theme line
+        var themeName: String?
+        for line in configText.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("theme") && trimmed.contains("=") {
+                let parts = trimmed.split(separator: "=", maxSplits: 1)
+                guard parts.count == 2 else { continue }
+                let key = parts[0].trimmingCharacters(in: .whitespaces)
+                guard key == "theme" else { continue }
+                themeName = parts[1].trimmingCharacters(in: .whitespaces)
+            }
+        }
+
+        guard var name = themeName else { return nil }
+
+        // Handle conditional themes: "light:X,dark:Y"
+        if name.contains(",") && name.contains(":") {
+            let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let variants = name.split(separator: ",")
+            for variant in variants {
+                let pair = variant.trimmingCharacters(in: .whitespaces)
+                if isDark && pair.hasPrefix("dark:") {
+                    name = String(pair.dropFirst("dark:".count))
+                    break
+                } else if !isDark && pair.hasPrefix("light:") {
+                    name = String(pair.dropFirst("light:".count))
+                    break
+                }
+            }
+        }
+
+        // Search for the theme file in standard locations
+        let searchPaths = [
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/ghostty/themes/\(name)"),
+            URL(fileURLWithPath: "/Applications/Ghostty.app/Contents/Resources/ghostty/themes/\(name)"),
+        ]
+
+        var themeText: String?
+        for path in searchPaths {
+            if let text = try? String(contentsOf: path, encoding: .utf8) {
+                themeText = text
+                break
+            }
+        }
+
+        guard let text = themeText else { return nil }
+
+        var background: String?
+        var foreground: String?
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("background") && trimmed.contains("=") {
+                let parts = trimmed.split(separator: "=", maxSplits: 1)
+                if parts.count == 2 {
+                    let key = parts[0].trimmingCharacters(in: .whitespaces)
+                    if key == "background" {
+                        background = parts[1].trimmingCharacters(in: .whitespaces)
+                    }
+                }
+            }
+            if trimmed.hasPrefix("foreground") && trimmed.contains("=") {
+                let parts = trimmed.split(separator: "=", maxSplits: 1)
+                if parts.count == 2 {
+                    let key = parts[0].trimmingCharacters(in: .whitespaces)
+                    if key == "foreground" {
+                        foreground = parts[1].trimmingCharacters(in: .whitespaces)
+                    }
+                }
+            }
+        }
+
+        // If we found nothing from the theme, the config values are fine.
+        guard background != nil || foreground != nil else { return nil }
+        return (background, foreground)
     }
 
     func loadSnapshot() throws -> GhosttyConfigSnapshot {

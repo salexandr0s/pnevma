@@ -59,6 +59,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // themes (e.g. light:X,dark:Y) resolve correctly.
         let reloadedConfig = TerminalConfig()
         TerminalSurface.applyGhosttyConfig(reloadedConfig)
+        GhosttyConfigController.shared.updateConfigOwner(reloadedConfig)
+        GhosttyThemeProvider.shared.refresh()
 
         if let restoredState {
             applyRestoredState(restoredState)
@@ -219,20 +221,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView)
-        let sidebarEffect = NSVisualEffectView()
-        sidebarEffect.material = .sidebar
-        sidebarEffect.blendingMode = .behindWindow
-        sidebarEffect.addSubview(sidebarHost)
+        let sidebarBacking = ThemedSidebarBackingView()
+        sidebarBacking.addSubview(sidebarHost)
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            sidebarHost.leadingAnchor.constraint(equalTo: sidebarEffect.leadingAnchor),
-            sidebarHost.trailingAnchor.constraint(equalTo: sidebarEffect.trailingAnchor),
-            sidebarHost.topAnchor.constraint(equalTo: sidebarEffect.topAnchor),
-            sidebarHost.bottomAnchor.constraint(equalTo: sidebarEffect.bottomAnchor),
+            sidebarHost.leadingAnchor.constraint(equalTo: sidebarBacking.leadingAnchor),
+            sidebarHost.trailingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            sidebarHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor),
+            sidebarHost.bottomAnchor.constraint(equalTo: sidebarBacking.bottomAnchor),
         ])
-        self.sidebarHostView = sidebarEffect
+        self.sidebarHostView = sidebarBacking
 
-        for view in [sidebarEffect, contentAreaView!, statusBar!] as [NSView] {
+        for view in [sidebarBacking, contentAreaView!, statusBar!] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
@@ -240,9 +240,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let statusHeight = DesignTokens.Layout.statusBarHeight
 
-        let swc = sidebarEffect.widthAnchor.constraint(equalToConstant: sidebarWidth)
-        let clc = contentAreaView!.leadingAnchor.constraint(equalTo: sidebarEffect.trailingAnchor)
-        let slc = statusBar!.leadingAnchor.constraint(equalTo: sidebarEffect.trailingAnchor)
+        let swc = sidebarBacking.widthAnchor.constraint(equalToConstant: sidebarWidth)
+        let clc = contentAreaView!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+        let slc = statusBar!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
 
         sidebarWidthConstraint = swc
         contentLeadingConstraint = clc
@@ -250,9 +250,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
-            sidebarEffect.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
-            sidebarEffect.topAnchor.constraint(equalTo: windowContent.topAnchor),
-            sidebarEffect.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+            sidebarBacking.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
+            sidebarBacking.topAnchor.constraint(equalTo: windowContent.topAnchor),
+            sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             swc,
 
             clc,
@@ -267,11 +267,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             statusBar!.heightAnchor.constraint(equalToConstant: statusHeight),
         ])
 
-        // Apply window transparency if ghostty background-opacity < 1.0
-        let bgOpacity = GhosttyThemeProvider.shared.backgroundOpacity
-        if bgOpacity < 1.0 {
+        // For terminal transparency (background-opacity < 1.0), the window must
+        // be non-opaque so ghostty's Metal layer alpha reaches the desktop.
+        // The sidebar, status bar, and dividers all paint their own backgrounds.
+        let theme = GhosttyThemeProvider.shared
+        if theme.backgroundOpacity < 1.0 {
             win.isOpaque = false
             win.backgroundColor = .clear
+        } else {
+            win.backgroundColor = theme.backgroundColor
         }
 
         self.window = win
@@ -792,6 +796,65 @@ extension AppDelegate: NSToolbarDelegate {
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
+    }
+}
+
+// MARK: - ThemedSidebarBackingView
+
+/// Sidebar backing view that uses the ghostty theme background color
+/// instead of the system NSVisualEffectView blur, so the sidebar matches
+/// the terminal's color scheme.
+private final class ThemedSidebarBackingView: NSView {
+    private var themeObserver: NSObjectProtocol?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.isOpaque = true
+        updateBackgroundColor()
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateBackgroundColor()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
+
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let theme = GhosttyThemeProvider.shared
+        let bg = theme.backgroundColor
+        let offset = SidebarPreferences.backgroundOffset
+        if offset == 0 {
+            bg.setFill()
+        } else {
+            bg.blended(withFraction: offset, of: .white)?.setFill() ?? bg.setFill()
+        }
+        bounds.fill()
+    }
+
+    private func updateBackgroundColor() {
+        let theme = GhosttyThemeProvider.shared
+        let bg = theme.backgroundColor
+        let offset = SidebarPreferences.backgroundOffset
+        let resolved: NSColor
+        if offset == 0 {
+            resolved = bg
+        } else {
+            resolved = bg.blended(withFraction: offset, of: .white) ?? bg
+        }
+        layer?.backgroundColor = resolved.cgColor
+        needsDisplay = true
     }
 }
 
