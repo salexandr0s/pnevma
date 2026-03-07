@@ -267,6 +267,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             statusBar!.heightAnchor.constraint(equalToConstant: statusHeight),
         ])
 
+        // Apply window transparency if ghostty background-opacity < 1.0
+        let bgOpacity = GhosttyThemeProvider.shared.backgroundOpacity
+        if bgOpacity < 1.0 {
+            win.isOpaque = false
+            win.backgroundColor = .clear
+        }
+
         self.window = win
         if showWindow {
             win.makeKeyAndOrderFront(nil)

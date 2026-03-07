@@ -282,6 +282,35 @@ final class GhosttyConfigController {
         return owner
     }
 
+    struct ThemeSnapshot {
+        let background: String?
+        let foreground: String?
+        let backgroundOpacity: Double
+        let splitDividerColor: String?
+        let unfocusedSplitFill: String?
+        let unfocusedSplitOpacity: Double
+    }
+
+    func themeSnapshot() -> ThemeSnapshot {
+        let config = runtimeConfigOwner()
+        let bg = config.scalarRawValue(for: "background", rawType: "Color")
+        let fg = config.scalarRawValue(for: "foreground", rawType: "Color")
+        let bgOpacity = config.scalarRawValue(for: "background-opacity", rawType: "f64")
+            .flatMap(Double.init) ?? 1.0
+        let divider = config.scalarRawValue(for: "split-divider-color", rawType: "?Color")
+        let unfocusedFill = config.scalarRawValue(for: "unfocused-split-fill", rawType: "?Color")
+        let unfocusedOpacity = config.scalarRawValue(for: "unfocused-split-opacity", rawType: "f64")
+            .flatMap(Double.init) ?? 0.85
+        return ThemeSnapshot(
+            background: bg,
+            foreground: fg,
+            backgroundOpacity: bgOpacity,
+            splitDividerColor: divider,
+            unfocusedSplitFill: unfocusedFill,
+            unfocusedSplitOpacity: unfocusedOpacity
+        )
+    }
+
     func loadSnapshot() throws -> GhosttyConfigSnapshot {
         let paths = try resolvedPaths()
         let configText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""

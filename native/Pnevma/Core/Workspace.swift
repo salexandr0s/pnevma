@@ -13,6 +13,10 @@ final class Workspace: ObservableObject, Identifiable {
     @Published var activeAgents: Int = 0
     @Published var costToday: Double = 0.0
     @Published var unreadNotifications: Int = 0
+    @Published var terminalNotificationCount: Int = 0
+    @Published var customColor: String?
+    @Published var isPinned: Bool = false
+    @Published var gitDirty: Bool = false
 
     /// The pane layout for this workspace.
     let layoutEngine: PaneLayoutEngine
@@ -43,6 +47,8 @@ extension Workspace {
         let name: String
         let projectPath: String?
         let layoutData: Data?
+        var customColor: String?
+        var isPinned: Bool?
     }
 
     func snapshot() -> Snapshot {
@@ -50,7 +56,9 @@ extension Workspace {
             id: id,
             name: name,
             projectPath: projectPath,
-            layoutData: layoutEngine.serialize()
+            layoutData: layoutEngine.serialize(),
+            customColor: customColor,
+            isPinned: isPinned
         )
     }
 
@@ -62,5 +70,7 @@ extension Workspace {
             projectPath: snapshot.projectPath,
             layoutEngine: restoredLayout
         )
+        self.customColor = snapshot.customColor
+        self.isPinned = snapshot.isPinned ?? false
     }
 }

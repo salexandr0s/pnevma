@@ -12,6 +12,7 @@ final class ContentAreaView: NSView {
     private var paneViews: [PaneID: NSView & PaneContent] = [:]
     private var dividerViews: [NSView] = []
     private var focusBorderView: NSView?
+    private var notificationRingViews: [PaneID: NotificationRingView] = [:]
 
     /// Called when a pane is closed and the layout becomes empty.
     var onAllPanesClosed: (() -> Void)?
@@ -21,6 +22,9 @@ final class ContentAreaView: NSView {
 
     /// Called when a pane updates persisted metadata such as session attachment.
     var onPanePersistenceChanged: (() -> Void)?
+
+    /// Called when a terminal notification fires on a pane.
+    var onTerminalNotification: (() -> Void)?
 
     // MARK: - Init
 
@@ -122,6 +126,9 @@ final class ContentAreaView: NSView {
 
         if index < dividerViews.count {
             dividerViews[index].frame = dividerRect
+            if let dv = dividerViews[index] as? DividerView {
+                dv.parentSize = direction == .horizontal ? rect.width : rect.height
+            }
         }
         index += 1
 
@@ -154,9 +161,10 @@ final class ContentAreaView: NSView {
         }
 
         let divider = DividerView(frame: dividerRect, direction: direction)
-        divider.onDrag = { [weak self] delta in
-            guard let self = self else { return }
-            let size = direction == .horizontal ? rect.width : rect.height
+        divider.parentSize = direction == .horizontal ? rect.width : rect.height
+        divider.onDrag = { [weak self, weak divider] delta in
+            guard let self = self, let divider = divider else { return }
+            let size = divider.parentSize
             guard size > 0 else { return }
             if let targetID = first.allPaneIDs.first {
                 self.layoutEngine.resizeSplit(containing: targetID, delta: delta / size)
@@ -262,6 +270,8 @@ final class ContentAreaView: NSView {
     func closePane(_ paneID: PaneID) {
         guard layoutEngine.closePane(paneID) else { return }
 
+        dismissNotificationRing(for: paneID)
+
         if let view = paneViews.removeValue(forKey: paneID) {
             view.dispose()
             view.removeFromSuperview()
@@ -303,6 +313,7 @@ final class ContentAreaView: NSView {
         paneViews[paneID]?.activate()
         onActivePaneChanged?(paneID)
         updateFocusBorder()
+        dismissNotificationRing(for: paneID)
     }
 
     /// Remove all pane and divider subviews and clear their tracking collections.
@@ -315,6 +326,10 @@ final class ContentAreaView: NSView {
         paneViews.removeAll()
         dividerViews.forEach { $0.removeFromSuperview() }
         dividerViews.removeAll()
+        for (_, ring) in notificationRingViews {
+            ring.removeFromSuperview()
+        }
+        notificationRingViews.removeAll()
     }
 
     /// Replace the layout engine (used when switching workspaces).
@@ -406,6 +421,44 @@ final class ContentAreaView: NSView {
         } else if subviews.last !== border {
             border.removeFromSuperview()
             addSubview(border, positioned: .above, relativeTo: nil)
+        }
+    }
+
+    // MARK: - Notification Rings
+
+    /// Show a notification ring around the given pane. Auto-dismisses after 5 seconds
+    /// or when the pane gains focus.
+    func showNotificationRing(for paneID: PaneID) {
+        guard let view = paneViews[paneID] else { return }
+
+        // Don't ring the focused pane
+        if paneID == layoutEngine.activePaneID { return }
+
+        if let existing = notificationRingViews[paneID] {
+            existing.frame = view.frame
+            existing.flash()
+            return
+        }
+
+        let ring = NotificationRingView(frame: view.frame)
+        if ring.superview == nil {
+            addSubview(ring, positioned: .above, relativeTo: nil)
+        }
+        notificationRingViews[paneID] = ring
+        ring.flash()
+
+        onTerminalNotification?()
+
+        // Auto-dismiss after 5 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak ring] in
+            guard let self, let ring, ring.superview != nil else { return }
+            self.dismissNotificationRing(for: paneID)
+        }
+    }
+
+    private func dismissNotificationRing(for paneID: PaneID) {
+        if let ring = notificationRingViews.removeValue(forKey: paneID) {
+            ring.removeFromSuperview()
         }
     }
 
@@ -543,6 +596,7 @@ private final class DividerView: NSView {
 
     let direction: SplitDirection
     var onDrag: ((CGFloat) -> Void)?
+    var parentSize: CGFloat = 0
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
 
@@ -555,7 +609,8 @@ private final class DividerView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        let color = isHovering ? NSColor.controlAccentColor.withAlphaComponent(0.6) : NSColor.separatorColor
+        let baseColor = GhosttyThemeProvider.shared.splitDividerColor ?? NSColor.separatorColor
+        let color = isHovering ? NSColor.controlAccentColor.withAlphaComponent(0.6) : baseColor
         color.setFill()
         bounds.fill()
     }
@@ -640,4 +695,42 @@ private final class DividerView: NSView {
         direction == .horizontal ? "Horizontal pane divider" : "Vertical pane divider"
     }
     override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
+}
+
+// MARK: - NotificationRingView
+
+/// Animated colored border overlay shown when a terminal pane receives a notification.
+/// Similar to FocusBorderView but with a distinctive notification color and fade animation.
+private final class NotificationRingView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 0
+        layer?.borderWidth = 2
+        layer?.borderColor = NSColor.systemOrange.cgColor
+        layer?.opacity = 0
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func flash() {
+        // Fade in
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        layer?.opacity = 1.0
+        CATransaction.commit()
+
+        // Fade out after delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self, self.superview != nil else { return }
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(1.0)
+            self.layer?.opacity = 0
+            CATransaction.commit()
+        }
+    }
+
+    override func accessibilityLabel() -> String? { "Notification indicator" }
 }

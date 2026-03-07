@@ -29,10 +29,23 @@ final class TerminalHostView: NSView, NSTextInputClient {
     /// Called when the visible terminal grid size changes.
     var onTerminalResize: ((UInt16, UInt16) -> Void)?
 
+    /// Called when a desktop notification arrives for this surface.
+    var onDesktopNotification: ((String, String) -> Void)?
+
+    /// Called when the terminal title changes.
+    var onTitleChanged: ((String) -> Void)?
+
+    /// Called when the working directory changes.
+    var onPwdChanged: ((String) -> Void)?
+
+    /// Called when the terminal bell rings.
+    var onBell: (() -> Void)?
+
     // MARK: - Private
 
     private var surfaceCreateScheduled = false
     private var windowObservers: [NSObjectProtocol] = []
+    private var actionObservers: [NSObjectProtocol] = []
     private var lastReportedGridSize: (columns: UInt16, rows: UInt16)?
 
     // MARK: - Init
@@ -49,11 +62,23 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     deinit {
         removeWindowObservers()
+        removeActionObservers()
     }
 
     private func commonInit() {
         // ghostty attaches a CAMetalLayer to the view, so the view must be layer-backed.
         wantsLayer = true
+
+        // When background-opacity < 1.0, allow the terminal to be transparent
+        // so the desktop shows through. Otherwise use an opaque black backing.
+        let bgOpacity = GhosttyThemeProvider.shared.backgroundOpacity
+        if bgOpacity < 1.0 {
+            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.isOpaque = false
+        } else {
+            layer?.backgroundColor = NSColor.black.cgColor
+            layer?.isOpaque = true
+        }
         // Track mouse movement so ghostty always has up-to-date cursor position.
         let trackingArea = NSTrackingArea(
             rect: .zero,
@@ -82,6 +107,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     func teardownSurface() {
+        removeActionObservers()
         terminalSurface = nil
         lastReportedGridSize = nil
         removeWindowObservers()
@@ -118,6 +144,15 @@ final class TerminalHostView: NSView, NSTextInputClient {
         updateSurfaceLayout()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        #if canImport(GhosttyKit)
+        let scheme = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+        terminalSurface?.setColorScheme(scheme)
+        #endif
+    }
+
     // MARK: - First Responder
 
     override var acceptsFirstResponder: Bool { true }
@@ -148,21 +183,30 @@ final class TerminalHostView: NSView, NSTextInputClient {
         return result
     }
 
-    /// Dim this terminal when its pane loses focus, using the user's
-    /// ghostty `unfocused-split-opacity` setting (default 0.85).
+    /// Apply an unfocused overlay when this terminal's pane loses focus.
+    /// Uses the ghostty `unfocused-split-fill` color and `unfocused-split-opacity` setting.
     func setPaneFocused(_ focused: Bool) {
-        let opacity: Float = focused ? 1.0 : Self.unfocusedSplitOpacity
-        layer?.opacity = opacity
+        if focused {
+            unfocusedOverlay?.isHidden = true
+        } else {
+            ensureUnfocusedOverlay()
+            unfocusedOverlay?.isHidden = false
+        }
     }
 
-    private static let unfocusedSplitOpacity: Float = {
-        let config = TerminalConfig()
-        if let raw = config.scalarRawValue(for: "unfocused-split-opacity", rawType: "f64"),
-           let value = Float(raw), value > 0, value <= 1 {
-            return value
+    private var unfocusedOverlay: NSView?
+
+    private func ensureUnfocusedOverlay() {
+        if unfocusedOverlay != nil {
+            unfocusedOverlay?.frame = bounds
+            return
         }
-        return 0.85
-    }()
+
+        let overlay = UnfocusedOverlayView(frame: bounds)
+        overlay.autoresizingMask = [.width, .height]
+        addSubview(overlay)
+        unfocusedOverlay = overlay
+    }
 
     // MARK: - Keyboard Events
 
@@ -342,6 +386,15 @@ final class TerminalHostView: NSView, NSTextInputClient {
         terminalSurface = surface
         updateSurfaceLayout()
 
+        #if canImport(GhosttyKit)
+        // Tell the surface the current color scheme so conditional themes resolve correctly.
+        let scheme = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+        surface.setColorScheme(scheme)
+        #endif
+
+        installActionObservers()
+
         if surface.isRendererReady {
             updateSurfaceDisplayID()
             onSurfaceReady?()
@@ -419,6 +472,68 @@ final class TerminalHostView: NSView, NSTextInputClient {
         windowObservers.removeAll()
     }
 
+    // MARK: - Action Observers
+
+    private func installActionObservers() {
+        removeActionObservers()
+        let center = NotificationCenter.default
+
+        let notifObserver = center.addObserver(
+            forName: .ghosttyDesktopNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.matchesSurface(notification) else { return }
+            let title = notification.userInfo?["title"] as? String ?? ""
+            let body = notification.userInfo?["body"] as? String ?? ""
+            self.onDesktopNotification?(title, body)
+        }
+        actionObservers.append(notifObserver)
+
+        let titleObserver = center.addObserver(
+            forName: .ghosttySetTitle, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.matchesSurface(notification) else { return }
+            let title = notification.userInfo?["title"] as? String ?? ""
+            self.onTitleChanged?(title)
+        }
+        actionObservers.append(titleObserver)
+
+        let pwdObserver = center.addObserver(
+            forName: .ghosttyPwdChanged, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.matchesSurface(notification) else { return }
+            let path = notification.userInfo?["path"] as? String ?? ""
+            self.onPwdChanged?(path)
+        }
+        actionObservers.append(pwdObserver)
+
+        let bellObserver = center.addObserver(
+            forName: .ghosttyRingBell, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.matchesSurface(notification) else { return }
+            self.onBell?()
+        }
+        actionObservers.append(bellObserver)
+    }
+
+    private func removeActionObservers() {
+        let center = NotificationCenter.default
+        for observer in actionObservers {
+            center.removeObserver(observer)
+        }
+        actionObservers.removeAll()
+    }
+
+    /// Check if a ghostty action notification targets this view's surface.
+    private func matchesSurface(_ notification: Notification) -> Bool {
+        guard let surfacePtr = notification.userInfo?["surface"] else { return true }
+        #if canImport(GhosttyKit)
+        guard let ptr = surfacePtr as? ghostty_surface_t else { return false }
+        return ptr == terminalSurface?.surfacePointer
+        #else
+        return true
+        #endif
+    }
+
     private func forwardMousePosition(_ event: NSEvent) {
         #if canImport(GhosttyKit)
         let pos = convert(event.locationInWindow, from: nil)
@@ -436,6 +551,38 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 }
 
+// MARK: - UnfocusedOverlayView
+
+/// Semi-transparent overlay drawn on top of an unfocused terminal pane.
+/// Uses the ghostty `unfocused-split-fill` color with alpha derived from
+/// `unfocused-split-opacity`. Passes through all mouse events.
+private final class UnfocusedOverlayView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        updateOverlayColor()
+
+        NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateOverlayColor()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func updateOverlayColor() {
+        let theme = GhosttyThemeProvider.shared
+        let fill = theme.unfocusedSplitFill ?? theme.backgroundColor
+        let alpha = 1.0 - theme.unfocusedSplitOpacity
+        layer?.backgroundColor = fill.withAlphaComponent(alpha).cgColor
+    }
+}
+
 // MARK: - NSEvent -> Ghostty Conversion
 
 #if canImport(GhosttyKit)
@@ -449,7 +596,7 @@ private func withGhosttyKeyEvent<T>(
     var key = ghostty_input_key_s()
     key.action = action
     key.mods = ghosttyMods(from: event.modifierFlags)
-    key.consumed_mods = ghostty_input_mods_e(GHOSTTY_MODS_NONE.rawValue)
+    key.consumed_mods = computeConsumedMods(from: event)
     key.keycode = UInt32(event.keyCode)
     key.composing = false
 
@@ -471,6 +618,23 @@ private func applyUnshiftedCodepoint(to key: inout ghostty_input_key_s, event: N
        let scalar = base.unicodeScalars.first {
         key.unshifted_codepoint = scalar.value
     }
+}
+
+private func computeConsumedMods(from event: NSEvent) -> ghostty_input_mods_e {
+    var consumed: UInt32 = GHOSTTY_MODS_NONE.rawValue
+    guard let chars = event.characters, !chars.isEmpty,
+          let baseChars = event.characters(byApplyingModifiers: []), !baseChars.isEmpty else {
+        return ghostty_input_mods_e(consumed)
+    }
+    if chars != baseChars {
+        if event.modifierFlags.contains(.shift) {
+            consumed |= GHOSTTY_MODS_SHIFT.rawValue
+        }
+        if event.modifierFlags.contains(.option) {
+            consumed |= GHOSTTY_MODS_ALT.rawValue
+        }
+    }
+    return ghostty_input_mods_e(consumed)
 }
 
 private func ghosttyMods(from flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {

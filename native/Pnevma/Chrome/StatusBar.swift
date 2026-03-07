@@ -23,6 +23,14 @@ final class StatusBar: NSView {
         setupUI()
     }
 
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
+
+    private var themeObserver: NSObjectProtocol?
+
     private func setupUI() {
         wantsLayer = true
 
@@ -86,6 +94,25 @@ final class StatusBar: NSView {
         updateBranch(nil)
         updateAgents(0)
         updateActivePane("Terminal")
+
+        // Observe theme changes
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyThemeColors()
+        }
+        applyThemeColors()
+    }
+
+    private func applyThemeColors() {
+        let theme = GhosttyThemeProvider.shared
+        let fgColor = theme.foregroundColor.withAlphaComponent(0.6)
+        for label in [branchLabel, agentsLabel, paneLabel] {
+            label.textColor = fgColor
+        }
+        needsDisplay = true
     }
 
     // MARK: - Updates
@@ -104,7 +131,7 @@ final class StatusBar: NSView {
 
     // MARK: - Drawing
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
+        GhosttyThemeProvider.shared.backgroundColor.setFill()
         bounds.fill()
     }
 

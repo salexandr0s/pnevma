@@ -85,9 +85,8 @@ class TerminalSurface {
                     }
                 }
             },
-            action_cb: { _, _, _ in
-                // Pnevma does not yet expose Ghostty window-management actions.
-                true
+            action_cb: { userdata, target, action in
+                return TerminalSurface.handleAction(userdata: userdata, action: action, target: target)
             },
             read_clipboard_cb: { userdata, _, statePtr in
                 guard let surface = TerminalSurface.surface(from: userdata) else { return }
@@ -119,6 +118,11 @@ class TerminalSurface {
             ghosttyConfigOwner = nil
         } else {
             isAppInitialized = true
+            // Tell ghostty the current color scheme so conditional themes
+            // (e.g. "light:X,dark:Y") resolve correctly at the app level.
+            let scheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+            ghostty_app_set_color_scheme(ghosttyApp!, scheme)
             Log.terminal.info("ghostty app initialized")
         }
     }
@@ -136,6 +140,11 @@ class TerminalSurface {
     // MARK: - Instance
 
     private var surface: ghostty_surface_t?
+
+    /// The raw ghostty surface pointer, used for identity comparison
+    /// when routing action callbacks to the correct TerminalHostView.
+    var surfacePointer: ghostty_surface_t? { surface }
+
     var isRendererReady: Bool {
         surface != nil
     }
@@ -167,7 +176,9 @@ class TerminalSurface {
             macos: ghostty_platform_macos_s(nsview: nsviewPtr)
         )
         surfaceConfig.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2.0)
-        surfaceConfig.font_size = 13.0
+        // font_size = 0 means "inherit from ghostty config" (e.g. ~/.config/ghostty/config).
+        // A positive value would override the user's configured font-size.
+        surfaceConfig.font_size = 0
 
         var wdNSString: NSString?
         var cmdNSString: NSString?
@@ -272,6 +283,11 @@ class TerminalSurface {
     func setOcclusion(_ occluded: Bool) {
         guard let surface else { return }
         ghostty_surface_set_occlusion(surface, occluded)
+    }
+
+    func setColorScheme(_ scheme: ghostty_color_scheme_e) {
+        guard let surface else { return }
+        ghostty_surface_set_color_scheme(surface, scheme)
     }
 
     fileprivate func updateConfig(_ config: ghostty_config_t) {
@@ -393,6 +409,81 @@ class TerminalSurface {
         return Unmanaged<TerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
     }
 
+    // MARK: - Action Callback Dispatcher
+
+    private static func handleAction(
+        userdata: UnsafeMutableRawPointer?,
+        action: ghostty_action_s,
+        target: ghostty_target_s
+    ) -> Bool {
+        switch action.tag {
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+            let n = action.action.desktop_notification
+            let title = n.title.map { String(cString: $0) } ?? ""
+            let body = n.body.map { String(cString: $0) } ?? ""
+            let surfacePtr = target.target.surface
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .ghosttyDesktopNotification,
+                    object: nil,
+                    userInfo: [
+                        "surface": surfacePtr as Any,
+                        "title": title,
+                        "body": body,
+                    ]
+                )
+            }
+            return true
+
+        case GHOSTTY_ACTION_SET_TITLE:
+            let v = action.action.set_title
+            let title = v.title.map { String(cString: $0) } ?? ""
+            let surfacePtr = target.target.surface
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .ghosttySetTitle,
+                    object: nil,
+                    userInfo: ["surface": surfacePtr as Any, "title": title]
+                )
+            }
+            return true
+
+        case GHOSTTY_ACTION_PWD:
+            let v = action.action.pwd
+            let path = v.pwd.map { String(cString: $0) } ?? ""
+            let surfacePtr = target.target.surface
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .ghosttyPwdChanged,
+                    object: nil,
+                    userInfo: ["surface": surfacePtr as Any, "path": path]
+                )
+            }
+            return true
+
+        case GHOSTTY_ACTION_RING_BELL:
+            let surfacePtr = target.target.surface
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .ghosttyRingBell,
+                    object: nil,
+                    userInfo: ["surface": surfacePtr as Any]
+                )
+            }
+            return true
+
+        case GHOSTTY_ACTION_COLOR_CHANGE, GHOSTTY_ACTION_CONFIG_CHANGE, GHOSTTY_ACTION_RELOAD_CONFIG:
+            DispatchQueue.main.async {
+                GhosttyThemeProvider.shared.refresh()
+            }
+            return true
+
+        default:
+            // Window-management and other actions we don't handle.
+            return true
+        }
+    }
+
     private static func emitSmokeDiagnostic(_ message: String) {
         guard AppSmokeMode.current != nil else { return }
         let line = "Smoke diagnostic: \(message)\n"
@@ -453,4 +544,13 @@ class TerminalSurface {
     func requestClose() {}
 
     #endif
+}
+
+// MARK: - Ghostty Action Notification Names
+
+extension Notification.Name {
+    static let ghosttyDesktopNotification = Notification.Name("ghosttyDesktopNotification")
+    static let ghosttySetTitle = Notification.Name("ghosttySetTitle")
+    static let ghosttyPwdChanged = Notification.Name("ghosttyPwdChanged")
+    static let ghosttyRingBell = Notification.Name("ghosttyRingBell")
 }

@@ -49,6 +49,13 @@ struct SidebarView: View {
     @State private var activeToolID: String?
     @State private var isToolsExpanded: Bool = true
 
+    /// Workspaces sorted with pinned items first, preserving relative order.
+    private var sortedWorkspaces: [Workspace] {
+        let pinned = workspaceManager.workspaces.filter(\.isPinned)
+        let unpinned = workspaceManager.workspaces.filter { !$0.isPinned }
+        return pinned + unpinned
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 1. Workspaces (top, takes remaining space)
@@ -66,7 +73,7 @@ struct SidebarView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 2)
 
-                    ForEach(workspaceManager.workspaces) { workspace in
+                    ForEach(sortedWorkspaces) { workspace in
                         WorkspaceTab(
                             workspace: workspace,
                             isActive: workspace.id == workspaceManager.activeWorkspaceID,
@@ -197,12 +204,41 @@ struct WorkspaceTab: View {
     @State private var renameText = ""
     @FocusState private var isRenameFieldFocused: Bool
 
+    private var themeAccentColor: Color {
+        Color(nsColor: GhosttyThemeProvider.shared.foregroundColor)
+    }
+
+    private var totalNotifications: Int {
+        workspace.unreadNotifications + workspace.terminalNotificationCount
+    }
+
+    private var indicatorColor: Color {
+        if let hex = workspace.customColor, let nsColor = NSColor(hexString: hex) {
+            return Color(nsColor: nsColor)
+        }
+        return isActive ? themeAccentColor : Color.secondary.opacity(0.3)
+    }
+
+    private var shortenedPath: String? {
+        guard let path = workspace.projectPath else { return nil }
+        let components = path.split(separator: "/")
+        if components.count <= 2 { return path }
+        return "~/" + components.suffix(2).joined(separator: "/")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            // Active indicator dot
-            Circle()
-                .fill(isActive ? Color.accentColor : Color.secondary.opacity(0.3))
-                .frame(width: 8, height: 8)
+            // Pin icon or active indicator dot
+            if workspace.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(indicatorColor)
+                    .frame(width: 8, height: 8)
+            } else {
+                Circle()
+                    .fill(indicatorColor)
+                    .frame(width: 8, height: 8)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 if isRenaming {
@@ -236,9 +272,17 @@ struct WorkspaceTab: View {
                     }
 
                     if let branch = workspace.gitBranch {
-                        Label(branch, systemImage: "arrow.triangle.branch")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 2) {
+                            Label(branch, systemImage: "arrow.triangle.branch")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            if workspace.gitDirty {
+                                Text("*")
+                                    .font(.caption2)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                     }
 
                     if workspace.activeTasks > 0 {
@@ -247,13 +291,20 @@ struct WorkspaceTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                if let shortPath = shortenedPath {
+                    Text(shortPath)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
 
-            // Notification badge
-            if workspace.unreadNotifications > 0 {
-                NotificationBadge(count: workspace.unreadNotifications)
+            // Notification badge (backend + terminal notifications combined)
+            if totalNotifications > 0 {
+                NotificationBadge(count: totalNotifications)
             }
 
             // Close button on hover
@@ -265,13 +316,13 @@ struct WorkspaceTab: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActive ? Color.accentColor.opacity(0.12) : Color.clear)
+                .fill(isActive ? indicatorColor.opacity(0.12) : Color.clear)
         )
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .onHover { isHovering = $0 }
-        .onChange(of: isRenaming) { renaming in
-            if renaming {
+        .onChange(of: isRenaming) {
+            if isRenaming {
                 isRenameFieldFocused = true
             }
         }
@@ -280,7 +331,14 @@ struct WorkspaceTab: View {
                 renameText = workspace.name
                 isRenaming = true
             }
+            Button(workspace.isPinned ? "Unpin" : "Pin") {
+                workspace.isPinned.toggle()
+            }
             if let path = workspace.projectPath {
+                Button("Copy Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(path, forType: .string)
+                }
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
                 }
@@ -290,7 +348,7 @@ struct WorkspaceTab: View {
                 onClose()
             }
         }
-        .accessibilityLabel("Workspace: \(workspace.name)")
+        .accessibilityLabel("Workspace: \(workspace.name)\(workspace.isPinned ? ", pinned" : "")")
     }
 }
 

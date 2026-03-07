@@ -357,6 +357,7 @@ final class WorkspaceManager: ObservableObject {
         workspace.activeAgents = summary.activeAgents
         workspace.costToday = summary.costToday
         workspace.unreadNotifications = summary.unreadNotifications
+        workspace.gitDirty = summary.gitDirty ?? false
     }
 
     @discardableResult
@@ -502,4 +503,5 @@ struct ProjectSummary: Decodable {
     let activeAgents: Int
     let costToday: Double
     let unreadNotifications: Int
+    let gitDirty: Bool?
 }
