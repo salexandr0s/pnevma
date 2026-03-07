@@ -346,12 +346,7 @@ enum ScrollbackReadStart {
 /// Resolve a binary name to its full path, searching common macOS locations
 /// in addition to the inherited PATH (which may be minimal for GUI apps).
 pub fn resolve_binary(name: &str) -> PathBuf {
-    let extra_dirs = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-    ];
+    let extra_dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
     for dir in &extra_dirs {
         let candidate = PathBuf::from(dir).join(name);
         if candidate.exists() {
@@ -581,10 +576,10 @@ impl SessionSupervisor {
         let is_bare_shell = bare_shells.iter().any(|s| {
             let trimmed = command.trim();
             trimmed == *s
-                || std::path::Path::new(trimmed)
+                || (std::path::Path::new(trimmed)
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n == *s)
+                    == Some(*s))
         });
         if !command.trim().is_empty() && !is_bare_shell {
             let send_out = self
@@ -809,7 +804,8 @@ impl SessionSupervisor {
 
         tokio::spawn(async move {
             let code = child.wait().await.ok().and_then(|status| status.code());
-            let tmux_alive = tmux_has_session_name(&tmux_name(session_id), &tmux_tmpdir, &tmux_bin).await;
+            let tmux_alive =
+                tmux_has_session_name(&tmux_name(session_id), &tmux_tmpdir, &tmux_bin).await;
 
             {
                 let mut guard = sessions.write().await;

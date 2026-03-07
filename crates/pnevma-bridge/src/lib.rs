@@ -46,7 +46,13 @@ pub struct PnevmaHandle {
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
-// Wrappers to make callback pointers Send+Sync (they cross FFI boundary)
+// Wrappers to make callback pointers Send+Sync (they cross FFI boundary).
+//
+// SAFETY: The Swift caller guarantees that:
+// 1. The `ctx` pointer is not shared across threads without synchronization.
+// 2. The `ctx` pointer outlives all Rust usage (i.e., remains valid until the
+//    PnevmaHandle is destroyed or the callback is unregistered).
+// 3. The callback function itself is safe to call from any thread.
 struct EventCallbackWrapper {
     cb: EventCallback,
     ctx: *mut (),
@@ -135,6 +141,13 @@ fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, 
             params_len, MAX_PARAMS_LEN
         )));
     }
+    debug_assert!(
+        !params_json.is_null() || params_len == 0,
+        "non-null params_json required when params_len > 0"
+    );
+    // SAFETY: The caller (Swift side) must guarantee that `params_json` points to a valid
+    // allocation of at least `params_len` bytes. The Swift wrapper always passes
+    // `string.utf8.count` for the length, which matches the allocation size.
     let slice = unsafe { std::slice::from_raw_parts(params_json as *const u8, params_len) };
     let s = std::str::from_utf8(slice).map_err(|_| make_error_result("invalid UTF-8 in params"))?;
     serde_json::from_str(s).map_err(|e| make_error_result(&format!("invalid JSON in params: {e}")))
@@ -299,6 +312,10 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
 /// **Must be called from a background thread** — never from the main thread.
 ///
 /// Returns a heap-allocated `PnevmaResult`. Caller must free with `pnevma_free_result`.
+///
+/// `params_json` must point to a valid allocation of at least `params_len`
+/// bytes. Passing a length exceeding the allocation is undefined behavior.
+/// NULL is valid when `params_len` is 0 (treated as empty params).
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_call(
@@ -368,6 +385,14 @@ pub extern "C" fn pnevma_call(
 /// of the callback. Copy any data you need before returning. The result is
 /// freed automatically by Rust after the callback returns — do NOT call
 /// `pnevma_free_result` on it.
+///
+/// `params_json` must point to a valid allocation of at least `params_len`
+/// bytes. Passing a length exceeding the allocation is undefined behavior.
+///
+/// LIFETIME CONTRACT: `cb_ctx` must remain valid until `cb` is invoked.
+/// The caller must NOT free, deallocate, or mutate the memory pointed to
+/// by `cb_ctx` until the callback has returned. Passing NULL is valid
+/// only if the callback handles NULL context.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_call_async(
@@ -474,6 +499,11 @@ pub unsafe extern "C" fn pnevma_free_result(result: *mut PnevmaResult) {
 ///
 /// This bypasses the JSON event system for performance. The callback receives
 /// raw bytes directly from the PTY.
+///
+/// LIFETIME CONTRACT: `ctx` must remain valid for as long as the callback
+/// is registered (i.e., until a new callback is registered or the handle
+/// is destroyed). The caller must NOT free or mutate the context while
+/// the callback may be invoked from a background thread.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_set_session_output_callback(

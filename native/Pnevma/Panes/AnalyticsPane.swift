@@ -240,6 +240,8 @@ final class AnalyticsViewModel: ObservableObject {
         handleActivationState(activationHub.currentState)
     }
 
+    private var loadTask: Task<Void, Never>?
+
     func load(showLoadingState: Bool = true) {
         guard let bus = commandBus else {
             viewState = .failed("Analytics is unavailable because the command bus is not configured.")
@@ -248,7 +250,8 @@ final class AnalyticsViewModel: ObservableObject {
         if showLoadingState, breakdown.isEmpty {
             viewState = .loading("Loading analytics...")
         }
-        Task { [weak self] in
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 struct DaysParams: Encodable { let days: Int? }
@@ -277,12 +280,14 @@ final class AnalyticsViewModel: ObservableObject {
                     fetchTrend,
                     fetchErrors
                 )
+                guard !Task.isCancelled else { return }
                 self.breakdown = breakdown
                 self.byModel = byModel
                 self.dailyTrend = trend
                 self.errors = errors
                 self.viewState = .ready
             } catch {
+                guard !Task.isCancelled else { return }
                 self.handleLoadFailure(error)
             }
         }
@@ -299,6 +304,11 @@ final class AnalyticsViewModel: ObservableObject {
         case .failed(_, _, let message):
             viewState = .failed(message)
         case .closed:
+            loadTask?.cancel()
+            breakdown = []
+            byModel = []
+            dailyTrend = []
+            errors = []
             viewState = .waiting("Open a project to load analytics.")
         }
     }

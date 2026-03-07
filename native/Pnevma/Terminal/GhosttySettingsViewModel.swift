@@ -316,7 +316,7 @@ final class GhosttySettingsViewModel: ObservableObject {
     }
 }
 
-private extension NSColor {
+extension NSColor {
     convenience init?(hexString: String) {
         let trimmed = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "#", with: "")
@@ -326,11 +326,11 @@ private extension NSColor {
         let red = CGFloat((value >> 16) & 0xFF) / 255
         let green = CGFloat((value >> 8) & 0xFF) / 255
         let blue = CGFloat(value & 0xFF) / 255
-        self.init(calibratedRed: red, green: green, blue: blue, alpha: 1)
+        self.init(srgbRed: red, green: green, blue: blue, alpha: 1)
     }
 
     var hexString: String? {
-        guard let rgb = usingColorSpace(.deviceRGB) else { return nil }
+        guard let rgb = usingColorSpace(.sRGB) else { return nil }
         return String(
             format: "#%02X%02X%02X",
             Int(round(rgb.redComponent * 255)),

@@ -210,6 +210,8 @@ final class MergeQueueViewModel: ObservableObject {
         handleActivationState(activationHub.currentState)
     }
 
+    private var loadTask: Task<Void, Never>?
+
     func load(showLoadingState: Bool = true) {
         guard let bus = commandBus else {
             viewState = .failed("Merge queue loading is unavailable because the command bus is not configured.")
@@ -218,13 +220,16 @@ final class MergeQueueViewModel: ObservableObject {
         if showLoadingState, items.isEmpty {
             viewState = .loading("Loading merge queue...")
         }
-        Task { [weak self] in
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let fetched: [MergeQueueItem] = try await bus.call(method: "merge.queue.list", params: nil)
+                guard !Task.isCancelled else { return }
                 self.items = fetched
                 self.viewState = .ready
             } catch {
+                guard !Task.isCancelled else { return }
                 self.handleLoadFailure(error)
             }
         }
@@ -276,6 +281,8 @@ final class MergeQueueViewModel: ObservableObject {
         case .failed(_, _, let message):
             viewState = .failed(message)
         case .closed:
+            items = []
+            actionError = nil
             viewState = .waiting("Open a project to load the merge queue.")
         }
     }

@@ -50,17 +50,21 @@ async fn load_tailscale_cert(
         if !path.exists() {
             continue;
         }
-        // Look for .crt and .key files
+        // Match .crt and .key files by base name to avoid pairing unrelated certs
         let mut cert_path = None;
         let mut key_path = None;
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.ends_with(".crt") {
-                    cert_path = Some(entry.path());
-                } else if name.ends_with(".key") {
-                    key_path = Some(entry.path());
+                let name_str = name.to_string_lossy();
+                if name_str.ends_with(".crt") {
+                    let stem = name_str.trim_end_matches(".crt");
+                    let key_candidate = entry.path().with_file_name(format!("{stem}.key"));
+                    if key_candidate.exists() {
+                        cert_path = Some(entry.path());
+                        key_path = Some(key_candidate);
+                        break;
+                    }
                 }
             }
         }

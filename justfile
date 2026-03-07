@@ -60,7 +60,9 @@ rust-audit:
     @if command -v cargo-audit >/dev/null 2>&1 || {{rust_tool}} cargo audit --version >/dev/null 2>&1; then \
       {{rust_tool}} cargo audit; \
     else \
-      echo "SKIP: cargo-audit not installed. Install with: cargo install cargo-audit --locked"; \
+      echo "WARNING: cargo-audit not installed — skipping vulnerability scan"; \
+      echo "Install with: cargo install cargo-audit --locked"; \
+      exit 1; \
     fi
 
 # ── Stage 3: Xcode (Swift) ───────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+use crate::discovery::redact_secrets;
 use crate::error::ContextError;
 use pnevma_core::{ContextManifestItem, ContextPack, TaskContract};
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,11 @@ impl ContextCompiler {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, markdown)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 
@@ -80,6 +86,7 @@ impl ContextCompiler {
                 "task goal cannot be empty for context compilation".to_string(),
             ));
         }
+        let rules: Vec<String> = input.rules.iter().map(|r| redact_secrets(r)).collect();
         let markdown = format!(
             "# Task Context\n\n## Goal\n{}\n\n## Acceptance Criteria\n{}\n\n## Constraints\n{}\n\n## Scope\n{}\n\n## Rules\n{}\n",
             task.goal,
@@ -98,8 +105,7 @@ impl ContextCompiler {
                 .map(|s| format!("- {}", s))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            input
-                .rules
+            rules
                 .iter()
                 .map(|r| format!("- {}", r))
                 .collect::<Vec<_>>()
@@ -188,8 +194,18 @@ impl ContextCompiler {
             "## Rules and Conventions",
             format!(
                 "Rules:\n{}\n\nConventions:\n{}",
-                input.rules.join("\n"),
-                input.conventions.join("\n")
+                input
+                    .rules
+                    .iter()
+                    .map(|r| redact_secrets(r))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                input
+                    .conventions
+                    .iter()
+                    .map(|c| redact_secrets(c))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ),
             false,
             &mut manifest,
@@ -197,7 +213,7 @@ impl ContextCompiler {
 
         push_section(
             "## Architecture Notes",
-            input.architecture_notes,
+            redact_secrets(&input.architecture_notes),
             false,
             &mut manifest,
         );

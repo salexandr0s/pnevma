@@ -148,10 +148,12 @@ jobs:
         run: just xcode-build
 
       - name: Check entitlements
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p native/build/security-artifacts
           cp native/Pnevma/Pnevma.entitlements native/build/security-artifacts/Pnevma.entitlements.source.plist
-          ./scripts/check-entitlements.sh | tee native/build/security-artifacts/entitlements-check.txt
+          ./scripts/check-entitlements.sh 2>&1 | tee native/build/security-artifacts/entitlements-check.txt
           if codesign -d --entitlements :- "$GITHUB_WORKSPACE/native/build/Build/Products/Debug/Pnevma.app" \
             > native/build/security-artifacts/Pnevma.entitlements.effective.plist 2>/dev/null \
             && [[ -s native/build/security-artifacts/Pnevma.entitlements.effective.plist ]]; then

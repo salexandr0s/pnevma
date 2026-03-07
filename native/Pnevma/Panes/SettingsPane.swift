@@ -44,6 +44,29 @@ struct GeneralSettingsTab: View {
                 Text("/bin/zsh").tag("/bin/zsh")
                 Text("/bin/bash").tag("/bin/bash")
             }
+
+            Section("Focus Border") {
+                Toggle("Show focus border on active pane", isOn: $viewModel.focusBorderEnabled)
+
+                if viewModel.focusBorderEnabled {
+                    Toggle("Use system accent color", isOn: $viewModel.focusBorderUseAccent)
+
+                    ColorPicker("Color", selection: $viewModel.focusBorderColor, supportsOpacity: false)
+                        .disabled(viewModel.focusBorderUseAccent)
+
+                    HStack {
+                        Text("Opacity")
+                        Slider(value: $viewModel.focusBorderOpacity, in: 0.1...1.0, step: 0.05)
+                        Text("\(Int(viewModel.focusBorderOpacity * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 36, alignment: .trailing)
+                    }
+
+                    Stepper("Width: \(viewModel.focusBorderWidth, specifier: "%.0f")px",
+                            value: $viewModel.focusBorderWidth, in: 1...6, step: 1)
+                }
+            }
         }
         .formStyle(.grouped)
     }
@@ -503,15 +526,78 @@ final class SettingsViewModel: ObservableObject {
     @Published var terminalFont = "SF Mono"
     @Published var terminalFontSize = 13
     @Published var scrollbackLines = 10000
+    @Published var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
+        didSet {
+            guard !isRestoring else { return }
+            FocusBorderPreferences.enabled = focusBorderEnabled
+            notifyFocusBorderChanged()
+        }
+    }
+    @Published var focusBorderOpacity: CGFloat = FocusBorderPreferences.opacity {
+        didSet {
+            guard !isRestoring else { return }
+            FocusBorderPreferences.opacity = focusBorderOpacity
+            notifyFocusBorderChanged()
+        }
+    }
+    @Published var focusBorderWidth: CGFloat = FocusBorderPreferences.width {
+        didSet {
+            guard !isRestoring else { return }
+            FocusBorderPreferences.width = focusBorderWidth
+            notifyFocusBorderChanged()
+        }
+    }
+    @Published var focusBorderColor: Color = Color(nsColor: .controlAccentColor) {
+        didSet {
+            guard !isRestoring else { return }
+            let ns = NSColor(focusBorderColor).usingColorSpace(.sRGB)
+            FocusBorderPreferences.colorHex = ns?.hexString
+            notifyFocusBorderChanged()
+        }
+    }
+    @Published var focusBorderUseAccent: Bool = true {
+        didSet {
+            guard !isRestoring else { return }
+            if focusBorderUseAccent {
+                FocusBorderPreferences.colorHex = "accent"
+                // Suppress the color didSet from overwriting "accent"
+                isRestoring = true
+                focusBorderColor = Color(nsColor: .controlAccentColor)
+                isRestoring = false
+            } else {
+                let ns = NSColor(focusBorderColor).usingColorSpace(.sRGB)
+                FocusBorderPreferences.colorHex = ns?.hexString
+            }
+            notifyFocusBorderChanged()
+        }
+    }
     @Published var telemetryEnabled = false
     @Published var crashReports = false
 
+    private var isRestoring = false
+
     func load() {
-        // TODO: Replace local stubs with backend-backed settings.
+        isRestoring = true
+        defer {
+            isRestoring = false
+            notifyFocusBorderChanged()
+        }
+        focusBorderEnabled = FocusBorderPreferences.enabled
+        focusBorderOpacity = FocusBorderPreferences.opacity
+        focusBorderWidth = FocusBorderPreferences.width
+        let hex = FocusBorderPreferences.colorHex
+        focusBorderUseAccent = hex == nil || hex == "accent" || hex?.isEmpty == true
+        if !focusBorderUseAccent, let hex, let ns = NSColor(hexString: hex) {
+            focusBorderColor = Color(nsColor: ns)
+        }
     }
 
     func save() {
         // TODO: Replace local stubs with backend-backed settings.
+    }
+
+    private func notifyFocusBorderChanged() {
+        NotificationCenter.default.post(name: .focusBorderPreferencesChanged, object: nil)
     }
 }
 

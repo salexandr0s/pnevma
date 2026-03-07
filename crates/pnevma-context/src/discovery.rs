@@ -61,7 +61,7 @@ fn default_max_file_size_kb() -> usize {
     100
 }
 
-fn secret_patterns() -> &'static [Regex] {
+pub fn secret_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         [
@@ -78,7 +78,7 @@ fn secret_patterns() -> &'static [Regex] {
     })
 }
 
-fn redact_secrets(content: &str) -> String {
+pub fn redact_secrets(content: &str) -> String {
     let mut result = content.to_string();
     for pattern in secret_patterns() {
         result = pattern.replace_all(&result, "[REDACTED]").to_string();

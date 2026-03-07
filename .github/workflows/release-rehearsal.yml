@@ -161,6 +161,8 @@ jobs:
             native/build/logs/**
           retention-days: ${{ env.RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS }}
 
-      - name: Cleanup keychain
+      - name: Cleanup keychain and credentials
         if: always()
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

@@ -183,6 +183,9 @@ pub fn generate_key(
 
     let passphrase = generate_passphrase();
 
+    // NOTE: The passphrase is passed via `-N` which makes it briefly visible in
+    // `ps` output. This is a local-only, short-lived exposure. A future improvement
+    // could pipe the passphrase via stdin to avoid process-list visibility entirely.
     let output = std::process::Command::new("ssh-keygen")
         .args([
             "-t",

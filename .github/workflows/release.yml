@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -152,6 +151,8 @@ jobs:
             "$ARCHIVE" \
             ./**/bom.cdx.json
 
-      - name: Cleanup keychain
+      - name: Cleanup keychain and credentials
         if: always()
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

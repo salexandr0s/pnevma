@@ -6,5 +6,5 @@ pub use compiler::{
     ContextCompileInput, ContextCompileMode, ContextCompiler, ContextCompilerConfig,
     ContextCompilerResult,
 };
-pub use discovery::{DiscoveryConfig, FileDiscovery};
+pub use discovery::{redact_secrets, DiscoveryConfig, FileDiscovery};
 pub use error::ContextError;

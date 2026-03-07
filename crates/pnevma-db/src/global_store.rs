@@ -30,6 +30,12 @@ impl GlobalDb {
             .map_err(|_| DbError::Config("HOME environment variable is not set".to_string()))?;
         let dir = std::path::PathBuf::from(home).join(".local/share/pnevma");
         tokio::fs::create_dir_all(&dir).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o700);
+            tokio::fs::set_permissions(&dir, perms).await?;
+        }
         let db_path = dir.join("global.db");
         let uri = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
         let pool = SqlitePoolOptions::new()
@@ -57,6 +63,13 @@ impl GlobalDb {
         )
         .execute(&pool)
         .await?;
+
+        #[cfg(unix)]
+        if db_path.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            tokio::fs::set_permissions(&db_path, perms).await?;
+        }
 
         Ok(Self { pool })
     }

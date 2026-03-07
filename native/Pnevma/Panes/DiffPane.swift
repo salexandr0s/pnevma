@@ -339,6 +339,8 @@ final class DiffViewModel: ObservableObject {
         handleActivationState(activationHub.currentState)
     }
 
+    private var loadTask: Task<Void, Never>?
+
     /// Load tasks that may have diffs (Review, InProgress, or Done).
     func load(showLoadingState: Bool = true) {
         guard let bus = commandBus else {
@@ -348,16 +350,19 @@ final class DiffViewModel: ObservableObject {
         if showLoadingState, tasks.isEmpty {
             viewState = .loading("Loading tasks...")
         }
-        Task { [weak self] in
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let backendTasks: [BackendDiffTask] = try await bus.call(method: "task.list", params: nil)
+                guard !Task.isCancelled else { return }
                 let filtered = backendTasks
                     .filter { ["Review", "InProgress", "Done"].contains($0.status) }
                     .map { DiffTaskItem(id: $0.id, title: $0.title, status: $0.status) }
                 self.tasks = filtered
                 self.viewState = .ready
             } catch {
+                guard !Task.isCancelled else { return }
                 self.handleLoadFailure(error)
             }
         }
@@ -400,6 +405,12 @@ final class DiffViewModel: ObservableObject {
         case .failed(_, _, let message):
             viewState = .failed(message)
         case .closed:
+            loadTask?.cancel()
+            tasks = []
+            files = []
+            selectedTaskId = nil
+            selectedFile = nil
+            diffError = nil
             viewState = .waiting("Open a project to load diffs.")
         }
     }

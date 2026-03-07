@@ -342,16 +342,20 @@ final class ReviewViewModel: ObservableObject {
         }
     }
 
+    private var packTask: Task<Void, Never>?
+
     func loadReviewPack(taskId: String) {
         guard let bus = commandBus else { return }
+        packTask?.cancel()
         isLoadingPack = true
-        Task { [weak self] in
+        packTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let pack: ReviewPack = try await bus.call(
                     method: "review.get_pack",
                     params: ReviewGetPackParams(taskId: taskId)
                 )
+                guard !Task.isCancelled else { return }
                 // Only apply if the user hasn't navigated away.
                 guard self.selectedTaskID == taskId else { return }
                 self.reviewPack = pack
@@ -361,6 +365,7 @@ final class ReviewViewModel: ObservableObject {
                 self.notes = pack.reviewerNotes ?? ""
                 self.isLoadingPack = false
             } catch {
+                guard !Task.isCancelled else { return }
                 guard self.selectedTaskID == taskId else { return }
                 self.isLoadingPack = false
                 self.actionError = error.localizedDescription
@@ -425,6 +430,8 @@ final class ReviewViewModel: ObservableObject {
         case .failed(_, _, let message):
             viewState = .failed(message)
         case .closed:
+            loadTask?.cancel()
+            packTask?.cancel()
             reviewTasks = []
             reviewPack = nil
             selectedTaskID = nil

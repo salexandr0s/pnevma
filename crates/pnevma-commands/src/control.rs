@@ -1,6 +1,7 @@
 use crate::auth_secret::load_socket_password;
 use crate::commands;
 use crate::state::AppState;
+use pnevma_context::redact_secrets;
 use pnevma_core::{GlobalConfig, ProjectConfig};
 use pnevma_db::NewEvent;
 use serde::{Deserialize, Serialize};
@@ -401,13 +402,14 @@ async fn process_request(
         return ControlResponse::err(request_id, "unauthorized", err);
     }
 
+    let redacted_params = redact_event_params(&params);
     append_automation_audit(
         state,
         "AutomationRequestReceived",
         json!({
             "request_id": request.id,
             "method": method,
-            "params": params,
+            "params": redacted_params,
         }),
     )
     .await;
@@ -1529,6 +1531,12 @@ pub async fn route_method(
         }
     };
     Ok(result)
+}
+
+fn redact_event_params(params: &Value) -> Value {
+    let raw = params.to_string();
+    let redacted = redact_secrets(&raw);
+    serde_json::from_str(&redacted).unwrap_or(Value::String(redacted))
 }
 
 async fn append_automation_audit(state: &AppState, event_type: &str, payload: Value) {

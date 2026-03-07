@@ -210,10 +210,12 @@ final class BrowserViewModel: NSObject, ObservableObject {
         // Safari user agent to avoid bot checks
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15"
 
-        // Enable Web Inspector
+        #if DEBUG
+        // Enable Web Inspector only in debug builds
         if #available(macOS 13.3, *) {
             webView.isInspectable = true
         }
+        #endif
 
         super.init()
 

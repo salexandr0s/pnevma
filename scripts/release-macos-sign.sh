@@ -39,7 +39,16 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 echo "Signing $APP_PATH"
-codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
+
+# Sign embedded frameworks/dylibs first (inside-out signing), then the outer app
+if [[ -d "$APP_PATH/Contents/Frameworks" ]]; then
+  find "$APP_PATH/Contents/Frameworks" \( -name "*.framework" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' fw; do
+    echo "Signing embedded: $fw"
+    codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$fw"
+  done
+fi
+
+codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
 
 echo "Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"

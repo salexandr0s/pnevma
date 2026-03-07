@@ -65,6 +65,10 @@ typedef void (*SessionOutputCallback)(const char *session_id,
  * **Must be called from a background thread** — never from the main thread.
  *
  * Returns a heap-allocated `PnevmaResult`. Caller must free with `pnevma_free_result`.
+ *
+ * `params_json` must point to a valid allocation of at least `params_len`
+ * bytes. Passing a length exceeding the allocation is undefined behavior.
+ * NULL is valid when `params_len` is 0 (treated as empty params).
  */
 
 struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
@@ -80,6 +84,14 @@ struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
  * of the callback. Copy any data you need before returning. The result is
  * freed automatically by Rust after the callback returns — do NOT call
  * `pnevma_free_result` on it.
+ *
+ * `params_json` must point to a valid allocation of at least `params_len`
+ * bytes. Passing a length exceeding the allocation is undefined behavior.
+ *
+ * LIFETIME CONTRACT: `cb_ctx` must remain valid until `cb` is invoked.
+ * The caller must NOT free, deallocate, or mutate the memory pointed to
+ * by `cb_ctx` until the callback has returned. Passing NULL is valid
+ * only if the callback handles NULL context.
  */
 
 void pnevma_call_async(struct PnevmaHandle *handle,
@@ -105,6 +117,11 @@ void pnevma_call_async(struct PnevmaHandle *handle,
  *
  * This bypasses the JSON event system for performance. The callback receives
  * raw bytes directly from the PTY.
+ *
+ * LIFETIME CONTRACT: `ctx` must remain valid for as long as the callback
+ * is registered (i.e., until a new callback is registered or the handle
+ * is destroyed). The caller must NOT free or mutate the context while
+ * the callback may be invoked from a background thread.
  */
 
 void pnevma_set_session_output_callback(struct PnevmaHandle *handle,

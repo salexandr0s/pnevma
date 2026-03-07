@@ -81,6 +81,6 @@ Assurance target:
 
 ## Residual risks to track
 
-- the hardened-runtime exception set is now reduced to `com.apple.security.cs.disable-library-validation`; validate regularly whether GhosttyKit still requires it on signed release builds
+- the hardened-runtime exception set is now reduced to `com.apple.security.cs.disable-library-validation` and `com.apple.security.network.client`; validate regularly whether GhosttyKit still requires the library-validation exception on signed release builds
 - project-level data retention can prune stale review packs, knowledge artifacts, feedback attachments, telemetry exports, and completed session scrollback when enabled in `pnevma.toml`
 - no supported native auto-updater exists yet, so release distribution remains manual

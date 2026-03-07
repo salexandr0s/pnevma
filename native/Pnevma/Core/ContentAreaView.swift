@@ -30,12 +30,22 @@ final class ContentAreaView: NSView {
         registerPaneView(rootPaneView)
         rootPaneView.activate()
         installClickMonitor()
+        focusBorderObserver = NotificationCenter.default.addObserver(
+            forName: .focusBorderPreferencesChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateFocusBorder()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     deinit {
         removeClickMonitor()
+        if let focusBorderObserver {
+            NotificationCenter.default.removeObserver(focusBorderObserver)
+        }
     }
 
     /// Use flipped coordinate system (top-left origin) so vertical splits
@@ -164,6 +174,7 @@ final class ContentAreaView: NSView {
     // MARK: - Click-to-Focus
 
     private var clickMonitor: Any?
+    private var focusBorderObserver: NSObjectProtocol?
 
     private func installClickMonitor() {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
@@ -367,7 +378,8 @@ final class ContentAreaView: NSView {
     // MARK: - Focus Border
 
     private func updateFocusBorder() {
-        guard paneViews.count > 1,
+        guard FocusBorderPreferences.enabled,
+              paneViews.count > 1,
               let activeID = layoutEngine.activePaneID,
               let activeView = paneViews[activeID] else {
             focusBorderView?.removeFromSuperview()
@@ -375,16 +387,26 @@ final class ContentAreaView: NSView {
             return
         }
 
-        let border: NSView
-        if let existing = focusBorderView {
+        let border: FocusBorderView
+        if let existing = focusBorderView as? FocusBorderView {
             border = existing
         } else {
+            focusBorderView?.removeFromSuperview()
             border = FocusBorderView(frame: .zero)
-            addSubview(border, positioned: .above, relativeTo: nil)
             focusBorderView = border
         }
 
         border.frame = activeView.frame
+        border.applyCurrentStyle()
+
+        // Ensure border is the topmost subview so it isn't covered
+        // by terminal or other pane views added after it.
+        if border.superview != self {
+            addSubview(border, positioned: .above, relativeTo: nil)
+        } else if subviews.last !== border {
+            border.removeFromSuperview()
+            addSubview(border, positioned: .above, relativeTo: nil)
+        }
     }
 
     // MARK: - Pane Context Menu
@@ -440,24 +462,75 @@ final class ContentAreaView: NSView {
     }
 }
 
+extension Notification.Name {
+    static let focusBorderPreferencesChanged = Notification.Name("focusBorderPreferencesChanged")
+}
+
+// MARK: - Focus Border Preferences
+
+enum FocusBorderPreferences {
+    private static let defaults = UserDefaults.standard
+
+    static var enabled: Bool {
+        get { defaults.object(forKey: "focusBorderEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "focusBorderEnabled") }
+    }
+
+    static var opacity: CGFloat {
+        get {
+            let raw = defaults.object(forKey: "focusBorderOpacity") as? Double
+                ?? Double(DesignTokens.Layout.focusBorderOpacity)
+            return CGFloat(max(0.1, min(1.0, raw)))
+        }
+        set { defaults.set(Double(newValue), forKey: "focusBorderOpacity") }
+    }
+
+    static var width: CGFloat {
+        get {
+            let raw = defaults.object(forKey: "focusBorderWidth") as? Double
+                ?? Double(DesignTokens.Layout.focusBorderWidth)
+            return CGFloat(max(1, min(6, raw)))
+        }
+        set { defaults.set(Double(newValue), forKey: "focusBorderWidth") }
+    }
+
+    /// Stored as hex string. `nil` or "accent" means system accent color.
+    static var colorHex: String? {
+        get { defaults.string(forKey: "focusBorderColor") }
+        set { defaults.set(newValue, forKey: "focusBorderColor") }
+    }
+
+    static var resolvedColor: NSColor {
+        guard let hex = colorHex, !hex.isEmpty, hex != "accent" else {
+            return .controlAccentColor
+        }
+        return NSColor(hexString: hex) ?? .controlAccentColor
+    }
+}
+
 // MARK: - FocusBorderView
 
-/// Transparent overlay that draws a 2px accent-colored border around the focused pane.
+/// Transparent overlay that draws an accent-colored border around the focused pane.
 private final class FocusBorderView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.borderColor = NSColor.controlAccentColor.cgColor
-        layer?.borderWidth = DesignTokens.Layout.focusBorderWidth
         layer?.cornerRadius = 0
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    func applyCurrentStyle() {
+        let color = FocusBorderPreferences.resolvedColor
+            .withAlphaComponent(FocusBorderPreferences.opacity)
+        layer?.borderColor = color.cgColor
+        layer?.borderWidth = FocusBorderPreferences.width
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        applyCurrentStyle()
     }
 
     override func accessibilityLabel() -> String? { "Active pane indicator" }

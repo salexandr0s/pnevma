@@ -7,6 +7,7 @@ APP_PATH="${APP_PATH:-}"
 
 allowed_keys=(
   "com.apple.security.cs.disable-library-validation"
+  "com.apple.security.network.client"
 )
 
 tmp_plist=""

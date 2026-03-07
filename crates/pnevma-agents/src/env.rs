@@ -15,6 +15,10 @@ const BLOCKED_EXACT_NAMES: &[&str] = &[
     "NOTARYTOOL_KEY",
     "NOTARYTOOL_KEY_ID",
     "NOTARYTOOL_ISSUER",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
 ];
 
 pub const MAX_AGENT_ENV_NAME_BYTES: usize = 128;
@@ -167,6 +171,10 @@ mod tests {
         assert!(validate_agent_env_name("PNEVMA_REMOTE_PASSWORD").is_err());
         assert!(validate_agent_env_name("APPLE_NOTARY_PROFILE").is_err());
         assert!(validate_agent_env_name("PATH").is_err());
+        assert!(validate_agent_env_name("GITHUB_TOKEN").is_err());
+        assert!(validate_agent_env_name("GH_TOKEN").is_err());
+        assert!(validate_agent_env_name("ANTHROPIC_API_KEY").is_err());
+        assert!(validate_agent_env_name("OPENAI_API_KEY").is_err());
     }
 
     #[test]
@@ -180,26 +188,30 @@ mod tests {
     #[test]
     fn rejects_invalid_values() {
         let oversized = "x".repeat(MAX_AGENT_ENV_VALUE_BYTES + 1);
-        assert!(validate_agent_env_entry("OPENAI_API_KEY", &oversized).is_err());
-        assert!(validate_agent_env_entry("OPENAI_API_KEY", "abc\0def").is_err());
+        assert!(validate_agent_env_entry("MY_CUSTOM_VAR", &oversized).is_err());
+        assert!(validate_agent_env_entry("MY_CUSTOM_VAR", "abc\0def").is_err());
     }
 
     #[test]
     fn builds_safe_agent_environment() {
         let env = build_agent_environment(&[
-            ("OPENAI_API_KEY".to_string(), "sk-test".to_string()),
+            ("MY_CUSTOM_VAR".to_string(), "hello".to_string()),
             ("PATH".to_string(), "/tmp/bin".to_string()),
             (
                 "DYLD_INSERT_LIBRARIES".to_string(),
                 "/tmp/libhack.dylib".to_string(),
             ),
+            ("OPENAI_API_KEY".to_string(), "sk-test".to_string()),
+            ("GITHUB_TOKEN".to_string(), "ghp_abc".to_string()),
         ]);
 
         assert!(env.iter().any(|(name, _)| name == "PATH"));
         assert!(env
             .iter()
-            .any(|(name, value)| name == "OPENAI_API_KEY" && value == "sk-test"));
+            .any(|(name, value)| name == "MY_CUSTOM_VAR" && value == "hello"));
         assert!(!env.iter().any(|(name, _)| name == "DYLD_INSERT_LIBRARIES"));
+        assert!(!env.iter().any(|(name, _)| name == "OPENAI_API_KEY"));
+        assert!(!env.iter().any(|(name, _)| name == "GITHUB_TOKEN"));
         assert_eq!(env.iter().filter(|(name, _)| name == "PATH").count(), 1);
     }
 }

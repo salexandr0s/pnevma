@@ -202,13 +202,26 @@ struct DailyBriefView: View {
         String(format: "$%.2f", usd)
     }
 
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoFormatterNoFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static let relativeFormatter = RelativeDateTimeFormatter()
+
     private func formatTimestamp(_ raw: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: raw) {
-            return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+        let date = Self.isoFormatter.date(from: raw)
+            ?? Self.isoFormatterNoFraction.date(from: raw)
+        if let date {
+            return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
         }
-        // Fallback: trim the T/Z noise for readability
         return raw
             .replacingOccurrences(of: "T", with: " ")
             .prefix(19)
@@ -293,6 +306,8 @@ final class DailyBriefViewModel: ObservableObject {
         handleActivationState(activationHub.currentState)
     }
 
+    private var loadTask: Task<Void, Never>?
+
     func load() {
         guard let bus = commandBus else {
             viewState = .failed("Daily brief is unavailable because the command bus is not configured.")
@@ -301,13 +316,16 @@ final class DailyBriefViewModel: ObservableObject {
         if brief == nil {
             viewState = .loading
         }
-        Task { [weak self] in
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result: DailyBrief = try await bus.call(method: "project.daily_brief", params: nil)
+                guard !Task.isCancelled else { return }
                 self.brief = result
                 self.viewState = .ready
             } catch {
+                guard !Task.isCancelled else { return }
                 self.handleLoadFailure(error)
             }
         }
@@ -324,6 +342,7 @@ final class DailyBriefViewModel: ObservableObject {
         case .failed(_, _, let message):
             viewState = .failed(message)
         case .closed:
+            loadTask?.cancel()
             brief = nil
             viewState = .waiting("Open a project to load the daily brief.")
         }

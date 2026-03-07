@@ -38,9 +38,10 @@ impl TokenStore {
 
     /// Generate a 256-bit random hex token, store it, and return it.
     pub fn create_token(&self, ip: &str) -> String {
+        use rand::rngs::OsRng;
         use rand::RngCore;
         let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        OsRng.fill_bytes(&mut bytes);
         let token = hex::encode(bytes);
         self.tokens.insert(
             token.clone(),
@@ -122,6 +123,12 @@ impl TokenStore {
     /// Returns `true` if the token existed and was removed.
     pub fn revoke_token(&self, token: &str) -> bool {
         self.tokens.remove(token).is_some()
+    }
+
+    /// Revoke all tokens. Call this when the password is changed to ensure
+    /// no previously-issued tokens remain valid.
+    pub fn revoke_all_tokens(&self) {
+        self.tokens.clear();
     }
 
     /// Return the expiry timestamp for a freshly-created token.

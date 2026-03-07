@@ -158,7 +158,7 @@ struct AddRuleSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(name.isEmpty)
+                .disabled(name.isEmpty || content.isEmpty)
             }
         }
         .padding(20)
@@ -261,8 +261,11 @@ final class RulesManagerViewModel: ObservableObject {
         }
     }
 
+    private var togglingRuleIDs = Set<String>()
+
     func toggleRule(rule: ProjectRule) {
         guard let bus = commandBus else { return }
+        guard togglingRuleIDs.insert(rule.id).inserted else { return }
         // Optimistically flip the active state locally.
         if let idx = rules.firstIndex(where: { $0.id == rule.id }) {
             rules[idx].active.toggle()
@@ -270,6 +273,7 @@ final class RulesManagerViewModel: ObservableObject {
         let newActive = !rule.active
         Task { [weak self] in
             guard let self else { return }
+            defer { self.togglingRuleIDs.remove(rule.id) }
             do {
                 let updated: ProjectRule = try await bus.call(
                     method: "rules.toggle",
