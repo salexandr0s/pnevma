@@ -22,7 +22,7 @@ struct CommandItem {
 
 // MARK: - CommandPalette
 
-/// Floating NSPanel command palette (Cmd+K).
+/// Floating NSPanel command palette (Shift+Cmd+P).
 /// Fuzzy-searches registered commands and dispatches the selected one.
 final class CommandPalette: NSPanel {
 

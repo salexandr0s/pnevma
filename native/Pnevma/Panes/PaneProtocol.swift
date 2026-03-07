@@ -349,10 +349,12 @@ private struct WelcomeContentView: View {
 
                 // Orientation hints
                 VStack(alignment: .leading, spacing: 10) {
-                    WelcomeHint(key: "Cmd+K", label: "Command Palette")
+                    WelcomeHint(key: "Cmd+T", label: "New Tab")
+                    WelcomeHint(key: "Shift+Cmd+P", label: "Command Palette")
                     WelcomeHint(key: "Cmd+D", label: "Split Right")
+                    WelcomeHint(key: "Cmd+]/[", label: "Next / Previous Pane")
                     WelcomeHint(key: "Cmd+B", label: "Toggle Sidebar")
-                    WelcomeHint(key: "Opt+Cmd+Arrows", label: "Navigate Panes")
+                    WelcomeHint(key: "Cmd+Enter", label: "Toggle Full Screen")
                 }
                 .padding(.top, 8)
             }

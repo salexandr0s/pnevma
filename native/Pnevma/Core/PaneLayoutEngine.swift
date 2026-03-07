@@ -438,6 +438,23 @@ class PaneLayoutEngine {
         return nil
     }
 
+    // MARK: - Equalize
+
+    /// Reset all split ratios to 0.5 (equal space).
+    func equalizeSplits() {
+        guard let root = root else { return }
+        self.root = equalize(root)
+    }
+
+    private func equalize(_ node: SplitNode) -> SplitNode {
+        switch node {
+        case .leaf:
+            return node
+        case .split(let dir, _, let first, let second):
+            return .split(direction: dir, ratio: 0.5, first: equalize(first), second: equalize(second))
+        }
+    }
+
     // MARK: - Serialization
 
     func serialize() -> Data? {

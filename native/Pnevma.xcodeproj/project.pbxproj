@@ -12,6 +12,7 @@
 		0F0E3BEDE1D8B511FC992193 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 2E52F41573A608565E5F0B7E /* libsqlite3.tbd */; };
 		103DA42DF7FDE17BF2693456 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */; };
 		109F9D05A5E2B5CF691F0EC6 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 90FF1D203A58F68A24C128E4 /* GhosttyKit.xcframework */; };
+		1E2036ED00D80E6FF103C2A0 /* GhosttyThemeBrowserSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 237774308FA1A956D8F350E2 /* GhosttyThemeBrowserSheet.swift */; };
 		20C398F420BCA879DB9D469D /* SettingsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 669EF3C93EAF867EF325DFE6 /* SettingsPane.swift */; };
 		26ECDCE314120B77635D0905 /* ReviewPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2ABF5369D15A88A22276EB /* ReviewPane.swift */; };
 		32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5CF35C36EC51718FA8D0DAE /* TerminalConfig.swift */; };
@@ -29,6 +30,7 @@
 		70DA668AC08F26BFFD6F9CD5 /* ContentAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */; };
 		753D941D6A6DB7CC268661B8 /* SessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F9720138A2A8A983D4E084B /* SessionPersistence.swift */; };
 		75A882CE240EFB18166C4C66 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 478DE8D1E7E9FD77FAE43F0E /* Security.framework */; };
+		82AAFC84C2E2B5A74C9611E9 /* GhosttyThemeBrowserViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56FFA62C53B156737FB105D1 /* GhosttyThemeBrowserViewModel.swift */; };
 		8DFFD6BE13FCA68D148972DF /* AnalyticsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */; };
 		8EDFEC8F919D2DDBA67989C0 /* PnevmaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9439B284463792B5897069AB /* PnevmaTests.swift */; };
 		911D8778472DAA448B2A5B9F /* PnevmaBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828FFB7F22FC420210D6AC17 /* PnevmaBridge.swift */; };
@@ -65,6 +67,7 @@
 		E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */; };
 		E4B187C264280A390D3219DD /* ToastOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BACC1D571547055E703921 /* ToastOverlay.swift */; };
 		E8746B9089C92661A666AB73 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF3059187ECC603279A0295F /* AppIntents.framework */; };
+		EA13151E3E63BADD8ED9403D /* GhosttyThemeFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3942E8DCD9C5EB25235EE0 /* GhosttyThemeFile.swift */; };
 		EE32C0DC4310751E92C25777 /* FileBrowserPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2FFA5B423F3AFEF4E067E4 /* FileBrowserPane.swift */; };
 		EF8FDB10727CFB9047386340 /* MergeQueuePane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */; };
 		F5CB679F6B9C87400DA3AD42 /* PaneProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */; };
@@ -94,6 +97,7 @@
 		0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBridge.swift; sourceTree = "<group>"; };
 		0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		1EAFB00C7B89DEB874995841 /* OnboardingFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlow.swift; sourceTree = "<group>"; };
+		237774308FA1A956D8F350E2 /* GhosttyThemeBrowserSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeBrowserSheet.swift; sourceTree = "<group>"; };
 		2384B2D98B340A6F16B39955 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		24C6D98E237464B9CC1F10DD /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		288B31EA70DBB7C2215B829A /* StatusBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBar.swift; sourceTree = "<group>"; };
@@ -106,7 +110,9 @@
 		478DE8D1E7E9FD77FAE43F0E /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		481C3D9236E2D0321C7F9915 /* PnevmaJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaJSON.swift; sourceTree = "<group>"; };
 		49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsPane.swift; sourceTree = "<group>"; };
+		4A3942E8DCD9C5EB25235EE0 /* GhosttyThemeFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeFile.swift; sourceTree = "<group>"; };
 		504D628AFBF0820CEF6ADF77 /* ProtectedActionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtectedActionSheet.swift; sourceTree = "<group>"; };
+		56FFA62C53B156737FB105D1 /* GhosttyThemeBrowserViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeBrowserViewModel.swift; sourceTree = "<group>"; };
 		5F9720138A2A8A983D4E084B /* SessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPersistence.swift; sourceTree = "<group>"; };
 		62741B6EA28060BADC0E8C4D /* GhosttyThemeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeProvider.swift; sourceTree = "<group>"; };
 		669EF3C93EAF867EF325DFE6 /* SettingsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPane.swift; sourceTree = "<group>"; };
@@ -207,6 +213,7 @@
 				D5EA8DEADC71098F70420D35 /* DailyBriefPane.swift */,
 				7F702FFFF0544A91FC6A1F77 /* DiffPane.swift */,
 				8B2FFA5B423F3AFEF4E067E4 /* FileBrowserPane.swift */,
+				237774308FA1A956D8F350E2 /* GhosttyThemeBrowserSheet.swift */,
 				A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */,
 				77B834396916F6473B7B5042 /* NotificationsPane.swift */,
 				B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */,
@@ -350,6 +357,8 @@
 				D13398913ACB6EB8AD6478CC /* GhosttyConfigController.swift */,
 				E6E07A33C5E1E99D9B5FE8B1 /* GhosttySchema.swift */,
 				775982942C9924718860A8DC /* GhosttySettingsViewModel.swift */,
+				56FFA62C53B156737FB105D1 /* GhosttyThemeBrowserViewModel.swift */,
+				4A3942E8DCD9C5EB25235EE0 /* GhosttyThemeFile.swift */,
 				62741B6EA28060BADC0E8C4D /* GhosttyThemeProvider.swift */,
 				D5CF35C36EC51718FA8D0DAE /* TerminalConfig.swift */,
 				0504F30FC49F942FD7AD3F1B /* TerminalHostView.swift */,
@@ -491,6 +500,9 @@
 				0D8104A38269DA8025B98478 /* GhosttyConfigController.swift in Sources */,
 				A2B98519DA1DCC49FCD28CCB /* GhosttySchema.swift in Sources */,
 				4D144841BC682E501E061C51 /* GhosttySettingsViewModel.swift in Sources */,
+				1E2036ED00D80E6FF103C2A0 /* GhosttyThemeBrowserSheet.swift in Sources */,
+				82AAFC84C2E2B5A74C9611E9 /* GhosttyThemeBrowserViewModel.swift in Sources */,
+				EA13151E3E63BADD8ED9403D /* GhosttyThemeFile.swift in Sources */,
 				9FCF28D3EF23A47A0B5743D9 /* GhosttyThemeProvider.swift in Sources */,
 				64A5B1853D5A6CBC37B01E5A /* Log.swift in Sources */,
 				EF8FDB10727CFB9047386340 /* MergeQueuePane.swift in Sources */,

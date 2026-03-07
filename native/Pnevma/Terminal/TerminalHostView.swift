@@ -386,6 +386,17 @@ final class TerminalHostView: NSView, NSTextInputClient {
         terminalSurface = surface
         updateSurfaceLayout()
 
+        // Ghostty attaches a CAMetalLayer as a sublayer. CAMetalLayer defaults
+        // to isOpaque=true which prevents background-opacity transparency.
+        // Propagate the host view's opacity setting to all sublayers so the
+        // terminal background matches the chrome.
+        if GhosttyThemeProvider.shared.backgroundOpacity < 1.0 {
+            layer?.isOpaque = false
+            for sublayer in layer?.sublayers ?? [] {
+                sublayer.isOpaque = false
+            }
+        }
+
         #if canImport(GhosttyKit)
         // Tell the surface the current color scheme so conditional themes resolve correctly.
         let scheme = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

@@ -86,6 +86,10 @@ final class ContentAreaView: NSView {
 
     /// Recompute and apply pane frames. Safe to call during drag.
     private func repositionPanes() {
+        if let zoomedID = zoomedPaneID {
+            paneViews[zoomedID]?.frame = bounds
+            return
+        }
         layoutEngine.layout(in: bounds)
         for (id, frame) in layoutEngine.paneFrames {
             if let view = paneViews[id] {
@@ -296,6 +300,13 @@ final class ContentAreaView: NSView {
 
     /// Close the given pane.
     func closePane(_ paneID: PaneID) {
+        // If the zoomed pane is being closed, unzoom first.
+        if zoomedPaneID == paneID {
+            zoomedPaneID = nil
+            for (_, view) in paneViews { view.isHidden = false }
+            dividerViews.forEach { $0.isHidden = false }
+        }
+
         guard layoutEngine.closePane(paneID) else { return }
 
         dismissNotificationRing(for: paneID)
@@ -410,6 +421,75 @@ final class ContentAreaView: NSView {
 
     /// Number of panes currently in the layout.
     var paneCount: Int { paneViews.count }
+
+    // MARK: - Pane Cycling
+
+    /// Cycle focus to the next pane in depth-first order.
+    func cycleFocusForward() {
+        guard let allIDs = layoutEngine.root?.allPaneIDs, allIDs.count > 1,
+              let active = layoutEngine.activePaneID,
+              let index = allIDs.firstIndex(of: active) else { return }
+        let next = allIDs[(index + 1) % allIDs.count]
+        focusPane(next)
+    }
+
+    /// Cycle focus to the previous pane in depth-first order.
+    func cycleFocusBackward() {
+        guard let allIDs = layoutEngine.root?.allPaneIDs, allIDs.count > 1,
+              let active = layoutEngine.activePaneID,
+              let index = allIDs.firstIndex(of: active) else { return }
+        let prev = allIDs[(index - 1 + allIDs.count) % allIDs.count]
+        focusPane(prev)
+    }
+
+    /// Focus the Nth pane (1-based). If n exceeds pane count, does nothing.
+    func focusNthPane(_ n: Int) {
+        guard let allIDs = layoutEngine.root?.allPaneIDs,
+              n > 0, n <= allIDs.count else { return }
+        focusPane(allIDs[n - 1])
+    }
+
+    /// Focus the last pane in the layout.
+    func focusLastPane() {
+        guard let allIDs = layoutEngine.root?.allPaneIDs,
+              let last = allIDs.last else { return }
+        focusPane(last)
+    }
+
+    // MARK: - Split Zoom
+
+    private var zoomedPaneID: PaneID?
+
+    /// Whether a pane is currently zoomed to fill the content area.
+    var isZoomed: Bool { zoomedPaneID != nil }
+
+    /// Toggle zoom: maximize the active pane to fill the entire content area,
+    /// or restore the previous split layout.
+    func toggleZoom() {
+        if zoomedPaneID != nil {
+            // Unzoom
+            zoomedPaneID = nil
+            for (_, view) in paneViews { view.isHidden = false }
+            dividerViews.forEach { $0.isHidden = false }
+            relayout()
+        } else {
+            guard let active = layoutEngine.activePaneID,
+                  paneViews.count > 1 else { return }
+            zoomedPaneID = active
+            for (id, view) in paneViews { view.isHidden = (id != active) }
+            dividerViews.forEach { $0.isHidden = true }
+            paneViews[active]?.frame = bounds
+            updateFocusBorder()
+        }
+    }
+
+    // MARK: - Equalize Splits
+
+    /// Reset all split ratios to equal (50/50).
+    func equalizeSplits() {
+        layoutEngine.equalizeSplits()
+        relayout()
+    }
 
     func syncPersistedPanes() {
         for view in paneViews.values {

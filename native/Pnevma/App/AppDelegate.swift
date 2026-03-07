@@ -32,6 +32,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
     private var toastController: ToastWindowController?
+    private var settingsWindow: NSWindow?
     private var smokeWindow: NSWindow?
     private var smokeHostView: TerminalHostView?
     private var smokeTimeoutWorkItem: DispatchWorkItem?
@@ -410,10 +411,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // File menu
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t"))
         fileMenu.addItem(NSMenuItem(title: "New Terminal", action: #selector(newTerminal), keyEquivalent: "n"))
         fileMenu.addItem(NSMenuItem(title: "Open Project...", action: #selector(openProjectAction), keyEquivalent: "o"))
         fileMenu.addItem(.separator())
         fileMenu.addItem(NSMenuItem(title: "Close Pane", action: #selector(closePaneAction), keyEquivalent: "w"))
+        let closeWindow = NSMenuItem(title: "Close Window", action: #selector(closeWindowAction), keyEquivalent: "W")
+        closeWindow.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(closeWindow)
         let fileMenuItem = NSMenuItem()
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
@@ -432,7 +437,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // View menu
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
-        viewMenu.addItem(withTitle: "Command Palette", action: #selector(showCommandPalette), keyEquivalent: "k")
+        let cmdPalette = NSMenuItem(title: "Command Palette", action: #selector(showCommandPalette), keyEquivalent: "P")
+        cmdPalette.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(cmdPalette)
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
@@ -444,6 +451,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let splitDown = NSMenuItem(title: "Split Down", action: #selector(splitDownAction), keyEquivalent: "D")
         splitDown.keyEquivalentModifierMask = [.command, .shift]
         paneMenu.addItem(splitDown)
+
+        paneMenu.addItem(.separator())
+
+        paneMenu.addItem(NSMenuItem(title: "Next Pane", action: #selector(nextPane), keyEquivalent: "]"))
+        paneMenu.addItem(NSMenuItem(title: "Previous Pane", action: #selector(previousPane), keyEquivalent: "["))
 
         paneMenu.addItem(.separator())
 
@@ -459,6 +471,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             paneMenu.addItem(item)
         }
 
+        paneMenu.addItem(.separator())
+
+        let zoomItem = NSMenuItem(title: "Toggle Split Zoom", action: #selector(toggleSplitZoom), keyEquivalent: "\r")
+        zoomItem.keyEquivalentModifierMask = [.command, .shift]
+        paneMenu.addItem(zoomItem)
+
+        let equalizeItem = NSMenuItem(title: "Equalize Splits", action: #selector(equalizeSplitsAction), keyEquivalent: "=")
+        equalizeItem.keyEquivalentModifierMask = [.command, .control]
+        paneMenu.addItem(equalizeItem)
+
+        paneMenu.addItem(.separator())
+
+        // Cmd+1–8: jump to Nth pane, Cmd+9: last pane
+        for i in 1...8 {
+            let item = NSMenuItem(title: "Pane \(i)", action: #selector(gotoPaneByTag(_:)), keyEquivalent: "\(i)")
+            item.tag = i
+            paneMenu.addItem(item)
+        }
+        let lastPaneItem = NSMenuItem(title: "Last Pane", action: #selector(gotoLastPane), keyEquivalent: "9")
+        paneMenu.addItem(lastPaneItem)
+
         let paneMenuItem = NSMenuItem()
         paneMenuItem.submenu = paneMenu
         mainMenu.addItem(paneMenuItem)
@@ -467,6 +500,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m"))
         windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: ""))
+        let fullscreen = NSMenuItem(title: "Toggle Full Screen", action: #selector(toggleFullScreenAction), keyEquivalent: "\r")
+        windowMenu.addItem(fullscreen)
         windowMenu.addItem(.separator())
 
         let nextWS = NSMenuItem(title: "Next Workspace", action: #selector(nextWorkspace), keyEquivalent: "]")
@@ -495,6 +530,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu Actions
 
+    @objc func newTab() {
+        let projectPath = workspaceManager?.activeWorkspace?.projectPath
+        let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
+        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+    }
+
     @objc func newTerminal() {
         let projectPath = workspaceManager?.activeWorkspace?.projectPath
         let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
@@ -521,6 +562,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func navigateRight() { contentAreaView?.navigateFocus(.right) }
     @objc private func navigateUp()    { contentAreaView?.navigateFocus(.up) }
     @objc private func navigateDown()  { contentAreaView?.navigateFocus(.down) }
+
+    @objc private func nextPane()     { contentAreaView?.cycleFocusForward() }
+    @objc private func previousPane() { contentAreaView?.cycleFocusBackward() }
+
+    @objc private func toggleSplitZoom()      { contentAreaView?.toggleZoom() }
+    @objc private func equalizeSplitsAction()  { contentAreaView?.equalizeSplits() }
+
+    @objc private func gotoPaneByTag(_ sender: NSMenuItem) {
+        contentAreaView?.focusNthPane(sender.tag)
+    }
+    @objc private func gotoLastPane() { contentAreaView?.focusLastPane() }
+
+    @objc private func closeWindowAction() { window?.close() }
+    @objc private func toggleFullScreenAction() { window?.toggleFullScreen(nil) }
 
     @objc private func toggleSidebar() {
         isSidebarVisible.toggle()
@@ -594,10 +649,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Open SSH Manager", "pane", nil, "Manage SSH keys and remote profiles", { SshManagerPaneView() }),
             ("Open Session Replay", "pane", nil, "Replay past terminal sessions", { ReplayPaneView(frame: .zero) }),
             ("Open Browser", "pane", nil, "Built-in web browser", { BrowserPaneView(frame: .zero, url: nil) }),
-            ("Open Settings", "pane", "Cmd+,", "Configure Pnevma preferences", { SettingsPaneView() }),
         ]
 
         var commands: [CommandItem] = [
+            CommandItem(id: "terminal.new_tab", title: "New Tab", category: "pane", shortcut: "Cmd+T", description: "Open a new terminal tab in the active workspace") { [weak self] in
+                self?.newTab()
+            },
             CommandItem(id: "terminal.new", title: "New Terminal", category: "pane", shortcut: "Cmd+N", description: "Open a new terminal in the active workspace") { [weak self] in
                 self?.newTerminal()
             },
@@ -607,8 +664,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandItem(id: "pane.split_down", title: "Split Down", category: "pane", shortcut: "Shift+Cmd+D", description: "Split the active pane vertically") { [weak self] in
                 self?.splitDownAction()
             },
+            CommandItem(id: "pane.next", title: "Next Pane", category: "pane", shortcut: "Cmd+]", description: "Cycle focus to the next pane") { [weak self] in
+                self?.nextPane()
+            },
+            CommandItem(id: "pane.prev", title: "Previous Pane", category: "pane", shortcut: "Cmd+[", description: "Cycle focus to the previous pane") { [weak self] in
+                self?.previousPane()
+            },
+            CommandItem(id: "pane.zoom", title: "Toggle Split Zoom", category: "pane", shortcut: "Shift+Cmd+Enter", description: "Maximize the active pane or restore splits") { [weak self] in
+                self?.toggleSplitZoom()
+            },
+            CommandItem(id: "pane.equalize", title: "Equalize Splits", category: "pane", shortcut: "Ctrl+Cmd+=", description: "Reset all split ratios to equal") { [weak self] in
+                self?.equalizeSplitsAction()
+            },
             CommandItem(id: "pane.close", title: "Close Pane", category: "pane", shortcut: "Cmd+W", description: "Close the currently active pane") { [weak self] in
                 self?.closePaneAction()
+            },
+            CommandItem(id: "window.close", title: "Close Window", category: "window", shortcut: "Shift+Cmd+W", description: "Close the current window") { [weak self] in
+                self?.closeWindowAction()
+            },
+            CommandItem(id: "window.fullscreen", title: "Toggle Full Screen", category: "window", shortcut: "Cmd+Enter", description: "Toggle full screen mode") { [weak self] in
+                self?.toggleFullScreenAction()
             },
             CommandItem(id: "view.sidebar", title: "Toggle Sidebar", category: "view", shortcut: "Cmd+B", description: "Show or hide the sidebar") { [weak self] in
                 self?.toggleSidebar()
@@ -636,6 +711,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             })
         }
 
+        commands.append(CommandItem(
+            id: "app.settings",
+            title: "Open Settings",
+            category: "app",
+            shortcut: "Cmd+,",
+            description: "Configure Pnevma preferences"
+        ) { [weak self] in
+            self?.openSettingsPane()
+        })
+
         commandPalette?.registerCommands(commands)
     }
 
@@ -653,10 +738,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openSettingsPane() {
-        let pane = SettingsPaneView()
-        if contentAreaView?.replaceActivePane(with: pane) == nil {
-            contentAreaView?.setRootPane(pane)
+        if let existing = settingsWindow, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            return
         }
+
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = "Settings"
+        win.appearance = NSAppearance(named: .darkAqua)
+        win.minSize = NSSize(width: 600, height: 400)
+        win.contentView = NSHostingView(rootView: SettingsView())
+        win.center()
+        win.makeKeyAndOrderFront(nil)
+        settingsWindow = win
     }
 
     private func openToolPane(_ toolID: String) {

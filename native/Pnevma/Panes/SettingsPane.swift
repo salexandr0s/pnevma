@@ -147,13 +147,15 @@ struct GhosttySettingsTab: View {
     @ObservedObject var viewModel: GhosttySettingsViewModel
     @State private var showDiagnostics = false
     @State private var showPreview = false
+    @State private var showThemeBrowser = false
 
     var body: some View {
         VStack(spacing: 0) {
             if viewModel.snapshot != nil {
                 GhosttySettingsToolbar(
                     viewModel: viewModel,
-                    showDiagnostics: $showDiagnostics
+                    showDiagnostics: $showDiagnostics,
+                    showThemeBrowser: $showThemeBrowser
                 )
                 Divider()
                 HSplitView {
@@ -185,6 +187,16 @@ struct GhosttySettingsTab: View {
         .sheet(isPresented: $showPreview) {
             GhosttyPreviewSheet(preview: viewModel.snapshot?.generatedPreview ?? "")
         }
+        .sheet(isPresented: $showThemeBrowser) {
+            GhosttyThemeBrowserSheet(
+                currentThemeName: viewModel.editedValues["theme"]?.first
+                    ?? viewModel.snapshot?.effectiveValues["theme"],
+                onApply: { themeName in
+                    viewModel.editedValues["theme"] = [themeName]
+                    viewModel.saveAndApply()
+                }
+            )
+        }
     }
 }
 
@@ -193,6 +205,7 @@ struct GhosttySettingsTab: View {
 private struct GhosttySettingsToolbar: View {
     @ObservedObject var viewModel: GhosttySettingsViewModel
     @Binding var showDiagnostics: Bool
+    @Binding var showThemeBrowser: Bool
 
     private var hasDiagnostics: Bool {
         let hasErrors = viewModel.errorMessage != nil && !(viewModel.errorMessage ?? "").isEmpty
@@ -213,10 +226,19 @@ private struct GhosttySettingsToolbar: View {
                     Text(mode.title).tag(mode)
                 }
             }
+            .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 200)
 
             Spacer()
+
+            Button {
+                showThemeBrowser = true
+            } label: {
+                Image(systemName: "paintbrush")
+            }
+            .buttonStyle(.plain)
+            .help("Browse themes")
 
             if hasDiagnostics {
                 Button {
@@ -724,15 +746,24 @@ final class SettingsViewModel: ObservableObject {
     @Published var autoUpdate = true
     @Published var defaultShell = ""
     @Published var keybindings: [KeybindingEntry] = [
+        KeybindingEntry(action: "New Tab", shortcut: "Cmd+T"),
         KeybindingEntry(action: "Split Right", shortcut: "Cmd+D"),
         KeybindingEntry(action: "Split Down", shortcut: "Shift+Cmd+D"),
+        KeybindingEntry(action: "Next Pane", shortcut: "Cmd+]"),
+        KeybindingEntry(action: "Previous Pane", shortcut: "Cmd+["),
         KeybindingEntry(action: "Close Pane", shortcut: "Cmd+W"),
         KeybindingEntry(action: "Navigate Left", shortcut: "Opt+Cmd+Left"),
         KeybindingEntry(action: "Navigate Right", shortcut: "Opt+Cmd+Right"),
         KeybindingEntry(action: "Navigate Up", shortcut: "Opt+Cmd+Up"),
         KeybindingEntry(action: "Navigate Down", shortcut: "Opt+Cmd+Down"),
-        KeybindingEntry(action: "Command Palette", shortcut: "Cmd+K"),
+        KeybindingEntry(action: "Toggle Split Zoom", shortcut: "Shift+Cmd+Enter"),
+        KeybindingEntry(action: "Equalize Splits", shortcut: "Ctrl+Cmd+="),
+        KeybindingEntry(action: "Goto Pane 1–8", shortcut: "Cmd+1–8"),
+        KeybindingEntry(action: "Last Pane", shortcut: "Cmd+9"),
+        KeybindingEntry(action: "Command Palette", shortcut: "Shift+Cmd+P"),
         KeybindingEntry(action: "Toggle Sidebar", shortcut: "Cmd+B"),
+        KeybindingEntry(action: "Toggle Full Screen", shortcut: "Cmd+Enter"),
+        KeybindingEntry(action: "Close Window", shortcut: "Shift+Cmd+W"),
     ]
     @Published var terminalFont = "SF Mono"
     @Published var terminalFontSize = 13
