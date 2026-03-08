@@ -148,9 +148,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionStore.activate()
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
+            _ = engine
             self?.contentAreaView?.syncPersistedPanes()
-            self?.contentAreaView?.setLayoutEngine(engine)
             if let workspace = self?.workspaceManager?.activeWorkspace {
+                workspace.ensureActiveTabHasDisplayableRootPane()
+                self?.contentAreaView?.setLayoutEngine(workspace.layoutEngine)
                 self?.statusBar?.updateBranch(workspace.gitBranch)
                 self?.statusBar?.updateAgents(workspace.activeAgents)
             }
@@ -569,18 +571,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func newTab() {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         contentAreaView?.syncPersistedPanes()
-        let tab = workspace.addTab(title: "Terminal")
-        if let rootPaneID = tab.layoutEngine.root?.allPaneIDs.first {
-            tab.layoutEngine.upsertPersistedPane(PersistedPane(
-                paneID: rootPaneID,
-                type: "terminal",
-                workingDirectory: workspace.projectPath,
-                sessionID: nil,
-                taskID: nil,
-                metadataJSON: nil
-            ))
-        }
-        contentAreaView?.setLayoutEngine(tab.layoutEngine)
+        _ = workspace.addTab(title: "Terminal")
+        workspace.ensureActiveTabHasDisplayableRootPane()
+        contentAreaView?.setLayoutEngine(workspace.layoutEngine)
         updateTabBar()
         persistence?.markDirty()
     }
@@ -590,6 +583,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard index != workspace.activeTabIndex else { return }
         contentAreaView?.syncPersistedPanes()
         workspace.switchToTab(index)
+        workspace.ensureActiveTabHasDisplayableRootPane()
         contentAreaView?.setLayoutEngine(workspace.layoutEngine)
         updateTabBar()
         persistence?.markDirty()
@@ -602,6 +596,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         contentAreaView?.syncPersistedPanes()
         workspace.closeTab(at: index)
         if wasActive {
+            workspace.ensureActiveTabHasDisplayableRootPane()
             contentAreaView?.setLayoutEngine(workspace.layoutEngine)
         }
         updateTabBar()
@@ -613,6 +608,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace else {
             tabBarView?.tabs = []
             tabBarView?.isHidden = true
+            tabBarView?.invalidateIntrinsicContentSize()
             return
         }
         let showTabBar = workspace.tabs.count > 1
@@ -620,6 +616,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         tabBarView?.tabs = workspace.tabs.enumerated().map { (i, tab) in
             TabBarView.Tab(id: tab.id, title: tab.title, isActive: i == workspace.activeTabIndex)
         }
+        tabBarView?.invalidateIntrinsicContentSize()
     }
 
     @objc func newTerminal() {
@@ -932,6 +929,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let activeWorkspace = workspaceManager?.activeWorkspace {
             contentAreaView?.syncPersistedPanes()
+            activeWorkspace.ensureActiveTabHasDisplayableRootPane()
             contentAreaView?.setLayoutEngine(activeWorkspace.layoutEngine)
         } else {
             workspaceManager?.createWorkspace(name: "Default")
@@ -1011,8 +1009,6 @@ extension AppDelegate: NSToolbarDelegate {
                 item.view = tabBar
             }
             item.label = "Tabs"
-            item.minSize = NSSize(width: 100, height: DesignTokens.Layout.tabBarHeight)
-            item.maxSize = NSSize(width: 10000, height: DesignTokens.Layout.tabBarHeight)
             return item
         case Self.notificationsIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)

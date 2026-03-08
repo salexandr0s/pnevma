@@ -28,6 +28,49 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(workspace.activeTabIndex, 2)
     }
 
+    func testEnsureActiveTabHasDisplayableRootPaneSeedsTerminalForBlankTab() {
+        let workspace = Workspace(name: "Test")
+        _ = workspace.addTab(title: "Second")
+
+        let changed = workspace.ensureActiveTabHasDisplayableRootPane()
+
+        let rootPaneID = workspace.layoutEngine.root?.allPaneIDs.first
+        let pane = rootPaneID.flatMap { workspace.layoutEngine.persistedPane(for: $0) }
+        XCTAssertTrue(changed)
+        XCTAssertEqual(pane?.type, "terminal")
+        XCTAssertNil(pane?.workingDirectory)
+    }
+
+    func testEnsureActiveTabHasDisplayableRootPaneUsesWorkspaceProjectPath() {
+        let workspace = Workspace(name: "Test", projectPath: "/tmp/project")
+        _ = workspace.addTab(title: "Second")
+
+        _ = workspace.ensureActiveTabHasDisplayableRootPane()
+
+        let rootPaneID = workspace.layoutEngine.root?.allPaneIDs.first
+        let pane = rootPaneID.flatMap { workspace.layoutEngine.persistedPane(for: $0) }
+        XCTAssertEqual(pane?.type, "terminal")
+        XCTAssertEqual(pane?.workingDirectory, "/tmp/project")
+    }
+
+    func testEnsureActiveTabHasDisplayableRootPaneDoesNotOverwriteExistingPane() {
+        let workspace = Workspace(name: "Test")
+        let rootPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
+        workspace.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: rootPaneID,
+            type: "welcome",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        let changed = workspace.ensureActiveTabHasDisplayableRootPane()
+
+        XCTAssertFalse(changed)
+        XCTAssertEqual(workspace.layoutEngine.persistedPane(for: rootPaneID)?.type, "welcome")
+    }
+
     func testCloseTabRemovesIt() {
         let workspace = Workspace(name: "Test")
         workspace.addTab(title: "Tab 2")

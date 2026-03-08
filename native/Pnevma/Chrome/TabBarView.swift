@@ -12,7 +12,18 @@ final class TabBarView: NSView {
     }
 
     var tabs: [Tab] = [] {
-        didSet { rebuild() }
+        didSet {
+            invalidateIntrinsicContentSize()
+            rebuild()
+        }
+    }
+
+    /// Set to the sidebar width so tabs start after the sidebar edge.
+    var sidebarWidth: CGFloat = 0 {
+        didSet {
+            invalidateIntrinsicContentSize()
+            needsLayout = true
+        }
     }
 
     var onSelectTab: ((Int) -> Void)?
@@ -27,6 +38,8 @@ final class TabBarView: NSView {
     private static let addButtonGap: CGFloat = 4
     private static let maxTabWidth: CGFloat = 180
     private static let minTabWidth: CGFloat = 80
+    private static let preferredTabWidth: CGFloat = 140
+    private static let minimumToolbarWidth: CGFloat = 100
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -46,6 +59,10 @@ final class TabBarView: NSView {
 
     private func setup() {
         wantsLayer = true
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .vertical)
         themeObserver = NotificationCenter.default.addObserver(
             forName: GhosttyThemeProvider.didChangeNotification,
             object: nil,
@@ -63,6 +80,12 @@ final class TabBarView: NSView {
     }
 
     override var isFlipped: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+    }
 
     // MARK: - Rebuild (only on data change)
 
@@ -115,14 +138,23 @@ final class TabBarView: NSView {
         repositionButtons()
     }
 
+    private func leadingOffset() -> CGFloat {
+        guard sidebarWidth > 0, window != nil else { return 0 }
+        let originInWindow = convert(NSPoint.zero, to: nil)
+        return max(0, sidebarWidth - originInWindow.x)
+    }
+
     /// Reposition existing buttons without destroying/recreating them.
     private func repositionButtons() {
         guard !tabButtons.isEmpty else { return }
         let height = DesignTokens.Layout.tabBarHeight
-        let reservedWidth = Self.addButtonWidth + Self.addButtonGap
+
+        // Tabs align with the content edge rather than the toolbar edge.
+        let leadingOffset = leadingOffset()
+        let reservedWidth = Self.addButtonWidth + Self.addButtonGap + leadingOffset
         let tabWidth = min(Self.maxTabWidth, max(Self.minTabWidth, (bounds.width - reservedWidth) / CGFloat(tabs.count)))
 
-        var x: CGFloat = 0
+        var x = leadingOffset
         for button in tabButtons {
             button.frame = NSRect(x: x, y: 0, width: tabWidth, height: height)
             x += tabWidth
@@ -135,14 +167,21 @@ final class TabBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         GhosttyThemeProvider.shared.backgroundColor.setFill()
         bounds.fill()
-        // Bottom border
-        let borderColor = GhosttyThemeProvider.shared.splitDividerColor ?? NSColor.separatorColor
-        borderColor.setFill()
-        NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: DesignTokens.Layout.tabBarHeight)
+        let height = DesignTokens.Layout.tabBarHeight
+        guard !isHidden, !tabs.isEmpty else {
+            return NSSize(width: 1, height: height)
+        }
+
+        let desiredTabWidth = min(Self.maxTabWidth, max(Self.minTabWidth, Self.preferredTabWidth))
+        let width = leadingOffset()
+            + (CGFloat(tabs.count) * desiredTabWidth)
+            + Self.addButtonWidth
+            + Self.addButtonGap
+
+        return NSSize(width: max(Self.minimumToolbarWidth, width), height: height)
     }
 
     // MARK: - Accessibility

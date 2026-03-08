@@ -75,6 +75,7 @@ private final class RestoredPaneContainer: NSView, PaneContent {
     let paneID: PaneID
     private let wrapped: NSView & PaneContent
     private let persisted: PersistedPane
+    private var persistedStateChangeHandler: ((PersistedPane) -> Void)?
 
     init(persisted: PersistedPane, wrapped: NSView & PaneContent) {
         self.paneID = persisted.paneID
@@ -100,7 +101,7 @@ private final class RestoredPaneContainer: NSView, PaneContent {
     var sessionID: String? { wrapped.sessionID ?? persisted.sessionID }
     var taskID: String? { wrapped.taskID ?? persisted.taskID }
     var metadataJSON: String? { wrapped.metadataJSON ?? persisted.metadataJSON }
-    var shouldPersist: Bool { wrapped.shouldPersist }
+    var shouldPersist: Bool { true }
 
     func activate() { wrapped.activate() }
     func deactivate() { wrapped.deactivate() }
@@ -109,8 +110,30 @@ private final class RestoredPaneContainer: NSView, PaneContent {
 
 extension RestoredPaneContainer: PanePersistenceObservable {
     var onPersistedStateChange: ((PersistedPane) -> Void)? {
-        get { (wrapped as? PanePersistenceObservable)?.onPersistedStateChange }
-        set { (wrapped as? PanePersistenceObservable)?.onPersistedStateChange = newValue }
+        get { persistedStateChangeHandler }
+        set {
+            persistedStateChangeHandler = newValue
+
+            guard let observablePane = wrapped as? PanePersistenceObservable else { return }
+            guard let newValue else {
+                observablePane.onPersistedStateChange = nil
+                return
+            }
+
+            observablePane.onPersistedStateChange = { [weak self] pane in
+                guard let self else { return }
+                newValue(
+                    PersistedPane(
+                        paneID: self.paneID,
+                        type: self.paneType,
+                        workingDirectory: pane.workingDirectory,
+                        sessionID: pane.sessionID,
+                        taskID: pane.taskID,
+                        metadataJSON: pane.metadataJSON
+                    )
+                )
+            }
+        }
     }
 }
 

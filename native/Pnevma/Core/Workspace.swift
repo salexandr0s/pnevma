@@ -12,6 +12,39 @@ final class WorkspaceTab: Identifiable {
         self.title = title
         self.layoutEngine = layoutEngine ?? PaneLayoutEngine(rootPaneID: rootPaneID)
     }
+
+    /// Ensure a brand-new single-pane tab can always be reconstructed.
+    @discardableResult
+    func ensureDisplayableRootPane(workingDirectory: String?) -> Bool {
+        let rootPaneID: PaneID
+        if let existingRootPaneID = layoutEngine.root?.allPaneIDs.first {
+            rootPaneID = existingRootPaneID
+            if layoutEngine.activePaneID == nil {
+                layoutEngine.activePaneID = existingRootPaneID
+            }
+        } else {
+            let newRootPaneID = PaneID()
+            layoutEngine.root = .leaf(newRootPaneID)
+            layoutEngine.activePaneID = newRootPaneID
+            rootPaneID = newRootPaneID
+        }
+
+        let paneIDs = layoutEngine.root?.allPaneIDs ?? [rootPaneID]
+        guard paneIDs.count == 1 else { return false }
+        guard paneIDs.allSatisfy({ layoutEngine.persistedPane(for: $0) == nil }) else { return false }
+
+        layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: rootPaneID,
+                type: "terminal",
+                workingDirectory: workingDirectory,
+                sessionID: nil,
+                taskID: nil,
+                metadataJSON: nil
+            )
+        )
+        return true
+    }
 }
 
 /// A workspace represents an open project with its own tabs, terminal sessions,
@@ -117,6 +150,17 @@ final class Workspace: ObservableObject, Identifiable {
     func switchToTab(_ index: Int) {
         guard index >= 0, index < tabs.count else { return }
         activeTabIndex = index
+    }
+
+    @discardableResult
+    func ensureActiveTabHasDisplayableRootPane() -> Bool {
+        ensureTabHasDisplayableRootPane(at: activeTabIndex)
+    }
+
+    @discardableResult
+    func ensureTabHasDisplayableRootPane(at index: Int) -> Bool {
+        guard index >= 0, index < tabs.count else { return false }
+        return tabs[index].ensureDisplayableRootPane(workingDirectory: projectPath)
     }
 }
 

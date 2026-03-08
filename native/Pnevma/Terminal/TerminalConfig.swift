@@ -1,5 +1,17 @@
 import Foundation
 
+enum GhosttyRuntime {
+    private(set) static var isInitialized = false
+
+    static func markInitialized() {
+        isInitialized = true
+    }
+
+    static func reset() {
+        isInitialized = false
+    }
+}
+
 /// Reads and applies Ghostty configuration for terminal instances.
 /// Merges user config with per-pane overrides.
 class TerminalConfig {
@@ -9,6 +21,10 @@ class TerminalConfig {
     private(set) var diagnostics: [String] = []
 
     init() {
+        guard GhosttyRuntime.isInitialized else {
+            print("[TerminalConfig] Ghostty runtime not initialized — using placeholder config")
+            return
+        }
         config = ghostty_config_new()
         guard config != nil else {
             print("[TerminalConfig] ERROR: ghostty_config_new() returned nil")

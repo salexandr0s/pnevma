@@ -62,10 +62,8 @@ let package = Package(
             exclude: [
                 "Pnevma.entitlements",
                 "App/PnevmaApp.swift",
-            ],
-            resources: [
-                .copy("Resources/readability.min.js"),
-                .copy("Resources/turndown.min.js"),
+                "Assets.xcassets",
+                "Resources/AppIcon.icon",
             ],
             sources: [
                 "App/AppDelegate.swift",
@@ -79,6 +77,7 @@ let package = Package(
                 "Core/PnevmaJSON.swift",
                 "Core/SessionBridge.swift",
                 "Core/SessionPersistence.swift",
+                "Core/SessionStore.swift",
                 "Core/Workspace.swift",
                 "Core/WorkspaceManager.swift",
                 // Terminal
@@ -86,6 +85,9 @@ let package = Package(
                 "Terminal/GhosttyConfigController.swift",
                 "Terminal/GhosttySchema.swift",
                 "Terminal/GhosttySettingsViewModel.swift",
+                "Terminal/GhosttyThemeBrowserViewModel.swift",
+                "Terminal/GhosttyThemeFile.swift",
+                "Terminal/GhosttyThemeProvider.swift",
                 "Terminal/TerminalHostView.swift",
                 "Terminal/TerminalSurface.swift",
                 // Panes
@@ -99,6 +101,7 @@ let package = Package(
                 "Panes/DiffPane.swift",
                 "Panes/SearchPane.swift",
                 "Panes/FileBrowserPane.swift",
+                "Panes/GhosttyThemeBrowserSheet.swift",
                 "Panes/RulesManagerPane.swift",
                 "Panes/SettingsPane.swift",
                 "Panes/WorkflowPane.swift",
@@ -111,12 +114,19 @@ let package = Package(
                 "Sidebar/SidebarView.swift",
                 // Chrome
                 "Chrome/CommandPalette.swift",
+                "Chrome/SessionManagerView.swift",
                 "Chrome/StatusBar.swift",
+                "Chrome/TabBarView.swift",
                 "Chrome/ProtectedActionSheet.swift",
                 "Chrome/OnboardingFlow.swift",
                 // Shared
                 "Shared/DesignTokens.swift",
                 "Shared/Extensions.swift",
+                "Shared/ToastOverlay.swift",
+            ],
+            resources: [
+                .copy("Resources/readability.min.js"),
+                .copy("Resources/turndown.min.js"),
             ],
             swiftSettings: [
                 .unsafeFlags([

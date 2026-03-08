@@ -6,6 +6,7 @@
 use pnevma_commands::event_emitter::EventEmitter;
 use pnevma_commands::state::AppState;
 use pnevma_commands::{route_method, NullEmitter};
+use pnevma_db::GlobalDb;
 use pnevma_session::SessionEvent;
 use serde_json::Value;
 use std::ffi::{CStr, CString};
@@ -256,6 +257,10 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
 
         let state = Arc::new(AppState::new(emitter));
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+
+        if let Err(err) = runtime.block_on(GlobalDb::open()) {
+            tracing::error!(error = %err, "failed to bootstrap global database");
+        }
 
         // Start background services
         let state_clone = Arc::clone(&state);

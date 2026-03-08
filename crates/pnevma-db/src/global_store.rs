@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct TrustRecord {
@@ -22,13 +23,22 @@ pub struct RecentProjectRow {
 #[derive(Debug, Clone)]
 pub struct GlobalDb {
     pool: SqlitePool,
+    path: PathBuf,
 }
 
 impl GlobalDb {
     pub async fn open() -> Result<Self, DbError> {
         let home = std::env::var("HOME")
             .map_err(|_| DbError::Config("HOME environment variable is not set".to_string()))?;
-        let dir = std::path::PathBuf::from(home).join(".local/share/pnevma");
+        let dir = PathBuf::from(home).join(".local/share/pnevma");
+        Self::open_in_dir(dir).await
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    async fn open_in_dir(dir: PathBuf) -> Result<Self, DbError> {
         tokio::fs::create_dir_all(&dir).await?;
         #[cfg(unix)]
         {
@@ -71,7 +81,10 @@ impl GlobalDb {
             tokio::fs::set_permissions(&db_path, perms).await?;
         }
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            path: db_path,
+        })
     }
 
     pub async fn is_path_trusted(&self, path: &str) -> Result<Option<TrustRecord>, DbError> {
@@ -158,4 +171,40 @@ impl GlobalDb {
 
 pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn open_in_dir_creates_database_file_for_fresh_home() {
+        let root = std::env::temp_dir().join(format!("pnevma-global-db-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let db = GlobalDb::open_in_dir(db_dir.clone())
+            .await
+            .expect("open global db in fresh dir");
+
+        assert_eq!(db.path(), db_dir.join("global.db").as_path());
+        assert!(
+            db.path().exists(),
+            "GlobalDb::open_in_dir should create the SQLite file for a fresh home"
+        );
+
+        let trust = db.list_trusted_paths().await.expect("list trusted paths");
+        let recents = db
+            .list_recent_projects(20)
+            .await
+            .expect("list recent projects");
+        assert!(trust.is_empty(), "fresh global db should start empty");
+        assert!(recents.is_empty(), "fresh global db should start empty");
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
 }

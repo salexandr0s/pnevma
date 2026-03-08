@@ -5,14 +5,74 @@ import XCTest
 private actor ActivationPaneCommandBus: CommandCalling {
     private var taskListCallCountValue = 0
     private var notificationListCallCountValue = 0
+    private var taskListJSON = #"""
+    [
+      {
+        "id": "task-1",
+        "title": "Ready work",
+        "goal": "Ship the board integration",
+        "status": "Ready",
+        "priority": "P1",
+        "scope": ["native/Pnevma/Panes/TaskBoardPane.swift"],
+        "dependencies": [],
+        "acceptance_criteria": [
+          { "description": "board loads" }
+        ],
+        "branch": "feature/taskboard",
+        "worktree_id": "wt-1",
+        "queued_position": null,
+        "cost_usd": 1.25,
+        "execution_mode": "worktree",
+        "updated_at": "2026-03-06T08:00:00Z"
+      }
+    ]
+    """#
 
     func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
         switch method {
         case "task.list":
             taskListCallCountValue += 1
-            return try decode(
-                #"[{"id":"task-1","title":"Ready work","status":"Ready","priority":"P1","cost_usd":1.25}]"#
-            )
+            return try decode(taskListJSON)
+        case "task.create":
+            taskListJSON = #"""
+            [
+              {
+                "id": "task-1",
+                "title": "Ready work",
+                "goal": "Ship the board integration",
+                "status": "Ready",
+                "priority": "P1",
+                "scope": ["native/Pnevma/Panes/TaskBoardPane.swift"],
+                "dependencies": [],
+                "acceptance_criteria": [
+                  { "description": "board loads" }
+                ],
+                "branch": "feature/taskboard",
+                "worktree_id": "wt-1",
+                "queued_position": null,
+                "cost_usd": 1.25,
+                "execution_mode": "worktree",
+                "updated_at": "2026-03-06T08:00:00Z"
+              },
+              {
+                "id": "task-created",
+                "title": "Planned follow-up",
+                "goal": "Capture the next task from the board",
+                "status": "Planned",
+                "priority": "P2",
+                "scope": [],
+                "dependencies": [],
+                "acceptance_criteria": [],
+                "branch": null,
+                "worktree_id": null,
+                "queued_position": null,
+                "cost_usd": null,
+                "execution_mode": "worktree",
+                "updated_at": "2026-03-07T10:15:00Z"
+              }
+            ]
+            """#
+            return try decode(#"{"task_id":"task-created"}"#)
         case "notification.list":
             notificationListCallCountValue += 1
             return try decode(
@@ -31,6 +91,10 @@ private actor ActivationPaneCommandBus: CommandCalling {
         notificationListCallCountValue
     }
 
+    func replaceTaskListJSON(_ json: String) {
+        taskListJSON = json
+    }
+
     private func decode<T: Decodable>(_ json: String) throws -> T {
         let decoder = PnevmaJSON.decoder()
         return try decoder.decode(T.self, from: Data(json.utf8))
@@ -39,6 +103,11 @@ private actor ActivationPaneCommandBus: CommandCalling {
 
 @MainActor
 final class WorkspaceRestoreTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        _ = NSApplication.shared
+    }
+
     private func waitUntil(
         timeoutNanos: UInt64 = 1_000_000_000,
         pollIntervalNanos: UInt64 = 10_000_000,
@@ -120,7 +189,7 @@ final class WorkspaceRestoreTests: XCTestCase {
     }
 
     func testContentAreaViewShowsRestoreErrorPaneWithoutMutatingStateWhenDescriptorMissing() {
-        let (_, rootPane) = PaneFactory.makeTerminal()
+        let (_, rootPane) = PaneFactory.makeWelcome()
         let contentArea = ContentAreaView(
             frame: NSRect(x: 0, y: 0, width: 1200, height: 800),
             rootPaneView: rootPane
@@ -135,6 +204,61 @@ final class WorkspaceRestoreTests: XCTestCase {
         XCTAssertEqual(contentArea.activePaneView?.paneType, "restore_error")
         XCTAssertFalse(contentArea.activePaneView?.shouldPersist ?? true)
         XCTAssertNil(engine.persistedPane(for: missingDescriptorPaneID))
+    }
+
+    func testRestoredWelcomePaneRemainsPersistable() {
+        let persistedPane = PersistedPane(
+            paneID: UUID(),
+            type: "welcome",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        )
+
+        let (paneID, pane) = PaneFactory.make(from: persistedPane)
+
+        XCTAssertEqual(paneID, persistedPane.paneID)
+        XCTAssertEqual(pane.persistedPane().paneID, persistedPane.paneID)
+        XCTAssertEqual(pane.persistedPane().type, "welcome")
+        XCTAssertTrue(pane.shouldPersist)
+    }
+
+    func testSwitchingToNewTabAfterSeedingDescriptorDoesNotShowRestoreError() {
+        let workspace = Workspace(name: "Default")
+        let initialRootPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
+        workspace.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: initialRootPaneID,
+                type: "welcome",
+                workingDirectory: nil,
+                sessionID: nil,
+                taskID: nil,
+                metadataJSON: nil
+            )
+        )
+
+        let (_, rootPane) = PaneFactory.makeWelcome()
+        let contentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            rootPaneView: rootPane
+        )
+        contentArea.setLayoutEngine(workspace.layoutEngine)
+
+        _ = workspace.addTab(title: "Terminal")
+        workspace.ensureActiveTabHasDisplayableRootPane()
+        contentArea.setLayoutEngine(workspace.layoutEngine)
+
+        XCTAssertEqual(contentArea.activePaneView?.paneType, "terminal")
+
+        workspace.switchToTab(0)
+        contentArea.setLayoutEngine(workspace.layoutEngine)
+        XCTAssertNotEqual(contentArea.activePaneView?.paneType, "restore_error")
+
+        workspace.switchToTab(1)
+        workspace.ensureActiveTabHasDisplayableRootPane()
+        contentArea.setLayoutEngine(workspace.layoutEngine)
+        XCTAssertEqual(contentArea.activePaneView?.paneType, "terminal")
     }
 
     func testTaskBoardViewModelWaitsForActivationBeforeLoading() async throws {
@@ -158,6 +282,84 @@ final class WorkspaceRestoreTests: XCTestCase {
             await bus.taskListCallCount() == 1
                 && viewModel.statusMessage == nil
                 && viewModel.tasks(for: .ready).count == 1
+        }
+    }
+
+    func testTaskBoardViewModelCreatesTaskAndRefreshesPlannedLane() async throws {
+        let bus = ActivationPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridgeHub = BridgeEventHub()
+        let viewModel = TaskBoardViewModel(
+            commandBus: bus,
+            bridgeEventHub: bridgeHub,
+            activationHub: activationHub
+        )
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        try await waitUntil {
+            await bus.taskListCallCount() == 1 && viewModel.tasks(for: .ready).count == 1
+        }
+
+        var draft = TaskCreationDraft()
+        draft.title = "Planned follow-up"
+        draft.goal = "Capture the next task from the board"
+        draft.priority = .p2
+
+        let created = await viewModel.createTask(from: draft)
+        XCTAssertTrue(created)
+
+        try await waitUntil {
+            await bus.taskListCallCount() == 2
+                && viewModel.tasks(for: .planned).count == 1
+                && viewModel.tasks(for: .planned).first?.title == "Planned follow-up"
+        }
+    }
+
+    func testTaskBoardViewModelRefreshesWhenTaskUpdatedEventArrives() async throws {
+        let bus = ActivationPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridgeHub = BridgeEventHub()
+        let viewModel = TaskBoardViewModel(
+            commandBus: bus,
+            bridgeEventHub: bridgeHub,
+            activationHub: activationHub
+        )
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        try await waitUntil {
+            await bus.taskListCallCount() == 1 && viewModel.tasks(for: .ready).count == 1
+        }
+
+        await bus.replaceTaskListJSON(
+            #"""
+            [
+              {
+                "id": "task-1",
+                "title": "Ready work",
+                "goal": "Ship the board integration",
+                "status": "Review",
+                "priority": "P1",
+                "scope": ["native/Pnevma/Panes/TaskBoardPane.swift"],
+                "dependencies": [],
+                "acceptance_criteria": [
+                  { "description": "board loads" }
+                ],
+                "branch": "feature/taskboard",
+                "worktree_id": "wt-1",
+                "queued_position": null,
+                "cost_usd": 1.25,
+                "execution_mode": "worktree",
+                "updated_at": "2026-03-07T11:00:00Z"
+              }
+            ]
+            """#
+        )
+        bridgeHub.post(BridgeEvent(name: "task_updated", payloadJSON: #"{"task_id":"task-1"}"#))
+
+        try await waitUntil {
+            await bus.taskListCallCount() == 2 && viewModel.tasks(for: .review).count == 1
         }
     }
 
