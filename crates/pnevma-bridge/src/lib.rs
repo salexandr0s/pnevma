@@ -255,12 +255,15 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             })
         };
 
-        let state = Arc::new(AppState::new(emitter));
+        let global_db = match runtime.block_on(GlobalDb::open()) {
+            Ok(db) => db,
+            Err(err) => {
+                tracing::error!(error = %err, "failed to bootstrap global database");
+                return ptr::null_mut();
+            }
+        };
+        let state = Arc::new(AppState::new_with_global_db(emitter, global_db));
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-
-        if let Err(err) = runtime.block_on(GlobalDb::open()) {
-            tracing::error!(error = %err, "failed to bootstrap global database");
-        }
 
         // Start background services
         let state_clone = Arc::clone(&state);

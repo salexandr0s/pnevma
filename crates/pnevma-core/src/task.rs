@@ -21,6 +21,7 @@ pub enum TaskStatus {
     Done,
     Failed,
     Blocked,
+    Looped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,6 +83,8 @@ pub struct TaskContract {
     pub execution_mode: Option<String>,
     pub timeout_minutes: Option<i64>,
     pub max_retries: Option<i64>,
+    pub loop_iteration: i64,
+    pub loop_context_json: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -117,6 +120,8 @@ impl TaskContract {
                 | (Planned, Blocked)
                 | (Ready, Blocked)
                 | (Blocked, Planned)
+                | (Failed, Looped)
+                | (Done, Looped)
         );
 
         if !valid {
@@ -175,6 +180,8 @@ mod tests {
             execution_mode: None,
             timeout_minutes: None,
             max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -209,7 +216,7 @@ mod tests {
         #[test]
         fn arbitrary_transition_sequence_never_panics(
             // Generate up to 10 transition attempts using indices into valid statuses
-            transitions in proptest::collection::vec(0usize..7, 0..=10)
+            transitions in proptest::collection::vec(0usize..8, 0..=10)
         ) {
             let statuses = [
                 TaskStatus::Planned,
@@ -219,6 +226,7 @@ mod tests {
                 TaskStatus::Done,
                 TaskStatus::Failed,
                 TaskStatus::Blocked,
+                TaskStatus::Looped,
             ];
 
             let mut task = base_task();
@@ -236,13 +244,14 @@ mod tests {
                         | TaskStatus::Done
                         | TaskStatus::Failed
                         | TaskStatus::Blocked
+                        | TaskStatus::Looped
                 ));
             }
         }
 
         #[test]
         fn terminal_states_cannot_transition_further(
-            next in 0usize..7
+            next in 0usize..8
         ) {
             let statuses = [
                 TaskStatus::Planned,
@@ -252,22 +261,31 @@ mod tests {
                 TaskStatus::Done,
                 TaskStatus::Failed,
                 TaskStatus::Blocked,
+                TaskStatus::Looped,
             ];
 
-            // Done and Failed are terminal — no outgoing transitions are defined for them.
-            for terminal in [TaskStatus::Done, TaskStatus::Failed] {
+            // Looped is fully terminal — no outgoing transitions defined.
+            // Done allows only Done → Looped (for until_complete loops).
+            for terminal in [TaskStatus::Done, TaskStatus::Looped] {
                 let mut task = base_task();
                 task.status = terminal.clone();
                 let to = statuses[next].clone();
-                // Any transition from a terminal state must be rejected.
-                let result = task.transition(to);
-                prop_assert!(
-                    result.is_err(),
-                    "transition from terminal state {:?} should fail",
-                    terminal
-                );
-                // Status must remain terminal after a rejected transition.
-                prop_assert_eq!(task.status, terminal);
+                if terminal == TaskStatus::Done && to == TaskStatus::Looped {
+                    // Done → Looped is valid (until_complete mode)
+                    let result = task.transition(to);
+                    prop_assert!(result.is_ok(), "Done -> Looped should succeed");
+                    prop_assert_eq!(task.status, TaskStatus::Looped);
+                } else {
+                    // All other transitions from terminal states must be rejected.
+                    let result = task.transition(to);
+                    prop_assert!(
+                        result.is_err(),
+                        "transition from terminal state {:?} should fail",
+                        terminal
+                    );
+                    // Status must remain terminal after a rejected transition.
+                    prop_assert_eq!(task.status, terminal);
+                }
             }
         }
 
@@ -317,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn done_state_rejects_all_transitions() {
+    fn done_state_rejects_non_looped_transitions() {
         for to in [
             TaskStatus::Planned,
             TaskStatus::Ready,
@@ -336,7 +354,25 @@ mod tests {
     }
 
     #[test]
-    fn failed_state_rejects_all_transitions() {
+    fn done_state_allows_looped_transition() {
+        let mut task = base_task();
+        task.status = TaskStatus::Done;
+        task.transition(TaskStatus::Looped)
+            .expect("Done -> Looped must succeed for until_complete loops");
+        assert_eq!(task.status, TaskStatus::Looped);
+    }
+
+    #[test]
+    fn failed_state_allows_looped_transition() {
+        let mut task = base_task();
+        task.status = TaskStatus::Failed;
+        task.transition(TaskStatus::Looped)
+            .expect("Failed -> Looped must succeed");
+        assert_eq!(task.status, TaskStatus::Looped);
+    }
+
+    #[test]
+    fn failed_state_rejects_other_transitions() {
         for to in [
             TaskStatus::Planned,
             TaskStatus::Ready,

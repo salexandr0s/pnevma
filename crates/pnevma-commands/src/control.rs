@@ -632,7 +632,7 @@ pub async fn route_method(
         "project.trust" => {
             let path = parse_string_param(params, "path")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
-            commands::trust_workspace(path)
+            commands::trust_workspace(path, state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
             serde_json::to_value(commands::OkResponse { ok: true })
@@ -902,6 +902,307 @@ pub async fn route_method(
         }
         "agent_profile.list" => serde_json::to_value(
             commands::list_agent_profiles(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "agent_profile.get" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::get_agent_profile(id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent_profile.create" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let role = parse_optional_string_param(params, "role");
+            let provider = parse_optional_string_param(params, "provider");
+            let model = parse_optional_string_param(params, "model");
+            let token_budget = params.get("token_budget").and_then(|v| v.as_i64());
+            let timeout_minutes = params.get("timeout_minutes").and_then(|v| v.as_i64());
+            let max_concurrent = params.get("max_concurrent").and_then(|v| v.as_i64());
+            let stations: Option<Vec<String>> = params
+                .get("stations")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let config_json = parse_optional_string_param(params, "config_json");
+            let system_prompt = parse_optional_string_param(params, "system_prompt");
+            serde_json::to_value(
+                commands::create_agent_profile(
+                    commands::CreateAgentProfileInput {
+                        name,
+                        role,
+                        provider,
+                        model,
+                        token_budget,
+                        timeout_minutes,
+                        max_concurrent,
+                        stations,
+                        config_json,
+                        system_prompt,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent_profile.update" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let name = parse_optional_string_param(params, "name");
+            let role = parse_optional_string_param(params, "role");
+            let provider = parse_optional_string_param(params, "provider");
+            let model = parse_optional_string_param(params, "model");
+            let token_budget = params.get("token_budget").and_then(|v| v.as_i64());
+            let timeout_minutes = params.get("timeout_minutes").and_then(|v| v.as_i64());
+            let max_concurrent = params.get("max_concurrent").and_then(|v| v.as_i64());
+            let stations: Option<Vec<String>> = params
+                .get("stations")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let config_json = parse_optional_string_param(params, "config_json");
+            let system_prompt = parse_optional_string_param(params, "system_prompt");
+            let active = params.get("active").and_then(|v| v.as_bool());
+            serde_json::to_value(
+                commands::update_agent_profile(
+                    commands::UpdateAgentProfileInput {
+                        id,
+                        name,
+                        role,
+                        provider,
+                        model,
+                        token_budget,
+                        timeout_minutes,
+                        max_concurrent,
+                        stations,
+                        config_json,
+                        system_prompt,
+                        active,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent_profile.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_agent_profile(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "agent_profile.copy_to_global" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let new_id = commands::copy_agent_to_global(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"id": new_id})
+        }
+        // ─── Global workflow commands ──────────────────────────────────
+        "global_workflow.list" => serde_json::to_value(
+            commands::list_global_workflows(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "global_workflow.get" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::get_global_workflow(id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "global_workflow.create" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let definition_yaml = parse_string_param(params, "definition_yaml")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let description = parse_optional_string_param(params, "description");
+            serde_json::to_value(
+                commands::create_global_workflow(
+                    commands::CreateGlobalWorkflowInput {
+                        name,
+                        description,
+                        definition_yaml,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "global_workflow.update" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let name = parse_optional_string_param(params, "name");
+            let description = parse_optional_string_param(params, "description");
+            let definition_yaml = parse_optional_string_param(params, "definition_yaml");
+            serde_json::to_value(
+                commands::update_global_workflow(
+                    commands::UpdateGlobalWorkflowInput {
+                        id,
+                        name,
+                        description,
+                        definition_yaml,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "global_workflow.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_global_workflow(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "global_workflow.copy_to_project" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let new_id = commands::copy_global_workflow_to_project(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"id": new_id})
+        }
+        "global_workflow.list_all" => serde_json::to_value(
+            commands::list_all_workflows(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workflow.copy_to_global" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let new_id = commands::copy_workflow_to_global(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"id": new_id})
+        }
+        // ─── Global agent commands ─────────────────────────────────────
+        "global_agent.list" => serde_json::to_value(
+            commands::list_global_agents(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "global_agent.get" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::get_global_agent(id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "global_agent.create" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let role = parse_optional_string_param(params, "role");
+            let provider = parse_optional_string_param(params, "provider");
+            let model = parse_optional_string_param(params, "model");
+            let token_budget = params.get("token_budget").and_then(|v| v.as_i64());
+            let timeout_minutes = params.get("timeout_minutes").and_then(|v| v.as_i64());
+            let max_concurrent = params.get("max_concurrent").and_then(|v| v.as_i64());
+            let stations: Option<Vec<String>> = params
+                .get("stations")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let config_json = parse_optional_string_param(params, "config_json");
+            let system_prompt = parse_optional_string_param(params, "system_prompt");
+            serde_json::to_value(
+                commands::create_global_agent(
+                    commands::CreateGlobalAgentInput {
+                        name,
+                        role,
+                        provider,
+                        model,
+                        token_budget,
+                        timeout_minutes,
+                        max_concurrent,
+                        stations,
+                        config_json,
+                        system_prompt,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "global_agent.update" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let name = parse_optional_string_param(params, "name");
+            let role = parse_optional_string_param(params, "role");
+            let provider = parse_optional_string_param(params, "provider");
+            let model = parse_optional_string_param(params, "model");
+            let token_budget = params.get("token_budget").and_then(|v| v.as_i64());
+            let timeout_minutes = params.get("timeout_minutes").and_then(|v| v.as_i64());
+            let max_concurrent = params.get("max_concurrent").and_then(|v| v.as_i64());
+            let stations: Option<Vec<String>> = params
+                .get("stations")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let config_json = parse_optional_string_param(params, "config_json");
+            let system_prompt = parse_optional_string_param(params, "system_prompt");
+            let active = params.get("active").and_then(|v| v.as_bool());
+            serde_json::to_value(
+                commands::update_global_agent(
+                    commands::UpdateGlobalAgentInput {
+                        id,
+                        name,
+                        role,
+                        provider,
+                        model,
+                        token_budget,
+                        timeout_minutes,
+                        max_concurrent,
+                        stations,
+                        config_json,
+                        system_prompt,
+                        active,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "global_agent.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_global_agent(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "global_agent.copy_to_project" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let new_id = commands::copy_global_agent_to_project(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"id": new_id})
+        }
+        "global_agent.list_all" => serde_json::to_value(
+            commands::list_all_agents(state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )

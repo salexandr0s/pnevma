@@ -2,7 +2,7 @@ use crate::control::ControlServerHandle;
 use crate::event_emitter::{BroadcastingEmitter, EventEmitter, NullEmitter};
 use pnevma_agents::{AdapterRegistry, DispatchPool};
 use pnevma_core::{GlobalConfig, ProjectConfig};
-use pnevma_db::Db;
+use pnevma_db::{Db, GlobalDb};
 use pnevma_git::GitService;
 use pnevma_session::SessionSupervisor;
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,7 @@ impl ProjectRuntime {
 pub struct AppState {
     pub current: Mutex<Option<ProjectContext>>,
     pub current_runtime: Mutex<Option<ProjectRuntime>>,
+    pub global_db: Option<GlobalDb>,
     pub recents: Mutex<Vec<RecentProject>>,
     pub control_plane: Mutex<Option<ControlServerHandle>>,
     pub merge_branch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -69,6 +70,7 @@ impl Default for AppState {
         Self {
             current: Mutex::new(None),
             current_runtime: Mutex::new(None),
+            global_db: None,
             recents: Mutex::new(Vec::new()),
             control_plane: Mutex::new(None),
             merge_branch_locks: Mutex::new(HashMap::new()),
@@ -89,5 +91,23 @@ impl AppState {
             emitter,
             ..Default::default()
         }
+    }
+
+    pub fn new_with_global_db(emitter: Arc<dyn EventEmitter>, global_db: GlobalDb) -> Self {
+        let (remote_events, _rx) = tokio::sync::broadcast::channel(2048);
+        let emitter = Arc::new(BroadcastingEmitter::new(emitter, remote_events.clone()))
+            as Arc<dyn EventEmitter>;
+        Self {
+            global_db: Some(global_db),
+            remote_events,
+            emitter,
+            ..Default::default()
+        }
+    }
+
+    pub fn global_db(&self) -> Result<&GlobalDb, String> {
+        self.global_db
+            .as_ref()
+            .ok_or_else(|| "global database not initialized".to_string())
     }
 }

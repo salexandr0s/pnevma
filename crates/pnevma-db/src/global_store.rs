@@ -1,4 +1,5 @@
 use crate::error::DbError;
+use crate::models::{GlobalAgentProfileRow, GlobalWorkflowRow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -69,6 +70,41 @@ impl GlobalDb {
                 name TEXT NOT NULL,
                 project_id TEXT NOT NULL,
                 opened_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS global_workflows (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                definition_yaml TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'user',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS global_agent_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL DEFAULT 'build',
+                provider TEXT NOT NULL DEFAULT 'anthropic',
+                model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+                token_budget INTEGER NOT NULL DEFAULT 200000,
+                timeout_minutes INTEGER NOT NULL DEFAULT 30,
+                max_concurrent INTEGER NOT NULL DEFAULT 2,
+                stations_json TEXT NOT NULL DEFAULT '[]',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                system_prompt TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )",
         )
         .execute(&pool)
@@ -163,6 +199,196 @@ impl GlobalDb {
     pub async fn remove_recent_project(&self, path: &str) -> Result<(), DbError> {
         sqlx::query("DELETE FROM recent_projects WHERE path = ?")
             .bind(path)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ─── Global Workflow methods ──────────────────────────────────────────────
+
+    pub async fn create_global_workflow(&self, row: &GlobalWorkflowRow) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO global_workflows (id, name, description, definition_yaml, source, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(&row.id)
+        .bind(&row.name)
+        .bind(&row.description)
+        .bind(&row.definition_yaml)
+        .bind(&row.source)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_global_workflow(
+        &self,
+        id: &str,
+    ) -> Result<Option<GlobalWorkflowRow>, DbError> {
+        let row = sqlx::query_as::<_, GlobalWorkflowRow>(
+            "SELECT id, name, description, definition_yaml, source, created_at, updated_at
+             FROM global_workflows WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_global_workflow_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<GlobalWorkflowRow>, DbError> {
+        let row = sqlx::query_as::<_, GlobalWorkflowRow>(
+            "SELECT id, name, description, definition_yaml, source, created_at, updated_at
+             FROM global_workflows WHERE name = ?1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_global_workflows(&self) -> Result<Vec<GlobalWorkflowRow>, DbError> {
+        let rows = sqlx::query_as::<_, GlobalWorkflowRow>(
+            "SELECT id, name, description, definition_yaml, source, created_at, updated_at
+             FROM global_workflows ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn update_global_workflow(&self, row: &GlobalWorkflowRow) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE global_workflows SET name = ?1, description = ?2, definition_yaml = ?3, source = ?4, updated_at = ?5
+             WHERE id = ?6",
+        )
+        .bind(&row.name)
+        .bind(&row.description)
+        .bind(&row.definition_yaml)
+        .bind(&row.source)
+        .bind(row.updated_at)
+        .bind(&row.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_global_workflow(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM global_workflows WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ─── Global Agent Profile methods ─────────────────────────────────────────
+
+    pub async fn create_global_agent_profile(
+        &self,
+        row: &GlobalAgentProfileRow,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO global_agent_profiles
+                (id, name, role, provider, model, token_budget, timeout_minutes,
+                 max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        )
+        .bind(&row.id)
+        .bind(&row.name)
+        .bind(&row.role)
+        .bind(&row.provider)
+        .bind(&row.model)
+        .bind(row.token_budget)
+        .bind(row.timeout_minutes)
+        .bind(row.max_concurrent)
+        .bind(&row.stations_json)
+        .bind(&row.config_json)
+        .bind(&row.system_prompt)
+        .bind(row.active)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_global_agent_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<GlobalAgentProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
+            "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at
+             FROM global_agent_profiles WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_global_agent_profile_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<GlobalAgentProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
+            "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at
+             FROM global_agent_profiles WHERE name = ?1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_global_agent_profiles(&self) -> Result<Vec<GlobalAgentProfileRow>, DbError> {
+        let rows = sqlx::query_as::<_, GlobalAgentProfileRow>(
+            "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at
+             FROM global_agent_profiles WHERE active = 1 ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn update_global_agent_profile(
+        &self,
+        row: &GlobalAgentProfileRow,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE global_agent_profiles
+             SET name = ?1, role = ?2, provider = ?3, model = ?4, token_budget = ?5,
+                 timeout_minutes = ?6, max_concurrent = ?7, stations_json = ?8,
+                 config_json = ?9, system_prompt = ?10, active = ?11, updated_at = ?12
+             WHERE id = ?13",
+        )
+        .bind(&row.name)
+        .bind(&row.role)
+        .bind(&row.provider)
+        .bind(&row.model)
+        .bind(row.token_budget)
+        .bind(row.timeout_minutes)
+        .bind(row.max_concurrent)
+        .bind(&row.stations_json)
+        .bind(&row.config_json)
+        .bind(&row.system_prompt)
+        .bind(row.active)
+        .bind(row.updated_at)
+        .bind(&row.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_global_agent_profile(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM global_agent_profiles WHERE id = ?1")
+            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())

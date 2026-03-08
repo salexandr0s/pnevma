@@ -1,6 +1,8 @@
 // Submodule declarations
 pub mod agents;
 pub mod analytics;
+pub mod global_agents;
+pub mod global_workflow;
 pub mod project;
 pub mod ssh;
 pub mod tasks;
@@ -9,6 +11,8 @@ pub mod workflow;
 // Re-export all command functions from submodules
 pub use self::agents::*;
 pub use self::analytics::*;
+pub use self::global_agents::*;
+pub use self::global_workflow::*;
 pub use self::project::*;
 pub use self::ssh::*;
 pub use self::tasks::*;
@@ -32,10 +36,10 @@ use pnevma_core::{
 };
 use pnevma_db::{
     sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow,
-    CostRow, Db, EventQueryFilter, EventRow, FeedbackRow, GlobalDb, MergeQueueRow, NewEvent,
-    NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow,
-    SecretRefRow, SessionRow, SshProfileRow, TaskRow, TelemetryEventRow, TrustRecord,
-    WorkflowInstanceRow, WorkflowRow, WorktreeRow,
+    CostRow, Db, EventQueryFilter, EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow,
+    OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SecretRefRow,
+    SessionRow, SshProfileRow, TaskRow, TelemetryEventRow, TrustRecord, WorkflowInstanceRow,
+    WorkflowRow, WorktreeRow,
 };
 use pnevma_git::GitService;
 use pnevma_redaction::{
@@ -850,6 +854,7 @@ fn parse_status(status: &str) -> TaskStatus {
         "Done" => TaskStatus::Done,
         "Failed" => TaskStatus::Failed,
         "Blocked" => TaskStatus::Blocked,
+        "Looped" => TaskStatus::Looped,
         _ => TaskStatus::Planned,
     }
 }
@@ -863,6 +868,7 @@ fn status_to_str(status: &TaskStatus) -> &'static str {
         TaskStatus::Done => "Done",
         TaskStatus::Failed => "Failed",
         TaskStatus::Blocked => "Blocked",
+        TaskStatus::Looped => "Looped",
     }
 }
 
@@ -1478,6 +1484,8 @@ fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
         execution_mode: row.execution_mode.clone(),
         timeout_minutes: row.timeout_minutes,
         max_retries: row.max_retries,
+        loop_iteration: row.loop_iteration,
+        loop_context_json: row.loop_context_json.clone(),
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
@@ -1513,6 +1521,8 @@ fn task_contract_to_row(task: &TaskContract, project_id: &str) -> Result<TaskRow
         execution_mode: task.execution_mode.clone(),
         timeout_minutes: task.timeout_minutes,
         max_retries: task.max_retries,
+        loop_iteration: task.loop_iteration,
+        loop_context_json: task.loop_context_json.clone(),
     })
 }
 
@@ -2562,7 +2572,10 @@ async fn generate_review_pack(
 }
 
 fn is_terminal_task_status(status: &TaskStatus) -> bool {
-    matches!(status, TaskStatus::Done | TaskStatus::Failed)
+    matches!(
+        status,
+        TaskStatus::Done | TaskStatus::Failed | TaskStatus::Looped
+    )
 }
 
 /// Check if all tasks in a workflow instance are terminal and update the instance status.
@@ -2587,6 +2600,7 @@ async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str) {
                 "Failed" => {
                     any_failed = true;
                 }
+                "Looped" => {} // terminal but not a failure — loop iteration was triggered
                 _ => {
                     all_terminal = false;
                 }
@@ -2603,6 +2617,456 @@ async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str) {
             .update_workflow_instance_status(&wt.workflow_id, new_status)
             .await;
     }
+}
+
+/// Resolve a workflow definition by name, searching project DB → disk YAML → global DB.
+async fn resolve_workflow_def(
+    workflow_name: &str,
+    db: &Db,
+    project_id: Uuid,
+    project_path: &Path,
+    global_db: Option<&pnevma_db::GlobalDb>,
+) -> Result<WorkflowDef, String> {
+    // Check project DB first
+    if let Some(row) = db
+        .get_workflow_by_name(&project_id.to_string(), workflow_name)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return WorkflowDef::from_yaml(&row.definition_yaml).map_err(|e| e.to_string());
+    }
+
+    // Check YAML files on disk
+    let workflows_dir = project_path.join(".pnevma").join("workflows");
+    let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
+    if let Some(d) = defs.into_iter().find(|d| d.name == workflow_name) {
+        return Ok(d);
+    }
+
+    // Check global DB
+    if let Some(global_db) = global_db {
+        if let Some(global_row) = global_db
+            .get_global_workflow_by_name(workflow_name)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return WorkflowDef::from_yaml(&global_row.definition_yaml).map_err(|e| e.to_string());
+        }
+    }
+
+    Err(format!("workflow '{workflow_name}' not found"))
+}
+
+/// Check if a terminal task should trigger a loop iteration.
+/// Returns true if a loop was triggered (caller should skip workflow completion check).
+///
+/// For `on_failure` mode: triggers only on `Failed`.
+/// For `until_complete` mode: triggers on `Failed` and `Done` (unless agent signaled `<COMPLETE>`).
+///
+/// This function is safe to call from spawned closures because it derives all context
+/// from the DB and project_path, without requiring AppState.
+async fn check_loop_trigger(
+    db: &Db,
+    task_id: &str,
+    task_status: &TaskStatus,
+    project_path: &Path,
+    global_db: Option<&pnevma_db::GlobalDb>,
+) -> Result<bool, String> {
+    // Early exit: only Failed and Done can trigger loops
+    if !matches!(task_status, TaskStatus::Failed | TaskStatus::Done) {
+        return Ok(false);
+    }
+
+    // Find which workflow/step this task belongs to
+    let wt = match db
+        .find_workflow_by_task(task_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        Some(wt) => wt,
+        None => return Ok(false),
+    };
+
+    // Load workflow instance to get project info and workflow name
+    let instance = db
+        .get_workflow_instance(&wt.workflow_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("workflow instance '{}' not found", wt.workflow_id))?;
+
+    let project_id = Uuid::parse_str(&instance.project_id).map_err(|e| e.to_string())?;
+
+    // Load the workflow definition to get LoopConfig
+    let def = resolve_workflow_def(
+        &instance.workflow_name,
+        db,
+        project_id,
+        project_path,
+        global_db,
+    )
+    .await?;
+
+    let step_idx = wt.step_index as usize;
+    if step_idx >= def.steps.len() {
+        return Ok(false);
+    }
+
+    let step = &def.steps[step_idx];
+    let loop_config = match &step.loop_config {
+        Some(lc) => lc,
+        None => return Ok(false),
+    };
+
+    // Load the gate task row once (needed for COMPLETE check and Looped marking)
+    let mut gate_row = db
+        .get_task(task_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task '{task_id}' not found"))?;
+
+    // Reject onFailure self-loops (target must be < gate step)
+    if loop_config.mode == pnevma_core::LoopMode::OnFailure && loop_config.target == step_idx {
+        tracing::warn!(
+            step_index = step_idx,
+            "onFailure loop has self-loop target — skipping (target must be < step index)"
+        );
+        return Ok(false);
+    }
+
+    // Mode-aware status check
+    match loop_config.mode {
+        pnevma_core::LoopMode::OnFailure => {
+            if *task_status != TaskStatus::Failed {
+                return Ok(false);
+            }
+        }
+        pnevma_core::LoopMode::UntilComplete => {
+            match task_status {
+                TaskStatus::Failed => {} // always loop on failure
+                TaskStatus::Done => {
+                    // Check for <COMPLETE> signal in handoff_summary
+                    let summary = gate_row.handoff_summary.as_deref().unwrap_or_default();
+                    if summary.to_lowercase().contains("<complete>") {
+                        tracing::info!(
+                            step_index = step_idx,
+                            "agent signaled COMPLETE — stopping until_complete loop"
+                        );
+                        return Ok(false);
+                    }
+                    // No COMPLETE signal → loop again
+                }
+                _ => return Ok(false),
+            }
+        }
+    }
+
+    // Check iteration count
+    let current_iter = db
+        .get_latest_iteration(&wt.workflow_id, wt.step_index)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if current_iter >= loop_config.max_iterations as i64 {
+        tracing::info!(
+            step_index = step_idx,
+            current_iter,
+            max = loop_config.max_iterations,
+            "loop exhausted for step — normal failure proceeds"
+        );
+        return Ok(false);
+    }
+
+    // Trigger loop iteration
+    let next_iter = current_iter + 1;
+    // Build feedback from gate_row (already loaded above) to avoid a redundant DB fetch
+    let raw_feedback = gate_row.handoff_summary.clone().unwrap_or_default();
+    let feedback = if raw_feedback.chars().count() > 500 {
+        let truncated: String = raw_feedback.chars().take(500).collect();
+        format!("{truncated}…")
+    } else {
+        raw_feedback
+    };
+    create_loop_iteration(db, &def, &wt, &instance, next_iter, &feedback, loop_config).await?;
+
+    // Mark the gate task as Looped (reuse gate_row loaded above)
+    gate_row.status = "Looped".to_string();
+    gate_row.updated_at = Utc::now();
+    db.update_task(&gate_row).await.map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        step_index = step_idx,
+        iteration = next_iter,
+        "loop iteration triggered"
+    );
+
+    Ok(true)
+}
+
+/// Create new task instances for a loop iteration (steps [target..=gate]).
+async fn create_loop_iteration(
+    db: &Db,
+    def: &WorkflowDef,
+    wt: &pnevma_db::WorkflowTaskRow,
+    instance: &pnevma_db::WorkflowInstanceRow,
+    iteration: i64,
+    feedback: &str,
+    loop_config: &pnevma_core::LoopConfig,
+) -> Result<(), String> {
+    let trigger_task_id = wt.task_id.as_str();
+    let target = loop_config.target;
+    let gate = wt.step_index as usize;
+    if target > gate {
+        return Err(format!("loop target {target} must be <= gate step {gate}"));
+    }
+    let now = Utc::now();
+
+    // Create new tasks for steps [target..=gate]
+    let mut new_task_ids: HashMap<usize, Uuid> = HashMap::new();
+
+    // Find the latest Done task for pre-loop dependencies
+    let all_wf_tasks = db
+        .list_workflow_tasks(&wt.workflow_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // For until_complete mode, accumulate summaries from all prior gate tasks
+    let accumulated_summaries = if loop_config.mode == pnevma_core::LoopMode::UntilComplete {
+        let prior_gate_tasks: Vec<_> = all_wf_tasks
+            .iter()
+            .filter(|t| t.step_index as usize == gate && t.task_id != trigger_task_id)
+            .collect();
+
+        let mut summaries: Vec<serde_json::Value> = Vec::new();
+        for prior_wt in &prior_gate_tasks {
+            if let Ok(Some(prior_row)) = db.get_task(&prior_wt.task_id).await {
+                if let Some(ref s) = prior_row.handoff_summary {
+                    if !s.is_empty() {
+                        let truncated: String = s.chars().take(500).collect();
+                        summaries.push(json!({
+                            "iteration": prior_row.loop_iteration,
+                            "summary": truncated,
+                            "status": prior_row.status,
+                        }));
+                    }
+                }
+            }
+        }
+        // Sort by iteration ascending and cap at 10 most recent
+        summaries.sort_by_key(|s| s.get("iteration").and_then(|v| v.as_i64()).unwrap_or(0));
+        if summaries.len() > 10 {
+            summaries = summaries.split_off(summaries.len() - 10);
+        }
+        Some(summaries)
+    } else {
+        None
+    };
+
+    let mode_str = match loop_config.mode {
+        pnevma_core::LoopMode::UntilComplete => "until_complete",
+        pnevma_core::LoopMode::OnFailure => "on_failure",
+    };
+
+    for step_idx in target..=gate {
+        let step = &def.steps[step_idx];
+        let task_id = Uuid::new_v4();
+
+        let loop_context = json!({
+            "iteration": iteration,
+            "feedback": feedback,
+            "trigger_task_id": trigger_task_id,
+            "mode": mode_str,
+            "accumulated_summaries": accumulated_summaries,
+        });
+
+        // Build dependencies: in-loop deps use new task IDs, pre-loop deps use latest Done task
+        let mut deps_json: Vec<String> = Vec::new();
+        let mut all_deps_satisfied = true;
+        for &dep_idx in &step.depends_on {
+            if dep_idx >= target {
+                // In-loop dependency → point to new task (not yet completed)
+                if let Some(id) = new_task_ids.get(&dep_idx) {
+                    deps_json.push(id.to_string());
+                    all_deps_satisfied = false; // in-loop dep won't be Done yet
+                }
+            } else {
+                // Pre-loop dependency → find latest Done task for that step.
+                // Pre-loop steps must be Done before the gate fails, so this
+                // should always succeed. Propagate the error if it doesn't.
+                let dep_task_id =
+                    find_latest_done_task_for_step(&all_wf_tasks, db, dep_idx).await?;
+                deps_json.push(dep_task_id);
+            }
+        }
+
+        // Start as Ready only if all deps are satisfied (Done or none)
+        let initial_status = if deps_json.is_empty() || all_deps_satisfied {
+            "Ready"
+        } else {
+            "Blocked"
+        };
+
+        let checks: Vec<serde_json::Value> = step
+            .acceptance_criteria
+            .iter()
+            .map(|desc| {
+                json!({
+                    "description": desc,
+                    "check_type": "ManualApproval",
+                })
+            })
+            .collect();
+
+        // Append loop context to goal
+        let goal = format!(
+            "{}\n\n[Loop iteration {}/{} — {}]",
+            step.goal, iteration, loop_config.max_iterations, feedback
+        );
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: instance.project_id.clone(),
+            title: step.title.clone(),
+            goal,
+            scope_json: serde_json::to_string(&step.scope).unwrap_or_else(|_| "[]".to_string()),
+            dependencies_json: serde_json::to_string(&deps_json)
+                .unwrap_or_else(|_| "[]".to_string()),
+            acceptance_json: serde_json::to_string(&checks).unwrap_or_else(|_| "[]".to_string()),
+            constraints_json: serde_json::to_string(&step.constraints)
+                .unwrap_or_else(|_| "[]".to_string()),
+            priority: step.priority.clone(),
+            status: initial_status.to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: step.auto_dispatch,
+            agent_profile_override: step.agent_profile.clone(),
+            execution_mode: Some(step.execution_mode.as_str().to_string()),
+            timeout_minutes: step.timeout_minutes.map(|v| v as i64),
+            max_retries: step.max_retries.map(|v| v as i64),
+            loop_iteration: iteration,
+            loop_context_json: Some(loop_context.to_string()),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if !deps_json.is_empty() {
+            db.replace_task_dependencies(&task_id.to_string(), &deps_json)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        db.add_workflow_task(
+            &wt.workflow_id,
+            step_idx as i64,
+            iteration,
+            &task_id.to_string(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        new_task_ids.insert(step_idx, task_id);
+    }
+
+    // Update downstream tasks (steps after gate) to depend on new gate task.
+    // Only touch tasks that actually reference the trigger task in their deps,
+    // to avoid corrupting historical iteration rows.
+    let new_gate_task_id = new_task_ids[&gate].to_string();
+    for downstream_wt in &all_wf_tasks {
+        if downstream_wt.step_index as usize > gate {
+            // Check if this task actually depends on the trigger task before swapping
+            if let Ok(Some(mut downstream_row)) = db.get_task(&downstream_wt.task_id).await {
+                let mut deps: Vec<String> =
+                    serde_json::from_str(&downstream_row.dependencies_json).unwrap_or_default();
+                let mut changed = false;
+                for dep in &mut deps {
+                    if dep == trigger_task_id {
+                        *dep = new_gate_task_id.clone();
+                        changed = true;
+                    }
+                }
+                if changed {
+                    db.swap_task_dependency(
+                        &downstream_wt.task_id,
+                        trigger_task_id,
+                        &new_gate_task_id,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    downstream_row.dependencies_json =
+                        serde_json::to_string(&deps).unwrap_or_else(|_| "[]".to_string());
+                    downstream_row.updated_at = Utc::now();
+                    db.update_task(&downstream_row)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+
+    // Update expanded_steps_json on the workflow instance for loop tracking
+    let mut loop_state: serde_json::Value = instance
+        .expanded_steps_json
+        .as_ref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_else(|| json!({"loops": {}}));
+
+    let gate_key = gate.to_string();
+    let new_task_id_map: serde_json::Map<String, serde_json::Value> = new_task_ids
+        .iter()
+        .map(|(k, v)| (k.to_string(), json!(v.to_string())))
+        .collect();
+
+    if let Some(loops) = loop_state.get_mut("loops").and_then(|l| l.as_object_mut()) {
+        let entry = loops.entry(gate_key).or_insert_with(|| {
+            json!({
+                "target": target,
+                "max_iterations": loop_config.max_iterations,
+                "current_iteration": 0,
+                "history": []
+            })
+        });
+        entry["current_iteration"] = json!(iteration);
+        if let Some(history) = entry.get_mut("history").and_then(|h| h.as_array_mut()) {
+            history.push(json!({
+                "iteration": iteration,
+                "task_ids": new_task_id_map,
+                "trigger_task_id": trigger_task_id,
+            }));
+        }
+    }
+
+    db.update_workflow_instance_expanded_steps(&wt.workflow_id, &loop_state.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Find the latest Done task for a given step index in a workflow's task list.
+/// Checks task status via DB to ensure only completed tasks are returned.
+async fn find_latest_done_task_for_step(
+    wf_tasks: &[pnevma_db::WorkflowTaskRow],
+    db: &Db,
+    step_idx: usize,
+) -> Result<String, String> {
+    // Iterate highest-iteration first and return the first task that is Done.
+    let mut candidates: Vec<_> = wf_tasks
+        .iter()
+        .filter(|t| t.step_index as usize == step_idx)
+        .collect();
+    candidates.sort_by(|a, b| b.iteration.cmp(&a.iteration));
+
+    for candidate in candidates {
+        if let Ok(Some(task)) = db.get_task(&candidate.task_id).await {
+            if task.status == "Done" {
+                return Ok(candidate.task_id.clone());
+            }
+        }
+    }
+
+    Err(format!("no Done task found for step {step_idx}"))
 }
 
 async fn stop_control_plane(state: &AppState) {

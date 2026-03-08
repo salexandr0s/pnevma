@@ -4,17 +4,28 @@ import Cocoa
 // MARK: - Data Models
 
 struct WorkflowDefItem: Identifiable, Codable {
-    var id: String? { dbId ?? name }
+    var id: String { dbId ?? name }
     let dbId: String?
     let name: String
     let description: String?
     let source: String
-    let steps: [WorkflowStepDef]
+    let steps: [WorkflowStepDef]?
 
     enum CodingKeys: String, CodingKey {
         case dbId = "id"
         case name, description, source, steps
     }
+}
+
+enum LoopMode: String, Codable, CaseIterable {
+    case onFailure = "on_failure"
+    case untilComplete = "until_complete"
+}
+
+struct LoopConfig: Codable {
+    var target: Int
+    var maxIterations: Int = 5
+    var mode: LoopMode = .onFailure
 }
 
 struct WorkflowStepDef: Codable {
@@ -31,6 +42,7 @@ struct WorkflowStepDef: Codable {
     var acceptanceCriteria: [String] = []
     var constraints: [String] = []
     var onFailure: String = "Pause"
+    var loopConfig: LoopConfig?
 }
 
 struct WorkflowInstanceItem: Identifiable, Codable {
@@ -56,8 +68,9 @@ struct WorkflowInstanceDetail: Codable {
 }
 
 struct WorkflowInstanceStepItem: Identifiable, Codable {
-    var id: String { taskID }
+    var id: String { "\(taskID)-\(iteration)" }
     let stepIndex: Int
+    let iteration: Int
     let taskID: String
     let title: String
     let goal: String
@@ -79,6 +92,7 @@ struct WorkflowInstanceStepItem: Identifiable, Codable {
         case "failed": return .red
         case "blocked": return .orange
         case "ready": return .cyan
+        case "looped": return .purple
         default: return .secondary
         }
     }
@@ -87,44 +101,119 @@ struct WorkflowInstanceStepItem: Identifiable, Codable {
 struct AgentProfileItem: Identifiable, Codable {
     let id: String
     let name: String
+    let role: String?
     let provider: String
     let model: String
+    let tokenBudget: Int?
     let timeoutMinutes: Int
     let maxConcurrent: Int
+    let stations: [String]?
+    let systemPrompt: String?
+    let active: Bool?
+    let scope: String?
 
     var displayName: String {
         "\(name) (\(provider) / \(model))"
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, role, provider, model
+        case tokenBudget = "token_budget"
+        case timeoutMinutes = "timeout_minutes"
+        case maxConcurrent = "max_concurrent"
+        case stations
+        case systemPrompt = "system_prompt"
+        case active, scope
+    }
+}
+
+struct AgentProfileFullItem: Identifiable, Codable {
+    let id: String
+    var name: String
+    var role: String
+    var provider: String
+    var model: String
+    var tokenBudget: Int
+    var timeoutMinutes: Int
+    var maxConcurrent: Int
+    var stations: [String]
+    var configJson: String
+    var systemPrompt: String?
+    var active: Bool
+    let scope: String?
+    let createdAt: String?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, role, provider, model
+        case tokenBudget = "token_budget"
+        case timeoutMinutes = "timeout_minutes"
+        case maxConcurrent = "max_concurrent"
+        case stations
+        case configJson = "config_json"
+        case systemPrompt = "system_prompt"
+        case active, scope
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+enum OrchestrationScope: String, CaseIterable {
+    case global = "Global"
+    case project = "Project"
 }
 
 // MARK: - Main View
 
 struct WorkflowView: View {
     @StateObject private var viewModel = WorkflowViewModel()
+    @StateObject private var agentViewModel = AgentViewModel()
     @State private var selectedTab: Tab = .library
+    @State private var scope: OrchestrationScope = .global
 
     enum Tab: String, CaseIterable {
         case library = "Library"
         case active = "Active"
         case builder = "Builder"
+        case agents = "Agents"
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Workflows")
+                Text("Agents")
                     .font(.headline)
                 Spacer()
+                // Scope selector
+                Picker("Scope", selection: $scope) {
+                    ForEach(OrchestrationScope.allCases, id: \.self) { s in
+                        Text(s.rawValue).tag(s)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                .onChange(of: scope) {
+                    viewModel.scope = scope
+                    agentViewModel.scope = scope
+                    viewModel.load()
+                    agentViewModel.load()
+                }
                 Picker("", selection: $selectedTab) {
                     ForEach(Tab.allCases, id: \.self) { tab in
                         Text(tab.rawValue).tag(tab)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 280)
+                .frame(width: 340)
                 if selectedTab == .library {
                     Button(action: { selectedTab = .builder; viewModel.resetBuilder() }) {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                if selectedTab == .agents {
+                    Button(action: { agentViewModel.startCreating() }) {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
@@ -148,9 +237,16 @@ struct WorkflowView: View {
                 }, onRun: {
                     selectedTab = .active
                 })
+            case .agents:
+                AgentsSection(viewModel: agentViewModel)
             }
         }
-        .onAppear { viewModel.load() }
+        .onAppear {
+            viewModel.scope = scope
+            agentViewModel.scope = scope
+            viewModel.load()
+            agentViewModel.load()
+        }
     }
 }
 
@@ -183,7 +279,7 @@ struct LibrarySection: View {
                         Text(desc).font(.caption).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 8) {
-                        Text("\(def.steps.count) steps")
+                        Text("\(def.steps?.count ?? 0) steps")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -254,22 +350,38 @@ struct InstanceDetailView: View {
     let detail: WorkflowInstanceDetail
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(detail.workflowName).font(.title3.bold())
-                Spacer()
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text(detail.workflowName).font(.headline)
                 StatusBadge(status: detail.status)
+                Spacer()
+                Text("\(detail.steps.count) steps")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
-            ScrollView([.horizontal, .vertical]) {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(layers, id: \.0) { _, layerSteps in
-                        HStack(spacing: 16) {
+            Divider().opacity(0.3)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(Array(layers.enumerated()), id: \.offset) { layerIdx, layer in
+                        let (_, layerSteps) = layer
+                        VStack(spacing: 10) {
                             ForEach(layerSteps) { step in
                                 InstanceStepNode(step: step)
                             }
+                        }
+                        if layerIdx < layers.count - 1 {
+                            // Single connector between layers — intentional
+                            // simplification; per-node edges would need Canvas.
+                            VStack {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.secondary.opacity(0.4))
+                            }
+                            .frame(width: 28)
                         }
                     }
                 }
@@ -308,39 +420,67 @@ struct InstanceStepNode: View {
     let step: WorkflowInstanceStepItem
 
     var body: some View {
-        VStack(spacing: 4) {
-            Circle()
-                .fill(step.statusColor)
-                .frame(width: 24, height: 24)
-                .overlay {
-                    statusIcon
-                        .font(.caption2)
-                        .foregroundStyle(.white)
-                }
-
-            Text(step.title)
-                .font(.caption)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-
-            if let profile = step.agentProfile {
-                Text(profile)
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.purple.opacity(0.15)))
+        HStack(spacing: 10) {
+            // Status indicator
+            ZStack {
+                Circle()
+                    .fill(step.statusColor.opacity(0.15))
+                    .frame(width: 32, height: 32)
+                Circle()
+                    .fill(step.statusColor)
+                    .frame(width: 20, height: 20)
+                    .overlay {
+                        statusIcon
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
             }
 
-            Image(systemName: step.executionMode == "main" ? "house.fill" : "arrow.triangle.branch")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(step.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    if step.iteration > 0 {
+                        Text("iter \(step.iteration)")
+                            .font(.system(size: 9, weight: .medium))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.purple.opacity(0.15))
+                            .cornerRadius(3)
+                            .foregroundStyle(.purple)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    if let profile = step.agentProfile {
+                        Text(profile)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.purple.opacity(0.8))
+                    }
+                    HStack(spacing: 2) {
+                        Image(systemName: step.executionMode == "main" ? "house.fill" : "arrow.triangle.branch")
+                            .font(.system(size: 8))
+                        Text(step.executionMode)
+                            .font(.system(size: 9))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+            }
         }
-        .frame(width: 100)
-        .padding(8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(minWidth: 160, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(step.statusColor.opacity(0.3), lineWidth: 1)
+                .fill(step.statusColor.opacity(0.04))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(step.statusColor.opacity(0.2), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(step.title), \(step.status), \(step.executionMode)")
     }
 
     @ViewBuilder
@@ -351,6 +491,7 @@ struct InstanceStepNode: View {
         case "failed": Image(systemName: "xmark")
         case "blocked": Image(systemName: "lock.fill")
         case "ready": Image(systemName: "bolt.fill")
+        case "looped": Image(systemName: "arrow.trianglehead.2.clockwise")
         default: Image(systemName: "clock")
         }
     }
@@ -424,36 +565,50 @@ struct BuilderSection: View {
 
             // Live DAG Preview
             if !viewModel.builderSteps.isEmpty {
-                Divider()
+                Divider().opacity(0.3)
                 MiniDagPreview(steps: viewModel.builderSteps)
-                    .frame(height: 120)
+                    .frame(height: 100)
             }
 
-            Divider()
+            Divider().opacity(0.3)
             // Actions
-            HStack {
+            HStack(spacing: 10) {
                 Button("Cancel") {
                     viewModel.resetBuilder()
                     onSaved()
                 }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+
                 Spacer()
+
                 if let err = viewModel.error {
-                    Text(err).font(.caption).foregroundStyle(.red)
-                }
-                Button("Save") {
-                    if mode == .source {
-                        _ = viewModel.parseFromYAML(yamlText)
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                        Text(err)
+                            .font(.caption)
                     }
+                    .foregroundStyle(.red)
+                }
+
+                Button(action: {
+                    if mode == .source { _ = viewModel.parseFromYAML(yamlText) }
                     viewModel.save { onSaved() }
+                }) {
+                    Label("Save", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.bordered)
-                Button("Run") {
-                    if mode == .source {
-                        _ = viewModel.parseFromYAML(yamlText)
-                    }
+                .controlSize(.regular)
+
+                Button(action: {
+                    if mode == .source { _ = viewModel.parseFromYAML(yamlText) }
                     viewModel.saveAndRun { onRun() }
+                }) {
+                    Label("Save & Run", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
             }
             .padding(12)
         }
@@ -637,6 +792,62 @@ struct StepFormCard: View {
                     }
                 }
             }
+
+            // Loop Configuration
+            do {
+                let loopEnabled = Binding<Bool>(
+                    get: { step.loopConfig != nil },
+                    set: { enabled in
+                        if enabled {
+                            step.loopConfig = LoopConfig(target: 0, maxIterations: 5)
+                        } else {
+                            step.loopConfig = nil
+                        }
+                    }
+                )
+                DisclosureGroup("Loop") {
+                    Toggle("Enable Loop", isOn: loopEnabled)
+                        .toggleStyle(.checkbox)
+                    if let _ = step.loopConfig {
+                        let loopMode = Binding<LoopMode>(
+                            get: { step.loopConfig?.mode ?? .onFailure },
+                            set: { newMode in
+                                step.loopConfig?.mode = newMode
+                                if newMode == .onFailure, let t = step.loopConfig?.target, t >= index {
+                                    step.loopConfig?.target = max(index - 1, 0)
+                                }
+                            }
+                        )
+                        let loopTarget = Binding<Int>(
+                            get: { step.loopConfig?.target ?? 0 },
+                            set: { step.loopConfig?.target = $0 }
+                        )
+                        let loopMaxIter = Binding<Int>(
+                            get: { step.loopConfig?.maxIterations ?? 5 },
+                            set: { step.loopConfig?.maxIterations = $0 }
+                        )
+                        Picker("Mode", selection: loopMode) {
+                            Text("On Failure").tag(LoopMode.onFailure)
+                            Text("Until Complete (Ralph)").tag(LoopMode.untilComplete)
+                        }
+                        let maxTarget = loopMode.wrappedValue == .untilComplete ? index : max(index - 1, 0)
+                        if loopMode.wrappedValue == .onFailure && index == 0 {
+                            Text("No valid loop targets (need earlier steps)")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        } else {
+                            Picker("Loop back to", selection: loopTarget) {
+                                ForEach(0...maxTarget, id: \.self) { i in
+                                    let label = i == index ? "Self" : (i < allStepTitles.count ? allStepTitles[i] : "Step \(i + 1)")
+                                    Text(label.isEmpty ? "Step \(i + 1)" : label).tag(i)
+                                }
+                            }
+                        }
+                        Stepper("Max iterations: \(loopMaxIter.wrappedValue)",
+                                value: loopMaxIter, in: 1...20)
+                    }
+                }
+            }
         }
         .padding(12)
         .background(
@@ -652,30 +863,41 @@ struct MiniDagPreview: View {
     let steps: [WorkflowStepDef]
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 16) {
-                ForEach(layers, id: \.0) { _, layerSteps in
-                    VStack(spacing: 8) {
-                        ForEach(layerSteps, id: \.offset) { idx, step in
-                            VStack(spacing: 2) {
-                                Circle()
-                                    .fill(Color.blue.opacity(0.5))
-                                    .frame(width: 16, height: 16)
-                                Text(step.title.isEmpty ? "Step \(idx + 1)" : step.title)
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                                if let profile = step.agentProfile {
-                                    Text(profile)
-                                        .font(.system(size: 8))
-                                        .foregroundStyle(.purple)
-                                }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("Pipeline Preview")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(Array(layers.enumerated()), id: \.offset) { layerIdx, layer in
+                        let (_, layerSteps) = layer
+                        VStack(spacing: 6) {
+                            ForEach(layerSteps, id: \.offset) { idx, step in
+                                MiniStepNode(
+                                    title: step.title.isEmpty ? "Step \(idx + 1)" : step.title,
+                                    agentProfile: step.agentProfile,
+                                    stepIndex: idx + 1,
+                                    hasLoop: step.loopConfig != nil
+                                )
                             }
-                            .frame(width: 70)
+                        }
+                        if layerIdx < layers.count - 1 {
+                            MiniConnector()
                         }
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
             }
-            .padding(8)
         }
     }
 
@@ -703,6 +925,61 @@ struct MiniDagPreview: View {
         let indexed = Array(steps.enumerated())
         let grouped = Dictionary(grouping: indexed) { depths[$0.offset] ?? 0 }
         return grouped.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+    }
+}
+
+private struct MiniStepNode: View {
+    let title: String
+    let agentProfile: String?
+    let stepIndex: Int
+    var hasLoop: Bool = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("\(stepIndex)")
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Color.blue.opacity(0.7)))
+
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+                .foregroundStyle(.primary.opacity(0.8))
+
+            if hasLoop {
+                Image(systemName: "arrow.trianglehead.2.clockwise")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(hasLoop ? Color.orange.opacity(0.3) : Color.blue.opacity(0.15), lineWidth: 1)
+        )
+    }
+}
+
+private struct MiniConnector: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.blue.opacity(0.2))
+                .frame(width: 16, height: 1.5)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(Color.blue.opacity(0.3))
+            Rectangle()
+                .fill(Color.blue.opacity(0.2))
+                .frame(width: 16, height: 1.5)
+        }
+        .frame(width: 40)
     }
 }
 
@@ -743,6 +1020,7 @@ final class WorkflowViewModel: ObservableObject {
     @Published var builderName: String = ""
     @Published var builderDescription: String = ""
     var editingWorkflowId: String?
+    var scope: OrchestrationScope = .global
 
     func load() {
         guard let bus = CommandBus.shared else {
@@ -750,15 +1028,24 @@ final class WorkflowViewModel: ObservableObject {
             return
         }
         isLoading = true
+        error = nil
+        let defsMethod = scope == .global ? "global_workflow.list" : "workflow.list_defs"
+        let profilesMethod = scope == .global ? "global_agent.list" : "agent_profile.list"
         Task {
             do {
-                async let defs: [WorkflowDefItem] = bus.call(method: "workflow.list_defs")
-                async let insts: [WorkflowInstanceItem] = bus.call(method: "workflow.list_instances")
-                async let profiles: [AgentProfileItem] = bus.call(method: "agent_profile.list")
-                let (d, i, p) = try await (defs, insts, profiles)
+                async let defs: [WorkflowDefItem] = bus.call(method: defsMethod)
+                async let profiles: [AgentProfileItem] = bus.call(method: profilesMethod)
+                // Workflow instances are project-scoped; skip when in global scope
+                let loadedInsts: [WorkflowInstanceItem]
+                if scope == .project {
+                    loadedInsts = try await bus.call(method: "workflow.list_instances")
+                } else {
+                    loadedInsts = []
+                }
+                let (d, p) = try await (defs, profiles)
                 await MainActor.run {
                     self.definitions = d
-                    self.instances = i
+                    self.instances = loadedInsts
                     self.availableProfiles = p
                     self.isLoading = false
                 }
@@ -809,18 +1096,20 @@ final class WorkflowViewModel: ObservableObject {
             return
         }
         let yaml = serializeToYAML()
+        let updateMethod = scope == .global ? "global_workflow.update" : "workflow.update"
+        let createMethod = scope == .global ? "global_workflow.create" : "workflow.create"
         Task {
             do {
                 if let existingId = editingWorkflowId {
                     struct Params: Encodable { let id: String; let name: String?; let description: String?; let definitionYaml: String? }
                     let _: WorkflowDefItem = try await bus.call(
-                        method: "workflow.update",
+                        method: updateMethod,
                         params: Params(id: existingId, name: builderName, description: builderDescription.isEmpty ? nil : builderDescription, definitionYaml: yaml)
                     )
                 } else {
                     struct Params: Encodable { let name: String; let description: String?; let definitionYaml: String }
                     let _: WorkflowDefItem = try await bus.call(
-                        method: "workflow.create",
+                        method: createMethod,
                         params: Params(name: builderName, description: builderDescription.isEmpty ? nil : builderDescription, definitionYaml: yaml)
                     )
                 }
@@ -847,10 +1136,11 @@ final class WorkflowViewModel: ObservableObject {
             error = "Backend connection unavailable"
             return
         }
+        let deleteMethod = scope == .global ? "global_workflow.delete" : "workflow.delete"
         Task {
             do {
                 struct Params: Encodable { let id: String }
-                let _: [String: Bool] = try await bus.call(method: "workflow.delete", params: Params(id: id))
+                let _: OkResponse = try await bus.call(method: deleteMethod, params: Params(id: id))
                 load()
             } catch {
                 await MainActor.run { self.error = error.localizedDescription }
@@ -862,7 +1152,7 @@ final class WorkflowViewModel: ObservableObject {
         editingWorkflowId = def.dbId
         builderName = def.name
         builderDescription = def.description ?? ""
-        builderSteps = def.steps
+        builderSteps = def.steps ?? []
     }
 
     func resetBuilder() {
@@ -952,6 +1242,14 @@ final class WorkflowViewModel: ObservableObject {
                 lines.append("    constraints:")
                 for c in step.constraints {
                     lines.append("      - \"\(yamlEscape(c))\"")
+                }
+            }
+            if let loop = step.loopConfig {
+                lines.append("    loop:")
+                lines.append("      target: \(loop.target)")
+                lines.append("      max_iterations: \(loop.maxIterations)")
+                if loop.mode != .onFailure {
+                    lines.append("      mode: \(loop.mode.rawValue)")
                 }
             }
         }
@@ -1052,6 +1350,12 @@ final class WorkflowViewModel: ObservableObject {
                     collectingKey = "constraints"
                     collectedItems = []
                 }
+            case "loop":
+                if value.isEmpty {
+                    // Start collecting loop sub-keys
+                    collectingKey = "loop"
+                    currentStep!.loopConfig = LoopConfig(target: 0, maxIterations: 5)
+                }
             default: break
             }
         }
@@ -1061,6 +1365,19 @@ final class WorkflowViewModel: ObservableObject {
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
 
             let indent = line.prefix(while: { $0 == " " }).count
+
+            // Loop sub-keys (indent 6+, e.g. "      target: 0")
+            if indent >= 6 && collectingKey == "loop" && currentStep != nil {
+                if let (key, value) = parseKV(trimmed) {
+                    switch key {
+                    case "target": currentStep!.loopConfig?.target = Int(value) ?? 0
+                    case "max_iterations": currentStep!.loopConfig?.maxIterations = Int(value) ?? 5
+                    case "mode": currentStep!.loopConfig?.mode = LoopMode(rawValue: value) ?? .onFailure
+                    default: break
+                    }
+                }
+                continue
+            }
 
             // Block sequence item (acceptance_criteria / constraints / scope)
             if indent >= 6 && trimmed.hasPrefix("- ") && collectingKey != nil {
@@ -1110,13 +1427,453 @@ final class WorkflowViewModel: ObservableObject {
     }
 }
 
+// MARK: - AgentViewModel
+
+private struct CopyResponse: Decodable {
+    let id: String
+}
+
+final class AgentViewModel: ObservableObject {
+    @Published var agents: [AgentProfileFullItem] = []
+    @Published var isLoading = false
+    @Published var error: String?
+    @Published var editingAgent: AgentProfileFullItem?
+    @Published var isCreating = false
+    var scope: OrchestrationScope = .global
+
+    func load() {
+        guard let bus = CommandBus.shared else { return }
+        isLoading = true
+        error = nil
+        let method = scope == .global ? "global_agent.list" : "agent_profile.list"
+        Task {
+            do {
+                let items: [AgentProfileFullItem] = try await bus.call(method: method)
+                await MainActor.run {
+                    self.agents = items
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
+    func startCreating() {
+        isCreating = true
+        editingAgent = AgentProfileFullItem(
+            id: UUID().uuidString,
+            name: "",
+            role: "build",
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200000,
+            timeoutMinutes: 30,
+            maxConcurrent: 2,
+            stations: [],
+            configJson: "{}",
+            systemPrompt: nil,
+            active: true,
+            scope: scope.rawValue.lowercased(),
+            createdAt: nil,
+            updatedAt: nil
+        )
+    }
+
+    func startEditing(_ agent: AgentProfileFullItem) {
+        isCreating = false
+        editingAgent = agent
+    }
+
+    func cancelEditing() {
+        editingAgent = nil
+        isCreating = false
+    }
+
+    func save(_ agent: AgentProfileFullItem) {
+        guard let bus = CommandBus.shared else { return }
+        let isNew = isCreating
+
+        struct CreateParams: Encodable {
+            let name: String
+            let role: String
+            let provider: String
+            let model: String
+            let tokenBudget: Int
+            let timeoutMinutes: Int
+            let maxConcurrent: Int
+            let stations: [String]
+            let configJson: String
+            let systemPrompt: String?
+            let active: Bool
+        }
+        struct UpdateParams: Encodable {
+            let id: String
+            let name: String
+            let role: String
+            let provider: String
+            let model: String
+            let tokenBudget: Int
+            let timeoutMinutes: Int
+            let maxConcurrent: Int
+            let stations: [String]
+            let configJson: String
+            let systemPrompt: String?
+            let active: Bool
+        }
+
+        let createMethod = scope == .global ? "global_agent.create" : "agent_profile.create"
+        let updateMethod = scope == .global ? "global_agent.update" : "agent_profile.update"
+
+        Task {
+            do {
+                if isNew {
+                    let _: AgentProfileFullItem = try await bus.call(
+                        method: createMethod,
+                        params: CreateParams(
+                            name: agent.name,
+                            role: agent.role,
+                            provider: agent.provider,
+                            model: agent.model,
+                            tokenBudget: agent.tokenBudget,
+                            timeoutMinutes: agent.timeoutMinutes,
+                            maxConcurrent: agent.maxConcurrent,
+                            stations: agent.stations,
+                            configJson: agent.configJson,
+                            systemPrompt: agent.systemPrompt,
+                            active: agent.active
+                        )
+                    )
+                } else {
+                    let _: AgentProfileFullItem = try await bus.call(
+                        method: updateMethod,
+                        params: UpdateParams(
+                            id: agent.id,
+                            name: agent.name,
+                            role: agent.role,
+                            provider: agent.provider,
+                            model: agent.model,
+                            tokenBudget: agent.tokenBudget,
+                            timeoutMinutes: agent.timeoutMinutes,
+                            maxConcurrent: agent.maxConcurrent,
+                            stations: agent.stations,
+                            configJson: agent.configJson,
+                            systemPrompt: agent.systemPrompt,
+                            active: agent.active
+                        )
+                    )
+                }
+                await MainActor.run {
+                    self.editingAgent = nil
+                    self.isCreating = false
+                }
+                load()
+            } catch {
+                await MainActor.run {
+                    self.error = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func delete(_ id: String) {
+        guard let bus = CommandBus.shared else { return }
+        let method = scope == .global ? "global_agent.delete" : "agent_profile.delete"
+        Task {
+            do {
+                struct Params: Encodable { let id: String }
+                let _: OkResponse = try await bus.call(method: method, params: Params(id: id))
+                load()
+            } catch {
+                await MainActor.run { self.error = error.localizedDescription }
+            }
+        }
+    }
+
+    func copyToProject(_ id: String) {
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let id: String }
+                let _: CopyResponse = try await bus.call(method: "global_agent.copy_to_project", params: Params(id: id))
+            } catch {
+                await MainActor.run { self.error = error.localizedDescription }
+            }
+        }
+    }
+
+    func copyToGlobal(_ id: String) {
+        guard let bus = CommandBus.shared else { return }
+        Task {
+            do {
+                struct Params: Encodable { let id: String }
+                let _: CopyResponse = try await bus.call(method: "agent_profile.copy_to_global", params: Params(id: id))
+            } catch {
+                await MainActor.run { self.error = error.localizedDescription }
+            }
+        }
+    }
+}
+
+// MARK: - AgentsSection
+
+struct AgentsSection: View {
+    @ObservedObject var viewModel: AgentViewModel
+
+    var body: some View {
+        if let editingAgent = viewModel.editingAgent {
+            AgentFormCard(agent: Binding(
+                get: { editingAgent },
+                set: { viewModel.editingAgent = $0 }
+            ), onSave: { agent in
+                viewModel.save(agent)
+            }, onCancel: {
+                viewModel.cancelEditing()
+            })
+        } else if viewModel.isLoading {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.agents.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "person.3")
+                    .font(.system(size: 40))
+                    .foregroundColor(.secondary)
+                Text("No agent profiles")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                Text("Create an agent profile to configure AI agent behavior.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Button("Create Agent") { viewModel.startCreating() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(viewModel.agents) { agent in
+                        AgentRow(agent: agent, viewModel: viewModel)
+                    }
+                }
+                .padding(12)
+            }
+        }
+    }
+}
+
+struct AgentRow: View {
+    let agent: AgentProfileFullItem
+    @ObservedObject var viewModel: AgentViewModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(agent.name)
+                        .font(.headline)
+                    RoleBadge(role: agent.role)
+                    if !agent.active {
+                        Text("inactive")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.gray.opacity(0.3))
+                            .cornerRadius(4)
+                    }
+                }
+                Text("\(agent.provider) / \(agent.model)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if let prompt = agent.systemPrompt, !prompt.isEmpty {
+                    Text(String(prompt.prefix(80)) + (prompt.count > 80 ? "\u{2026}" : ""))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            HStack(spacing: 4) {
+                if viewModel.scope == .global {
+                    Button(action: { viewModel.copyToProject(agent.id) }) {
+                        Image(systemName: "arrow.down.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy to Project")
+                } else {
+                    Button(action: { viewModel.copyToGlobal(agent.id) }) {
+                        Image(systemName: "arrow.up.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy to Global")
+                }
+                Button(action: { viewModel.startEditing(agent) }) {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                Button(action: { viewModel.delete(agent.id) }) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.red)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(8)
+    }
+}
+
+struct RoleBadge: View {
+    let role: String
+
+    var color: Color {
+        switch role.lowercased() {
+        case "build": return .blue
+        case "plan": return .purple
+        case "review": return .orange
+        case "ops": return .green
+        case "research": return .cyan
+        case "test": return .yellow
+        default: return .gray
+        }
+    }
+
+    var body: some View {
+        Text(role)
+            .font(.caption2)
+            .fontWeight(.medium)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.2))
+            .foregroundColor(color)
+            .cornerRadius(4)
+    }
+}
+
+// MARK: - AgentFormCard
+
+struct AgentFormCard: View {
+    @Binding var agent: AgentProfileFullItem
+    let onSave: (AgentProfileFullItem) -> Void
+    let onCancel: () -> Void
+    @State private var stationsText: String = ""
+    @State private var promptExpanded = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Header
+                HStack {
+                    Text(agent.createdAt == nil ? "New Agent" : "Edit Agent")
+                        .font(.headline)
+                    Spacer()
+                    Button("Cancel") { onCancel() }
+                        .buttonStyle(.borderless)
+                    Button("Save") { onSave(agent) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(agent.name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                GroupBox("Identity") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Name", text: $agent.name)
+                        Picker("Role", selection: $agent.role) {
+                            Text("Build").tag("build")
+                            Text("Plan").tag("plan")
+                            Text("Review").tag("review")
+                            Text("Ops").tag("ops")
+                            Text("Research").tag("research")
+                            Text("Test").tag("test")
+                            Text("Custom").tag("custom")
+                        }
+                    }
+                    .padding(4)
+                }
+
+                GroupBox("Model") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Provider", selection: $agent.provider) {
+                            Text("Anthropic").tag("anthropic")
+                            Text("OpenAI").tag("openai")
+                        }
+                        TextField("Model", text: $agent.model)
+                        HStack {
+                            Text("Token Budget")
+                            Spacer()
+                            TextField("", value: $agent.tokenBudget, format: .number)
+                                .frame(width: 100)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                    .padding(4)
+                }
+
+                GroupBox("Execution") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Timeout (min)")
+                            Spacer()
+                            TextField("", value: $agent.timeoutMinutes, format: .number)
+                                .frame(width: 80)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        Stepper("Max Concurrent: \(agent.maxConcurrent)", value: $agent.maxConcurrent, in: 1...10)
+                        Toggle("Active", isOn: $agent.active)
+                    }
+                    .padding(4)
+                }
+
+                GroupBox("Stations") {
+                    TextField("Comma-separated station names", text: $stationsText)
+                        .onAppear { stationsText = agent.stations.joined(separator: ", ") }
+                        .onChange(of: stationsText) {
+                            agent.stations = stationsText
+                                .split(separator: ",")
+                                .map { $0.trimmingCharacters(in: .whitespaces) }
+                                .filter { !$0.isEmpty }
+                        }
+                        .padding(4)
+                }
+
+                GroupBox("System Prompt") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if promptExpanded {
+                            TextEditor(text: Binding(
+                                get: { agent.systemPrompt ?? "" },
+                                set: { agent.systemPrompt = $0.isEmpty ? nil : $0 }
+                            ))
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 120)
+                        } else {
+                            TextField("Optional system prompt", text: Binding(
+                                get: { agent.systemPrompt ?? "" },
+                                set: { agent.systemPrompt = $0.isEmpty ? nil : $0 }
+                            ))
+                        }
+                        Button(promptExpanded ? "Collapse" : "Expand") {
+                            promptExpanded.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
+                    .padding(4)
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
 // MARK: - NSView Wrapper
 
 final class WorkflowPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "workflow"
     let shouldPersist = false
-    var title: String { "Workflow" }
+    var title: String { "Agents" }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

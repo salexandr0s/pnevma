@@ -60,6 +60,34 @@ impl FailurePolicy {
     }
 }
 
+/// Loop mode for a workflow step.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopMode {
+    #[default]
+    OnFailure,
+    UntilComplete,
+}
+
+/// Loop configuration for a workflow step.
+/// When this step fails, loop back to `target` step, up to `max_iterations` times.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopConfig {
+    /// Step index to loop back to (must be < this step's index, or == for until_complete self-loops).
+    pub target: usize,
+    /// Maximum number of loop iterations (default 5, max 20).
+    #[serde(default = "default_max_loop_iterations")]
+    pub max_iterations: u32,
+    /// Loop mode: `on_failure` (default) loops only on failure; `until_complete` loops on
+    /// success too, stopping only when the agent includes `<COMPLETE>` in its summary.
+    #[serde(default)]
+    pub mode: LoopMode,
+}
+
+fn default_max_loop_iterations() -> u32 {
+    5
+}
+
 /// A single step in a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStep {
@@ -93,6 +121,9 @@ pub struct WorkflowStep {
     /// Max retry attempts (0 = no retries).
     #[serde(default)]
     pub max_retries: Option<u32>,
+    /// Loop configuration. If set, failing this step loops back to `target`.
+    #[serde(default, rename = "loop")]
+    pub loop_config: Option<LoopConfig>,
 }
 
 fn default_priority() -> String {
@@ -216,6 +247,27 @@ impl WorkflowDef {
                 if profile.trim().is_empty() {
                     return Err(CoreError::InvalidConfig(format!(
                         "step {i} agent_profile must not be empty if set"
+                    )));
+                }
+            }
+            if let Some(ref lp) = step.loop_config {
+                if lp.mode == LoopMode::UntilComplete {
+                    if lp.target > i {
+                        return Err(CoreError::InvalidConfig(format!(
+                            "step {i} until_complete loop target must be <= step index (got {})",
+                            lp.target
+                        )));
+                    }
+                } else if lp.target >= i {
+                    return Err(CoreError::InvalidConfig(format!(
+                        "step {i} loop target must reference an earlier step (got {})",
+                        lp.target
+                    )));
+                }
+                if lp.max_iterations == 0 || lp.max_iterations > 20 {
+                    return Err(CoreError::InvalidConfig(format!(
+                        "step {i} loop max_iterations must be 1..=20 (got {})",
+                        lp.max_iterations
                     )));
                 }
             }
@@ -490,5 +542,254 @@ steps:
                 }
             }
         }
+    }
+
+    #[test]
+    fn parse_loop_config() {
+        let yaml = r#"
+name: "Loop Workflow"
+steps:
+  - title: "Build"
+    goal: "Implement feature"
+    auto_dispatch: true
+  - title: "Test"
+    goal: "Run tests"
+    depends_on: [0]
+    auto_dispatch: true
+  - title: "Verify"
+    goal: "Verify output"
+    depends_on: [1]
+    auto_dispatch: true
+    loop:
+      target: 0
+      max_iterations: 5
+"#;
+        let wf = WorkflowDef::from_yaml(yaml).unwrap();
+        assert_eq!(wf.steps.len(), 3);
+        assert!(wf.steps[0].loop_config.is_none());
+        assert!(wf.steps[1].loop_config.is_none());
+        let lc = wf.steps[2].loop_config.as_ref().unwrap();
+        assert_eq!(lc.target, 0);
+        assert_eq!(lc.max_iterations, 5);
+    }
+
+    #[test]
+    fn loop_config_default_max_iterations() {
+        let yaml = r#"
+name: "Default Loop"
+steps:
+  - title: "Plan"
+    goal: "Make plan"
+  - title: "Review"
+    goal: "Review plan"
+    depends_on: [0]
+    loop:
+      target: 0
+"#;
+        let wf = WorkflowDef::from_yaml(yaml).unwrap();
+        let lc = wf.steps[1].loop_config.as_ref().unwrap();
+        assert_eq!(lc.max_iterations, 5);
+    }
+
+    #[test]
+    fn reject_loop_target_not_earlier() {
+        let yaml = r#"
+name: "Bad Loop"
+steps:
+  - title: "A"
+    goal: "Do A"
+    loop:
+      target: 0
+      max_iterations: 3
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("loop target must reference an earlier step"));
+    }
+
+    #[test]
+    fn reject_loop_zero_iterations() {
+        let yaml = r#"
+name: "Bad Loop"
+steps:
+  - title: "A"
+    goal: "Do A"
+  - title: "B"
+    goal: "Do B"
+    depends_on: [0]
+    loop:
+      target: 0
+      max_iterations: 0
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("loop max_iterations must be 1..=20"));
+    }
+
+    #[test]
+    fn reject_loop_excessive_iterations() {
+        let yaml = r#"
+name: "Bad Loop"
+steps:
+  - title: "A"
+    goal: "Do A"
+  - title: "B"
+    goal: "Do B"
+    depends_on: [0]
+    loop:
+      target: 0
+      max_iterations: 25
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("loop max_iterations must be 1..=20"));
+    }
+
+    #[test]
+    fn loop_does_not_create_cycle_in_dag() {
+        let yaml = r#"
+name: "Loop No Cycle"
+steps:
+  - title: "Build"
+    goal: "Build"
+    auto_dispatch: true
+  - title: "Test"
+    goal: "Test"
+    depends_on: [0]
+    auto_dispatch: true
+  - title: "Verify"
+    goal: "Verify"
+    depends_on: [1]
+    auto_dispatch: true
+    loop:
+      target: 0
+      max_iterations: 10
+"#;
+        let wf = WorkflowDef::from_yaml(yaml);
+        assert!(
+            wf.is_ok(),
+            "loop config should not cause cycle detection to fail"
+        );
+    }
+
+    #[test]
+    fn parse_until_complete_mode() {
+        let yaml = r#"
+name: "Ralph Loop"
+steps:
+  - title: "Implement"
+    goal: "Pick next story and implement"
+    auto_dispatch: true
+    loop:
+      target: 0
+      mode: until_complete
+      max_iterations: 10
+"#;
+        let wf = WorkflowDef::from_yaml(yaml).unwrap();
+        let lc = wf.steps[0].loop_config.as_ref().unwrap();
+        assert_eq!(lc.target, 0);
+        assert_eq!(lc.max_iterations, 10);
+        assert_eq!(lc.mode, LoopMode::UntilComplete);
+    }
+
+    #[test]
+    fn until_complete_self_loop_allowed() {
+        let yaml = r#"
+name: "Self Loop"
+steps:
+  - title: "Do Work"
+    goal: "Work until done"
+    auto_dispatch: true
+    loop:
+      target: 0
+      mode: until_complete
+      max_iterations: 5
+"#;
+        let wf = WorkflowDef::from_yaml(yaml);
+        assert!(wf.is_ok(), "self-loop with until_complete should be valid");
+    }
+
+    #[test]
+    fn on_failure_self_loop_rejected() {
+        let yaml = r#"
+name: "Bad Self Loop"
+steps:
+  - title: "Do Work"
+    goal: "Work"
+    loop:
+      target: 0
+      mode: on_failure
+      max_iterations: 5
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("loop target must reference an earlier step"));
+    }
+
+    #[test]
+    fn until_complete_forward_target_rejected() {
+        let yaml = r#"
+name: "Bad Forward"
+steps:
+  - title: "Build"
+    goal: "Build"
+    loop:
+      target: 1
+      mode: until_complete
+      max_iterations: 5
+  - title: "Test"
+    goal: "Test"
+    depends_on: [0]
+"#;
+        let err = WorkflowDef::from_yaml(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("until_complete loop target must be <= step index"));
+    }
+
+    #[test]
+    fn default_loop_mode_is_on_failure() {
+        let yaml = r#"
+name: "Default Mode"
+steps:
+  - title: "Build"
+    goal: "Build"
+  - title: "Verify"
+    goal: "Verify"
+    depends_on: [0]
+    loop:
+      target: 0
+"#;
+        let wf = WorkflowDef::from_yaml(yaml).unwrap();
+        let lc = wf.steps[1].loop_config.as_ref().unwrap();
+        assert_eq!(lc.mode, LoopMode::OnFailure);
+    }
+
+    #[test]
+    fn until_complete_multi_step_loop() {
+        let yaml = r#"
+name: "Multi-step Ralph"
+steps:
+  - title: "Build"
+    goal: "Pick next task and implement"
+    auto_dispatch: true
+  - title: "Verify"
+    goal: "Run tests"
+    depends_on: [0]
+    auto_dispatch: true
+    loop:
+      target: 0
+      mode: until_complete
+      max_iterations: 10
+"#;
+        let wf = WorkflowDef::from_yaml(yaml).unwrap();
+        assert_eq!(wf.steps.len(), 2);
+        let lc = wf.steps[1].loop_config.as_ref().unwrap();
+        assert_eq!(lc.target, 0);
+        assert_eq!(lc.mode, LoopMode::UntilComplete);
     }
 }

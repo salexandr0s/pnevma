@@ -79,6 +79,11 @@ pub struct TaskRow {
     pub timeout_minutes: Option<i64>,
     /// Max retry attempts (0 = no retries).
     pub max_retries: Option<i64>,
+    /// Loop iteration number (0 = original task, 1+ = loop iteration).
+    #[serde(default)]
+    pub loop_iteration: i64,
+    /// JSON context for loop iterations (iteration number, feedback, trigger task).
+    pub loop_context_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -295,6 +300,7 @@ pub struct WorkflowInstanceRow {
 pub struct WorkflowTaskRow {
     pub workflow_id: String,
     pub step_index: i64,
+    pub iteration: i64,
     pub task_id: String,
 }
 
@@ -398,6 +404,37 @@ pub struct AgentProfileRow {
     pub max_concurrent: i64,
     pub stations_json: String,
     pub config_json: String,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub role: String,                  // NEW - migration 0015
+    pub system_prompt: Option<String>, // NEW - migration 0015
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GlobalWorkflowRow {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub definition_yaml: String,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GlobalAgentProfileRow {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub provider: String,
+    pub model: String,
+    pub token_budget: i64,
+    pub timeout_minutes: i64,
+    pub max_concurrent: i64,
+    pub stations_json: String,
+    pub config_json: String,
+    pub system_prompt: Option<String>,
     pub active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

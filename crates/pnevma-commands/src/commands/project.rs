@@ -174,7 +174,7 @@ pub async fn open_project(
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let current_fingerprint = sha256_hex(config_content.as_bytes());
     let path_str_for_trust = path_buf.to_string_lossy().to_string();
-    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    let global_db = state.global_db().map_err(|e| e.to_string())?;
     let trust = global_db
         .is_path_trusted(&path_str_for_trust)
         .await
@@ -721,7 +721,7 @@ pub async fn cleanup_project_data(
 }
 
 pub async fn list_recent_projects(state: &AppState) -> Result<Vec<RecentProject>, String> {
-    match GlobalDb::open().await {
+    match state.global_db() {
         Ok(global_db) => match global_db.list_recent_projects(20).await {
             Ok(rows) => Ok(rows
                 .into_iter()
@@ -737,14 +737,14 @@ pub async fn list_recent_projects(state: &AppState) -> Result<Vec<RecentProject>
     }
 }
 
-pub async fn trust_workspace(path: String) -> Result<(), String> {
+pub async fn trust_workspace(path: String, state: &AppState) -> Result<(), String> {
     let path_buf = std::fs::canonicalize(PathBuf::from(&path))
         .map_err(|e| format!("failed to canonicalize path: {e}"))?;
     let config_path = path_buf.join("pnevma.toml");
     let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let fingerprint = sha256_hex(content.as_bytes());
     let canonical = path_buf.to_string_lossy().to_string();
-    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    let global_db = state.global_db()?;
     global_db
         .trust_path(&canonical, &fingerprint)
         .await
@@ -752,11 +752,11 @@ pub async fn trust_workspace(path: String) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn revoke_workspace_trust(path: String) -> Result<(), String> {
+pub async fn revoke_workspace_trust(path: String, state: &AppState) -> Result<(), String> {
     let canonical = std::fs::canonicalize(PathBuf::from(&path))
         .map_err(|e| format!("failed to canonicalize path: {e}"))?;
     let canonical_str = canonical.to_string_lossy().to_string();
-    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+    let global_db = state.global_db()?;
     global_db
         .revoke_trust(&canonical_str)
         .await
@@ -764,8 +764,8 @@ pub async fn revoke_workspace_trust(path: String) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn list_trusted_workspaces() -> Result<Vec<TrustRecord>, String> {
-    let global_db = GlobalDb::open().await.map_err(|e| e.to_string())?;
+pub async fn list_trusted_workspaces(state: &AppState) -> Result<Vec<TrustRecord>, String> {
+    let global_db = state.global_db()?;
     global_db
         .list_trusted_paths()
         .await
@@ -1532,7 +1532,8 @@ pub(crate) async fn search_db(
         r#"SELECT t.id, t.project_id, t.title, t.goal, t.scope_json, t.dependencies_json,
                   t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
                   t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
-                  t.auto_dispatch, t.agent_profile_override
+                  t.auto_dispatch, t.agent_profile_override, t.execution_mode,
+                  t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json
            FROM tasks_fts f
            JOIN tasks t ON t.rowid = f.rowid
            WHERE tasks_fts MATCH ?1 AND t.project_id = ?3
@@ -4412,6 +4413,8 @@ mod tests {
             execution_mode: None,
             timeout_minutes: None,
             max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
         }
     }
 

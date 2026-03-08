@@ -307,6 +307,8 @@ fn make_task(project_id: &str) -> TaskRow {
         execution_mode: Some("main".to_string()),
         timeout_minutes: None,
         max_retries: None,
+        loop_iteration: 0,
+        loop_context_json: None,
     }
 }
 

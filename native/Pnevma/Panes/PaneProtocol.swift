@@ -329,94 +329,166 @@ final class WelcomePaneView: NSView, PaneContent {
 }
 
 private struct WelcomeContentView: View {
+    @State private var appeared = false
+
     var body: some View {
         ZStack {
             Color.clear.ignoresSafeArea()
 
-            VStack(spacing: 24) {
-                VStack(spacing: 8) {
-                    Text("Welcome to Pnevma")
-                        .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    Text("Terminal-first execution workspace for AI-agent-driven software delivery.")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
+            VStack(spacing: 0) {
+                Spacer()
 
-                // Quick actions
+                // Logo + title
+                VStack(spacing: 12) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 40, weight: .light))
+                        .foregroundStyle(.primary.opacity(0.25))
+
+                    Text("Pnevma")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary.opacity(0.9))
+
+                    Text("Terminal-first workspace for AI-agent-driven delivery")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 36)
+
+                // Action cards
                 HStack(spacing: 12) {
-                    WelcomeActionButton(
-                        title: "Open Project",
+                    WelcomeCard(
                         icon: "folder.badge.plus",
-                        isPrimary: true
+                        title: "Open Project",
+                        subtitle: "Resume or start a workspace",
+                        accentColor: .blue
                     ) {
                         NSApp.sendAction(#selector(AppDelegate.openProjectAction), to: nil, from: nil)
                     }
 
-                    WelcomeActionButton(
-                        title: "New Terminal",
+                    WelcomeCard(
                         icon: "terminal",
-                        isPrimary: false
+                        title: "New Terminal",
+                        subtitle: "Launch a standalone shell",
+                        accentColor: .green
                     ) {
                         NSApp.sendAction(#selector(AppDelegate.newTerminal), to: nil, from: nil)
                     }
                 }
+                .padding(.bottom, 32)
 
-                // Orientation hints
-                VStack(alignment: .leading, spacing: 10) {
-                    WelcomeHint(key: "Cmd+T", label: "New Tab")
-                    WelcomeHint(key: "Shift+Cmd+P", label: "Command Palette")
-                    WelcomeHint(key: "Cmd+D", label: "Split Right")
-                    WelcomeHint(key: "Cmd+]/[", label: "Next / Previous Pane")
-                    WelcomeHint(key: "Cmd+B", label: "Toggle Sidebar")
-                    WelcomeHint(key: "Cmd+Enter", label: "Toggle Full Screen")
+                // Keyboard shortcuts grid
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        WelcomeShortcut(keys: ["Cmd", "T"], label: "New Tab")
+                        WelcomeShortcut(keys: ["Shift", "Cmd", "P"], label: "Command Palette")
+                        WelcomeShortcut(keys: ["Cmd", "D"], label: "Split Right")
+                    }
+                    Divider().opacity(0.3)
+                    HStack(spacing: 0) {
+                        WelcomeShortcut(keys: ["Cmd", "]"], label: "Next Pane")
+                        WelcomeShortcut(keys: ["Cmd", "B"], label: "Toggle Sidebar")
+                        WelcomeShortcut(keys: ["Cmd", "Enter"], label: "Full Screen")
+                    }
                 }
-                .padding(.top, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.primary.opacity(0.03))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(.primary.opacity(0.06), lineWidth: 1)
+                )
+
+                Spacer()
+                Spacer()
             }
-            .frame(maxWidth: 420)
+            .frame(maxWidth: 520)
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 8)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.4).delay(0.05)) {
+                appeared = true
+            }
         }
     }
 }
 
-private struct WelcomeActionButton: View {
-    let title: String
+private struct WelcomeCard: View {
     let icon: String
-    let isPrimary: Bool
+    let title: String
+    let subtitle: String
+    let accentColor: Color
     let action: () -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
-        if isPrimary {
-            Button(action: action) {
-                Label(title, systemImage: icon)
-                    .frame(minWidth: 140)
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(accentColor.opacity(0.8))
+                    .frame(width: 44, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(accentColor.opacity(0.1))
+                    )
+
+                VStack(spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary.opacity(0.9))
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-        } else {
-            Button(action: action) {
-                Label(title, systemImage: icon)
-                    .frame(minWidth: 140)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.primary.opacity(isHovering ? 0.06 : 0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(.primary.opacity(isHovering ? 0.12 : 0.06), lineWidth: 1)
+            )
         }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: isHovering)
     }
 }
 
-private struct WelcomeHint: View {
-    let key: String
+private struct WelcomeShortcut: View {
+    let keys: [String]
     let label: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(key)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 130, alignment: .trailing)
+        VStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(keys, id: \.self) { key in
+                    Text(key)
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(.primary.opacity(0.06))
+                        )
+                }
+            }
             Text(label)
-                .font(.system(size: 13))
-                .foregroundStyle(.primary)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary.opacity(0.7))
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label), \(keys.joined(separator: " "))")
     }
 }
 

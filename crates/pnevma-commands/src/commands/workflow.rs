@@ -195,7 +195,8 @@ pub async fn dispatch_workflow(
         (ctx.project_id, ctx.db.clone(), ctx.project_path.clone())
     };
 
-    // Look up workflow def from DB first, then fall back to YAML files on disk.
+    // Look up workflow def from DB first, then fall back to YAML files on disk,
+    // then fall back to the global DB.
     let def = if let Some(row) = db
         .get_workflow_by_name(&project_id.to_string(), &input.workflow_name)
         .await
@@ -205,9 +206,18 @@ pub async fn dispatch_workflow(
     } else {
         let workflows_dir = project_path.join(".pnevma").join("workflows");
         let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
-        defs.into_iter()
-            .find(|d| d.name == input.workflow_name)
-            .ok_or_else(|| format!("workflow '{}' not found", input.workflow_name))?
+        if let Some(d) = defs.into_iter().find(|d| d.name == input.workflow_name) {
+            d
+        } else if let Some(global_db) = state.global_db.as_ref() {
+            let global_row = global_db
+                .get_global_workflow_by_name(&input.workflow_name)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("workflow '{}' not found", input.workflow_name))?;
+            WorkflowDef::from_yaml(&global_row.definition_yaml).map_err(|e| e.to_string())?
+        } else {
+            return Err(format!("workflow '{}' not found", input.workflow_name));
+        }
     };
 
     let workflow_id = Uuid::new_v4();
@@ -277,6 +287,8 @@ pub async fn dispatch_workflow(
             execution_mode: Some(step.execution_mode.as_str().to_string()),
             timeout_minutes: step.timeout_minutes.map(|v| v as i64),
             max_retries: step.max_retries.map(|v| v as i64),
+            loop_iteration: 0,
+            loop_context_json: None,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -287,7 +299,7 @@ pub async fn dispatch_workflow(
                 .map_err(|e| e.to_string())?;
         }
 
-        db.add_workflow_task(&workflow_id.to_string(), i as i64, &task_id.to_string())
+        db.add_workflow_task(&workflow_id.to_string(), i as i64, 0, &task_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
 
@@ -323,6 +335,13 @@ pub struct WorkflowDefView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopConfigView {
+    pub target: usize,
+    pub max_iterations: u32,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStepView {
     pub title: String,
     pub goal: String,
@@ -337,6 +356,7 @@ pub struct WorkflowStepView {
     pub acceptance_criteria: Vec<String>,
     pub constraints: Vec<String>,
     pub on_failure: String,
+    pub loop_config: Option<LoopConfigView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,6 +385,14 @@ fn step_to_view(s: pnevma_core::WorkflowStep) -> WorkflowStepView {
         acceptance_criteria: s.acceptance_criteria,
         constraints: s.constraints,
         on_failure: s.on_failure.as_str().to_string(),
+        loop_config: s.loop_config.map(|lc| LoopConfigView {
+            target: lc.target,
+            max_iterations: lc.max_iterations,
+            mode: match lc.mode {
+                pnevma_core::LoopMode::OnFailure => "on_failure".to_string(),
+                pnevma_core::LoopMode::UntilComplete => "until_complete".to_string(),
+            },
+        }),
     }
 }
 
@@ -439,12 +467,31 @@ pub async fn instantiate_workflow(
         (ctx.project_id, ctx.db.clone(), ctx.project_path.clone())
     };
 
-    let workflows_dir = project_path.join(".pnevma").join("workflows");
-    let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
-    let def = defs
-        .into_iter()
-        .find(|d| d.name == input.workflow_name)
-        .ok_or_else(|| format!("workflow '{}' not found", input.workflow_name))?;
+    // Check project DB first
+    let def = if let Some(row) = db
+        .get_workflow_by_name(&project_id.to_string(), &input.workflow_name)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        WorkflowDef::from_yaml(&row.definition_yaml).map_err(|e| e.to_string())?
+    } else {
+        // Then check YAML files
+        let workflows_dir = project_path.join(".pnevma").join("workflows");
+        let defs = WorkflowDef::load_all(&workflows_dir).map_err(|e| e.to_string())?;
+        if let Some(d) = defs.into_iter().find(|d| d.name == input.workflow_name) {
+            d
+        } else if let Some(global_db) = state.global_db.as_ref() {
+            // Then check global DB
+            let global_row = global_db
+                .get_global_workflow_by_name(&input.workflow_name)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("workflow '{}' not found", input.workflow_name))?;
+            WorkflowDef::from_yaml(&global_row.definition_yaml).map_err(|e| e.to_string())?
+        } else {
+            return Err(format!("workflow '{}' not found", input.workflow_name));
+        }
+    };
 
     let workflow_id = Uuid::new_v4();
     let now = Utc::now();
@@ -511,6 +558,8 @@ pub async fn instantiate_workflow(
             execution_mode: Some(step.execution_mode.as_str().to_string()),
             timeout_minutes: step.timeout_minutes.map(|v| v as i64),
             max_retries: step.max_retries.map(|v| v as i64),
+            loop_iteration: 0,
+            loop_context_json: None,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -523,7 +572,7 @@ pub async fn instantiate_workflow(
         }
 
         // Link task to workflow instance.
-        db.add_workflow_task(&workflow_id.to_string(), i as i64, &task_id.to_string())
+        db.add_workflow_task(&workflow_id.to_string(), i as i64, 0, &task_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
 
@@ -598,6 +647,7 @@ pub struct WorkflowInstanceDetailView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowInstanceStepView {
     pub step_index: i64,
+    pub iteration: i64,
     pub task_id: String,
     pub title: String,
     pub goal: String,
@@ -644,6 +694,7 @@ pub async fn get_workflow_instance(
         let deps: Vec<String> = serde_json::from_str(&task.dependencies_json).unwrap_or_default();
         steps.push(WorkflowInstanceStepView {
             step_index: wt.step_index,
+            iteration: wt.iteration,
             task_id: wt.task_id,
             title: task.title,
             goal: task.goal,
@@ -669,6 +720,39 @@ pub async fn get_workflow_instance(
         created_at: inst.created_at,
         updated_at: inst.updated_at,
     })
+}
+
+pub async fn copy_workflow_to_global(id: String, state: &AppState) -> Result<String, String> {
+    let db = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        ctx.db.clone()
+    };
+    let project_row = db
+        .get_workflow(&id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("workflow '{id}' not found"))?;
+
+    let global_db = state.global_db()?;
+    let now = Utc::now();
+    let new_id = Uuid::new_v4().to_string();
+    let row = pnevma_db::GlobalWorkflowRow {
+        id: new_id.clone(),
+        name: project_row.name,
+        description: project_row.description,
+        definition_yaml: project_row.definition_yaml,
+        source: "user".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    global_db
+        .create_global_workflow(&row)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(new_id)
 }
 
 #[cfg(test)]
@@ -764,6 +848,7 @@ mod tests {
         let state = AppState {
             current: Mutex::new(Some(ctx)),
             current_runtime: Mutex::new(None),
+            global_db: None,
             recents: Mutex::new(Vec::new()),
             control_plane: Mutex::new(None),
             merge_branch_locks: Mutex::new(std::collections::HashMap::new()),

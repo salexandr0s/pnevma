@@ -1037,6 +1037,8 @@ pub async fn create_task(
         execution_mode: input.execution_mode.clone(),
         timeout_minutes: input.timeout_minutes,
         max_retries: input.max_retries,
+        loop_iteration: 0,
+        loop_context_json: None,
         created_at: now,
         updated_at: now,
     };
@@ -1245,7 +1247,24 @@ pub async fn update_task(
     emit_enriched_task_event(emitter, &db, &row.id).await;
     if previous_status != task.status && is_terminal_task_status(&task.status) {
         cleanup_task_worktree(&db, &git, project_id, task.id, Some(emitter)).await?;
-        check_workflow_completion(&db, &row.id).await;
+        let loop_triggered = check_loop_trigger(
+            &db,
+            &row.id,
+            &task.status,
+            &project_path,
+            state.global_db.as_ref(),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(task_id = %row.id, error = %e, "check_loop_trigger failed");
+            false
+        });
+        if loop_triggered {
+            // Refresh deps to unblock/auto-dispatch newly created loop tasks
+            refresh_dependency_states(&db, project_id, Some(emitter), state).await?;
+        } else {
+            check_workflow_completion(&db, &row.id).await;
+        }
     }
     task_row_to_view(row.clone(), db.task_cost_total(&row.id).await.ok())
 }
@@ -1637,7 +1656,38 @@ pub async fn dispatch_task(
             .map(|check| check.description.clone())
             .collect(),
         relevant_file_paths: task.scope.clone(),
-        prior_context_summary: None,
+        prior_context_summary: row.loop_context_json.as_ref().and_then(|json_str| {
+            let ctx: serde_json::Value = serde_json::from_str(json_str).ok()?;
+            let mut parts = Vec::new();
+
+            if let Some(iter) = ctx.get("iteration").and_then(|v| v.as_i64()) {
+                parts.push(format!("This is loop iteration {}.", iter));
+            }
+
+            if let Some(summaries) = ctx.get("accumulated_summaries").and_then(|v| v.as_array()) {
+                if !summaries.is_empty() {
+                    parts.push("## Previous Iteration Results\n".to_string());
+                    for s in summaries {
+                        let iter_n = s.get("iteration").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let text = s.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                        parts.push(format!("**Iteration {} ({}):** {}", iter_n, status, text));
+                    }
+                }
+            }
+
+            if let Some(fb) = ctx.get("feedback").and_then(|v| v.as_str()) {
+                if !fb.is_empty() {
+                    parts.push(format!("\n## Feedback from Previous Attempt\n\n{}", fb));
+                }
+            }
+
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n\n"))
+            }
+        }),
     };
     let permit_holder = Arc::new(std::sync::Mutex::new(Some(permit)));
     let db_for_task = db.clone();
@@ -1648,6 +1698,7 @@ pub async fn dispatch_task(
     let session_id = handle.id.to_string();
     let session_uuid_for_task = handle.id;
     let project_path_for_task = project_path.clone();
+    let global_db_for_task = state.global_db.clone();
     let target_branch_for_task = config.branches.target.clone();
     let redaction_secrets_for_task = Arc::clone(&redaction_secrets);
     let permit_holder_for_task = Arc::clone(&permit_holder);
@@ -1815,7 +1866,17 @@ pub async fn dispatch_task(
             };
 
             if !failed {
-                if let Ok(task_contract) = task_row_to_contract(&row) {
+                // Check if this is an until_complete loop task — skip acceptance checks, go straight to Done
+                let is_until_complete = row
+                    .loop_context_json
+                    .as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .and_then(|v| v.get("mode")?.as_str().map(|s| s == "until_complete"))
+                    .unwrap_or(false);
+
+                if is_until_complete {
+                    next_status = TaskStatus::Done;
+                } else if let Ok(task_contract) = task_row_to_contract(&row) {
                     match run_acceptance_checks_for_task(
                         &db_for_task,
                         project_id,
@@ -1876,7 +1937,24 @@ pub async fn dispatch_task(
             row.updated_at = Utc::now();
             let _ = db_for_task.update_task(&row).await;
             if is_terminal_task_status(&next_status) {
-                check_workflow_completion(&db_for_task, &row.id).await;
+                let loop_triggered = check_loop_trigger(
+                    &db_for_task,
+                    &row.id,
+                    &next_status,
+                    &project_path_for_task,
+                    global_db_for_task.as_ref(),
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(task_id = %row.id, error = %e, "check_loop_trigger failed");
+                    false
+                });
+                if !loop_triggered {
+                    check_workflow_completion(&db_for_task, &row.id).await;
+                }
+                // Note: Loop tasks are created as Ready when their pre-loop deps
+                // are satisfied (see create_loop_iteration). The auto_dispatch
+                // background loop picks them up for dispatch.
             }
             if prev_status != next_status {
                 append_event(

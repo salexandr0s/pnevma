@@ -743,11 +743,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let paneMinWidth: CGFloat = 800 - sidebarWidth
         window?.minSize.width = isSidebarVisible ? (sidebarWidth + paneMinWidth) : paneMinWidth
         let width = isSidebarVisible ? sidebarWidth : 0
-        tabBarView?.sidebarWidth = CGFloat(width)
         if isSidebarVisible { sidebarHostView?.isHidden = false }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.Motion.normal
+            ctx.allowsImplicitAnimation = true
             sidebarWidthConstraint?.animator().constant = width
+            // Set inside animation block so implicit animations apply to the
+            // subsequent layout pass; the property itself is not interpolated.
+            tabBarView?.sidebarWidth = width
         }, completionHandler: {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }

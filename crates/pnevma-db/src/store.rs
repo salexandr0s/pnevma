@@ -328,8 +328,8 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO tasks
-            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries, loop_iteration, loop_context_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
             "#,
         )
         .bind(&task.id)
@@ -352,6 +352,8 @@ impl Db {
         .bind(&task.execution_mode)
         .bind(task.timeout_minutes)
         .bind(task.max_retries)
+        .bind(task.loop_iteration)
+        .bind(&task.loop_context_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -377,7 +379,9 @@ impl Db {
                 agent_profile_override = ?15,
                 execution_mode = ?16,
                 timeout_minutes = ?17,
-                max_retries = ?18
+                max_retries = ?18,
+                loop_iteration = ?19,
+                loop_context_json = ?20
             WHERE id = ?1
             "#,
         )
@@ -399,6 +403,8 @@ impl Db {
         .bind(&task.execution_mode)
         .bind(task.timeout_minutes)
         .bind(task.max_retries)
+        .bind(task.loop_iteration)
+        .bind(&task.loop_context_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -409,7 +415,8 @@ impl Db {
             r#"
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
                    priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
-                   auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries
+                   auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries,
+                   loop_iteration, loop_context_json
             FROM tasks
             WHERE id = ?1
             LIMIT 1
@@ -493,7 +500,8 @@ impl Db {
             r#"
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
                    priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
-                   auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries
+                   auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries,
+                   loop_iteration, loop_context_json
             FROM tasks
             WHERE project_id = ?1
             ORDER BY created_at DESC
@@ -1687,16 +1695,18 @@ impl Db {
         &self,
         workflow_id: &str,
         step_index: i64,
+        iteration: i64,
         task_id: &str,
     ) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO workflow_tasks (workflow_id, step_index, task_id)
-            VALUES (?1, ?2, ?3)
+            INSERT INTO workflow_tasks (workflow_id, step_index, iteration, task_id)
+            VALUES (?1, ?2, ?3, ?4)
             "#,
         )
         .bind(workflow_id)
         .bind(step_index)
+        .bind(iteration)
         .bind(task_id)
         .execute(&self.pool)
         .await?;
@@ -1709,9 +1719,9 @@ impl Db {
     ) -> Result<Vec<WorkflowTaskRow>, DbError> {
         let rows = sqlx::query_as::<_, WorkflowTaskRow>(
             r#"
-            SELECT workflow_id, step_index, task_id
+            SELECT workflow_id, step_index, iteration, task_id
             FROM workflow_tasks WHERE workflow_id = ?1
-            ORDER BY step_index ASC
+            ORDER BY step_index ASC, iteration ASC
             "#,
         )
         .bind(workflow_id)
@@ -1726,7 +1736,7 @@ impl Db {
     ) -> Result<Option<WorkflowTaskRow>, DbError> {
         let row = sqlx::query_as::<_, WorkflowTaskRow>(
             r#"
-            SELECT workflow_id, step_index, task_id
+            SELECT workflow_id, step_index, iteration, task_id
             FROM workflow_tasks WHERE task_id = ?1
             "#,
         )
@@ -1734,6 +1744,69 @@ impl Db {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    /// Get the latest (highest) iteration number for a step in a workflow.
+    pub async fn get_latest_iteration(
+        &self,
+        workflow_id: &str,
+        step_index: i64,
+    ) -> Result<i64, DbError> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COALESCE(MAX(iteration), 0)
+            FROM workflow_tasks
+            WHERE workflow_id = ?1 AND step_index = ?2
+            "#,
+        )
+        .bind(workflow_id)
+        .bind(step_index)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Swap a specific dependency on a task (replace old_dep with new_dep).
+    pub async fn swap_task_dependency(
+        &self,
+        task_id: &str,
+        old_dep: &str,
+        new_dep: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE task_dependencies
+            SET depends_on_task_id = ?3
+            WHERE task_id = ?1 AND depends_on_task_id = ?2
+            "#,
+        )
+        .bind(task_id)
+        .bind(old_dep)
+        .bind(new_dep)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update expanded_steps_json on a workflow instance.
+    pub async fn update_workflow_instance_expanded_steps(
+        &self,
+        workflow_id: &str,
+        expanded_steps_json: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE workflow_instances
+            SET expanded_steps_json = ?1, updated_at = ?2
+            WHERE id = ?3
+            "#,
+        )
+        .bind(expanded_steps_json)
+        .bind(Utc::now())
+        .bind(workflow_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn list_ssh_profiles(&self, project_id: &str) -> Result<Vec<SshProfileRow>, DbError> {
@@ -2117,8 +2190,9 @@ impl Db {
             r#"
             INSERT INTO agent_profiles
                 (id, project_id, name, provider, model, token_budget, timeout_minutes,
-                 max_concurrent, stations_json, config_json, active, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 max_concurrent, stations_json, config_json, active, created_at, updated_at,
+                 role, system_prompt)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             "#,
         )
         .bind(&row.id)
@@ -2134,6 +2208,8 @@ impl Db {
         .bind(row.active)
         .bind(row.created_at)
         .bind(row.updated_at)
+        .bind(&row.role)
+        .bind(&row.system_prompt)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2143,7 +2219,8 @@ impl Db {
         let row = sqlx::query_as::<_, AgentProfileRow>(
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
-                   max_concurrent, stations_json, config_json, active, created_at, updated_at
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at,
+                   role, system_prompt
             FROM agent_profiles
             WHERE id = ?1
             "#,
@@ -2162,7 +2239,8 @@ impl Db {
         let row = sqlx::query_as::<_, AgentProfileRow>(
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
-                   max_concurrent, stations_json, config_json, active, created_at, updated_at
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at,
+                   role, system_prompt
             FROM agent_profiles
             WHERE project_id = ?1 AND name = ?2
             "#,
@@ -2181,7 +2259,8 @@ impl Db {
         let rows = sqlx::query_as::<_, AgentProfileRow>(
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
-                   max_concurrent, stations_json, config_json, active, created_at, updated_at
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at,
+                   role, system_prompt
             FROM agent_profiles
             WHERE project_id = ?1 AND active = 1
             ORDER BY name
@@ -2199,8 +2278,9 @@ impl Db {
             UPDATE agent_profiles
             SET name = ?1, provider = ?2, model = ?3, token_budget = ?4,
                 timeout_minutes = ?5, max_concurrent = ?6, stations_json = ?7,
-                config_json = ?8, active = ?9, updated_at = ?10
-            WHERE id = ?11
+                config_json = ?8, active = ?9, updated_at = ?10,
+                role = ?11, system_prompt = ?12
+            WHERE id = ?13
             "#,
         )
         .bind(&row.name)
@@ -2213,6 +2293,8 @@ impl Db {
         .bind(&row.config_json)
         .bind(row.active)
         .bind(row.updated_at)
+        .bind(&row.role)
+        .bind(&row.system_prompt)
         .bind(&row.id)
         .execute(&self.pool)
         .await?;
@@ -2330,6 +2412,8 @@ mod tests {
             execution_mode: None,
             timeout_minutes: None,
             max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
         };
 
         db.create_task(&task).await.expect("create task");
@@ -2397,6 +2481,8 @@ mod tests {
             execution_mode: None,
             timeout_minutes: None,
             max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
         };
 
         let t1_id = Uuid::new_v4().to_string();
@@ -2616,9 +2702,11 @@ mod tests {
             execution_mode: None,
             timeout_minutes: None,
             max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
         };
         db.create_task(&task_row).await.expect("create wf task");
-        db.add_workflow_task(&instance.id, 0, &task_row.id)
+        db.add_workflow_task(&instance.id, 0, 0, &task_row.id)
             .await
             .expect("add wf task");
 
@@ -2746,6 +2834,8 @@ mod tests {
             execution_mode: None,
             timeout_minutes: None,
             max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
         };
         db.create_task(&task).await.expect("create task for wt");
 
