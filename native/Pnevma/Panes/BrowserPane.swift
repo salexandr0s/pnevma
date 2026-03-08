@@ -410,6 +410,7 @@ struct WebViewRepresentable: NSViewRepresentable {
 
 struct BrowserView: View {
     @ObservedObject var viewModel: BrowserViewModel
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
     @StateObject private var readerState = BrowserReaderState()
     @State private var findState: BrowserFindState?
 
@@ -419,7 +420,7 @@ struct BrowserView: View {
             omnibar
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(Color.clear)
 
             // Progress bar
             if viewModel.isLoading {
@@ -477,7 +478,7 @@ struct BrowserView: View {
                 }
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.clear)
         .onAppear {
             viewModel.webView.onRequestPanelFocus = { [weak viewModel] in
                 viewModel?.showSuggestions = false
@@ -533,7 +534,7 @@ struct BrowserView: View {
             // Address bar pill
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
                     .frame(height: 28)
 
                 OmnibarTextField(
@@ -634,7 +635,7 @@ struct BrowserView: View {
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
                 .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         )
         .zIndex(100)
@@ -684,7 +685,7 @@ struct BrowserView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(
                                     RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color(nsColor: .controlBackgroundColor))
+                                        .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
                                 )
                             }
                             .buttonStyle(.plain)

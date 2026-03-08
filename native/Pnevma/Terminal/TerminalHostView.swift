@@ -76,7 +76,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
             layer?.backgroundColor = NSColor.clear.cgColor
             layer?.isOpaque = false
         } else {
-            layer?.backgroundColor = NSColor.black.cgColor
+            layer?.backgroundColor = GhosttyThemeProvider.shared.backgroundColor.cgColor
             layer?.isOpaque = true
         }
         // Track mouse movement so ghostty always has up-to-date cursor position.

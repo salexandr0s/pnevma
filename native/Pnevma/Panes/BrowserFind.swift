@@ -172,6 +172,7 @@ final class BrowserFindState: ObservableObject {
 
 struct BrowserFindOverlay: View {
     @ObservedObject var state: BrowserFindState
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
     let webView: WKWebView
     let onClose: () -> Void
 
@@ -229,7 +230,7 @@ struct BrowserFindOverlay: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
                 .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
         )
     }

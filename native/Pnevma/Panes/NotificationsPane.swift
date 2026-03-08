@@ -32,6 +32,7 @@ struct NotificationItem: Identifiable {
 
 struct NotificationsView: View {
     @StateObject private var viewModel = NotificationsViewModel()
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,7 +91,7 @@ struct NotificationsView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(Color(nsColor: theme.backgroundColor))
             }
         }
         .onAppear { viewModel.activate() }

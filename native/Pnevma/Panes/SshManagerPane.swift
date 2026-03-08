@@ -24,6 +24,7 @@ struct TailscaleDevice: Identifiable, Codable {
 
 struct SshManagerView: View {
     @StateObject private var viewModel = SshManagerViewModel()
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,7 +69,7 @@ struct SshManagerView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(Color(nsColor: theme.backgroundColor))
             }
         }
         .sheet(isPresented: $viewModel.showAddSheet) {

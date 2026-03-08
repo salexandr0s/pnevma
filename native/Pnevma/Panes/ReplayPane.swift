@@ -105,7 +105,7 @@ struct ReplayView: View {
             Divider()
 
             ZStack {
-                Color(nsColor: .textBackgroundColor)
+                Color.clear
 
                 if let content = viewModel.currentFrame {
                     ScrollView {

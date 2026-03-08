@@ -303,7 +303,7 @@ struct BrowserReaderModeView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(Color.clear)
 
             Divider()
 
@@ -320,7 +320,7 @@ struct BrowserReaderModeView: View {
                 .frame(maxWidth: 720)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(Color.clear)
         }
     }
 

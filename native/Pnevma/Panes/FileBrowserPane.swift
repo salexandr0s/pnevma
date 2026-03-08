@@ -20,6 +20,7 @@ private struct FileTreeParams: Encodable {
 
 struct FileBrowserView: View {
     @StateObject private var viewModel = FileBrowserViewModel()
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     var body: some View {
         HSplitView {
@@ -93,7 +94,7 @@ struct FileBrowserView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(Color(nsColor: theme.backgroundColor))
             }
         }
         .onAppear { viewModel.activate() }

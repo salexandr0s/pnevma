@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionManagerView: View {
     @ObservedObject var store: SessionStore
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -83,7 +84,7 @@ struct SessionManagerView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(Color(nsColor: theme.backgroundColor))
             }
         }
         .onAppear { store.activate() }

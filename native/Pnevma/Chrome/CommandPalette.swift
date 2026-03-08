@@ -56,7 +56,17 @@ final class CommandPalette: NSPanel {
         titlebarAppearsTransparent = true
         isMovableByWindowBackground = true
         hidesOnDeactivate = true
-        backgroundColor = NSColor.windowBackgroundColor
+        backgroundColor = GhosttyThemeProvider.shared.backgroundColor
+
+        NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.backgroundColor = GhosttyThemeProvider.shared.backgroundColor
+            }
+        }
 
         setupUI()
     }
@@ -241,12 +251,20 @@ private final class CommandCellView: NSTableCellView {
         titleLabel.font = .systemFont(ofSize: 13)
         titleLabel.lineBreakMode = .byTruncatingTail
         categoryLabel.font = .systemFont(ofSize: 10)
-        categoryLabel.textColor = .secondaryLabelColor
         shortcutLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        shortcutLabel.textColor = .tertiaryLabelColor
         descriptionLabel.font = .systemFont(ofSize: 10)
-        descriptionLabel.textColor = .tertiaryLabelColor
         descriptionLabel.lineBreakMode = .byTruncatingTail
+        applyThemeColors()
+
+        NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.applyThemeColors()
+            }
+        }
 
         for label in [titleLabel, categoryLabel, shortcutLabel, descriptionLabel] {
             label.translatesAutoresizingMaskIntoConstraints = false
@@ -274,6 +292,14 @@ private final class CommandCellView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private func applyThemeColors() {
+        let fg = GhosttyThemeProvider.shared.foregroundColor
+        titleLabel.textColor = fg.withAlphaComponent(0.85)
+        categoryLabel.textColor = fg.withAlphaComponent(0.5)
+        shortcutLabel.textColor = fg.withAlphaComponent(0.35)
+        descriptionLabel.textColor = fg.withAlphaComponent(0.35)
+    }
 
     func configure(title: String, category: String, shortcut: String?, description: String? = nil) {
         titleLabel.stringValue = title
