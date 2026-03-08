@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		01AF653A6C7B1F2BF4F614EF /* AppUpdateCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECE72994743B389BD49E89BD /* AppUpdateCoordinator.swift */; };
 		02E6F538894460C4C00E0928 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C867176B0B0B77C7E95830B1 /* AppDelegate.swift */; };
 		0478C676BA381D7378E1A0A5 /* NativeContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B130BE9A4E1C7023F066CC2 /* NativeContractDecodingTests.swift */; };
 		0D8104A38269DA8025B98478 /* GhosttyConfigController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13398913ACB6EB8AD6478CC /* GhosttyConfigController.swift */; };
@@ -75,6 +76,7 @@
 		E23C8FB1988C5983AA68BDE4 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C296C61E24606F14100C9700 /* libresolv.tbd */; };
 		E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */; };
 		E4B187C264280A390D3219DD /* ToastOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BACC1D571547055E703921 /* ToastOverlay.swift */; };
+		E5BD329D9EC1AC7BFA66175C /* AppUpdateCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2002D27CB3C59FEB276F8AB3 /* AppUpdateCoordinatorTests.swift */; };
 		E8746B9089C92661A666AB73 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF3059187ECC603279A0295F /* AppIntents.framework */; };
 		EA13151E3E63BADD8ED9403D /* GhosttyThemeFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3942E8DCD9C5EB25235EE0 /* GhosttyThemeFile.swift */; };
 		EDB7E0CD629A6724AC776DAD /* TabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF72258523A9B37DDE84802D /* TabBarView.swift */; };
@@ -107,6 +109,7 @@
 		0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBridge.swift; sourceTree = "<group>"; };
 		0FB4AE38731683C14AE0C4A2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		1EAFB00C7B89DEB874995841 /* OnboardingFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlow.swift; sourceTree = "<group>"; };
+		2002D27CB3C59FEB276F8AB3 /* AppUpdateCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCoordinatorTests.swift; sourceTree = "<group>"; };
 		237774308FA1A956D8F350E2 /* GhosttyThemeBrowserSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeBrowserSheet.swift; sourceTree = "<group>"; };
 		2384B2D98B340A6F16B39955 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		24C6D98E237464B9CC1F10DD /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
@@ -181,6 +184,7 @@
 		E6D9D8FCAEFD159352C6540E /* PnevmaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PnevmaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E6E07A33C5E1E99D9B5FE8B1 /* GhosttySchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttySchema.swift; sourceTree = "<group>"; };
 		EAB471570010013AF3EF6D96 /* SessionPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPersistenceTests.swift; sourceTree = "<group>"; };
+		ECE72994743B389BD49E89BD /* AppUpdateCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCoordinator.swift; sourceTree = "<group>"; };
 		FBA0CB4E50F6B5BF2AE464D0 /* TaskBoardPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskBoardPane.swift; sourceTree = "<group>"; };
 		FC879880933557B14A3270BC /* BrowserMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserMarkdown.swift; sourceTree = "<group>"; };
 		FFC7D5AA27FD6FE6D8299EF6 /* Pnevma-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Pnevma-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -316,6 +320,7 @@
 			isa = PBXGroup;
 			children = (
 				D8E1E87640F67DB9023A4DC9 /* AppRuntimeSettings.swift */,
+				ECE72994743B389BD49E89BD /* AppUpdateCoordinator.swift */,
 				67EDEB7FE9D4D7AC1922DEE3 /* CommandBus.swift */,
 				BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */,
 				A20D11B7F1496ED9ECFE4003 /* Log.swift */,
@@ -333,6 +338,7 @@
 		A730B687549039C16E92E7E1 /* PnevmaTests */ = {
 			isa = PBXGroup;
 			children = (
+				2002D27CB3C59FEB276F8AB3 /* AppUpdateCoordinatorTests.swift */,
 				00AC90491564E38CEE6DD40F /* CommandBusTests.swift */,
 				5102701F8777ED8EDFD2770F /* FileBrowserPaneTests.swift */,
 				9B130BE9A4E1C7023F066CC2 /* NativeContractDecodingTests.swift */,
@@ -498,6 +504,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5BD329D9EC1AC7BFA66175C /* AppUpdateCoordinatorTests.swift in Sources */,
 				C835AD707B86071BCC2AA70C /* CommandBusTests.swift in Sources */,
 				3A31CDC8BA234E1B645BC4C2 /* FileBrowserPaneTests.swift in Sources */,
 				0478C676BA381D7378E1A0A5 /* NativeContractDecodingTests.swift in Sources */,
@@ -523,6 +530,7 @@
 				8DFFD6BE13FCA68D148972DF /* AnalyticsPane.swift in Sources */,
 				02E6F538894460C4C00E0928 /* AppDelegate.swift in Sources */,
 				8036CDA4F95C90AE526EFF54 /* AppRuntimeSettings.swift in Sources */,
+				01AF653A6C7B1F2BF4F614EF /* AppUpdateCoordinator.swift in Sources */,
 				946B6A90DBBA4FD2BC43CD67 /* BrowserFind.swift in Sources */,
 				E0F8264BE85577904C910572 /* BrowserMarkdown.swift in Sources */,
 				D1F0CB65AF08B3C912527366 /* BrowserPane.swift in Sources */,

@@ -72,6 +72,7 @@ let package = Package(
                 // Core
                 "Core/CommandBus.swift",
                 "Core/AppRuntimeSettings.swift",
+                "Core/AppUpdateCoordinator.swift",
                 "Core/ContentAreaView.swift",
                 "Core/Log.swift",
                 "Core/PaneLayoutEngine.swift",

@@ -1,4 +1,5 @@
 import Cocoa
+import Combine
 import SwiftUI
 
 struct SettingsView: View {
@@ -38,9 +39,49 @@ struct GeneralSettingsTab: View {
             Toggle("Auto-save workspace on quit", isOn: $viewModel.autoSave)
             Toggle("Restore windows on launch", isOn: $viewModel.restoreWindows)
             Toggle("Check for updates automatically", isOn: $viewModel.autoUpdate)
-            Text("Automatic update checks are saved for future updater integration and are not active in the current build.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+            if let coordinator = viewModel.updateCoordinator {
+                GroupBox("Version Info") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Current version:")
+                                .foregroundStyle(.secondary)
+                            Text("\(coordinator.state.currentVersion) (build \(coordinator.state.currentBuild))")
+                        }
+                        .font(.caption)
+
+                        if let latest = coordinator.state.latestVersion {
+                            HStack {
+                                Text("Latest release:")
+                                    .foregroundStyle(.secondary)
+                                Text(latest)
+                            }
+                            .font(.caption)
+                        }
+
+                        if let lastCheck = coordinator.state.lastCheckAt {
+                            HStack {
+                                Text("Last checked:")
+                                    .foregroundStyle(.secondary)
+                                Text(lastCheck, style: .relative)
+                            }
+                            .font(.caption)
+                        }
+
+                        HStack {
+                            Text("Status:")
+                                .foregroundStyle(.secondary)
+                            updateStatusLabel(coordinator.state.status)
+                        }
+                        .font(.caption)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                Text("Version checking initializes after settings load completes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Picker("Default shell", selection: $viewModel.defaultShell) {
                 Text("System default").tag("")
@@ -83,6 +124,30 @@ struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func updateStatusLabel(_ status: AppUpdateStatus) -> some View {
+        switch status {
+        case .idle:
+            Text("Idle")
+                .foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Checking\u{2026}")
+            }
+        case .updateAvailable(let version, _):
+            Text("Update available: \(version)")
+                .foregroundStyle(.orange)
+        case .upToDate:
+            Text("Up to date")
+                .foregroundStyle(.green)
+        case .failed(let msg):
+            Text("Failed: \(msg)")
+                .foregroundStyle(.red)
+        }
     }
 }
 
@@ -874,6 +939,11 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var updateCoordinator: AppUpdateCoordinator? {
+        didSet { bindCoordinatorObserver() }
+    }
+    private var coordinatorCancellable: AnyCancellable?
+
     private var isRestoring = false
     private var didLoadFromBackend = false
     private var saveTask: Task<Void, Never>?
@@ -882,6 +952,12 @@ final class SettingsViewModel: ObservableObject {
 
     init(commandBus: (any CommandCalling)? = CommandBus.shared) {
         self.commandBus = commandBus
+    }
+
+    private func bindCoordinatorObserver() {
+        coordinatorCancellable = updateCoordinator?.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     func load() {
@@ -903,6 +979,10 @@ final class SettingsViewModel: ObservableObject {
                 didLoadFromBackend = true
                 AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
+                if self.updateCoordinator == nil,
+                   let delegate = NSApp.delegate as? AppDelegate {
+                    self.updateCoordinator = delegate.updateCoordinator
+                }
             } catch {
                 Log.general.error("Failed to load app settings: \(error.localizedDescription, privacy: .public)")
                 if let latestLoadedSnapshot {

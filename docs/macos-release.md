@@ -8,7 +8,7 @@ This repository ships a supported native macOS release flow for the notarized `.
 - `scripts/release-macos-staple-verify.sh`
 - `scripts/check-entitlements.sh`
 
-The legacy `scripts/release-updater-*.sh` helpers are intentionally disabled. Pnevma does not currently ship a supported auto-updater for the Swift/AppKit app.
+The legacy `scripts/release-updater-*.sh` helpers are intentionally disabled. Pnevma ships real version checking against GitHub releases but does not yet perform in-app self-update.
 
 ## Prerequisites
 
@@ -92,12 +92,28 @@ Default notarization archive path:
 
 - `native/build/Pnevma-notarize.zip`
 
-## Auto-updater status
+## Version checking and update status
 
-There is no supported native auto-updater at the moment. Distribution is manual:
+Pnevma includes real version checking via `AppUpdateCoordinator`, which queries
+`https://api.github.com/repos/salexandr0s/pnevma/releases/latest` and compares
+the remote `tag_name` against `CFBundleShortVersionString` using semantic version
+comparison.
+
+- **Automatic checks** run on launch and when the `auto_update` setting is
+  toggled on, subject to a 24-hour cooldown. They are non-modal and update
+  coordinator state silently.
+- **Manual checks** are available from the app menu via
+  `Pnevma > Check for Updates...`. They always run regardless of the
+  `auto_update` setting or cooldown, and present a native alert with the result.
+- When an update is available, the manual check offers to open the GitHub
+  release page in the default browser.
+
+**Blocked: full in-app self-update.** The app does not download or install
+updates itself. This requires a hosted feed/appcast, Sparkle integration, and
+matching security gate updates. The implementation is Sparkle-ready (update
+logic is isolated behind the `ReleaseVersionChecking` protocol), but Sparkle is
+not added in this release. Distribution remains manual:
 
 1. build the native app,
 2. sign, notarize, and staple it,
-3. publish the notarized archive and release notes.
-
-If updater support is introduced later, it must be documented as a native flow and added to the security release gate before use.
+3. publish the notarized archive and release notes on GitHub.

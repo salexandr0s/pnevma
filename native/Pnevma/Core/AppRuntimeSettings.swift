@@ -95,6 +95,10 @@ final class AppRuntimeSettings {
         snapshot.normalizedDefaultShell
     }
 
+    var autoUpdate: Bool {
+        snapshot.autoUpdate
+    }
+
     func load(commandBus: (any CommandCalling)? = CommandBus.shared) async {
         guard let commandBus else { return }
 

@@ -39,6 +39,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smokeHostView: TerminalHostView?
     private var smokeTimeoutWorkItem: DispatchWorkItem?
     private var runtimeSettingsObserver: NSObjectProtocol?
+    var updateCoordinator: AppUpdateCoordinator?
 
     // MARK: - App Lifecycle
 
@@ -85,6 +86,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Build menu bar
         NSApplication.shared.mainMenu = buildMainMenu()
+
+        // Initialize update coordinator
+        updateCoordinator = AppUpdateCoordinator()
+        updateCoordinator?.automaticCheck()
 
         // Attach toast overlay
         if let win = window {
@@ -209,6 +214,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyRuntimeSettings() {
         persistence?.isPersistenceEnabled = AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
         sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
+        if AppRuntimeSettings.shared.autoUpdate {
+            updateCoordinator?.automaticCheck()
+        }
     }
 
     // MARK: - Main Window
@@ -469,6 +477,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // App menu
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "About Pnevma", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        appMenu.addItem(NSMenuItem(title: "Check for Updates\u{2026}", action: #selector(checkForUpdatesAction), keyEquivalent: ""))
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettingsAction), keyEquivalent: ","))
         appMenu.addItem(.separator())
@@ -658,6 +667,44 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func closePaneAction() { contentAreaView?.closeActivePane() }
     @objc func openProjectAction() { openProject() }
     @objc private func openSettingsAction() { openSettingsPane() }
+
+    @objc private func checkForUpdatesAction() {
+        if updateCoordinator == nil {
+            updateCoordinator = AppUpdateCoordinator()
+        }
+        Task { @MainActor [weak self] in
+            guard let coordinator = self?.updateCoordinator else { return }
+            await coordinator.manualCheck()
+            switch coordinator.state.status {
+            case .updateAvailable(let version, let url):
+                let alert = NSAlert()
+                alert.messageText = "Update Available"
+                alert.informativeText = "Pnevma \(version) is available. You are running \(coordinator.state.currentVersion)."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Open Release Page")
+                alert.addButton(withTitle: "Later")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.open(url)
+                }
+            case .upToDate:
+                let alert = NSAlert()
+                alert.messageText = "You're Up to Date"
+                alert.informativeText = "Pnevma \(coordinator.state.currentVersion) is the latest version."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            case .failed(let message):
+                let alert = NSAlert()
+                alert.messageText = "Update Check Failed"
+                alert.informativeText = "Could not check for updates: \(message)"
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            default:
+                break
+            }
+        }
+    }
 
     @objc private func browserFindInPage() {
         NotificationCenter.default.post(name: .browserToggleFind, object: nil)
