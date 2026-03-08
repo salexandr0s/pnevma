@@ -19,7 +19,6 @@ AGENTS.md
 spike/
 
 # Internal-only docs
-docs/implementation-status.md
 docs/design-partner-readiness.md
 docs/keyboard-audit.md
 docs/latency-validation.md

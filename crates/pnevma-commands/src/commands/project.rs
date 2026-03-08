@@ -50,6 +50,89 @@ async fn abort_project_runtime(state: &AppState) {
     }
 }
 
+fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
+    AppSettingsView {
+        auto_save_workspace_on_quit: config.auto_save_workspace_on_quit,
+        restore_windows_on_launch: config.restore_windows_on_launch,
+        auto_update: config.auto_update,
+        default_shell: config.default_shell.clone().unwrap_or_default(),
+        terminal_font: config.terminal_font.clone(),
+        terminal_font_size: config.terminal_font_size,
+        scrollback_lines: config.scrollback_lines,
+        sidebar_background_offset: config.sidebar_background_offset,
+        focus_border_enabled: config.focus_border_enabled,
+        focus_border_opacity: config.focus_border_opacity,
+        focus_border_width: config.focus_border_width,
+        focus_border_color: config
+            .focus_border_color
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "accent".to_string()),
+        telemetry_enabled: config.telemetry_opt_in,
+        crash_reports: config.crash_reports_opt_in,
+        keybindings: keybinding_views_from_config(config),
+    }
+}
+
+async fn load_effective_global_config(state: &AppState) -> Result<GlobalConfig, String> {
+    let current = state.current.lock().await;
+    if let Some(ctx) = current.as_ref() {
+        Ok(ctx.global_config.clone())
+    } else {
+        load_global_config().map_err(|e| e.to_string())
+    }
+}
+
+pub async fn get_app_settings(state: &AppState) -> Result<AppSettingsView, String> {
+    let config = load_effective_global_config(state).await?;
+    Ok(app_settings_view_from_config(&config))
+}
+
+pub async fn set_app_settings(
+    input: SetAppSettingsInput,
+    state: &AppState,
+) -> Result<AppSettingsView, String> {
+    let mut config = load_effective_global_config(state).await?;
+
+    let default_shell = match input.default_shell.trim() {
+        "" => None,
+        value => Some(value.to_string()),
+    };
+    let terminal_font = input.terminal_font.trim();
+    if terminal_font.is_empty() {
+        return Err("terminal_font must not be empty".to_string());
+    }
+
+    let focus_border_color = match input.focus_border_color.trim() {
+        "" | "accent" => None,
+        value => Some(value.to_string()),
+    };
+
+    config.auto_save_workspace_on_quit = input.auto_save_workspace_on_quit;
+    config.restore_windows_on_launch = input.restore_windows_on_launch;
+    config.auto_update = input.auto_update;
+    config.default_shell = default_shell;
+    config.terminal_font = terminal_font.to_string();
+    config.terminal_font_size = input.terminal_font_size;
+    config.scrollback_lines = input.scrollback_lines;
+    config.sidebar_background_offset = input.sidebar_background_offset;
+    config.focus_border_enabled = input.focus_border_enabled;
+    config.focus_border_opacity = input.focus_border_opacity;
+    config.focus_border_width = input.focus_border_width;
+    config.focus_border_color = focus_border_color;
+    config.telemetry_opt_in = input.telemetry_enabled;
+    config.crash_reports_opt_in = input.crash_reports;
+
+    save_global_config(&config).map_err(|e| e.to_string())?;
+
+    let mut current = state.current.lock().await;
+    if let Some(ctx) = current.as_mut() {
+        ctx.global_config = config.clone();
+    }
+
+    Ok(app_settings_view_from_config(&config))
+}
+
 async fn install_project_runtime(
     state: &AppState,
     db: Db,
@@ -1691,6 +1774,182 @@ pub async fn search_project(
     Ok(hits)
 }
 
+fn normalize_relative_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn sort_file_tree_nodes(nodes: &mut [FileTreeNodeView]) {
+    nodes.sort_by(|a, b| match (a.is_directory, b.is_directory) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a
+            .name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+            .then_with(|| a.name.cmp(&b.name)),
+    });
+}
+
+fn build_project_file_tree(
+    current_dir: &Path,
+    root_dir: &Path,
+    visited_dirs: &mut HashSet<PathBuf>,
+) -> Result<Vec<FileTreeNodeView>, String> {
+    let entries = std::fs::read_dir(current_dir)
+        .map_err(|e| format!("failed to read {}: {e}", current_dir.display()))?;
+    let mut nodes = Vec::new();
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let entry_path = entry.path();
+        let Ok(relative_path) = entry_path.strip_prefix(root_dir) else {
+            continue;
+        };
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = normalize_relative_path(relative_path);
+        let metadata = match std::fs::symlink_metadata(&entry_path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let file_type = metadata.file_type();
+
+        if file_type.is_symlink() {
+            let Ok(canonical_target) = std::fs::canonicalize(&entry_path) else {
+                continue;
+            };
+            if !canonical_target.starts_with(root_dir) {
+                continue;
+            }
+            let Ok(target_metadata) = std::fs::metadata(&canonical_target) else {
+                continue;
+            };
+            if target_metadata.is_dir() {
+                if !visited_dirs.insert(canonical_target.clone()) {
+                    continue;
+                }
+                let mut children =
+                    match build_project_file_tree(&entry_path, root_dir, visited_dirs) {
+                        Ok(children) => children,
+                        Err(_) => {
+                            visited_dirs.remove(&canonical_target);
+                            continue;
+                        }
+                    };
+                visited_dirs.remove(&canonical_target);
+                sort_file_tree_nodes(&mut children);
+                nodes.push(FileTreeNodeView {
+                    id: path.clone(),
+                    name,
+                    path,
+                    is_directory: true,
+                    children: Some(children),
+                    size: None,
+                });
+            } else if target_metadata.is_file() {
+                nodes.push(FileTreeNodeView {
+                    id: path.clone(),
+                    name,
+                    path,
+                    is_directory: false,
+                    children: None,
+                    size: i64::try_from(target_metadata.len()).ok(),
+                });
+            }
+            continue;
+        }
+
+        if metadata.is_dir() {
+            let Ok(canonical_dir) = std::fs::canonicalize(&entry_path) else {
+                continue;
+            };
+            if !canonical_dir.starts_with(root_dir) || !visited_dirs.insert(canonical_dir.clone()) {
+                continue;
+            }
+            let mut children = match build_project_file_tree(&entry_path, root_dir, visited_dirs) {
+                Ok(children) => children,
+                Err(_) => {
+                    visited_dirs.remove(&canonical_dir);
+                    continue;
+                }
+            };
+            visited_dirs.remove(&canonical_dir);
+            sort_file_tree_nodes(&mut children);
+            nodes.push(FileTreeNodeView {
+                id: path.clone(),
+                name,
+                path,
+                is_directory: true,
+                children: Some(children),
+                size: None,
+            });
+            continue;
+        }
+
+        if metadata.is_file() {
+            nodes.push(FileTreeNodeView {
+                id: path.clone(),
+                name,
+                path,
+                is_directory: false,
+                children: None,
+                size: i64::try_from(metadata.len()).ok(),
+            });
+        }
+    }
+
+    sort_file_tree_nodes(&mut nodes);
+    Ok(nodes)
+}
+
+fn filter_project_file_tree(nodes: Vec<FileTreeNodeView>, query: &str) -> Vec<FileTreeNodeView> {
+    if query.is_empty() {
+        return nodes;
+    }
+
+    let mut filtered = Vec::new();
+    for mut node in nodes {
+        let matches = node.name.to_ascii_lowercase().contains(query)
+            || node.path.to_ascii_lowercase().contains(query);
+        if matches {
+            filtered.push(node);
+            continue;
+        }
+
+        if let Some(children) = node.children.take() {
+            let children = filter_project_file_tree(children, query);
+            if !children.is_empty() {
+                node.children = Some(children);
+                filtered.push(node);
+            }
+        }
+    }
+    filtered
+}
+
+fn trim_project_file_tree(
+    nodes: Vec<FileTreeNodeView>,
+    remaining: &mut usize,
+) -> Vec<FileTreeNodeView> {
+    let mut trimmed = Vec::new();
+    for mut node in nodes {
+        if *remaining == 0 {
+            break;
+        }
+        *remaining -= 1;
+        if let Some(children) = node.children.take() {
+            node.children = Some(trim_project_file_tree(children, remaining));
+        }
+        trimmed.push(node);
+    }
+    trimmed
+}
+
 pub async fn list_project_files(
     input: Option<ListProjectFilesInput>,
     state: &AppState,
@@ -1765,6 +2024,43 @@ pub async fn list_project_files(
         files.truncate(limit);
     }
     Ok(files)
+}
+
+pub async fn list_project_file_tree(
+    input: Option<ListProjectFilesInput>,
+    state: &AppState,
+) -> Result<Vec<FileTreeNodeView>, String> {
+    let (project_path, query, limit) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (
+            ctx.project_path.clone(),
+            input
+                .as_ref()
+                .and_then(|value| value.query.clone())
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase(),
+            input.as_ref().and_then(|value| value.limit),
+        )
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let root_dir = std::fs::canonicalize(&project_path)
+            .map_err(|e| format!("failed to canonicalize project path: {e}"))?;
+        let mut visited_dirs = HashSet::from([root_dir.clone()]);
+        let mut nodes = build_project_file_tree(&root_dir, &root_dir, &mut visited_dirs)?;
+        nodes = filter_project_file_tree(nodes, &query);
+        if let Some(limit) = limit {
+            let mut remaining = limit.clamp(1, 20_000);
+            nodes = trim_project_file_tree(nodes, &mut remaining);
+        }
+        Ok(nodes)
+    })
+    .await
+    .map_err(|e| format!("failed to build file tree: {e}"))?
 }
 
 pub async fn open_file_target(
@@ -4038,6 +4334,40 @@ mod tests {
     use pnevma_core::RemoteSection;
     use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct HomeOverride {
+        previous_home: Option<OsString>,
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl HomeOverride {
+        fn new(path: &Path) -> Self {
+            let guard = home_env_lock().lock().expect("home env lock");
+            let previous_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", path);
+            Self {
+                previous_home,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for HomeOverride {
+        fn drop(&mut self) {
+            if let Some(previous_home) = self.previous_home.as_ref() {
+                std::env::set_var("HOME", previous_home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
 
     async fn open_test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -4579,6 +4909,84 @@ mod tests {
             .any(|option| option.id == "restart" && option.enabled));
     }
 
+    #[test]
+    fn app_settings_view_uses_defaults_for_empty_optional_fields() {
+        let view = app_settings_view_from_config(&GlobalConfig::default());
+        assert_eq!(view.default_shell, "");
+        assert_eq!(view.focus_border_color, "accent");
+        assert!(!view.keybindings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_app_settings_round_trips_and_preserves_other_global_fields() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeOverride::new(temp.path());
+
+        let mut initial = GlobalConfig {
+            default_provider: Some("claude-code".to_string()),
+            theme: Some("solarized".to_string()),
+            socket_auth_mode: Some("same-user".to_string()),
+            ..GlobalConfig::default()
+        };
+        initial
+            .keybindings
+            .insert("Open Settings".to_string(), "Cmd+,".to_string());
+        save_global_config(&initial).expect("save initial config");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+        let updated = set_app_settings(
+            SetAppSettingsInput {
+                auto_save_workspace_on_quit: false,
+                restore_windows_on_launch: false,
+                auto_update: false,
+                default_shell: "/bin/bash".to_string(),
+                terminal_font: "JetBrains Mono".to_string(),
+                terminal_font_size: 14,
+                scrollback_lines: 20_000,
+                sidebar_background_offset: 0.1,
+                focus_border_enabled: false,
+                focus_border_opacity: 0.5,
+                focus_border_width: 3.0,
+                focus_border_color: "#336699".to_string(),
+                telemetry_enabled: true,
+                crash_reports: true,
+            },
+            &state,
+        )
+        .await
+        .expect("set app settings");
+
+        assert_eq!(updated.default_shell, "/bin/bash");
+        assert_eq!(updated.terminal_font, "JetBrains Mono");
+        assert_eq!(updated.focus_border_color, "#336699");
+        assert!(updated.telemetry_enabled);
+        assert!(updated.crash_reports);
+
+        let reloaded = load_global_config().expect("reload config");
+        assert_eq!(reloaded.default_provider.as_deref(), Some("claude-code"));
+        assert_eq!(reloaded.theme.as_deref(), Some("solarized"));
+        assert_eq!(reloaded.socket_auth_mode.as_deref(), Some("same-user"));
+        assert_eq!(
+            reloaded
+                .keybindings
+                .get("Open Settings")
+                .map(String::as_str),
+            Some("Cmd+,")
+        );
+        assert_eq!(reloaded.default_shell.as_deref(), Some("/bin/bash"));
+        assert_eq!(reloaded.terminal_font, "JetBrains Mono");
+        assert_eq!(reloaded.terminal_font_size, 14);
+        assert_eq!(reloaded.scrollback_lines, 20_000);
+        assert_eq!(reloaded.sidebar_background_offset, 0.1);
+        assert!(!reloaded.focus_border_enabled);
+        assert_eq!(reloaded.focus_border_opacity, 0.5);
+        assert_eq!(reloaded.focus_border_width, 3.0);
+        assert_eq!(reloaded.focus_border_color.as_deref(), Some("#336699"));
+        assert!(reloaded.telemetry_opt_in);
+        assert!(reloaded.crash_reports_opt_in);
+    }
+
     #[tokio::test]
     async fn get_scrollback_defaults_to_tail_when_offset_is_omitted() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -4687,6 +5095,103 @@ mod tests {
 
         assert!(data.contains("TAIL-MARKER"));
         assert!(!data.contains("HEAD-MARKER"));
+    }
+
+    #[tokio::test]
+    async fn list_project_file_tree_returns_nested_nodes_including_hidden_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::create_dir_all(project_root.join(".git")).unwrap();
+        std::fs::create_dir_all(project_root.join(".pnevma/data")).unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn tree() {}\n").unwrap();
+        std::fs::write(project_root.join(".env"), "TOKEN=secret\n").unwrap();
+        std::fs::write(project_root.join(".git/config"), "[core]\n").unwrap();
+        std::fs::write(project_root.join(".pnevma/data/runtime.log"), "runtime\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(None, &state)
+            .await
+            .expect("file tree should load");
+
+        let src = nodes
+            .iter()
+            .find(|node| node.path == "src" && node.is_directory)
+            .expect("src directory should be present");
+        let src_children = src.children.as_ref().expect("src should contain children");
+        let lib_rs = src_children
+            .iter()
+            .find(|node| node.path == "src/lib.rs" && !node.is_directory)
+            .expect("lib.rs should be present");
+
+        assert_eq!(lib_rs.id, "src/lib.rs");
+        assert_eq!(lib_rs.name, "lib.rs");
+        assert!(lib_rs.size.unwrap_or_default() > 0);
+        assert!(nodes.iter().any(|node| node.path == ".env"));
+        assert!(nodes.iter().any(|node| node.path == ".git"));
+        assert!(nodes.iter().any(|node| node.path == ".pnevma"));
+    }
+
+    #[tokio::test]
+    async fn open_file_target_accepts_path_from_file_tree() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn preview() {}\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-preview-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(None, &state)
+            .await
+            .expect("file tree should load");
+        let src = nodes
+            .iter()
+            .find(|node| node.path == "src" && node.is_directory)
+            .expect("src directory should be present");
+        let lib_rs_path = src
+            .children
+            .as_ref()
+            .and_then(|children| children.iter().find(|node| node.path == "src/lib.rs"))
+            .map(|node| node.path.clone())
+            .expect("lib.rs path should be available");
+
+        let opened = open_file_target(
+            OpenFileTargetInput {
+                path: lib_rs_path,
+                mode: Some("preview".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect("preview should load");
+
+        assert_eq!(opened.path, "src/lib.rs");
+        assert!(opened.content.contains("preview"));
     }
 
     #[tokio::test]

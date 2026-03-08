@@ -173,6 +173,16 @@ pub struct ProjectFileView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTreeNodeView {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub is_directory: bool,
+    pub children: Option<Vec<FileTreeNodeView>>,
+    pub size: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileOpenResultView {
     pub path: String,
     pub content: String,
@@ -721,6 +731,43 @@ pub struct InitProjectScaffoldResultView {
 pub struct TelemetryStatusView {
     pub opted_in: bool,
     pub queued_events: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettingsView {
+    pub auto_save_workspace_on_quit: bool,
+    pub restore_windows_on_launch: bool,
+    pub auto_update: bool,
+    pub default_shell: String,
+    pub terminal_font: String,
+    pub terminal_font_size: u32,
+    pub scrollback_lines: u32,
+    pub sidebar_background_offset: f64,
+    pub focus_border_enabled: bool,
+    pub focus_border_opacity: f64,
+    pub focus_border_width: f64,
+    pub focus_border_color: String,
+    pub telemetry_enabled: bool,
+    pub crash_reports: bool,
+    pub keybindings: Vec<KeybindingView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetAppSettingsInput {
+    pub auto_save_workspace_on_quit: bool,
+    pub restore_windows_on_launch: bool,
+    pub auto_update: bool,
+    pub default_shell: String,
+    pub terminal_font: String,
+    pub terminal_font_size: u32,
+    pub scrollback_lines: u32,
+    pub sidebar_background_offset: f64,
+    pub focus_border_enabled: bool,
+    pub focus_border_opacity: f64,
+    pub focus_border_width: f64,
+    pub focus_border_color: String,
+    pub telemetry_enabled: bool,
+    pub crash_reports: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

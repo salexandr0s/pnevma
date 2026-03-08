@@ -191,7 +191,7 @@ pub struct ProjectConfig {
     pub remote: RemoteSection,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
     #[serde(default)]
     pub default_provider: Option<String>,
@@ -200,11 +200,63 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub telemetry_opt_in: bool,
     #[serde(default)]
+    pub crash_reports_opt_in: bool,
+    #[serde(default)]
     pub socket_auth_mode: Option<String>,
     #[serde(default)]
     pub socket_password_file: Option<String>,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
+    #[serde(default = "default_global_auto_save_workspace_on_quit")]
+    pub auto_save_workspace_on_quit: bool,
+    #[serde(default = "default_global_restore_windows_on_launch")]
+    pub restore_windows_on_launch: bool,
+    #[serde(default = "default_global_auto_update")]
+    pub auto_update: bool,
+    #[serde(default)]
+    pub default_shell: Option<String>,
+    #[serde(default = "default_global_terminal_font")]
+    pub terminal_font: String,
+    #[serde(default = "default_global_terminal_font_size")]
+    pub terminal_font_size: u32,
+    #[serde(default = "default_global_scrollback_lines")]
+    pub scrollback_lines: u32,
+    #[serde(default = "default_global_sidebar_background_offset")]
+    pub sidebar_background_offset: f64,
+    #[serde(default = "default_global_focus_border_enabled")]
+    pub focus_border_enabled: bool,
+    #[serde(default = "default_global_focus_border_opacity")]
+    pub focus_border_opacity: f64,
+    #[serde(default = "default_global_focus_border_width")]
+    pub focus_border_width: f64,
+    #[serde(default)]
+    pub focus_border_color: Option<String>,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            default_provider: None,
+            theme: None,
+            telemetry_opt_in: false,
+            crash_reports_opt_in: false,
+            socket_auth_mode: None,
+            socket_password_file: None,
+            keybindings: HashMap::new(),
+            auto_save_workspace_on_quit: default_global_auto_save_workspace_on_quit(),
+            restore_windows_on_launch: default_global_restore_windows_on_launch(),
+            auto_update: default_global_auto_update(),
+            default_shell: None,
+            terminal_font: default_global_terminal_font(),
+            terminal_font_size: default_global_terminal_font_size(),
+            scrollback_lines: default_global_scrollback_lines(),
+            sidebar_background_offset: default_global_sidebar_background_offset(),
+            focus_border_enabled: default_global_focus_border_enabled(),
+            focus_border_opacity: default_global_focus_border_opacity(),
+            focus_border_width: default_global_focus_border_width(),
+            focus_border_color: None,
+        }
+    }
 }
 
 fn default_branch() -> String {
@@ -243,6 +295,46 @@ fn default_scrollback_retention_days() -> i64 {
     14
 }
 
+fn default_global_auto_save_workspace_on_quit() -> bool {
+    true
+}
+
+fn default_global_restore_windows_on_launch() -> bool {
+    true
+}
+
+fn default_global_auto_update() -> bool {
+    true
+}
+
+fn default_global_terminal_font() -> String {
+    "SF Mono".to_string()
+}
+
+fn default_global_terminal_font_size() -> u32 {
+    13
+}
+
+fn default_global_scrollback_lines() -> u32 {
+    10_000
+}
+
+fn default_global_sidebar_background_offset() -> f64 {
+    0.05
+}
+
+fn default_global_focus_border_enabled() -> bool {
+    true
+}
+
+fn default_global_focus_border_opacity() -> f64 {
+    0.4
+}
+
+fn default_global_focus_border_width() -> f64 {
+    2.0
+}
+
 fn looks_like_valid_origin(origin: &str) -> bool {
     let trimmed = origin.trim();
     if trimmed.is_empty() || trimmed.contains('?') || trimmed.contains('#') {
@@ -258,6 +350,12 @@ fn looks_like_valid_origin(origin: &str) -> bool {
 
     let remainder = remainder.strip_suffix('/').unwrap_or(remainder);
     !remainder.is_empty() && !remainder.contains('/') && !remainder.contains('@')
+}
+
+fn looks_like_hex_color(color: &str) -> bool {
+    let trimmed = color.trim();
+    let raw = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    raw.len() == 6 && raw.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
@@ -359,6 +457,82 @@ fn validate_global_config(cfg: &GlobalConfig) -> Result<(), CoreError> {
         }
     }
 
+    if let Some(shell) = &cfg.default_shell {
+        if shell.trim().is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "default_shell must not be empty when set".to_string(),
+            ));
+        }
+        if shell.len() > 256 {
+            return Err(CoreError::InvalidConfig(
+                "default_shell exceeds 256 characters".to_string(),
+            ));
+        }
+        if shell.chars().any(|ch| ch == '\0' || ch.is_control()) {
+            return Err(CoreError::InvalidConfig(
+                "default_shell contains unsafe control characters".to_string(),
+            ));
+        }
+    }
+
+    if cfg.terminal_font.trim().is_empty() {
+        return Err(CoreError::InvalidConfig(
+            "terminal_font must not be empty".to_string(),
+        ));
+    }
+    if cfg.terminal_font.len() > 128 {
+        return Err(CoreError::InvalidConfig(
+            "terminal_font exceeds 128 characters".to_string(),
+        ));
+    }
+    if cfg
+        .terminal_font
+        .chars()
+        .any(|ch| ch == '\0' || ch.is_control())
+    {
+        return Err(CoreError::InvalidConfig(
+            "terminal_font contains unsafe control characters".to_string(),
+        ));
+    }
+
+    if !(8..=32).contains(&cfg.terminal_font_size) {
+        return Err(CoreError::InvalidConfig(
+            "terminal_font_size must be between 8 and 32".to_string(),
+        ));
+    }
+
+    if !(1_000..=100_000).contains(&cfg.scrollback_lines) {
+        return Err(CoreError::InvalidConfig(
+            "scrollback_lines must be between 1000 and 100000".to_string(),
+        ));
+    }
+
+    if !(0.0..=0.3).contains(&cfg.sidebar_background_offset) {
+        return Err(CoreError::InvalidConfig(
+            "sidebar_background_offset must be between 0.0 and 0.3".to_string(),
+        ));
+    }
+
+    if !(0.1..=1.0).contains(&cfg.focus_border_opacity) {
+        return Err(CoreError::InvalidConfig(
+            "focus_border_opacity must be between 0.1 and 1.0".to_string(),
+        ));
+    }
+
+    if !(1.0..=6.0).contains(&cfg.focus_border_width) {
+        return Err(CoreError::InvalidConfig(
+            "focus_border_width must be between 1.0 and 6.0".to_string(),
+        ));
+    }
+
+    if let Some(color) = &cfg.focus_border_color {
+        if !color.trim().is_empty() && color != "accent" && !looks_like_hex_color(color) {
+            return Err(CoreError::InvalidConfig(
+                "focus_border_color must be 'accent' or a #RRGGBB hex value".to_string(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -392,6 +566,7 @@ pub fn global_config_path() -> PathBuf {
 }
 
 pub fn save_global_config(config: &GlobalConfig) -> Result<(), CoreError> {
+    validate_global_config(config)?;
     let path = global_config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -497,5 +672,72 @@ mod tests {
         };
         let err = validate_global_config(&cfg).expect_err("empty socket password file");
         assert!(err.to_string().contains("socket_password_file"));
+    }
+
+    #[test]
+    fn global_terminal_settings_must_be_in_range() {
+        let cfg = GlobalConfig {
+            terminal_font_size: 40,
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid terminal font size");
+        assert!(err.to_string().contains("terminal_font_size"));
+
+        let cfg = GlobalConfig {
+            scrollback_lines: 500,
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid scrollback lines");
+        assert!(err.to_string().contains("scrollback_lines"));
+    }
+
+    #[test]
+    fn global_visual_settings_must_be_in_range() {
+        let cfg = GlobalConfig {
+            sidebar_background_offset: 0.5,
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid sidebar offset");
+        assert!(err.to_string().contains("sidebar_background_offset"));
+
+        let cfg = GlobalConfig {
+            focus_border_opacity: 0.05,
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid focus border opacity");
+        assert!(err.to_string().contains("focus_border_opacity"));
+
+        let cfg = GlobalConfig {
+            focus_border_width: 9.0,
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid focus border width");
+        assert!(err.to_string().contains("focus_border_width"));
+    }
+
+    #[test]
+    fn global_focus_border_color_must_be_valid() {
+        let cfg = GlobalConfig {
+            focus_border_color: Some("blue".to_string()),
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("invalid focus border color");
+        assert!(err.to_string().contains("focus_border_color"));
+
+        let valid = GlobalConfig {
+            focus_border_color: Some("#A1B2C3".to_string()),
+            ..GlobalConfig::default()
+        };
+        validate_global_config(&valid).expect("hex color should be allowed");
+    }
+
+    #[test]
+    fn global_default_shell_must_be_safe() {
+        let cfg = GlobalConfig {
+            default_shell: Some("   ".to_string()),
+            ..GlobalConfig::default()
+        };
+        let err = validate_global_config(&cfg).expect_err("blank shell");
+        assert!(err.to_string().contains("default_shell"));
     }
 }

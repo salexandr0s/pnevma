@@ -357,7 +357,7 @@ final class GhosttyConfigController {
 
         // Handle conditional themes: "light:X,dark:Y"
         if name.contains(",") && name.contains(":") {
-            let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let isDark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             let variants = name.split(separator: ",")
             for variant in variants {
                 let pair = variant.trimmingCharacters(in: .whitespaces)

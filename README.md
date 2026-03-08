@@ -147,6 +147,8 @@ naming = "pnevma/{task_id}/{slug}"
 
 See the full [pnevma.toml reference](docs/pnevma-toml-reference.md).
 
+Global app settings and keybinding overrides are stored in `~/.config/pnevma/config.toml`. The native Settings pane reads and writes this file through the Rust backend.
+
 ## Development
 
 ```bash
@@ -214,7 +216,7 @@ See the full [macOS release runbook](docs/macos-release.md).
 | [Threat Model](docs/threat-model.md)                         | Trust boundaries, assets, and primary attack paths       |
 | [Security Release Gate](docs/security-release-gate.md)       | Release blockers, evidence bundle, and exceptions        |
 | [Hardening Exit Criteria](docs/hardening-exit-criteria.md)   | Freeze policy and the bar to resume feature work         |
-| [Implementation Status](docs/implementation-status.md)       | Phase completion tracking                                |
+| [Implementation Status](docs/implementation-status.md)       | Current repo status, priorities, and active hardening focus |
 | [Design Partner Readiness](docs/design-partner-readiness.md) | Readiness assessment                                     |
 
 ## Security

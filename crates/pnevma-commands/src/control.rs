@@ -1265,6 +1265,18 @@ pub async fn route_method(
             serde_json::to_value(items)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "workspace.files.tree" => {
+            let query = parse_optional_string_param(params, "query");
+            let limit = parse_optional_i64_param(params, "limit").map(|v| v.max(1) as usize);
+            let items = commands::list_project_file_tree(
+                Some(commands::ListProjectFilesInput { query, limit }),
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "workspace.file.open" => {
             let path = parse_string_param(params, "path")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
@@ -1545,6 +1557,21 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "settings.app.get" => serde_json::to_value(
+            commands::get_app_settings(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "settings.app.set" => {
+            let input: commands::SetAppSettingsInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            let settings = commands::set_app_settings(input, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(settings)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "telemetry.set" => {
             let opted_in = parse_optional_bool_param(params, "opted_in")
                 .ok_or_else(|| ("invalid_params".to_string(), "missing opted_in".to_string()))?;
@@ -1859,6 +1886,16 @@ mod tests {
         )
         .await
         .expect_err("missing project should still route to the session.scrollback handler");
+        assert_eq!(err.0, "internal_error");
+        assert_eq!(err.1, "no open project");
+    }
+
+    #[tokio::test]
+    async fn workspace_files_tree_route_is_registered() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(&state, "workspace.files.tree", &json!({}))
+            .await
+            .expect_err("missing project should still route to the file tree handler");
         assert_eq!(err.0, "internal_error");
         assert_eq!(err.1, "no open project");
     }

@@ -740,11 +740,69 @@ struct KeybindingEntry: Identifiable, Codable {
     let shortcut: String
 }
 
+struct AppSettingsSnapshot: Decodable {
+    let autoSaveWorkspaceOnQuit: Bool
+    let restoreWindowsOnLaunch: Bool
+    let autoUpdate: Bool
+    let defaultShell: String
+    let terminalFont: String
+    let terminalFontSize: UInt32
+    let scrollbackLines: UInt32
+    let sidebarBackgroundOffset: Double
+    let focusBorderEnabled: Bool
+    let focusBorderOpacity: Double
+    let focusBorderWidth: Double
+    let focusBorderColor: String
+    let telemetryEnabled: Bool
+    let crashReports: Bool
+    let keybindings: [KeybindingEntry]
+}
+
+struct AppSettingsSaveRequest: Encodable {
+    let autoSaveWorkspaceOnQuit: Bool
+    let restoreWindowsOnLaunch: Bool
+    let autoUpdate: Bool
+    let defaultShell: String
+    let terminalFont: String
+    let terminalFontSize: Int
+    let scrollbackLines: Int
+    let sidebarBackgroundOffset: Double
+    let focusBorderEnabled: Bool
+    let focusBorderOpacity: Double
+    let focusBorderWidth: Double
+    let focusBorderColor: String
+    let telemetryEnabled: Bool
+    let crashReports: Bool
+}
+
+@MainActor
 final class SettingsViewModel: ObservableObject {
-    @Published var autoSave = true
-    @Published var restoreWindows = true
-    @Published var autoUpdate = true
-    @Published var defaultShell = ""
+    private let commandBus: (any CommandCalling)?
+
+    @Published var autoSave = true {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    @Published var restoreWindows = true {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    @Published var autoUpdate = true {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    @Published var defaultShell = "" {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
     @Published var keybindings: [KeybindingEntry] = [
         KeybindingEntry(action: "New Tab", shortcut: "Cmd+T"),
         KeybindingEntry(action: "Split Right", shortcut: "Cmd+D"),
@@ -765,14 +823,30 @@ final class SettingsViewModel: ObservableObject {
         KeybindingEntry(action: "Toggle Full Screen", shortcut: "Cmd+Enter"),
         KeybindingEntry(action: "Close Window", shortcut: "Shift+Cmd+W"),
     ]
-    @Published var terminalFont = "SF Mono"
-    @Published var terminalFontSize = 13
-    @Published var scrollbackLines = 10000
+    @Published var terminalFont = "SF Mono" {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    @Published var terminalFontSize = 13 {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    @Published var scrollbackLines = 10000 {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
     @Published var sidebarBackgroundOffset: Double = SidebarPreferences.backgroundOffset {
         didSet {
             guard !isRestoring else { return }
             SidebarPreferences.backgroundOffset = sidebarBackgroundOffset
-            Task { @MainActor in GhosttyThemeProvider.shared.refresh() }
+            GhosttyThemeProvider.shared.refresh()
+            scheduleSave()
         }
     }
     @Published var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
@@ -780,6 +854,7 @@ final class SettingsViewModel: ObservableObject {
             guard !isRestoring else { return }
             FocusBorderPreferences.enabled = focusBorderEnabled
             notifyFocusBorderChanged()
+            scheduleSave()
         }
     }
     @Published var focusBorderOpacity: CGFloat = FocusBorderPreferences.opacity {
@@ -787,6 +862,7 @@ final class SettingsViewModel: ObservableObject {
             guard !isRestoring else { return }
             FocusBorderPreferences.opacity = focusBorderOpacity
             notifyFocusBorderChanged()
+            scheduleSave()
         }
     }
     @Published var focusBorderWidth: CGFloat = FocusBorderPreferences.width {
@@ -794,6 +870,7 @@ final class SettingsViewModel: ObservableObject {
             guard !isRestoring else { return }
             FocusBorderPreferences.width = focusBorderWidth
             notifyFocusBorderChanged()
+            scheduleSave()
         }
     }
     @Published var focusBorderColor: Color = Color(nsColor: .controlAccentColor) {
@@ -802,6 +879,7 @@ final class SettingsViewModel: ObservableObject {
             let ns = NSColor(focusBorderColor).usingColorSpace(.sRGB)
             FocusBorderPreferences.colorHex = ns?.hexString
             notifyFocusBorderChanged()
+            scheduleSave()
         }
     }
     @Published var focusBorderUseAccent: Bool = true {
@@ -818,14 +896,164 @@ final class SettingsViewModel: ObservableObject {
                 FocusBorderPreferences.colorHex = ns?.hexString
             }
             notifyFocusBorderChanged()
+            scheduleSave()
         }
     }
-    @Published var telemetryEnabled = false
-    @Published var crashReports = false
+    @Published var telemetryEnabled = false {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    @Published var crashReports = false {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
 
     private var isRestoring = false
+    private var didLoadFromBackend = false
+    private var saveTask: Task<Void, Never>?
+    private var latestSaveGeneration: UInt64 = 0
+    private var latestLoadedSnapshot: AppSettingsSnapshot?
+
+    init(commandBus: (any CommandCalling)? = CommandBus.shared) {
+        self.commandBus = commandBus
+    }
 
     func load() {
+        saveTask?.cancel()
+        didLoadFromBackend = false
+
+        guard let commandBus else {
+            applyLocalPreferencesFallback()
+            return
+        }
+
+        Task {
+            do {
+                let snapshot: AppSettingsSnapshot = try await commandBus.call(
+                    method: "settings.app.get",
+                    params: nil
+                )
+                latestLoadedSnapshot = snapshot
+                didLoadFromBackend = true
+                apply(snapshot: snapshot)
+            } catch {
+                Log.general.error("Failed to load app settings: \(error.localizedDescription, privacy: .public)")
+                if let latestLoadedSnapshot {
+                    didLoadFromBackend = true
+                    apply(snapshot: latestLoadedSnapshot)
+                } else {
+                    applyLocalPreferencesFallback()
+                }
+            }
+        }
+    }
+
+    func save() {
+        latestSaveGeneration &+= 1
+        persistSettings(generation: latestSaveGeneration)
+    }
+
+    private func persistSettings(generation: UInt64) {
+        guard didLoadFromBackend, let commandBus else { return }
+
+        let request = AppSettingsSaveRequest(
+            autoSaveWorkspaceOnQuit: autoSave,
+            restoreWindowsOnLaunch: restoreWindows,
+            autoUpdate: autoUpdate,
+            defaultShell: defaultShell,
+            terminalFont: terminalFont,
+            terminalFontSize: terminalFontSize,
+            scrollbackLines: scrollbackLines,
+            sidebarBackgroundOffset: sidebarBackgroundOffset,
+            focusBorderEnabled: focusBorderEnabled,
+            focusBorderOpacity: Double(focusBorderOpacity),
+            focusBorderWidth: Double(focusBorderWidth),
+            focusBorderColor: focusBorderUseAccent
+                ? "accent"
+                : (NSColor(focusBorderColor).usingColorSpace(.sRGB)?.hexString ?? "accent"),
+            telemetryEnabled: telemetryEnabled,
+            crashReports: crashReports
+        )
+
+        Task {
+            do {
+                let snapshot: AppSettingsSnapshot = try await commandBus.call(
+                    method: "settings.app.set",
+                    params: request
+                )
+                guard generation == latestSaveGeneration else { return }
+                latestLoadedSnapshot = snapshot
+                apply(snapshot: snapshot)
+            } catch {
+                guard generation == latestSaveGeneration else { return }
+                Log.general.error("Failed to save app settings: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func notifyFocusBorderChanged() {
+        NotificationCenter.default.post(name: .focusBorderPreferencesChanged, object: nil)
+    }
+
+    private func scheduleSave() {
+        guard didLoadFromBackend else { return }
+        saveTask?.cancel()
+        latestSaveGeneration &+= 1
+        let generation = latestSaveGeneration
+        saveTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            persistSettings(generation: generation)
+        }
+    }
+
+    private func apply(snapshot: AppSettingsSnapshot) {
+        isRestoring = true
+        defer {
+            isRestoring = false
+            notifyFocusBorderChanged()
+            GhosttyThemeProvider.shared.refresh()
+        }
+
+        autoSave = snapshot.autoSaveWorkspaceOnQuit
+        restoreWindows = snapshot.restoreWindowsOnLaunch
+        autoUpdate = snapshot.autoUpdate
+        defaultShell = snapshot.defaultShell
+        terminalFont = snapshot.terminalFont
+        terminalFontSize = Int(snapshot.terminalFontSize)
+        scrollbackLines = Int(snapshot.scrollbackLines)
+        sidebarBackgroundOffset = snapshot.sidebarBackgroundOffset
+        telemetryEnabled = snapshot.telemetryEnabled
+        crashReports = snapshot.crashReports
+        keybindings = snapshot.keybindings
+
+        SidebarPreferences.backgroundOffset = snapshot.sidebarBackgroundOffset
+        FocusBorderPreferences.enabled = snapshot.focusBorderEnabled
+        FocusBorderPreferences.opacity = CGFloat(snapshot.focusBorderOpacity)
+        FocusBorderPreferences.width = CGFloat(snapshot.focusBorderWidth)
+        FocusBorderPreferences.colorHex = snapshot.focusBorderColor == "accent"
+            ? "accent"
+            : snapshot.focusBorderColor
+
+        focusBorderEnabled = snapshot.focusBorderEnabled
+        focusBorderOpacity = CGFloat(snapshot.focusBorderOpacity)
+        focusBorderWidth = CGFloat(snapshot.focusBorderWidth)
+        focusBorderUseAccent = snapshot.focusBorderColor == "accent"
+        if focusBorderUseAccent {
+            focusBorderColor = Color(nsColor: .controlAccentColor)
+        } else if let ns = NSColor(hexString: snapshot.focusBorderColor) {
+            focusBorderColor = Color(nsColor: ns)
+        } else {
+            focusBorderUseAccent = true
+            focusBorderColor = Color(nsColor: .controlAccentColor)
+        }
+    }
+
+    private func applyLocalPreferencesFallback() {
         isRestoring = true
         defer {
             isRestoring = false
@@ -837,17 +1065,11 @@ final class SettingsViewModel: ObservableObject {
         focusBorderWidth = FocusBorderPreferences.width
         let hex = FocusBorderPreferences.colorHex
         focusBorderUseAccent = hex == nil || hex == "accent" || hex?.isEmpty == true
-        if !focusBorderUseAccent, let hex, let ns = NSColor(hexString: hex) {
+        if focusBorderUseAccent {
+            focusBorderColor = Color(nsColor: .controlAccentColor)
+        } else if let hex, let ns = NSColor(hexString: hex) {
             focusBorderColor = Color(nsColor: ns)
         }
-    }
-
-    func save() {
-        // TODO: Replace local stubs with backend-backed settings.
-    }
-
-    private func notifyFocusBorderChanged() {
-        NotificationCenter.default.post(name: .focusBorderPreferencesChanged, object: nil)
     }
 }
 
