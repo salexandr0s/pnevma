@@ -341,6 +341,33 @@ impl SessionSupervisor {
             .output()
             .await;
 
+        // Allow escape-sequence passthrough so protocols such as Kitty
+        // graphics reach the outer terminal emulator (Ghostty) instead of
+        // being swallowed by tmux.  `all` rather than `on` so that
+        // passthrough works from any pane, not only the active one.
+        match self
+            .tmux_command()
+            .args(["set", "-t", &name, "allow-passthrough", "all"])
+            .output()
+            .await
+        {
+            Ok(out) if !out.status.success() => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                tracing::warn!(
+                    session_id = %session_id,
+                    "tmux set allow-passthrough failed: {}",
+                    stderr.trim()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "tmux set allow-passthrough failed: {e}"
+                );
+            }
+            _ => {}
+        }
+
         // Send non-shell commands as literal keystrokes to prevent shell injection.
         if !command.trim().is_empty() && explicit_shell.is_none() {
             let send_out = self

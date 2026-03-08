@@ -37,7 +37,7 @@ struct SessionBindingDescriptor: Decodable, Equatable {
         let tmux = Self.tmuxPath
         return TerminalSurfaceLaunchConfiguration(
             workingDirectory: cwd,
-            command: "/bin/sh -lc '\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
+            command: "/bin/sh -lc '\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; \(tmux) set -t \"$PNEVMA_TMUX_TARGET\" allow-passthrough all 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
             env: env.map { TerminalSurfaceEnvironmentVariable(key: $0.key, value: $0.value) },
             waitAfterCommand: waitAfterCommand,
             initialInput: nil
