@@ -64,6 +64,143 @@ struct TopCostTask: Decodable, Identifiable {
     var taskId: String { taskID }
 }
 
+// MARK: - Timestamp Formatting
+
+private let briefISOFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+private let briefISOFormatterNoFraction: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f
+}()
+
+private let briefRelativeFormatter = RelativeDateTimeFormatter()
+
+private func formatRelativeTimestamp(_ raw: String) -> String {
+    let date = briefISOFormatter.date(from: raw)
+        ?? briefISOFormatterNoFraction.date(from: raw)
+    if let date {
+        return briefRelativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+    return raw
+        .replacingOccurrences(of: "T", with: " ")
+        .prefix(19)
+        .description
+}
+
+// MARK: - Event Grouping
+
+private struct GroupedEvent: Identifiable {
+    let id: String
+    let kind: String
+    let level: BriefEvent.EventLevel
+    let events: [BriefEvent]
+    var count: Int { events.count }
+    var latestTimestamp: String { events.first?.timestamp ?? "" }
+}
+
+private func groupConsecutiveEvents(_ events: [BriefEvent]) -> [GroupedEvent] {
+    guard !events.isEmpty else { return [] }
+    var groups: [GroupedEvent] = []
+    var currentKind = events[0].kind
+    var currentBatch = [events[0]]
+
+    for event in events.dropFirst() {
+        if event.kind == currentKind {
+            currentBatch.append(event)
+        } else {
+            groups.append(GroupedEvent(
+                id: "group-\(groups.count)",
+                kind: currentKind,
+                level: currentBatch[0].level,
+                events: currentBatch
+            ))
+            currentKind = event.kind
+            currentBatch = [event]
+        }
+    }
+    groups.append(GroupedEvent(
+        id: "group-\(groups.count)",
+        kind: currentKind,
+        level: currentBatch[0].level,
+        events: currentBatch
+    ))
+    return groups
+}
+
+// MARK: - GroupedEventRow
+
+private struct GroupedEventRow: View {
+    let group: GroupedEvent
+    @State private var isExpanded = false
+
+    var body: some View {
+        if group.count == 1, let event = group.events.first {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(group.level.color)
+                    .frame(width: 6, height: 6)
+                Text(event.summary)
+                    .font(.callout)
+                    .lineLimit(1)
+                Spacer()
+                Text(formatRelativeTimestamp(event.timestamp))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(group.level.color)
+                            .frame(width: 6, height: 6)
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 10)
+                        Text(group.kind)
+                            .font(.callout)
+                        Text("\u{00d7}\(group.count)")
+                            .font(.caption.monospacedDigit())
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(group.level.color.opacity(0.15)))
+                        Spacer()
+                        Text(formatRelativeTimestamp(group.latestTimestamp))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 4)
+
+                if isExpanded {
+                    ForEach(group.events) { event in
+                        HStack(spacing: 6) {
+                            Text(event.summary)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(formatRelativeTimestamp(event.timestamp))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.leading, 22)
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - DailyBriefView
 
 struct DailyBriefView: View {
@@ -126,36 +263,7 @@ struct DailyBriefView: View {
                     .padding(.vertical, 2)
                 }
 
-                // Recent events timeline
-                GroupBox("Recent Events") {
-                    if brief.recentEvents.isEmpty {
-                        Text("No events today")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                    } else {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(brief.recentEvents) { event in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Circle()
-                                        .fill(event.level.color)
-                                        .frame(width: 8, height: 8)
-                                        .padding(.top, 5)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(event.summary)
-                                            .font(.body)
-                                        Text(formatTimestamp(event.timestamp))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 4)
-                            }
-                        }
-                    }
-                }
-
-                // Recommended actions
+                // Recommended actions (moved before events)
                 GroupBox("Recommended Actions") {
                     if brief.recommendedActions.isEmpty {
                         Text("No recommendations")
@@ -172,6 +280,25 @@ struct DailyBriefView: View {
                                 .padding(.vertical, 2)
                             }
                         }
+                    }
+                }
+
+                // Recent events timeline (grouped)
+                GroupBox("Recent Events") {
+                    if brief.recentEvents.isEmpty {
+                        Text("No events today")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding()
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(groupConsecutiveEvents(brief.recentEvents)) { group in
+                                    GroupedEventRow(group: group)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 280)
                     }
                 }
 
@@ -202,32 +329,6 @@ struct DailyBriefView: View {
     private func formatCost(_ usd: Double) -> String {
         String(format: "$%.2f", usd)
     }
-
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoFormatterNoFraction: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
-    private static let relativeFormatter = RelativeDateTimeFormatter()
-
-    private func formatTimestamp(_ raw: String) -> String {
-        let date = Self.isoFormatter.date(from: raw)
-            ?? Self.isoFormatterNoFraction.date(from: raw)
-        if let date {
-            return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
-        }
-        return raw
-            .replacingOccurrences(of: "T", with: " ")
-            .prefix(19)
-            .description
-    }
 }
 
 // MARK: - MetricCard
@@ -235,6 +336,7 @@ struct DailyBriefView: View {
 struct MetricCard: View {
     let label: String
     let value: String
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     var body: some View {
         VStack(spacing: 4) {
@@ -249,7 +351,7 @@ struct MetricCard: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
         )
     }
 }

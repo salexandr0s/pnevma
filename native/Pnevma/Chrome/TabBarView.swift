@@ -36,9 +36,9 @@ final class TabBarView: NSView {
 
     private static let addButtonWidth: CGFloat = 24
     private static let addButtonGap: CGFloat = 4
-    private static let maxTabWidth: CGFloat = 180
+    private static let maxTabWidth: CGFloat = 160
     private static let minTabWidth: CGFloat = 80
-    private static let preferredTabWidth: CGFloat = 140
+    private static let preferredTabWidth: CGFloat = 120
     private static let minimumToolbarWidth: CGFloat = 100
 
     override init(frame: NSRect) {
@@ -115,8 +115,8 @@ final class TabBarView: NSView {
         let plusBtn = NSButton(frame: .zero)
         plusBtn.bezelStyle = .inline
         plusBtn.isBordered = false
-        plusBtn.title = "+"
-        plusBtn.font = .systemFont(ofSize: 14, weight: .light)
+        plusBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")
+        plusBtn.imageScaling = .scaleProportionallyDown
         plusBtn.contentTintColor = theme.foregroundColor.withAlphaComponent(0.5)
         plusBtn.target = self
         plusBtn.action = #selector(addButtonClicked)
@@ -237,7 +237,7 @@ private final class TabButton: NSView {
     override func layout() {
         super.layout()
         let closeSize: CGFloat = 16
-        let padding: CGFloat = 8
+        let padding: CGFloat = 6
         closeButton.frame = NSRect(
             x: bounds.width - closeSize - padding,
             y: (bounds.height - closeSize) / 2,
@@ -254,21 +254,20 @@ private final class TabButton: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let theme else { return }
+        let insetRect = bounds.insetBy(dx: 2, dy: 2)
+        let path = NSBezierPath(roundedRect: insetRect, xRadius: 4, yRadius: 4)
         if isActive {
-            let activeColor = theme.foregroundColor.withAlphaComponent(0.08)
-            activeColor.setFill()
-            bounds.fill()
-            // Bottom highlight for active tab
-            theme.foregroundColor.withAlphaComponent(0.3).setFill()
-            NSRect(x: 0, y: bounds.height - 2, width: bounds.width, height: 2).fill()
+            theme.foregroundColor.withAlphaComponent(0.05).setFill()
+            path.fill()
+            // Centered bottom indicator (60% width)
+            let barWidth = bounds.width * 0.6
+            let barX = (bounds.width - barWidth) / 2
+            NSColor.controlAccentColor.withAlphaComponent(0.7).setFill()
+            NSRect(x: barX, y: bounds.height - 2, width: barWidth, height: 2).fill()
         } else if isHovering {
             theme.foregroundColor.withAlphaComponent(0.04).setFill()
-            bounds.fill()
+            path.fill()
         }
-        // Right separator
-        let sepColor = theme.splitDividerColor ?? NSColor.separatorColor
-        sepColor.withAlphaComponent(0.3).setFill()
-        NSRect(x: bounds.width - 1, y: 4, width: 1, height: bounds.height - 8).fill()
     }
 
     override func mouseDown(with event: NSEvent) {

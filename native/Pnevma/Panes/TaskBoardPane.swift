@@ -1001,32 +1001,20 @@ private struct TaskCreationSection<Content: View>: View {
 
 private struct TaskBoardBackdrop: View {
     var body: some View {
-        LinearGradient(
-            colors: [
-                Color(nsColor: .windowBackgroundColor),
-                Color(nsColor: .underPageBackgroundColor),
-                Color(nsColor: .controlBackgroundColor)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 0)
-                .fill(Color.white.opacity(0.02))
-        )
-        .ignoresSafeArea()
+        Color.clear.ignoresSafeArea()
     }
 }
 
 private struct TaskBoardSurface: View {
     let cornerRadius: CGFloat
+    @ObservedObject private var theme = GhosttyThemeProvider.shared
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.88))
+            .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(Color(nsColor: theme.foregroundColor).opacity(0.05), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.08), radius: 18, y: 10)
     }
