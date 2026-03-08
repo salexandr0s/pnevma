@@ -903,8 +903,16 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
         .await
         .map_err(|e| e.to_string())?;
     if let Some(old_id) = prior_session_id {
-        let _ = ctx.sessions.kill_session_backend(old_id).await;
-        let _ = ctx.sessions.mark_exit(old_id, None).await;
+        match ctx.sessions.kill_session_backend(old_id).await {
+            Ok(_) => {
+                let _ = ctx.sessions.mark_exit(old_id, None).await;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "restart_session: failed to terminate prior session {old_id}: {err}"
+                );
+            }
+        }
     }
 
     let row = session_row_from_meta(&new_meta);

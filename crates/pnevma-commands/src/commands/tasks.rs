@@ -1459,11 +1459,14 @@ pub async fn dispatch_task(
     let mut secret_values = build_secrets_list();
     secret_values.extend(keychain_secret_values);
     let secret_values = normalize_redaction_secrets(&secret_values);
-    let compiler = ContextCompiler::new(ContextCompilerConfig {
-        mode: ContextCompileMode::V2,
-        token_budget,
-    });
-    let discovery = FileDiscovery::new(DiscoveryConfig::default());
+    let compiler = ContextCompiler::new(
+        ContextCompilerConfig {
+            mode: ContextCompileMode::V2,
+            token_budget,
+        },
+        secret_values.clone(),
+    );
+    let discovery = FileDiscovery::new(DiscoveryConfig::default(), secret_values.clone());
     let relevant_file_contents = discovery
         .discover(&task, &project_path, token_budget)
         .await
@@ -1613,7 +1616,12 @@ pub async fn dispatch_task(
     db.upsert_pane(&pane).await.map_err(|e| e.to_string())?;
     emitter.emit(
         "session_spawned",
-        json!({"session_id": handle.id.to_string(), "name": agent_session_row.name, "session": session_row_to_event_payload(&agent_session_row)}),
+        json!({
+            "project_id": project_id,
+            "session_id": handle.id.to_string(),
+            "name": agent_session_row.name,
+            "session": session_row_to_event_payload(&agent_session_row)
+        }),
     );
     let mut rx = adapter.events(&handle);
     let payload = TaskPayload {

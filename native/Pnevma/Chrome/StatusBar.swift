@@ -1,4 +1,5 @@
 import Cocoa
+import Combine
 
 /// Bottom status bar showing git branch, active agents, pool utilization, and pane info.
 final class StatusBar: NSView {
@@ -7,9 +8,13 @@ final class StatusBar: NSView {
 
     private let branchLabel = NSTextField(labelWithString: "")
     private let agentsLabel = NSTextField(labelWithString: "")
+    let sessionsButton = NSButton(frame: .zero)
     private let paneLabel = NSTextField(labelWithString: "")
     private let separator1 = NSBox()
     private let separator2 = NSBox()
+    private let separator3 = NSBox()
+
+    var onSessionsClicked: (() -> Void)?
 
     // MARK: - Init
 
@@ -30,6 +35,7 @@ final class StatusBar: NSView {
     }
 
     private var themeObserver: NSObjectProtocol?
+    private var cancellables = Set<AnyCancellable>()
 
     override var isOpaque: Bool { true }
 
@@ -50,7 +56,19 @@ final class StatusBar: NSView {
             addSubview(label)
         }
 
-        for sep in [separator1, separator2] {
+        // Sessions button
+        sessionsButton.bezelStyle = .inline
+        sessionsButton.isBordered = false
+        sessionsButton.font = font
+        sessionsButton.contentTintColor = secondaryColor
+        sessionsButton.title = "0 sessions"
+        sessionsButton.target = self
+        sessionsButton.action = #selector(sessionsClicked)
+        sessionsButton.setAccessibilityLabel("Sessions")
+        sessionsButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(sessionsButton)
+
+        for sep in [separator1, separator2, separator3] {
             sep.boxType = .separator
             sep.translatesAutoresizingMaskIntoConstraints = false
             addSubview(sep)
@@ -84,6 +102,15 @@ final class StatusBar: NSView {
             separator2.widthAnchor.constraint(equalToConstant: 1),
             separator2.heightAnchor.constraint(equalToConstant: 14),
 
+            sessionsButton.leadingAnchor.constraint(equalTo: separator2.trailingAnchor, constant: 10),
+            sessionsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            separator3.leadingAnchor.constraint(equalTo: sessionsButton.trailingAnchor, constant: 10),
+            separator3.centerYAnchor.constraint(equalTo: centerYAnchor),
+            separator3.widthAnchor.constraint(equalToConstant: 1),
+            separator3.heightAnchor.constraint(equalToConstant: 14),
+
+            paneLabel.leadingAnchor.constraint(greaterThanOrEqualTo: separator3.trailingAnchor, constant: 10),
             paneLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             paneLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -115,11 +142,35 @@ final class StatusBar: NSView {
         for label in [branchLabel, agentsLabel, paneLabel] {
             label.textColor = fgColor
         }
+        sessionsButton.contentTintColor = fgColor
         layer?.backgroundColor = theme.backgroundColor.cgColor
         needsDisplay = true
     }
 
+    @objc private func sessionsClicked() {
+        onSessionsClicked?()
+    }
+
     // MARK: - Updates
+
+    func updateSessions(_ count: Int) {
+        sessionsButton.title = "\(count) session\(count == 1 ? "" : "s")"
+    }
+
+    func bindSessionStore(_ store: SessionStore) {
+        cancellables.removeAll()
+
+        store.$sessions
+            .combineLatest(store.$availability)
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak store] _, _ in
+                guard let self, let store else { return }
+                self.updateSessions(store.activeCount)
+            }
+            .store(in: &cancellables)
+
+        updateSessions(store.activeCount)
+    }
 
     func updateBranch(_ branch: String?) {
         branchLabel.stringValue = branch.map { "\u{E0A0} \($0)" } ?? "\u{E0A0} —"

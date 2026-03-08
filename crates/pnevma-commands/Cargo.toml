@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 pnevma-core = { path = "../pnevma-core" }
 pnevma-db = { path = "../pnevma-db" }
+pnevma-redaction = { path = "../pnevma-redaction" }
 pnevma-session = { path = "../pnevma-session" }
 pnevma-agents = { path = "../pnevma-agents" }
 pnevma-git = { path = "../pnevma-git" }

@@ -38,10 +38,13 @@ use pnevma_db::{
     WorkflowInstanceRow, WorkflowRow, WorktreeRow,
 };
 use pnevma_git::GitService;
+use pnevma_redaction::{
+    normalize_secrets as shared_normalize_secrets, redact_json_value as shared_redact_json_value,
+    redact_text as shared_redact_text, StreamRedactionBuffer,
+};
 use pnevma_session::{
     ScrollbackSlice, SessionEvent, SessionHealth, SessionMetadata, SessionStatus, SessionSupervisor,
 };
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -339,6 +342,44 @@ pub struct TaskDispatchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OkResponse {
     pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LiveSessionView {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub health: String,
+    pub pid: Option<i64>,
+    pub cwd: String,
+    pub command: String,
+    pub started_at: DateTime<Utc>,
+    pub last_heartbeat: DateTime<Utc>,
+    pub exit_code: Option<i32>,
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionKillResult {
+    pub session_id: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionKillFailure {
+    pub session_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionKillAllResult {
+    pub requested: usize,
+    pub killed: usize,
+    pub already_gone: usize,
+    pub failed: usize,
+    pub failures: Vec<SessionKillFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1235,6 +1276,17 @@ fn session_status_to_string(status: &SessionStatus) -> String {
     }
 }
 
+fn session_health_to_string(health: &SessionHealth) -> String {
+    match health {
+        SessionHealth::Active => "active".to_string(),
+        SessionHealth::Idle => "idle".to_string(),
+        SessionHealth::Stuck => "stuck".to_string(),
+        SessionHealth::Waiting => "waiting".to_string(),
+        SessionHealth::Error => "error".to_string(),
+        SessionHealth::Complete => "complete".to_string(),
+    }
+}
+
 fn parse_session_status(status: &str) -> SessionStatus {
     match status {
         "running" => SessionStatus::Running,
@@ -1267,6 +1319,43 @@ fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
         worktree_id: meta.worktree_id.map(|v| v.to_string()),
         started_at: meta.started_at,
         last_heartbeat: meta.last_heartbeat,
+    }
+}
+
+fn live_session_view_from_meta(meta: &SessionMetadata) -> LiveSessionView {
+    LiveSessionView {
+        id: meta.id.to_string(),
+        name: meta.name.clone(),
+        status: session_status_to_string(&meta.status),
+        health: session_health_to_string(&meta.health),
+        pid: meta.pid.map(i64::from),
+        cwd: meta.cwd.clone(),
+        command: meta.command.clone(),
+        started_at: meta.started_at,
+        last_heartbeat: meta.last_heartbeat,
+        exit_code: meta.exit_code,
+        ended_at: meta.ended_at,
+    }
+}
+
+fn live_session_view_from_row(row: &SessionRow) -> LiveSessionView {
+    LiveSessionView {
+        id: row.id.clone(),
+        name: row.name.clone(),
+        status: row.status.clone(),
+        health: match row.status.as_str() {
+            "running" => "active".to_string(),
+            "waiting" => "waiting".to_string(),
+            "error" => "error".to_string(),
+            _ => "complete".to_string(),
+        },
+        pid: row.pid,
+        cwd: row.cwd.clone(),
+        command: row.command.clone(),
+        started_at: row.started_at,
+        last_heartbeat: row.last_heartbeat,
+        exit_code: None,
+        ended_at: None,
     }
 }
 
@@ -1435,17 +1524,7 @@ async fn emit_enriched_task_event(emitter: &Arc<dyn EventEmitter>, db: &Db, task
 
 /// Build a serializable session view from a SessionRow.
 fn session_row_to_event_payload(row: &SessionRow) -> serde_json::Value {
-    json!({
-        "id": row.id,
-        "project_id": row.project_id,
-        "name": row.name,
-        "status": row.status,
-        "pid": row.pid,
-        "cwd": row.cwd,
-        "command": row.command,
-        "started_at": row.started_at.to_rfc3339(),
-        "last_heartbeat": row.last_heartbeat.to_rfc3339(),
-    })
+    serde_json::to_value(live_session_view_from_row(row)).expect("LiveSessionView must serialize")
 }
 
 async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
@@ -1713,184 +1792,17 @@ fn json_value_from_arg(raw: &str) -> serde_json::Value {
     }
 }
 
-fn redaction_authorization_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+")
-            .expect("authorization redaction regex must compile")
-    })
-}
-
-fn redaction_key_value_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)"#,
-        )
-        .expect("key-value redaction regex must compile")
-    })
-}
-
-fn redaction_aws_key_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"AKIA[0-9A-Z]{16}").expect("AWS key redaction regex must compile")
-    })
-}
-
-fn redaction_github_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{36,255}")
-            .expect("GitHub token redaction regex must compile")
-    })
-}
-
-fn redaction_slack_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]{10,}")
-            .expect("Slack token redaction regex must compile")
-    })
-}
-
-fn redaction_pem_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
-            .expect("PEM redaction regex must compile")
-    })
-}
-
-fn redaction_connection_string_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"://[^:]+:([^@]+)@").expect("connection string redaction regex must compile")
-    })
-}
-
-fn redaction_partial_authorization_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)authorization\s*:\s*(?:(?:b|be|bea|bear|beare|bearer)(?:\s+[^\s]*)?)?$")
-            .expect("partial authorization redaction regex must compile")
-    })
-}
-
-fn redaction_partial_key_value_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*|'[^']*|[^\s,;]*)$"#,
-        )
-        .expect("partial key-value redaction regex must compile")
-    })
-}
-
-fn redaction_partial_aws_key_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"AKIA[0-9A-Z]{0,15}$").expect("partial AWS key redaction regex must compile")
-    })
-}
-
-fn redaction_partial_github_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{0,255}$")
-            .expect("partial GitHub token redaction regex must compile")
-    })
-}
-
-fn redaction_partial_slack_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]*$")
-            .expect("partial Slack token redaction regex must compile")
-    })
-}
-
-fn redaction_partial_connection_string_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^:@\s]+:[^@\s]*$")
-            .expect("partial connection string redaction regex must compile")
-    })
-}
-
-fn is_sensitive_json_key(key: &str) -> bool {
-    let normalized = key.trim().replace('-', "_").to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "password"
-            | "passphrase"
-            | "token"
-            | "access_token"
-            | "refresh_token"
-            | "bearer_token"
-            | "secret"
-            | "client_secret"
-            | "secret_key"
-            | "private_key"
-            | "api_key"
-            | "apikey"
-            | "authorization"
-    ) || normalized.ends_with("_token")
-        || normalized.ends_with("_secret")
-        || normalized.ends_with("_password")
-        || normalized.ends_with("_api_key")
-}
-
+#[cfg(test)]
 fn redact_patterns(input: &str) -> String {
-    let mut result = redaction_authorization_regex()
-        .replace_all(input, "$1[REDACTED]")
-        .to_string();
-    result = redaction_key_value_regex()
-        .replace_all(&result, "$1=[REDACTED]")
-        .to_string();
-    result = redaction_aws_key_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_github_token_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_slack_token_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_pem_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    redaction_connection_string_regex()
-        .replace_all(&result, "://[REDACTED]@")
-        .to_string()
+    shared_redact_text(input, &[])
 }
 
 fn redact_text(input: &str, secrets: &[String]) -> String {
-    let mut redacted = redact_patterns(input);
-    for secret in secrets {
-        if secret.is_empty() {
-            continue;
-        }
-        redacted = redacted.replace(secret, "[REDACTED]");
-    }
-    redacted
+    shared_redact_text(input, secrets)
 }
 
 pub(crate) fn normalize_redaction_secrets(secrets: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut normalized = secrets
-        .iter()
-        .filter(|secret| !secret.is_empty())
-        .filter_map(|secret| {
-            if seen.insert(secret.clone()) {
-                Some(secret.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    normalized.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    normalized
+    shared_normalize_secrets(secrets)
 }
 
 fn project_redaction_secret_registry() -> &'static StdRwLock<HashMap<Uuid, Vec<String>>> {
@@ -1946,175 +1858,37 @@ fn project_redaction_secrets(project_id: Uuid) -> Vec<String> {
     }
 }
 
-const STREAM_REDACTION_TAIL_BYTES: usize = 256;
-
-fn minimum_partial_match_bytes(literal: &str) -> usize {
-    if literal.len() <= 4 {
-        2
-    } else {
-        3
-    }
-}
-
-fn partial_literal_start(
-    input: &str,
-    literal: &str,
-    retain_full_match: bool,
-    min_match_bytes: usize,
-) -> Option<usize> {
-    if input.is_empty() || literal.is_empty() {
-        return None;
-    }
-
-    let mut retain_start = None;
-    for (idx, _) in literal.char_indices().skip(1) {
-        if idx < min_match_bytes {
-            continue;
-        }
-        if input.ends_with(&literal[..idx]) {
-            retain_start = Some(input.len() - idx);
-        }
-    }
-
-    if retain_full_match && literal.len() >= min_match_bytes && input.ends_with(literal) {
-        return Some(input.len() - literal.len());
-    }
-
-    retain_start
-}
-
-fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
-    const PEM_PREFIX_MARKERS: &[&str] = &[
-        "-----BEGIN ",
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----BEGIN EC PRIVATE KEY-----",
-        "-----BEGIN DSA PRIVATE KEY-----",
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-        "-----BEGIN PRIVATE KEY-----",
-    ];
-
-    let mut retain_start = None;
-
-    for marker in PEM_PREFIX_MARKERS {
-        let candidate =
-            partial_literal_start(input, marker, false, minimum_partial_match_bytes(marker));
-        if let Some(start) = candidate {
-            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
-        }
-    }
-
-    for secret in secrets {
-        if let Some(start) =
-            partial_literal_start(input, secret, false, minimum_partial_match_bytes(secret))
-        {
-            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
-        }
-    }
-
-    for regex in [
-        redaction_partial_authorization_regex(),
-        redaction_partial_key_value_regex(),
-        redaction_partial_aws_key_regex(),
-        redaction_partial_github_token_regex(),
-        redaction_partial_slack_token_regex(),
-        redaction_partial_connection_string_regex(),
-    ] {
-        if let Some(found) = regex.find(input) {
-            retain_start = Some(
-                retain_start.map_or(found.start(), |current: usize| current.min(found.start())),
-            );
-        }
-    }
-
-    retain_start
-}
-
-fn drain_to_retained_tail(input: &str, retain_bytes: usize) -> usize {
-    if input.len() <= retain_bytes {
-        return input.len();
-    }
-
-    let mut split_at = input.len() - retain_bytes;
-    while split_at > 0 && !input.is_char_boundary(split_at) {
-        split_at -= 1;
-    }
-    split_at
-}
-
 pub(crate) async fn current_redaction_secrets(secrets: &Arc<RwLock<Vec<String>>>) -> Vec<String> {
     secrets.read().await.clone()
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct StreamRedactor {
-    pending: String,
+    buffer: StreamRedactionBuffer,
     secrets: Arc<RwLock<Vec<String>>>,
 }
 
 impl StreamRedactor {
     pub(crate) fn new(secrets: Arc<RwLock<Vec<String>>>) -> Self {
         Self {
-            pending: String::new(),
+            buffer: StreamRedactionBuffer::new(),
             secrets,
         }
     }
 
     pub(crate) async fn push_chunk(&mut self, chunk: &str) -> Option<String> {
-        self.pending.push_str(chunk);
-        self.drain(false).await
+        let secrets = current_redaction_secrets(&self.secrets).await;
+        self.buffer.push_chunk(chunk, &secrets)
     }
 
     pub(crate) async fn finish(&mut self) -> Option<String> {
-        self.drain(true).await
-    }
-
-    async fn drain(&mut self, flush_all: bool) -> Option<String> {
-        if self.pending.is_empty() {
-            return None;
-        }
-
         let secrets = current_redaction_secrets(&self.secrets).await;
-        let drain_to = if flush_all {
-            self.pending.len()
-        } else {
-            let tail_boundary = drain_to_retained_tail(&self.pending, STREAM_REDACTION_TAIL_BYTES);
-            partial_redaction_start(&self.pending, &secrets).map_or(tail_boundary, |retain_start| {
-                tail_boundary.min(retain_start)
-            })
-        };
-
-        if drain_to == 0 {
-            return None;
-        }
-
-        let chunk = self.pending[..drain_to].to_string();
-        self.pending.replace_range(..drain_to, "");
-        Some(redact_text(&chunk, &secrets))
+        self.buffer.finish(&secrets)
     }
 }
 
 fn redact_json_value(value: serde_json::Value, secrets: &[String]) -> serde_json::Value {
-    match value {
-        serde_json::Value::String(text) => serde_json::Value::String(redact_text(&text, secrets)),
-        serde_json::Value::Array(items) => serde_json::Value::Array(
-            items
-                .into_iter()
-                .map(|item| redact_json_value(item, secrets))
-                .collect(),
-        ),
-        serde_json::Value::Object(map) => {
-            let mut out = serde_json::Map::new();
-            for (key, value) in map {
-                if is_sensitive_json_key(&key) {
-                    out.insert(key, serde_json::Value::String("[REDACTED]".to_string()));
-                } else {
-                    out.insert(key, redact_json_value(value, secrets));
-                }
-            }
-            serde_json::Value::Object(out)
-        }
-        other => other,
-    }
+    shared_redact_json_value(value, secrets)
 }
 
 pub(crate) fn redact_payload_for_log_with_secrets(
@@ -3235,10 +3009,16 @@ fn spawn_session_bridge(
             match event {
                 SessionEvent::Spawned(meta) => {
                     let row = session_row_from_meta(&meta);
+                    let live_session = live_session_view_from_meta(&meta);
                     let _ = db.upsert_session(&row).await;
                     emitter.emit(
                         "session_spawned",
-                        json!({"session_id": meta.id, "name": meta.name, "session": session_row_to_event_payload(&row)}),
+                        json!({
+                            "project_id": project_id,
+                            "session_id": meta.id,
+                            "name": meta.name,
+                            "session": live_session
+                        }),
                     );
                     append_event(
                         &db,
@@ -3266,14 +3046,18 @@ fn spawn_session_bridge(
                     let session_payload = if let Some(meta) = sessions.get(session_id).await {
                         let row = session_row_from_meta(&meta);
                         let _ = db.upsert_session(&row).await;
-                        Some(session_row_to_event_payload(&row))
+                        Some(live_session_view_from_meta(&meta))
                     } else {
                         None
                     };
-                    let mut payload =
-                        json!({"session_id": session_id, "health": format!("{:?}", health)});
+                    let mut payload = json!({
+                        "project_id": project_id,
+                        "session_id": session_id,
+                        "health": session_health_to_string(&health)
+                    });
                     if let Some(s) = session_payload {
-                        payload["session"] = s;
+                        payload["session"] =
+                            serde_json::to_value(s).expect("LiveSessionView must serialize");
                     }
                     emitter.emit("session_heartbeat", payload);
                 }
@@ -3281,13 +3065,18 @@ fn spawn_session_bridge(
                     let session_payload = if let Some(meta) = sessions.get(session_id).await {
                         let row = session_row_from_meta(&meta);
                         let _ = db.upsert_session(&row).await;
-                        Some(session_row_to_event_payload(&row))
+                        Some(live_session_view_from_meta(&meta))
                     } else {
                         None
                     };
-                    let mut payload = json!({"session_id": session_id, "code": code});
+                    let mut payload = json!({
+                        "project_id": project_id,
+                        "session_id": session_id,
+                        "code": code
+                    });
                     if let Some(s) = session_payload {
-                        payload["session"] = s;
+                        payload["session"] =
+                            serde_json::to_value(s).expect("LiveSessionView must serialize");
                     }
                     if let Some(redactor) = output_redactors.get_mut(&session_id) {
                         if let Some(safe_chunk) = redactor.finish().await {
@@ -3443,6 +3232,23 @@ mod redaction_tests {
         assert_eq!(second, "token=[REDACTED]\n");
     }
 
+    #[tokio::test]
+    async fn stream_redactor_redacts_provider_assignment_split_across_chunks() {
+        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        assert!(redactor
+            .push_chunk(r#"OPENAI_API_KEY="sk-proj-abcdef"#)
+            .await
+            .is_none());
+
+        let output = redactor
+            .push_chunk(r#"ghijklmnopqrstuvwxyz1234567890" done"#)
+            .await
+            .expect("completed provider assignment should flush");
+        assert_eq!(output, "OPENAI_API_KEY=[REDACTED] done");
+    }
+
     // ── redact_patterns ───────────────────────────────────────────────────────
 
     #[test]
@@ -3484,6 +3290,24 @@ mod redaction_tests {
         let input = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123456789";
         let output = redact_patterns(input);
         assert!(!output.contains("ghp_"), "github token must be redacted");
+    }
+
+    #[test]
+    fn provider_token_pattern_is_redacted() {
+        let input = "token sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+        let output = redact_patterns(input);
+        assert!(
+            !output.contains("sk-proj-"),
+            "provider token must be redacted"
+        );
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn quoted_env_assignment_pattern_is_redacted() {
+        let input = r#"ANTHROPIC_API_KEY="sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890""#;
+        let output = redact_patterns(input);
+        assert_eq!(output, "ANTHROPIC_API_KEY=[REDACTED]");
     }
 
     #[test]
@@ -3622,6 +3446,20 @@ mod redaction_tests {
         clear_project_redaction_secrets(project_id);
     }
 
+    #[test]
+    fn project_log_redaction_catches_provider_tokens_without_registered_values() {
+        let project_id = Uuid::new_v4();
+        let out = redact_payload_for_project_log(
+            project_id,
+            serde_json::json!({
+                "chunk": "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
+            }),
+        );
+        let out_str = out.to_string();
+        assert!(!out_str.contains("sk-proj-"));
+        assert!(out_str.contains("[REDACTED]"));
+    }
+
     #[tokio::test]
     async fn discover_markdown_files_ignores_missing_glob_parent() {
         let project_root =
@@ -3646,5 +3484,33 @@ mod redaction_tests {
         );
 
         let _ = tokio::fs::remove_dir_all(&project_root).await;
+    }
+
+    #[test]
+    fn live_session_event_payload_uses_normalized_public_shape() {
+        let row = SessionRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: Uuid::new_v4().to_string(),
+            name: "Terminal".to_string(),
+            r#type: Some("terminal".to_string()),
+            status: "running".to_string(),
+            pid: Some(42),
+            cwd: "/tmp/project".to_string(),
+            command: "zsh".to_string(),
+            branch: Some("main".to_string()),
+            worktree_id: Some(Uuid::new_v4().to_string()),
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+        };
+
+        let payload = session_row_to_event_payload(&row);
+
+        assert_eq!(payload["id"], row.id);
+        assert_eq!(payload["status"], "running");
+        assert_eq!(payload["health"], "active");
+        assert_eq!(payload["cwd"], row.cwd);
+        assert!(payload.get("project_id").is_none());
+        assert!(payload.get("branch").is_none());
+        assert!(payload.get("worktree_id").is_none());
     }
 }

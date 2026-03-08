@@ -4,6 +4,7 @@ use crate::state::AppState;
 use pnevma_context::redact_secrets;
 use pnevma_core::{GlobalConfig, ProjectConfig};
 use pnevma_db::NewEvent;
+use pnevma_session::{SessionBackendKillResult, SessionStatus, SessionSupervisor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -315,6 +316,96 @@ fn parse_optional_bool_param(params: &Value, key: &str) -> Option<bool> {
 
 fn parse_optional_i64_param(params: &Value, key: &str) -> Option<i64> {
     params.get(key).and_then(Value::as_i64)
+}
+
+fn session_kill_result(
+    session_id: String,
+    outcome: &str,
+    message: Option<String>,
+) -> commands::SessionKillResult {
+    commands::SessionKillResult {
+        session_id,
+        outcome: outcome.to_string(),
+        message,
+    }
+}
+
+async fn finalize_session_exit(
+    supervisor: &SessionSupervisor,
+    session_id: Uuid,
+    outcome: &str,
+    exit_code: Option<i32>,
+) -> commands::SessionKillResult {
+    let session_id_string = session_id.to_string();
+    match supervisor.mark_exit(session_id, exit_code).await {
+        Ok(()) => session_kill_result(session_id_string, outcome, None),
+        Err(err) => session_kill_result(
+            session_id_string,
+            "failed",
+            Some(format!("failed to record session exit: {err}")),
+        ),
+    }
+}
+
+async fn kill_live_session(
+    supervisor: &SessionSupervisor,
+    session_id: Uuid,
+) -> commands::SessionKillResult {
+    if supervisor.get(session_id).await.is_none() {
+        return session_kill_result(session_id.to_string(), "not_found", None);
+    }
+
+    match supervisor.kill_session_backend(session_id).await {
+        Ok(SessionBackendKillResult::Killed) => {
+            finalize_session_exit(supervisor, session_id, "killed", Some(-9)).await
+        }
+        Ok(SessionBackendKillResult::AlreadyGone) => {
+            finalize_session_exit(supervisor, session_id, "already_gone", None).await
+        }
+        Err(err) => session_kill_result(session_id.to_string(), "failed", Some(err.to_string())),
+    }
+}
+
+async fn kill_all_live_sessions(supervisor: &SessionSupervisor) -> commands::SessionKillAllResult {
+    let sessions = supervisor.list().await;
+    let mut result = commands::SessionKillAllResult {
+        requested: 0,
+        killed: 0,
+        already_gone: 0,
+        failed: 0,
+        failures: Vec::new(),
+    };
+
+    for session in sessions {
+        if session.status == SessionStatus::Complete {
+            continue;
+        }
+
+        result.requested += 1;
+        let kill_result = kill_live_session(supervisor, session.id).await;
+        match kill_result.outcome.as_str() {
+            "killed" => result.killed += 1,
+            "already_gone" | "not_found" => result.already_gone += 1,
+            "failed" => {
+                result.failed += 1;
+                result.failures.push(commands::SessionKillFailure {
+                    session_id: kill_result.session_id,
+                    message: kill_result
+                        .message
+                        .unwrap_or_else(|| "session kill failed".to_string()),
+                });
+            }
+            _ => {
+                result.failed += 1;
+                result.failures.push(commands::SessionKillFailure {
+                    session_id: kill_result.session_id,
+                    message: format!("unexpected kill outcome {}", kill_result.outcome),
+                });
+            }
+        }
+    }
+
+    result
 }
 
 fn parse_optional_string_list_param(params: &Value, key: &str) -> Option<Vec<String>> {
@@ -841,6 +932,78 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "session.list_live" => {
+            let supervisor = {
+                let current = state.current.lock().await;
+                current
+                    .as_ref()
+                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?
+                    .sessions
+                    .clone()
+            };
+            let mut sessions = supervisor
+                .list()
+                .await
+                .into_iter()
+                .map(|meta| commands::LiveSessionView {
+                    id: meta.id.to_string(),
+                    name: meta.name,
+                    status: match meta.status {
+                        SessionStatus::Running => "running".to_string(),
+                        SessionStatus::Waiting => "waiting".to_string(),
+                        SessionStatus::Error => "error".to_string(),
+                        SessionStatus::Complete => "complete".to_string(),
+                    },
+                    health: match meta.health {
+                        pnevma_session::SessionHealth::Active => "active".to_string(),
+                        pnevma_session::SessionHealth::Idle => "idle".to_string(),
+                        pnevma_session::SessionHealth::Stuck => "stuck".to_string(),
+                        pnevma_session::SessionHealth::Waiting => "waiting".to_string(),
+                        pnevma_session::SessionHealth::Error => "error".to_string(),
+                        pnevma_session::SessionHealth::Complete => "complete".to_string(),
+                    },
+                    pid: meta.pid.map(i64::from),
+                    cwd: meta.cwd,
+                    command: meta.command,
+                    started_at: meta.started_at,
+                    last_heartbeat: meta.last_heartbeat,
+                    exit_code: meta.exit_code,
+                    ended_at: meta.ended_at,
+                })
+                .collect::<Vec<_>>();
+            sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+            serde_json::to_value(sessions)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "session.kill" => {
+            let session_id =
+                parse_string_param_aliases(params, &["session_id", "id"], "session_id")
+                    .map_err(|e| ("invalid_params".to_string(), e))?;
+            let sid = Uuid::parse_str(&session_id)
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            let supervisor = {
+                let current = state.current.lock().await;
+                current
+                    .as_ref()
+                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?
+                    .sessions
+                    .clone()
+            };
+            serde_json::to_value(kill_live_session(&supervisor, sid).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "session.kill_all" => {
+            let supervisor = {
+                let current = state.current.lock().await;
+                current
+                    .as_ref()
+                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?
+                    .sessions
+                    .clone()
+            };
+            serde_json::to_value(kill_all_live_sessions(&supervisor).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "session.binding" => {
             let session_id =
                 parse_string_param_aliases(params, &["session_id", "id"], "session_id")

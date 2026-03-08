@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/pnevma-core",
+  "crates/pnevma-redaction",
   "crates/pnevma-session",
   "crates/pnevma-agents",
   "crates/pnevma-git",

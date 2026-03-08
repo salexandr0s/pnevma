@@ -1,313 +1,42 @@
 use crate::error::SessionError;
 use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
 use chrono::{Duration, Utc};
-use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use pnevma_redaction::{normalize_secrets, StreamRedactionBuffer};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use uuid::Uuid;
 
-fn redaction_authorization_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+")
-            .expect("authorization redaction regex must compile")
-    })
-}
-
-fn redaction_key_value_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)"#,
-        )
-        .expect("key-value redaction regex must compile")
-    })
-}
-
-fn redaction_aws_key_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"AKIA[0-9A-Z]{16}").expect("AWS key redaction regex must compile")
-    })
-}
-
-fn redaction_github_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{36,255}")
-            .expect("GitHub token redaction regex must compile")
-    })
-}
-
-fn redaction_slack_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]{10,}")
-            .expect("Slack token redaction regex must compile")
-    })
-}
-
-fn redaction_pem_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
-            .expect("PEM redaction regex must compile")
-    })
-}
-
-fn redaction_connection_string_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"://[^:]+:([^@]+)@").expect("connection string redaction regex must compile")
-    })
-}
-
-fn redaction_partial_authorization_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)authorization\s*:\s*(?:(?:b|be|bea|bear|beare|bearer)(?:\s+[^\s]*)?)?$")
-            .expect("partial authorization redaction regex must compile")
-    })
-}
-
-fn redaction_partial_key_value_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*("[^"]*|'[^']*|[^\s,;]*)$"#,
-        )
-        .expect("partial key-value redaction regex must compile")
-    })
-}
-
-fn redaction_partial_aws_key_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"AKIA[0-9A-Z]{0,15}$").expect("partial AWS key redaction regex must compile")
-    })
-}
-
-fn redaction_partial_github_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{0,255}$")
-            .expect("partial GitHub token redaction regex must compile")
-    })
-}
-
-fn redaction_partial_slack_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"xox[bpras]-[A-Za-z0-9\-]*$")
-            .expect("partial Slack token redaction regex must compile")
-    })
-}
-
-fn redaction_partial_connection_string_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^:@\s]+:[^@\s]*$")
-            .expect("partial connection string redaction regex must compile")
-    })
-}
-
-fn redact_stream_text(input: &str, secrets: &[String]) -> String {
-    let mut result = redaction_authorization_regex()
-        .replace_all(input, "$1[REDACTED]")
-        .to_string();
-    result = redaction_key_value_regex()
-        .replace_all(&result, "$1=[REDACTED]")
-        .to_string();
-    result = redaction_aws_key_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_github_token_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_slack_token_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_pem_regex()
-        .replace_all(&result, "[REDACTED]")
-        .to_string();
-    result = redaction_connection_string_regex()
-        .replace_all(&result, "://[REDACTED]@")
-        .to_string();
-    for secret in secrets {
-        if secret.is_empty() {
-            continue;
-        }
-        result = result.replace(secret, "[REDACTED]");
-    }
-    result
-}
-
 #[cfg(test)]
 fn redact_stream_chunk(input: &str) -> String {
-    redact_stream_text(input, &[])
-}
-
-fn normalize_redaction_secrets(secrets: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut normalized = secrets
-        .iter()
-        .filter(|secret| !secret.is_empty())
-        .filter_map(|secret| {
-            if seen.insert(secret.clone()) {
-                Some(secret.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    normalized.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    normalized
-}
-
-const STREAM_REDACTION_TAIL_BYTES: usize = 256;
-
-fn minimum_partial_match_bytes(literal: &str) -> usize {
-    if literal.len() <= 4 {
-        2
-    } else {
-        3
-    }
-}
-
-fn partial_literal_start(
-    input: &str,
-    literal: &str,
-    retain_full_match: bool,
-    min_match_bytes: usize,
-) -> Option<usize> {
-    if input.is_empty() || literal.is_empty() {
-        return None;
-    }
-
-    let mut retain_start = None;
-    for (idx, _) in literal.char_indices().skip(1) {
-        if idx < min_match_bytes {
-            continue;
-        }
-        if input.ends_with(&literal[..idx]) {
-            retain_start = Some(input.len() - idx);
-        }
-    }
-
-    if retain_full_match && literal.len() >= min_match_bytes && input.ends_with(literal) {
-        return Some(input.len() - literal.len());
-    }
-
-    retain_start
-}
-
-fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
-    const PEM_PREFIX_MARKERS: &[&str] = &[
-        "-----BEGIN ",
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----BEGIN EC PRIVATE KEY-----",
-        "-----BEGIN DSA PRIVATE KEY-----",
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-        "-----BEGIN PRIVATE KEY-----",
-    ];
-
-    let mut retain_start = None;
-
-    for marker in PEM_PREFIX_MARKERS {
-        let candidate =
-            partial_literal_start(input, marker, false, minimum_partial_match_bytes(marker));
-        if let Some(start) = candidate {
-            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
-        }
-    }
-
-    for secret in secrets {
-        if let Some(start) =
-            partial_literal_start(input, secret, false, minimum_partial_match_bytes(secret))
-        {
-            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
-        }
-    }
-
-    for regex in [
-        redaction_partial_authorization_regex(),
-        redaction_partial_key_value_regex(),
-        redaction_partial_aws_key_regex(),
-        redaction_partial_github_token_regex(),
-        redaction_partial_slack_token_regex(),
-        redaction_partial_connection_string_regex(),
-    ] {
-        if let Some(found) = regex.find(input) {
-            retain_start = Some(
-                retain_start.map_or(found.start(), |current: usize| current.min(found.start())),
-            );
-        }
-    }
-
-    retain_start
-}
-
-fn drain_to_retained_tail(input: &str, retain_bytes: usize) -> usize {
-    if input.len() <= retain_bytes {
-        return input.len();
-    }
-
-    let mut split_at = input.len() - retain_bytes;
-    while split_at > 0 && !input.is_char_boundary(split_at) {
-        split_at -= 1;
-    }
-    split_at
+    pnevma_redaction::redact_text(input, &[])
 }
 
 #[derive(Debug, Clone)]
 struct StreamRedactor {
-    pending: String,
+    buffer: StreamRedactionBuffer,
     secrets: Arc<RwLock<Vec<String>>>,
 }
 
 impl StreamRedactor {
     fn new(secrets: Arc<RwLock<Vec<String>>>) -> Self {
         Self {
-            pending: String::new(),
+            buffer: StreamRedactionBuffer::new(),
             secrets,
         }
     }
 
     async fn push_chunk(&mut self, chunk: &str) -> Option<String> {
-        self.pending.push_str(chunk);
-        self.drain(false).await
+        let secrets = self.secrets.read().await.clone();
+        self.buffer.push_chunk(chunk, &secrets)
     }
 
     async fn finish(&mut self) -> Option<String> {
-        self.drain(true).await
-    }
-
-    async fn drain(&mut self, flush_all: bool) -> Option<String> {
-        if self.pending.is_empty() {
-            return None;
-        }
-
         let secrets = self.secrets.read().await.clone();
-        let drain_to = if flush_all {
-            self.pending.len()
-        } else {
-            let tail_boundary = drain_to_retained_tail(&self.pending, STREAM_REDACTION_TAIL_BYTES);
-            partial_redaction_start(&self.pending, &secrets).map_or(tail_boundary, |retain_start| {
-                tail_boundary.min(retain_start)
-            })
-        };
-
-        if drain_to == 0 {
-            return None;
-        }
-
-        let chunk = self.pending[..drain_to].to_string();
-        self.pending.replace_range(..drain_to, "");
-        Some(redact_stream_text(&chunk, &secrets))
+        self.buffer.finish(&secrets)
     }
 }
 
@@ -326,6 +55,12 @@ pub enum SessionEvent {
         session_id: Uuid,
         code: Option<i32>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionBackendKillResult {
+    Killed,
+    AlreadyGone,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -400,7 +135,7 @@ impl SessionSupervisor {
     }
 
     pub async fn set_redaction_secrets(&self, secrets: Vec<String>) {
-        *self.redaction_secrets.write().await = normalize_redaction_secrets(&secrets);
+        *self.redaction_secrets.write().await = normalize_secrets(&secrets);
     }
 
     pub async fn spawn_shell(
@@ -500,7 +235,10 @@ impl SessionSupervisor {
         self.attach_tmux_client(session_id).await
     }
 
-    pub async fn kill_session_backend(&self, session_id: Uuid) -> Result<(), SessionError> {
+    pub async fn kill_session_backend(
+        &self,
+        session_id: Uuid,
+    ) -> Result<SessionBackendKillResult, SessionError> {
         self.ensure_tmux_tmpdir().await?;
         let name = tmux_name(session_id);
         let out = self
@@ -511,12 +249,12 @@ impl SessionSupervisor {
             .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
 
         if out.status.success() {
-            return Ok(());
+            return Ok(SessionBackendKillResult::Killed);
         }
 
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         if stderr.contains("can't find session") {
-            return Ok(());
+            return Ok(SessionBackendKillResult::AlreadyGone);
         }
 
         Err(SessionError::SpawnFailed(format!(
@@ -709,6 +447,17 @@ impl SessionSupervisor {
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
+            if let Some(parent) = scrollback_path.parent() {
+                if tokio::fs::create_dir_all(parent).await.is_err() {
+                    return;
+                }
+            }
+            if let Some(parent) = scrollback_index_path.parent() {
+                if tokio::fs::create_dir_all(parent).await.is_err() {
+                    return;
+                }
+            }
+
             let file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1082,12 +831,16 @@ async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) 
 #[cfg(test)]
 mod tests {
     use super::redact_stream_chunk;
+    use super::SessionBackendKillResult;
     use super::SessionSupervisor;
     use super::StreamRedactor;
     use crate::error::SessionError;
     use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
     use chrono::Utc;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::RwLock;
     use uuid::Uuid;
 
@@ -1445,6 +1198,18 @@ mod tests {
         session_id
     }
 
+    fn write_fake_tmux(root: &Path, body: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(root).expect("create fake tmux root");
+        let path = root.join("fake-tmux.sh");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake tmux");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("fake tmux metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("set fake tmux permissions");
+        path
+    }
+
     #[tokio::test]
     async fn refresh_health_active_when_recent_heartbeat() {
         let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
@@ -1529,6 +1294,45 @@ mod tests {
 
         let meta = supervisor.get(session_id).await.expect("session exists");
         assert_eq!(meta.health, SessionHealth::Complete);
+    }
+
+    #[tokio::test]
+    async fn kill_session_backend_returns_killed_for_successful_tmux_exit() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let mut supervisor = SessionSupervisor::new(&root);
+        supervisor.tmux_bin = write_fake_tmux(&root, "exit 0");
+
+        let result = supervisor
+            .kill_session_backend(Uuid::new_v4())
+            .await
+            .expect("successful tmux exit should report killed");
+        assert_eq!(result, SessionBackendKillResult::Killed);
+    }
+
+    #[tokio::test]
+    async fn kill_session_backend_returns_already_gone_for_missing_tmux_session() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let mut supervisor = SessionSupervisor::new(&root);
+        supervisor.tmux_bin = write_fake_tmux(&root, "echo \"can't find session\" 1>&2\nexit 1");
+
+        let result = supervisor
+            .kill_session_backend(Uuid::new_v4())
+            .await
+            .expect("missing tmux session should classify as already gone");
+        assert_eq!(result, SessionBackendKillResult::AlreadyGone);
+    }
+
+    #[tokio::test]
+    async fn kill_session_backend_returns_error_for_real_tmux_failure() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let mut supervisor = SessionSupervisor::new(&root);
+        supervisor.tmux_bin = write_fake_tmux(&root, "echo \"permission denied\" 1>&2\nexit 1");
+
+        let err = supervisor
+            .kill_session_backend(Uuid::new_v4())
+            .await
+            .expect_err("hard tmux failure should bubble as an error");
+        assert!(matches!(err, SessionError::SpawnFailed(_)));
     }
 
     // ── mark_exit ───────────────────────────────────────────────────────────
@@ -1622,6 +1426,14 @@ mod tests {
     }
 
     #[test]
+    fn redacts_provider_token_and_env_assignment() {
+        let input = r#"OPENAI_API_KEY="sk-proj-abcdefghijklmnopqrstuvwxyz1234567890""#;
+        let output = redact_stream_chunk(input);
+        assert_eq!(output, "OPENAI_API_KEY=[REDACTED]");
+        assert!(!output.contains("sk-proj-"));
+    }
+
+    #[test]
     fn does_not_redact_normal_text() {
         let input = "Hello, world! This is a normal log line.";
         let output = redact_stream_chunk(input);
@@ -1642,6 +1454,79 @@ mod tests {
         let output = redact_stream_chunk(input);
         assert!(!output.contains("mypassword"));
         assert!(output.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn spawn_reader_task_persists_provider_tokens_redacted() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        let scrollback_index_path = scrollback_path.with_extension("idx");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "persist-redacted".to_string(),
+                status: SessionStatus::Running,
+                health: SessionHealth::Active,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let (mut writer, reader) = tokio::io::duplex(512);
+        supervisor.spawn_reader_task(
+            session_id,
+            reader,
+            scrollback_path.clone(),
+            scrollback_index_path,
+            Arc::new(RwLock::new(Vec::new())),
+        );
+
+        writer
+            .write_all(b"prefix sk-pr")
+            .await
+            .expect("write first chunk");
+        writer
+            .write_all(b"oj-abcdefghijklmnopqrstuvwxyz1234567890 suffix")
+            .await
+            .expect("write second chunk");
+        writer.shutdown().await.expect("shutdown writer");
+        drop(writer);
+
+        let persisted = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(contents) = tokio::fs::read_to_string(&scrollback_path).await {
+                    if !contents.is_empty() {
+                        break contents;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("persisted redacted scrollback");
+
+        assert_eq!(persisted, "prefix [REDACTED] suffix");
+        assert!(!persisted.contains("sk-proj-"));
+
+        let slice = supervisor
+            .read_scrollback(session_id, 0, 4096)
+            .await
+            .expect("read scrollback");
+        assert_eq!(slice.data, persisted);
+        assert!(!slice.data.contains("sk-proj-"));
     }
 
     // ── list/get ─────────────────────────────────────────────────────────────

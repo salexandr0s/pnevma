@@ -21,6 +21,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var bridge: PnevmaBridge?
     private var commandBus: CommandBus?
     private var sessionBridge: SessionBridge?
+    private var sessionStore: SessionStore?
     private var workspaceManager: WorkspaceManager?
     private var contentAreaView: ContentAreaView?
     private var tabBarView: TabBarView?
@@ -115,6 +116,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
         if initResult != 0 {
             Log.general.error("ghostty_init() failed with code \(initResult)")
+        } else {
+            GhosttyRuntime.markInitialized()
         }
         #endif
 
@@ -140,6 +143,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sessionBridge = sessionBridge
             SessionBridge.shared = sessionBridge
             PaneFactory.sessionBridge = sessionBridge
+            let sessionStore = SessionStore(commandBus: bus)
+            self.sessionStore = sessionStore
+            sessionStore.activate()
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
             self?.contentAreaView?.syncPersistedPanes()
@@ -162,6 +168,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Free ghostty app singleton before process exit.
         #if canImport(GhosttyKit)
         TerminalSurface.shutdownGhostty()
+        GhosttyRuntime.reset()
         #endif
 
         bridge?.destroy()
@@ -190,6 +197,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create tab bar before toolbar so it's available when the delegate is called
         let tabBar = TabBarView()
+        tabBar.sidebarWidth = DesignTokens.Layout.sidebarWidth
         tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
         tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
         tabBar.onAddTab = { [weak self] in self?.newTab() }
@@ -233,6 +241,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Status bar
         statusBar = StatusBar()
+        statusBar?.onSessionsClicked = { [weak self] in self?.showSessionManager() }
+        if let sessionStore {
+            statusBar?.bindSessionStore(sessionStore)
+        }
 
         // Sidebar
         guard let bridge = bridge, let commandBus = commandBus else {
@@ -657,6 +669,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let paneMinWidth: CGFloat = 800 - sidebarWidth
         window?.minSize.width = isSidebarVisible ? (sidebarWidth + paneMinWidth) : paneMinWidth
         let width = isSidebarVisible ? sidebarWidth : 0
+        tabBarView?.sidebarWidth = CGFloat(width)
         if isSidebarVisible { sidebarHostView?.isHidden = false }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.Motion.normal
@@ -795,6 +808,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openSettingsPane()
         })
 
+        commands.append(CommandItem(
+            id: "app.sessions",
+            title: "Session Manager",
+            category: "app",
+            shortcut: nil,
+            description: "View and manage active terminal sessions"
+        ) { [weak self] in
+            self?.showSessionManager()
+        })
+
         commandPalette?.registerCommands(commands)
     }
 
@@ -898,6 +921,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
         sidebarWidthConstraint?.constant = width
         sidebarHostView?.isHidden = !isSidebarVisible
+        tabBarView?.sidebarWidth = CGFloat(width)
         let paneMinWidth: CGFloat = 800 - DesignTokens.Layout.sidebarWidth
         window?.minSize.width = isSidebarVisible ? 800 : paneMinWidth
 
@@ -923,7 +947,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var notificationsPopover: NSPopover?
+    private var sessionsPopover: NSPopover?
     private weak var notificationToolbarButton: NSButton?
+
+    private func showSessionManager() {
+        if let popover = sessionsPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let statusBar, let sessionStore else { return }
+        let button = statusBar.sessionsButton
+
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 380, height: 320)
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: SessionManagerPopoverView(store: sessionStore)
+        )
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        sessionsPopover = popover
+    }
 
     @objc private func showNotifications() {
         if let popover = notificationsPopover, popover.isShown {
@@ -1156,4 +1200,3 @@ struct NotificationsPopoverView: View {
         }
     }
 }
-
