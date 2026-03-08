@@ -38,6 +38,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smokeWindow: NSWindow?
     private var smokeHostView: TerminalHostView?
     private var smokeTimeoutWorkItem: DispatchWorkItem?
+    private var runtimeSettingsObserver: NSObjectProtocol?
 
     // MARK: - App Lifecycle
 
@@ -48,8 +49,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         initializeRuntime()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await AppRuntimeSettings.shared.load(commandBus: self.commandBus)
+            self.applyRuntimeSettings()
+            self.finishLaunchingAfterSettingsLoad()
+        }
+    }
 
-        let restoredState = persistence?.restore()
+    private func finishLaunchingAfterSettingsLoad() {
+        let restoredState = persistence?.restore(
+            ifEnabled: AppRuntimeSettings.shared.restoreWindowsOnLaunch
+        )
         if let smokeMode = AppSmokeMode.current {
             runSmoke(mode: smokeMode, restoredState: restoredState)
             return
@@ -161,11 +172,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         persistence = SessionPersistence()
+        runtimeSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .appRuntimeSettingsDidChange,
+            object: AppRuntimeSettings.shared,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyRuntimeSettings()
+            }
+        }
+        applyRuntimeSettings()
     }
 
     private func shutdownRuntime() {
         smokeTimeoutWorkItem?.cancel()
         smokeTimeoutWorkItem = nil
+        if let runtimeSettingsObserver {
+            NotificationCenter.default.removeObserver(runtimeSettingsObserver)
+            self.runtimeSettingsObserver = nil
+        }
 
         // Free ghostty app singleton before process exit.
         #if canImport(GhosttyKit)
@@ -179,6 +204,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    private func applyRuntimeSettings() {
+        persistence?.isPersistenceEnabled = AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
+        sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
     }
 
     // MARK: - Main Window

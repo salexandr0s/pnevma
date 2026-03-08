@@ -38,9 +38,11 @@ struct WorkflowInstanceItem: Identifiable, Codable {
     let workflowName: String
     let description: String?
     let status: String
-    let taskIds: [String]
+    let taskIDs: [String]
     let createdAt: String
     let updatedAt: String
+
+    var taskIds: [String] { taskIDs }
 }
 
 struct WorkflowInstanceDetail: Codable {
@@ -54,9 +56,9 @@ struct WorkflowInstanceDetail: Codable {
 }
 
 struct WorkflowInstanceStepItem: Identifiable, Codable {
-    var id: String { taskId }
+    var id: String { taskID }
     let stepIndex: Int
-    let taskId: String
+    let taskID: String
     let title: String
     let goal: String
     let status: String
@@ -67,6 +69,8 @@ struct WorkflowInstanceStepItem: Identifiable, Codable {
     let branch: String?
     let createdAt: String
     let updatedAt: String
+
+    var taskId: String { taskID }
 
     var statusColor: Color {
         switch status.lowercased() {

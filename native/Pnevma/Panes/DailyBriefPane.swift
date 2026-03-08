@@ -56,11 +56,12 @@ struct BriefEvent: Identifiable, Decodable {
 }
 
 struct TopCostTask: Decodable, Identifiable {
-    let taskId: String
+    let taskID: String
     let title: String
     let costUsd: Double
 
-    var id: String { taskId }
+    var id: String { taskID }
+    var taskId: String { taskID }
 }
 
 // MARK: - DailyBriefView

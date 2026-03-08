@@ -9,13 +9,15 @@ struct SearchResult: Identifiable, Decodable {
     let title: String
     let snippet: String
     let path: String?
-    let taskId: String?
-    let sessionId: String?
+    let taskID: String?
+    let sessionID: String?
     let timestamp: String?
 
     // Display aliases
     var filePath: String? { path }
     var lineContent: String { snippet }
+    var taskId: String? { taskID }
+    var sessionId: String? { sessionID }
 }
 
 private struct SearchParams: Encodable {

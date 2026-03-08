@@ -38,6 +38,9 @@ struct GeneralSettingsTab: View {
             Toggle("Auto-save workspace on quit", isOn: $viewModel.autoSave)
             Toggle("Restore windows on launch", isOn: $viewModel.restoreWindows)
             Toggle("Check for updates automatically", isOn: $viewModel.autoUpdate)
+            Text("Automatic update checks are saved for future updater integration and are not active in the current build.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Picker("Default shell", selection: $viewModel.defaultShell) {
                 Text("System default").tag("")
@@ -133,7 +136,7 @@ struct TerminalSettingsTab: View {
             Stepper("Scrollback lines: \(viewModel.scrollbackLines)",
                     value: $viewModel.scrollbackLines, in: 1000...100000, step: 1000)
 
-            Text("These settings are Pnevma-local terminal defaults. Embedded Ghostty behavior and appearance are edited in the Ghostty tab.")
+            Text("These terminal defaults are saved but not yet applied at runtime. Current terminal font, size, and scrollback still follow Ghostty configuration in the Ghostty tab.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -734,47 +737,6 @@ private struct GhosttyPreviewSheet: View {
     }
 }
 
-struct KeybindingEntry: Identifiable, Codable {
-    var id: String { action }
-    let action: String
-    let shortcut: String
-}
-
-struct AppSettingsSnapshot: Decodable {
-    let autoSaveWorkspaceOnQuit: Bool
-    let restoreWindowsOnLaunch: Bool
-    let autoUpdate: Bool
-    let defaultShell: String
-    let terminalFont: String
-    let terminalFontSize: UInt32
-    let scrollbackLines: UInt32
-    let sidebarBackgroundOffset: Double
-    let focusBorderEnabled: Bool
-    let focusBorderOpacity: Double
-    let focusBorderWidth: Double
-    let focusBorderColor: String
-    let telemetryEnabled: Bool
-    let crashReports: Bool
-    let keybindings: [KeybindingEntry]
-}
-
-struct AppSettingsSaveRequest: Encodable {
-    let autoSaveWorkspaceOnQuit: Bool
-    let restoreWindowsOnLaunch: Bool
-    let autoUpdate: Bool
-    let defaultShell: String
-    let terminalFont: String
-    let terminalFontSize: Int
-    let scrollbackLines: Int
-    let sidebarBackgroundOffset: Double
-    let focusBorderEnabled: Bool
-    let focusBorderOpacity: Double
-    let focusBorderWidth: Double
-    let focusBorderColor: String
-    let telemetryEnabled: Bool
-    let crashReports: Bool
-}
-
 @MainActor
 final class SettingsViewModel: ObservableObject {
     private let commandBus: (any CommandCalling)?
@@ -939,6 +901,7 @@ final class SettingsViewModel: ObservableObject {
                 )
                 latestLoadedSnapshot = snapshot
                 didLoadFromBackend = true
+                AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
             } catch {
                 Log.general.error("Failed to load app settings: \(error.localizedDescription, privacy: .public)")
@@ -987,6 +950,7 @@ final class SettingsViewModel: ObservableObject {
                 )
                 guard generation == latestSaveGeneration else { return }
                 latestLoadedSnapshot = snapshot
+                AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
             } catch {
                 guard generation == latestSaveGeneration else { return }
@@ -1080,6 +1044,10 @@ struct TelemetrySettingsTab: View {
         Form {
             Toggle("Enable usage analytics", isOn: $viewModel.telemetryEnabled)
             Toggle("Share crash reports", isOn: $viewModel.crashReports)
+
+            Text("Usage analytics controls backend telemetry event collection. Crash report sharing is saved for future crash-report integration and is not active in the current build.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if viewModel.telemetryEnabled {
                 GroupBox("What we collect") {

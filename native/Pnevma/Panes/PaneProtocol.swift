@@ -708,7 +708,10 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private func showLocalTerminal() {
         let cwd = currentWorkingDirectory ?? NSHomeDirectory()
         let hostView = TerminalHostView()
-        hostView.launchConfiguration = .shell(workingDirectory: cwd)
+        hostView.launchConfiguration = .shell(
+            workingDirectory: cwd,
+            command: AppRuntimeSettings.shared.normalizedDefaultShell
+        )
         hostView.onTerminalClose = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.loadOrRestoreSession()

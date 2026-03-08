@@ -5,13 +5,15 @@ import Cocoa
 
 struct MergeQueueItem: Identifiable, Decodable {
     let id: String
-    let taskId: String
+    let taskID: String
     let taskTitle: String
     let status: String
     let blockedReason: String?
     let approvedAt: String
     let startedAt: String?
     let completedAt: String?
+
+    var taskId: String { taskID }
 }
 
 // MARK: - MergeQueueView

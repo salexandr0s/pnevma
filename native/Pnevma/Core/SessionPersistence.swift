@@ -35,6 +35,7 @@ final class SessionPersistence {
     private let saveURL: URL
     private var autoSaveTimer: Timer?
     private let dirtyLock = OSAllocatedUnfairLock(initialState: false)
+    var isPersistenceEnabled = true
 
     /// Closure that provides the current session state for auto-save.
     var stateProvider: (() -> SessionState)?
@@ -70,6 +71,7 @@ final class SessionPersistence {
     }
 
     private func saveIfDirty() {
+        guard isPersistenceEnabled else { return }
         let wasDirty = dirtyLock.withLock { val -> Bool in
             let was = val; val = false; return was
         }
@@ -81,6 +83,7 @@ final class SessionPersistence {
     // MARK: - Save / Restore
 
     func save(state: SessionState) {
+        guard isPersistenceEnabled else { return }
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -89,6 +92,11 @@ final class SessionPersistence {
         } catch {
             Log.persistence.error("Save failed: \(error)")
         }
+    }
+
+    func restore(ifEnabled enabled: Bool) -> SessionState? {
+        guard enabled else { return nil }
+        return restore()
     }
 
     func restore() -> SessionState? {

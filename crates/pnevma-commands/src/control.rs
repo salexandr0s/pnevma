@@ -1257,7 +1257,11 @@ pub async fn route_method(
             let query = parse_optional_string_param(params, "query");
             let limit = parse_optional_i64_param(params, "limit").map(|v| v.max(1) as usize);
             let items = commands::list_project_files(
-                Some(commands::ListProjectFilesInput { query, limit }),
+                Some(commands::ListProjectFilesInput {
+                    query,
+                    limit,
+                    path: None,
+                }),
                 state,
             )
             .await
@@ -1268,8 +1272,9 @@ pub async fn route_method(
         "workspace.files.tree" => {
             let query = parse_optional_string_param(params, "query");
             let limit = parse_optional_i64_param(params, "limit").map(|v| v.max(1) as usize);
+            let path = parse_optional_string_param(params, "path");
             let items = commands::list_project_file_tree(
-                Some(commands::ListProjectFilesInput { query, limit }),
+                Some(commands::ListProjectFilesInput { query, limit, path }),
                 state,
             )
             .await

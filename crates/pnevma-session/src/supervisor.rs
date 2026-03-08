@@ -276,8 +276,11 @@ impl SessionSupervisor {
             return Ok(());
         }
 
-        // Create session WITHOUT a command to avoid shell expansion
-        let args = vec![
+        let explicit_shell = explicit_shell_command(command);
+
+        // Create the tmux session directly with an explicit shell path/name when requested.
+        // Other commands still flow through send-keys below so they are not shell-expanded.
+        let mut args = vec![
             "new-session".to_string(),
             "-d".to_string(),
             "-s".to_string(),
@@ -285,6 +288,9 @@ impl SessionSupervisor {
             "-c".to_string(),
             cwd.to_string(),
         ];
+        if let Some(explicit_shell) = explicit_shell.as_ref() {
+            args.push(explicit_shell.clone());
+        }
 
         let out = self
             .tmux_command()
@@ -308,18 +314,8 @@ impl SessionSupervisor {
             .output()
             .await;
 
-        // Send the command as literal keystrokes to prevent shell injection.
-        // Skip bare shell names — tmux already starts a default shell.
-        let bare_shells = ["zsh", "bash", "sh", "fish"];
-        let is_bare_shell = bare_shells.iter().any(|s| {
-            let trimmed = command.trim();
-            trimmed == *s
-                || (std::path::Path::new(trimmed)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    == Some(*s))
-        });
-        if !command.trim().is_empty() && !is_bare_shell {
+        // Send non-shell commands as literal keystrokes to prevent shell injection.
+        if !command.trim().is_empty() && explicit_shell.is_none() {
             let send_out = self
                 .tmux_command()
                 .args(["send-keys", "-t", &name, "-l", command])
@@ -816,6 +812,21 @@ fn tmux_name(session_id: Uuid) -> String {
     format!("pnevma_{}", session_id.simple())
 }
 
+fn explicit_shell_command(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() || trimmed.split_whitespace().count() != 1 {
+        return None;
+    }
+
+    let shell_name = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())?;
+
+    ["zsh", "bash", "sh", "fish"]
+        .contains(&shell_name)
+        .then(|| trimmed.to_string())
+}
+
 async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) -> bool {
     let _ = tokio::fs::create_dir_all(tmux_tmpdir).await;
 
@@ -830,6 +841,7 @@ async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) 
 
 #[cfg(test)]
 mod tests {
+    use super::explicit_shell_command;
     use super::redact_stream_chunk;
     use super::SessionBackendKillResult;
     use super::SessionSupervisor;
@@ -1527,6 +1539,18 @@ mod tests {
             .expect("read scrollback");
         assert_eq!(slice.data, persisted);
         assert!(!slice.data.contains("sk-proj-"));
+    }
+
+    #[test]
+    fn explicit_shell_command_detects_supported_shell_paths_and_names() {
+        assert_eq!(explicit_shell_command("bash"), Some("bash".to_string()));
+        assert_eq!(
+            explicit_shell_command("/bin/zsh"),
+            Some("/bin/zsh".to_string())
+        );
+        assert_eq!(explicit_shell_command("cargo test"), None);
+        assert_eq!(explicit_shell_command("/bin/bash -l"), None);
+        assert_eq!(explicit_shell_command(""), None);
     }
 
     // ── list/get ─────────────────────────────────────────────────────────────

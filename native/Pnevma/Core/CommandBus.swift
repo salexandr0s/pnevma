@@ -51,7 +51,9 @@ actor CommandBus: CommandCalling {
                     let decoded = try decoder.decode(T.self, from: data)
                     continuation.resume(returning: decoded)
                 } catch {
-                    continuation.resume(throwing: PnevmaError.decodingFailed(error))
+                    continuation.resume(
+                        throwing: PnevmaError.decodingFailed(method: method, error: error)
+                    )
                 }
             }
         }
@@ -62,7 +64,7 @@ enum PnevmaError: Error, LocalizedError {
     case bridgeCallFailed(method: String)
     case backendError(method: String, message: String)
     case invalidResponse
-    case decodingFailed(Error)
+    case decodingFailed(method: String, error: Error)
 
     var errorDescription: String? {
         switch self {
@@ -72,8 +74,8 @@ enum PnevmaError: Error, LocalizedError {
             return Self.describeBackendMessage(message)
         case .invalidResponse:
             return "The backend returned an invalid response."
-        case .decodingFailed(let error):
-            return "Failed to decode the backend response: \(error.localizedDescription)"
+        case .decodingFailed(let method, let error):
+            return "Failed to decode backend response for \(method): \(Self.describeDecodingError(error))"
         }
     }
 
@@ -103,6 +105,34 @@ enum PnevmaError: Error, LocalizedError {
         default:
             return message
         }
+    }
+
+    private static func describeDecodingError(_ error: Error) -> String {
+        guard let decodingError = error as? DecodingError else {
+            return error.localizedDescription
+        }
+
+        switch decodingError {
+        case .keyNotFound(let key, let context):
+            let path = codingPathDescription(context.codingPath)
+            return path.isEmpty
+                ? "missing key '\(key.stringValue)'"
+                : "missing key '\(key.stringValue)' at \(path)"
+        case .typeMismatch(_, let context),
+             .valueNotFound(_, let context),
+             .dataCorrupted(let context):
+            let path = codingPathDescription(context.codingPath)
+            return path.isEmpty ? context.debugDescription : "\(context.debugDescription) at \(path)"
+        @unknown default:
+            return error.localizedDescription
+        }
+    }
+
+    private static func codingPathDescription(_ codingPath: [CodingKey]) -> String {
+        codingPath
+            .map(\.stringValue)
+            .filter { !$0.isEmpty }
+            .joined(separator: ".")
     }
 }
 

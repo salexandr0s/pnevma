@@ -107,6 +107,7 @@ final class SessionBridge {
 
     private let commandBus: any CommandCalling
     private let activeWorkspacePath: () -> String?
+    var defaultShell: String?
 
     init(
         commandBus: any CommandCalling,
@@ -127,7 +128,7 @@ final class SessionBridge {
             params: SessionCreateParams(
                 name: "Terminal",
                 cwd: cwd,
-                command: ""
+                command: defaultShell ?? ""
             )
         )
         return response.binding

@@ -6,12 +6,14 @@ import Cocoa
 /// Matches the backend `ReviewPackView` response from `review.get_pack`.
 /// The decoder uses `PnevmaJSON.decoder()` which converts snake_case → camelCase with acronym handling.
 struct ReviewPack: Decodable {
-    let taskId: String
+    let taskID: String
     let status: String          // "Pending" | "Approved" | "Rejected"
     let reviewPackPath: String
     let reviewerNotes: String?
     let approvedAt: String?
     let pack: JSONValue
+
+    var taskId: String { taskID }
 }
 
 struct AcceptanceCriterion: Identifiable, Codable {

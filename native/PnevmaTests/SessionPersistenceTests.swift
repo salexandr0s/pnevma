@@ -75,6 +75,34 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(result, "restore should return nil when no session file exists")
     }
 
+    func testSaveDoesNothingWhenPersistenceIsDisabled() {
+        persistence.isPersistenceEnabled = false
+
+        let state = SessionPersistence.SessionState(
+            windowFrame: nil,
+            workspaces: [],
+            activeWorkspaceID: nil,
+            sidebarVisible: true
+        )
+        persistence.save(state: state)
+
+        let saveURL = tempDir.appendingPathComponent("session.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: saveURL.path))
+    }
+
+    func testRestoreReturnsNilWhenPersistenceIsDisabled() {
+        let state = SessionPersistence.SessionState(
+            windowFrame: nil,
+            workspaces: [],
+            activeWorkspaceID: nil,
+            sidebarVisible: true
+        )
+        persistence.save(state: state)
+
+        XCTAssertNil(persistence.restore(ifEnabled: false))
+        XCTAssertNotNil(persistence.restore(ifEnabled: true))
+    }
+
     func testSaveAndRestorePreservesWorkspaceSnapshots() {
         let workspace = Workspace(name: "Persisted")
         let state = SessionPersistence.SessionState(
@@ -108,5 +136,40 @@ final class SessionPersistenceTests: XCTestCase {
 
         let result = group.wait(timeout: .now() + 5)
         XCTAssertEqual(result, .success, "All markDirty calls should complete without deadlock")
+    }
+
+    func testDirtyStateIsSavedAfterPersistenceIsReenabled() {
+        let state = SessionPersistence.SessionState(
+            windowFrame: nil,
+            workspaces: [],
+            activeWorkspaceID: nil,
+            sidebarVisible: false
+        )
+        var saveCount = 0
+        persistence.stateProvider = {
+            saveCount += 1
+            return state
+        }
+        persistence.isPersistenceEnabled = false
+        persistence.markDirty()
+        persistence.startAutoSave(interval: 0.05)
+
+        let disabledExpectation = expectation(description: "disabled auto-save interval elapses")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            disabledExpectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+        XCTAssertEqual(saveCount, 0)
+
+        persistence.isPersistenceEnabled = true
+
+        let enabledExpectation = expectation(description: "auto-save resumes after re-enable")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            enabledExpectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+
+        XCTAssertGreaterThanOrEqual(saveCount, 1)
+        XCTAssertNotNil(persistence.restore())
     }
 }

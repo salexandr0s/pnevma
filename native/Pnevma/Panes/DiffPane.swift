@@ -66,9 +66,11 @@ enum DiffLineType {
 
 /// Top-level response from the `review.diff` backend command.
 private struct TaskDiffResponse: Decodable {
-    let taskId: String
+    let taskID: String
     let diffPath: String
     let files: [DiffFile]
+
+    var taskId: String { taskID }
 }
 
 /// A task item carrying just the fields needed for the diff task selector.

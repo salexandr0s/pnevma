@@ -54,6 +54,11 @@ actor SettingsCommandBusStub: CommandCalling {
 
 @MainActor
 final class SettingsViewModelTests: XCTestCase {
+    override func tearDown() {
+        AppRuntimeSettings.shared.apply(.defaults)
+        super.tearDown()
+    }
+
     private func waitUntil(
         timeoutNanos: UInt64 = 1_000_000_000,
         pollIntervalNanos: UInt64 = 10_000_000,
@@ -108,6 +113,16 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(saveCount, 0, "save should stay disabled until backend load succeeds")
     }
 
+    func testLoadUpdatesSharedRuntimeSettings() async throws {
+        let bus = SettingsCommandBusStub(getResult: .success(makeSnapshot(defaultShell: "/bin/bash")))
+        let viewModel = SettingsViewModel(commandBus: bus)
+
+        viewModel.load()
+
+        try await waitUntil { AppRuntimeSettings.shared.normalizedDefaultShell == "/bin/bash" }
+        XCTAssertEqual(AppRuntimeSettings.shared.normalizedDefaultShell, "/bin/bash")
+    }
+
     func testOlderSaveResponseCannotOverwriteNewerEdit() async throws {
         let bus = SettingsCommandBusStub(getResult: .success(makeSnapshot()))
         let viewModel = SettingsViewModel(commandBus: bus)
@@ -136,5 +151,20 @@ final class SettingsViewModelTests: XCTestCase {
         await bus.completeSet(at: 0, with: makeSnapshot(defaultShell: "/bin/zsh"))
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(viewModel.defaultShell, "/bin/bash", "stale save response must be ignored")
+    }
+
+    func testSuccessfulSaveUpdatesSharedRuntimeSettings() async throws {
+        let bus = SettingsCommandBusStub(getResult: .success(makeSnapshot()))
+        let viewModel = SettingsViewModel(commandBus: bus)
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        viewModel.defaultShell = "/bin/bash"
+        try await waitUntil { await bus.setRequestCount() == 1 }
+        await bus.completeSet(at: 0, with: makeSnapshot(defaultShell: "/bin/bash"))
+
+        try await waitUntil { AppRuntimeSettings.shared.normalizedDefaultShell == "/bin/bash" }
+        XCTAssertEqual(AppRuntimeSettings.shared.normalizedDefaultShell, "/bin/bash")
     }
 }

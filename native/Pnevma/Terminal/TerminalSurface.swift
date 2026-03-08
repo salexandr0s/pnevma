@@ -13,10 +13,13 @@ struct TerminalSurfaceLaunchConfiguration: Equatable {
     let waitAfterCommand: Bool
     let initialInput: String?
 
-    static func shell(workingDirectory: String? = nil) -> Self {
+    static func shell(
+        workingDirectory: String? = nil,
+        command: String? = nil
+    ) -> Self {
         Self(
             workingDirectory: workingDirectory,
-            command: nil,
+            command: command,
             env: [],
             waitAfterCommand: false,
             initialInput: nil

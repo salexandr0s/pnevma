@@ -154,6 +154,7 @@ pub struct SearchResultView {
 pub struct ListProjectFilesInput {
     pub query: Option<String>,
     pub limit: Option<usize>,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

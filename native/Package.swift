@@ -71,6 +71,7 @@ let package = Package(
                 "Bridge/PnevmaBridge.swift",
                 // Core
                 "Core/CommandBus.swift",
+                "Core/AppRuntimeSettings.swift",
                 "Core/ContentAreaView.swift",
                 "Core/Log.swift",
                 "Core/PaneLayoutEngine.swift",

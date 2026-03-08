@@ -769,6 +769,26 @@ pub async fn list_trusted_workspaces() -> Result<Vec<TrustRecord>, String> {
         .map_err(|e| e.to_string())
 }
 
+fn resolve_session_command(input_command: &str, global_default_shell: Option<&str>) -> String {
+    if !input_command.trim().is_empty() {
+        return input_command.to_string();
+    }
+
+    global_default_shell
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("SHELL").ok().and_then(|shell| {
+                std::path::Path::new(&shell)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.to_string())
+            })
+        })
+        .unwrap_or_else(|| "zsh".to_string())
+}
+
 pub async fn create_session(input: SessionInput, state: &AppState) -> Result<String, String> {
     let current = state.current.lock().await;
     let ctx = current
@@ -778,20 +798,8 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
     ensure_bounded_text_field(&input.name, "session name", MAX_SESSION_NAME_BYTES)?;
     ensure_safe_path_input(&input.cwd, "session cwd")?;
 
-    // Default empty command to the user's shell so validation passes.
-    let command = if input.command.trim().is_empty() {
-        std::env::var("SHELL")
-            .ok()
-            .and_then(|s| {
-                std::path::Path::new(&s)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.to_string())
-            })
-            .unwrap_or_else(|| "zsh".to_string())
-    } else {
-        input.command.clone()
-    };
+    let command =
+        resolve_session_command(&input.command, ctx.global_config.default_shell.as_deref());
     ensure_bounded_text_field(&command, "session command", MAX_SESSION_COMMAND_BYTES)?;
 
     // H2: Validate command against the configured allowlist.
@@ -1790,10 +1798,48 @@ fn sort_file_tree_nodes(nodes: &mut [FileTreeNodeView]) {
     });
 }
 
-fn build_project_file_tree(
+fn resolve_project_tree_directory(
+    project_path: &Path,
+    requested_path: Option<&str>,
+) -> Result<(PathBuf, PathBuf), String> {
+    let root_dir = std::fs::canonicalize(project_path)
+        .map_err(|e| format!("failed to canonicalize project path: {e}"))?;
+
+    let current_dir = match requested_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(path) => {
+            let relative_path = path.trim_start_matches('/');
+            ensure_safe_path_input(relative_path, "file tree path")?;
+            if relative_path.is_empty() {
+                return Err("invalid path".to_string());
+            }
+
+            let directory = root_dir.join(relative_path);
+            if !directory.exists() {
+                return Err(format!("directory not found: {path}"));
+            }
+
+            let canonical = directory.canonicalize().map_err(|e| e.to_string())?;
+            if !canonical.starts_with(&root_dir) {
+                return Err("path escapes project directory".to_string());
+            }
+            if !canonical.is_dir() {
+                return Err("path is not a directory".to_string());
+            }
+
+            directory
+        }
+        None => root_dir.clone(),
+    };
+
+    Ok((root_dir, current_dir))
+}
+
+fn list_project_directory_entries(
     current_dir: &Path,
     root_dir: &Path,
-    visited_dirs: &mut HashSet<PathBuf>,
 ) -> Result<Vec<FileTreeNodeView>, String> {
     let entries = std::fs::read_dir(current_dir)
         .map_err(|e| format!("failed to read {}: {e}", current_dir.display()))?;
@@ -1820,7 +1866,7 @@ fn build_project_file_tree(
         let file_type = metadata.file_type();
 
         if file_type.is_symlink() {
-            let Ok(canonical_target) = std::fs::canonicalize(&entry_path) else {
+            let Ok(canonical_target) = entry_path.canonicalize() else {
                 continue;
             };
             if !canonical_target.starts_with(root_dir) {
@@ -1830,25 +1876,12 @@ fn build_project_file_tree(
                 continue;
             };
             if target_metadata.is_dir() {
-                if !visited_dirs.insert(canonical_target.clone()) {
-                    continue;
-                }
-                let mut children =
-                    match build_project_file_tree(&entry_path, root_dir, visited_dirs) {
-                        Ok(children) => children,
-                        Err(_) => {
-                            visited_dirs.remove(&canonical_target);
-                            continue;
-                        }
-                    };
-                visited_dirs.remove(&canonical_target);
-                sort_file_tree_nodes(&mut children);
                 nodes.push(FileTreeNodeView {
                     id: path.clone(),
                     name,
                     path,
                     is_directory: true,
-                    children: Some(children),
+                    children: None,
                     size: None,
                 });
             } else if target_metadata.is_file() {
@@ -1865,27 +1898,18 @@ fn build_project_file_tree(
         }
 
         if metadata.is_dir() {
-            let Ok(canonical_dir) = std::fs::canonicalize(&entry_path) else {
+            let Ok(canonical_dir) = entry_path.canonicalize() else {
                 continue;
             };
-            if !canonical_dir.starts_with(root_dir) || !visited_dirs.insert(canonical_dir.clone()) {
+            if !canonical_dir.starts_with(root_dir) {
                 continue;
             }
-            let mut children = match build_project_file_tree(&entry_path, root_dir, visited_dirs) {
-                Ok(children) => children,
-                Err(_) => {
-                    visited_dirs.remove(&canonical_dir);
-                    continue;
-                }
-            };
-            visited_dirs.remove(&canonical_dir);
-            sort_file_tree_nodes(&mut children);
             nodes.push(FileTreeNodeView {
                 id: path.clone(),
                 name,
                 path,
                 is_directory: true,
-                children: Some(children),
+                children: None,
                 size: None,
             });
             continue;
@@ -1907,47 +1931,19 @@ fn build_project_file_tree(
     Ok(nodes)
 }
 
-fn filter_project_file_tree(nodes: Vec<FileTreeNodeView>, query: &str) -> Vec<FileTreeNodeView> {
+fn filter_project_file_tree(
+    mut nodes: Vec<FileTreeNodeView>,
+    query: &str,
+) -> Vec<FileTreeNodeView> {
     if query.is_empty() {
         return nodes;
     }
 
-    let mut filtered = Vec::new();
-    for mut node in nodes {
-        let matches = node.name.to_ascii_lowercase().contains(query)
-            || node.path.to_ascii_lowercase().contains(query);
-        if matches {
-            filtered.push(node);
-            continue;
-        }
-
-        if let Some(children) = node.children.take() {
-            let children = filter_project_file_tree(children, query);
-            if !children.is_empty() {
-                node.children = Some(children);
-                filtered.push(node);
-            }
-        }
-    }
-    filtered
-}
-
-fn trim_project_file_tree(
-    nodes: Vec<FileTreeNodeView>,
-    remaining: &mut usize,
-) -> Vec<FileTreeNodeView> {
-    let mut trimmed = Vec::new();
-    for mut node in nodes {
-        if *remaining == 0 {
-            break;
-        }
-        *remaining -= 1;
-        if let Some(children) = node.children.take() {
-            node.children = Some(trim_project_file_tree(children, remaining));
-        }
-        trimmed.push(node);
-    }
-    trimmed
+    nodes.retain(|node| {
+        node.name.to_ascii_lowercase().contains(query)
+            || node.path.to_ascii_lowercase().contains(query)
+    });
+    nodes
 }
 
 pub async fn list_project_files(
@@ -2030,7 +2026,7 @@ pub async fn list_project_file_tree(
     input: Option<ListProjectFilesInput>,
     state: &AppState,
 ) -> Result<Vec<FileTreeNodeView>, String> {
-    let (project_path, query, limit) = {
+    let (project_path, query, limit, requested_path) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
@@ -2044,23 +2040,22 @@ pub async fn list_project_file_tree(
                 .trim()
                 .to_ascii_lowercase(),
             input.as_ref().and_then(|value| value.limit),
+            input.as_ref().and_then(|value| value.path.clone()),
         )
     };
 
     tokio::task::spawn_blocking(move || {
-        let root_dir = std::fs::canonicalize(&project_path)
-            .map_err(|e| format!("failed to canonicalize project path: {e}"))?;
-        let mut visited_dirs = HashSet::from([root_dir.clone()]);
-        let mut nodes = build_project_file_tree(&root_dir, &root_dir, &mut visited_dirs)?;
+        let (root_dir, current_dir) =
+            resolve_project_tree_directory(&project_path, requested_path.as_deref())?;
+        let mut nodes = list_project_directory_entries(&current_dir, &root_dir)?;
         nodes = filter_project_file_tree(nodes, &query);
         if let Some(limit) = limit {
-            let mut remaining = limit.clamp(1, 20_000);
-            nodes = trim_project_file_tree(nodes, &mut remaining);
+            nodes.truncate(limit.clamp(1, 10_000));
         }
         Ok(nodes)
     })
     .await
-    .map_err(|e| format!("failed to build file tree: {e}"))?
+    .map_err(|e| format!("failed to list file tree entries: {e}"))?
 }
 
 pub async fn open_file_target(
@@ -2111,7 +2106,18 @@ pub async fn open_file_target(
         false
     };
 
-    let raw = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
+    let raw = tokio::fs::read(&abs).await.map_err(|e| e.to_string())?;
+    let raw = match String::from_utf8(raw) {
+        Ok(text) => text,
+        Err(_) => {
+            return Ok(FileOpenResultView {
+                path: rel.to_string(),
+                content: "[Binary file preview unavailable]".to_string(),
+                truncated: false,
+                launched_editor,
+            });
+        }
+    };
     let max_chars = 20_000usize;
     let truncated = raw.chars().count() > max_chars;
     let content = if truncated {
@@ -4689,6 +4695,26 @@ mod tests {
         assert!(ensure_safe_session_input(&"x".repeat(MAX_SESSION_INPUT_BYTES + 1)).is_err());
     }
 
+    #[test]
+    fn resolve_session_command_prefers_global_default_shell_for_empty_commands() {
+        assert_eq!(
+            resolve_session_command("", Some("/bin/bash")),
+            "/bin/bash".to_string()
+        );
+        assert_eq!(
+            resolve_session_command("   ", Some("/bin/zsh")),
+            "/bin/zsh".to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_session_command_preserves_explicit_commands() {
+        assert_eq!(
+            resolve_session_command("cargo test", Some("/bin/bash")),
+            "cargo test".to_string()
+        );
+    }
+
     #[tokio::test]
     async fn cleanup_project_data_prunes_old_files_and_updates_rows() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -5098,7 +5124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_project_file_tree_returns_nested_nodes_including_hidden_entries() {
+    async fn list_project_file_tree_lists_directory_entries_including_hidden_entries() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project_root = temp.path().join("project");
         std::fs::create_dir_all(project_root.join("src")).unwrap();
@@ -5131,8 +5157,45 @@ mod tests {
             .iter()
             .find(|node| node.path == "src" && node.is_directory)
             .expect("src directory should be present");
-        let src_children = src.children.as_ref().expect("src should contain children");
-        let lib_rs = src_children
+        assert!(src.children.is_none(), "src should load lazily");
+        assert!(nodes.iter().any(|node| node.path == ".env"));
+        assert!(nodes.iter().any(|node| node.path == ".git"));
+        assert!(nodes.iter().any(|node| node.path == ".pnevma"));
+    }
+
+    #[tokio::test]
+    async fn list_project_file_tree_loads_subdirectory_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn preview() {}\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-preview-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(
+            Some(ListProjectFilesInput {
+                query: None,
+                limit: None,
+                path: Some("src".to_string()),
+            }),
+            &state,
+        )
+        .await
+        .expect("file tree should load");
+
+        let lib_rs = nodes
             .iter()
             .find(|node| node.path == "src/lib.rs" && !node.is_directory)
             .expect("lib.rs should be present");
@@ -5140,9 +5203,7 @@ mod tests {
         assert_eq!(lib_rs.id, "src/lib.rs");
         assert_eq!(lib_rs.name, "lib.rs");
         assert!(lib_rs.size.unwrap_or_default() > 0);
-        assert!(nodes.iter().any(|node| node.path == ".env"));
-        assert!(nodes.iter().any(|node| node.path == ".git"));
-        assert!(nodes.iter().any(|node| node.path == ".pnevma"));
+        assert!(nodes.iter().all(|node| !node.path.starts_with(".git")));
     }
 
     #[tokio::test]
@@ -5166,17 +5227,19 @@ mod tests {
 
         let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
         let state = make_state_with_project(project_id, &project_root, db, sessions).await;
-        let nodes = list_project_file_tree(None, &state)
-            .await
-            .expect("file tree should load");
-        let src = nodes
+        let nodes = list_project_file_tree(
+            Some(ListProjectFilesInput {
+                query: None,
+                limit: None,
+                path: Some("src".to_string()),
+            }),
+            &state,
+        )
+        .await
+        .expect("file tree should load");
+        let lib_rs_path = nodes
             .iter()
-            .find(|node| node.path == "src" && node.is_directory)
-            .expect("src directory should be present");
-        let lib_rs_path = src
-            .children
-            .as_ref()
-            .and_then(|children| children.iter().find(|node| node.path == "src/lib.rs"))
+            .find(|node| node.path == "src/lib.rs" && !node.is_directory)
             .map(|node| node.path.clone())
             .expect("lib.rs path should be available");
 
@@ -5192,6 +5255,43 @@ mod tests {
 
         assert_eq!(opened.path, "src/lib.rs");
         assert!(opened.content.contains("preview"));
+    }
+
+    #[tokio::test]
+    async fn open_file_target_reports_binary_preview_unavailable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("assets")).unwrap();
+        std::fs::write(project_root.join("assets/icon.bin"), [0_u8, 159, 146, 150]).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-binary-preview-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let opened = open_file_target(
+            OpenFileTargetInput {
+                path: "assets/icon.bin".to_string(),
+                mode: Some("preview".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect("binary preview should return a placeholder");
+
+        assert_eq!(opened.path, "assets/icon.bin");
+        assert_eq!(opened.content, "[Binary file preview unavailable]");
+        assert!(!opened.truncated);
     }
 
     #[tokio::test]

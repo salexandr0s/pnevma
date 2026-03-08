@@ -12,6 +12,10 @@ struct FileNode: Identifiable, Codable {
     let size: Int64?
 }
 
+private struct FileTreeParams: Encodable {
+    let path: String?
+}
+
 // MARK: - FileBrowserView
 
 struct FileBrowserView: View {
@@ -19,7 +23,6 @@ struct FileBrowserView: View {
 
     var body: some View {
         HSplitView {
-            // File tree
             VStack(spacing: 0) {
                 HStack {
                     Text("Files")
@@ -40,7 +43,7 @@ struct FileBrowserView: View {
                         title: "No project open",
                         message: "Open a project to browse files"
                     )
-                } else if viewModel.rootNodes.isEmpty {
+                } else if viewModel.isLoadingRoot {
                     VStack(spacing: 8) {
                         ProgressView()
                         Text("Loading files...")
@@ -48,17 +51,18 @@ struct FileBrowserView: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if viewModel.rootNodes.isEmpty {
+                    EmptyStateView(
+                        icon: "folder",
+                        title: "No files found",
+                        message: "This directory is empty"
+                    )
                 } else {
-                    List(viewModel.rootNodes, children: \.optionalChildren) { node in
-                        FileRow(node: node, isSelected: viewModel.selectedPath == node.path)
-                            .onTapGesture { viewModel.select(node) }
-                    }
-                    .listStyle(.sidebar)
+                    FileTreeList(viewModel: viewModel)
                 }
             }
             .frame(minWidth: 200, maxWidth: 300)
 
-            // Preview
             VStack {
                 if let content = viewModel.previewContent {
                     ScrollView {
@@ -68,8 +72,11 @@ struct FileBrowserView: View {
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                } else if viewModel.selectedPath != nil {
+                } else if viewModel.isLoadingPreview {
                     Text("Loading...")
+                        .foregroundStyle(.secondary)
+                } else if viewModel.selectedFilePath != nil {
+                    Text("Preview unavailable")
                         .foregroundStyle(.secondary)
                 } else {
                     Text("Select a file to preview")
@@ -93,25 +100,108 @@ struct FileBrowserView: View {
     }
 }
 
-// MARK: - FileRow
+// MARK: - Tree Views
 
-struct FileRow: View {
-    let node: FileNode
-    let isSelected: Bool
+private struct FileTreeList: View {
+    @ObservedObject var viewModel: FileBrowserViewModel
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: node.isDirectory ? "folder.fill" : fileIcon(node.name))
-                .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
-                .frame(width: 16)
-            Text(node.name)
-                .font(.body)
-                .lineLimit(1)
-            Spacer()
-            if let size = node.size, !node.isDirectory {
-                Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(viewModel.rootNodes) { node in
+                    FileTreeRow(node: node, depth: 0, viewModel: viewModel)
+                }
+            }
+            .padding(.vertical, 6)
+        }
+    }
+}
+
+private struct FileTreeRow: View {
+    let node: FileNode
+    let depth: Int
+    @ObservedObject var viewModel: FileBrowserViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                if node.isDirectory {
+                    Button(action: { viewModel.toggleDirectory(node) }) {
+                        Image(systemName: viewModel.isExpanded(node.path) ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 12, height: 12)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Color.clear
+                        .frame(width: 12, height: 12)
+                }
+
+                Image(systemName: node.isDirectory ? "folder.fill" : fileIcon(node.name))
+                    .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
+                    .frame(width: 16)
+
+                Text(node.name)
+                    .font(.body)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if viewModel.isLoadingDirectory(node.path) {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if let size = node.size, !node.isDirectory {
+                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.leading, CGFloat(depth) * 14 + 8)
+            .padding(.trailing, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowBackground)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                viewModel.select(node)
+            }
+
+            if node.isDirectory && viewModel.isExpanded(node.path) {
+                if let children = node.children {
+                    if children.isEmpty {
+                        Text("Empty")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, CGFloat(depth + 1) * 14 + 42)
+                            .padding(.vertical, 4)
+                    } else {
+                        ForEach(children) { child in
+                            FileTreeRow(node: child, depth: depth + 1, viewModel: viewModel)
+                        }
+                    }
+                } else if viewModel.isLoadingDirectory(node.path) {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, CGFloat(depth + 1) * 14 + 24)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private var rowBackground: some View {
+        Group {
+            if viewModel.selectedPath == node.path {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.14))
+            } else {
+                Color.clear
             }
         }
     }
@@ -130,29 +220,36 @@ struct FileRow: View {
     }
 }
 
-// MARK: - FileNode helpers
-
-extension FileNode {
-    var optionalChildren: [FileNode]? {
-        isDirectory ? (children ?? []) : nil
-    }
-}
-
 // MARK: - ViewModel
 
 @MainActor
 final class FileBrowserViewModel: ObservableObject {
     @Published var rootNodes: [FileNode] = []
+    @Published var expandedPaths: Set<String> = []
     @Published var selectedPath: String?
+    @Published private(set) var selectedFilePath: String?
     @Published var previewContent: String?
     @Published var actionError: String?
     @Published private(set) var isProjectOpen = false
+    @Published private(set) var isLoadingRoot = false
+    @Published private(set) var isLoadingPreview = false
+    @Published private(set) var loadingDirectories: Set<String> = []
 
+    private let commandBus: (any CommandCalling)?
     private let activationHub: ActiveWorkspaceActivationHub
     private var activationObserverID: UUID?
-    private var isLoadingFiles = false
+    private var activationGeneration: UInt64 = 0
+    private var rootLoadToken: UInt64 = 0
+    private var previewLoadToken: UInt64 = 0
+    private var rootLoadTask: Task<Void, Never>?
+    private var previewLoadTask: Task<Void, Never>?
+    private var directoryLoadTasks: [String: Task<Void, Never>] = [:]
 
-    init(activationHub: ActiveWorkspaceActivationHub = .shared) {
+    init(
+        commandBus: (any CommandCalling)? = CommandBus.shared,
+        activationHub: ActiveWorkspaceActivationHub = .shared
+    ) {
+        self.commandBus = commandBus
         self.activationHub = activationHub
         activationObserverID = activationHub.addObserver { [weak self] state in
             Task { @MainActor [weak self] in
@@ -171,74 +268,286 @@ final class FileBrowserViewModel: ObservableObject {
         handleActivationState(activationHub.currentState)
     }
 
-    func load() {
-        guard !isLoadingFiles else { return }
-        guard let bus = CommandBus.shared else {
+    func refresh() {
+        clearContentState()
+        loadRoot()
+    }
+
+    func select(_ node: FileNode) {
+        selectedPath = node.path
+        actionError = nil
+
+        if node.isDirectory {
+            selectedFilePath = nil
+            previewContent = nil
+            isLoadingPreview = false
+            return
+        }
+
+        selectedFilePath = node.path
+        loadPreview(path: node.path)
+    }
+
+    func toggleDirectory(_ node: FileNode) {
+        guard node.isDirectory else { return }
+        selectedPath = node.path
+
+        if expandedPaths.contains(node.path) {
+            expandedPaths.remove(node.path)
+            return
+        }
+
+        expandedPaths.insert(node.path)
+        guard children(for: node.path) == nil else {
+            return
+        }
+        loadDirectory(path: node.path)
+    }
+
+    func isExpanded(_ path: String) -> Bool {
+        expandedPaths.contains(path)
+    }
+
+    func isLoadingDirectory(_ path: String) -> Bool {
+        loadingDirectories.contains(path)
+    }
+
+    private func loadRoot() {
+        guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
             return
         }
-        isLoadingFiles = true
-        Task { [weak self] in
+
+        rootLoadTask?.cancel()
+        rootLoadToken &+= 1
+        let loadToken = rootLoadToken
+        let generation = activationGeneration
+
+        isLoadingRoot = true
+        rootLoadTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.isLoadingFiles = false }
+            defer {
+                if self.activationGeneration == generation && self.rootLoadToken == loadToken {
+                    self.isLoadingRoot = false
+                }
+            }
+
             do {
-                struct Params: Encodable { let limit: Int }
-                let nodes: [FileNode] = try await bus.call(method: "workspace.files", params: Params(limit: 500))
+                let nodes: [FileNode] = try await bus.call(
+                    method: "workspace.files.tree",
+                    params: nil
+                )
+                guard self.activationGeneration == generation, self.rootLoadToken == loadToken else {
+                    return
+                }
                 self.rootNodes = nodes
+                self.expandedPaths = []
+                self.actionError = nil
             } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
+                guard self.activationGeneration == generation, self.rootLoadToken == loadToken else {
+                    return
+                }
+                self.handleLoadFailure(error)
             }
         }
     }
 
-    func refresh() { load() }
-
-    func select(_ node: FileNode) {
-        selectedPath = node.path
-        if !node.isDirectory {
-            loadPreview(path: node.path)
-        }
-    }
-
-    private func loadPreview(path: String) {
-        previewContent = nil
-        guard let bus = CommandBus.shared else {
+    private func loadDirectory(path: String) {
+        guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
             return
         }
-        Task { [weak self] in
+        guard directoryLoadTasks[path] == nil else { return }
+
+        let generation = activationGeneration
+        loadingDirectories.insert(path)
+        let task = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.activationGeneration == generation {
+                    self.loadingDirectories.remove(path)
+                    self.directoryLoadTasks.removeValue(forKey: path)
+                }
+            }
+
             do {
-                struct Params: Encodable { let path: String; let mode: String }
-                struct FilePreview: Decodable { let content: String }
-                let preview: FilePreview = try await bus.call(method: "workspace.file.open", params: Params(path: path, mode: "preview"))
-                self.previewContent = preview.content
+                let children: [FileNode] = try await bus.call(
+                    method: "workspace.files.tree",
+                    params: FileTreeParams(path: path)
+                )
+                guard self.activationGeneration == generation else {
+                    return
+                }
+                self.setChildren(children, for: path)
+                self.actionError = nil
             } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
+                guard self.activationGeneration == generation else {
+                    return
+                }
+                self.handleLoadFailure(error)
+            }
+        }
+        directoryLoadTasks[path] = task
+    }
+
+    private func loadPreview(path: String) {
+        previewContent = nil
+        isLoadingPreview = true
+
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            isLoadingPreview = false
+            return
+        }
+
+        previewLoadTask?.cancel()
+        previewLoadToken &+= 1
+        let previewToken = previewLoadToken
+        let generation = activationGeneration
+
+        previewLoadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.activationGeneration == generation && self.previewLoadToken == previewToken {
+                    self.isLoadingPreview = false
+                }
+            }
+
+            do {
+                struct Params: Encodable {
+                    let path: String
+                    let mode: String
+                }
+
+                struct FilePreview: Decodable {
+                    let content: String
+                }
+
+                let preview: FilePreview = try await bus.call(
+                    method: "workspace.file.open",
+                    params: Params(path: path, mode: "preview")
+                )
+                guard self.activationGeneration == generation,
+                      self.previewLoadToken == previewToken,
+                      self.selectedFilePath == path else {
+                    return
+                }
+                self.previewContent = preview.content
+                self.actionError = nil
+            } catch {
+                guard self.activationGeneration == generation,
+                      self.previewLoadToken == previewToken,
+                      self.selectedFilePath == path else {
+                    return
+                }
+                self.handleLoadFailure(error)
             }
         }
     }
 
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        invalidatePendingLoads()
+
         switch state {
         case .idle, .opening, .closed:
             isProjectOpen = false
-            rootNodes = []
-            selectedPath = nil
-            previewContent = nil
+            clearContentState()
         case .open:
             isProjectOpen = true
-            load()
+            clearContentState()
+            loadRoot()
         case .failed(_, _, let message):
             isProjectOpen = false
-            rootNodes = []
+            clearContentState()
             actionError = message
             scheduleDismissActionError()
         }
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        if PnevmaError.isProjectNotReady(error) {
+            isProjectOpen = false
+            clearContentState()
+            actionError = nil
+            return
+        }
+
+        actionError = error.localizedDescription
+        scheduleDismissActionError()
+    }
+
+    private func invalidatePendingLoads() {
+        activationGeneration &+= 1
+        rootLoadToken &+= 1
+        previewLoadToken &+= 1
+
+        rootLoadTask?.cancel()
+        rootLoadTask = nil
+
+        previewLoadTask?.cancel()
+        previewLoadTask = nil
+
+        for task in directoryLoadTasks.values {
+            task.cancel()
+        }
+        directoryLoadTasks.removeAll()
+
+        isLoadingRoot = false
+        isLoadingPreview = false
+        loadingDirectories.removeAll()
+    }
+
+    private func clearContentState() {
+        rootNodes = []
+        expandedPaths = []
+        selectedPath = nil
+        selectedFilePath = nil
+        previewContent = nil
+    }
+
+    private func children(for path: String) -> [FileNode]? {
+        Self.children(for: path, in: rootNodes)
+    }
+
+    private func setChildren(_ children: [FileNode], for path: String) {
+        _ = Self.setChildren(children, for: path, in: &rootNodes)
+    }
+
+    private static func children(for path: String, in nodes: [FileNode]) -> [FileNode]? {
+        for node in nodes {
+            if node.path == path {
+                return node.children
+            }
+
+            if let childNodes = node.children,
+               let loadedChildren = children(for: path, in: childNodes) {
+                return loadedChildren
+            }
+        }
+        return nil
+    }
+
+    private static func setChildren(
+        _ children: [FileNode],
+        for path: String,
+        in nodes: inout [FileNode]
+    ) -> Bool {
+        for index in nodes.indices {
+            if nodes[index].path == path {
+                nodes[index].children = children
+                return true
+            }
+
+            if var childNodes = nodes[index].children,
+               setChildren(children, for: path, in: &childNodes) {
+                nodes[index].children = childNodes
+                return true
+            }
+        }
+        return false
     }
 
     private func scheduleDismissActionError() {

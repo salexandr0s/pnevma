@@ -28,12 +28,25 @@ final class CommandBusTests: XCTestCase {
         let underlying = DecodingError.dataCorrupted(
             DecodingError.Context(codingPath: [], debugDescription: "bad data")
         )
-        let err = PnevmaError.decodingFailed(underlying)
-        if case .decodingFailed(let wrapped) = err {
+        let err = PnevmaError.decodingFailed(method: "workspace.files.tree", error: underlying)
+        if case .decodingFailed(let method, let wrapped) = err {
+            XCTAssertEqual(method, "workspace.files.tree")
             XCTAssertNotNil(wrapped)
         } else {
             XCTFail("Expected decodingFailed case")
         }
+    }
+
+    func testDecodingFailedErrorIncludesMethodAndMissingKey() {
+        let error = DecodingError.keyNotFound(
+            DynamicCodingKey("is_directory"),
+            DecodingError.Context(codingPath: [], debugDescription: "missing field")
+        )
+        let wrapped = PnevmaError.decodingFailed(method: "workspace.files.tree", error: error)
+
+        let description = wrapped.localizedDescription
+        XCTAssertTrue(description.contains("workspace.files.tree"))
+        XCTAssertTrue(description.contains("is_directory"))
     }
 
     // MARK: - JSON param encoding
@@ -152,5 +165,24 @@ final class CommandBusTests: XCTestCase {
         let decoded = try PnevmaJSON.decoder().decode(SessionRecoveryResult.self, from: Data(json.utf8))
         XCTAssertTrue(decoded.ok)
         XCTAssertEqual(decoded.newSessionID, "session-123")
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init(_ stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    init?(stringValue: String) {
+        self.init(stringValue)
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = "\(intValue)"
+        self.intValue = intValue
     }
 }
