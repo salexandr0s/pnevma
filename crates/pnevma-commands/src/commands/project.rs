@@ -228,6 +228,9 @@ pub async fn open_project(
     let session_rows = reconcile_persisted_sessions(&db, project_id, path_buf.as_path()).await?;
     let restore_root = path_buf.join(".pnevma/data");
     for row in session_rows {
+        if row.status == "complete" || row.status == "error" {
+            continue;
+        }
         if let Some(meta) = session_meta_from_row(&row, &restore_root) {
             let session_id = meta.id;
             append_event(

@@ -120,7 +120,7 @@ impl SessionSupervisor {
             stuck_after: Duration::minutes(10),
             tmux_tmpdir: data_dir.join("tmux"),
             data_dir,
-            max_sessions: 16,
+            max_sessions: 64,
             tmux_bin: resolve_binary("tmux"),
             script_bin: resolve_binary("script"),
         }
@@ -146,16 +146,6 @@ impl SessionSupervisor {
         command: impl Into<String>,
     ) -> Result<SessionMetadata, SessionError> {
         let session_id = Uuid::new_v4();
-
-        // Check session count limit
-        let current_count = self.sessions.read().await.len();
-        if current_count >= self.max_sessions {
-            return Err(SessionError::LimitReached(format!(
-                "maximum of {} sessions reached",
-                self.max_sessions
-            )));
-        }
-
         let now = Utc::now();
         let cwd = cwd.into();
         let command = command.into();
@@ -169,25 +159,6 @@ impl SessionSupervisor {
             .data_dir
             .join("scrollback")
             .join(format!("{session_id}.log"));
-        let scrollback_index_path = self
-            .data_dir
-            .join("scrollback")
-            .join(format!("{session_id}.idx"));
-        if let Some(parent) = scrollback_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&scrollback_path)
-            .await?;
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&scrollback_index_path)
-            .await?;
-
-        self.create_tmux_session(session_id, &cwd, &command).await?;
 
         let meta = SessionMetadata {
             id: session_id,
@@ -207,13 +178,69 @@ impl SessionSupervisor {
             ended_at: None,
         };
 
-        self.sessions.write().await.insert(session_id, meta.clone());
-        let _ = self.tx.send(SessionEvent::Spawned(meta.clone()));
-        self.attach_tmux_client(session_id).await?;
+        // Atomically check the limit and reserve a slot under a single write lock.
+        {
+            let mut sessions = self.sessions.write().await;
+            let active_count = sessions
+                .values()
+                .filter(|m| matches!(m.status, SessionStatus::Running | SessionStatus::Waiting))
+                .count();
+            if active_count >= self.max_sessions {
+                return Err(SessionError::LimitReached(format!(
+                    "maximum of {} sessions reached",
+                    self.max_sessions
+                )));
+            }
+            sessions.insert(session_id, meta.clone());
+        }
+
+        // Perform I/O outside the lock. On failure, remove the reserved slot
+        // and any partial state left by attach_tmux_client.
+        if let Err(err) = self
+            .finish_spawn(session_id, &cwd, &command, &scrollback_path)
+            .await
+        {
+            self.sessions.write().await.remove(&session_id);
+            self.inputs.write().await.remove(&session_id);
+            return Err(err);
+        }
+
+        let _ = self.tx.send(SessionEvent::Spawned(meta));
 
         self.get(session_id)
             .await
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))
+    }
+
+    /// Performs the I/O-heavy portion of session spawn (file creation, tmux,
+    /// attach). Separated so the caller can roll back the HashMap entry on
+    /// failure.
+    async fn finish_spawn(
+        &self,
+        session_id: Uuid,
+        cwd: &str,
+        command: &str,
+        scrollback_path: &std::path::Path,
+    ) -> Result<(), SessionError> {
+        let scrollback_index_path = scrollback_path.with_extension("idx");
+        if let Some(parent) = scrollback_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(scrollback_path)
+            .await?;
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&scrollback_index_path)
+            .await?;
+
+        self.create_tmux_session(session_id, cwd, command).await?;
+        self.attach_tmux_client(session_id).await?;
+
+        Ok(())
     }
 
     pub async fn attach_existing(&self, session_id: Uuid) -> Result<(), SessionError> {
@@ -1592,5 +1619,104 @@ mod tests {
         let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
         let supervisor = SessionSupervisor::new(&root);
         assert!(supervisor.get(Uuid::new_v4()).await.is_none());
+    }
+
+    // ── Session limit ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn session_limit_ignores_completed_and_errored_sessions() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let mut supervisor = SessionSupervisor::new(&root);
+        supervisor.max_sessions = 2;
+
+        let now = Utc::now();
+        let project_id = Uuid::new_v4();
+
+        // Register a Complete and an Error session — should not count against limit
+        for status in [SessionStatus::Complete, SessionStatus::Error] {
+            let id = Uuid::new_v4();
+            let scrollback = root.join("scrollback").join(format!("{id}.log"));
+            supervisor
+                .register_restored(SessionMetadata {
+                    id,
+                    project_id,
+                    name: format!("{status:?}"),
+                    status,
+                    health: SessionHealth::Complete,
+                    pid: None,
+                    cwd: ".".to_string(),
+                    command: "zsh".to_string(),
+                    branch: None,
+                    worktree_id: None,
+                    started_at: now,
+                    last_heartbeat: now,
+                    scrollback_path: scrollback.to_string_lossy().to_string(),
+                    exit_code: Some(0),
+                    ended_at: Some(now),
+                })
+                .await;
+        }
+
+        // Register 2 Waiting sessions — these fill the limit
+        for i in 0..2 {
+            let id = Uuid::new_v4();
+            let scrollback = root.join("scrollback").join(format!("{id}.log"));
+            supervisor
+                .register_restored(SessionMetadata {
+                    id,
+                    project_id,
+                    name: format!("waiting-{i}"),
+                    status: SessionStatus::Waiting,
+                    health: SessionHealth::Waiting,
+                    pid: None,
+                    cwd: ".".to_string(),
+                    command: "zsh".to_string(),
+                    branch: None,
+                    worktree_id: None,
+                    started_at: now,
+                    last_heartbeat: now,
+                    scrollback_path: scrollback.to_string_lossy().to_string(),
+                    exit_code: None,
+                    ended_at: None,
+                })
+                .await;
+        }
+
+        // 4 sessions in the HashMap, but only 2 active — limit is 2, so next spawn should fail
+        assert_eq!(supervisor.list().await.len(), 4);
+
+        let err = supervisor
+            .spawn_shell(project_id, "over-limit", ".", "")
+            .await
+            .expect_err("should hit session limit");
+        assert!(matches!(err, SessionError::LimitReached(_)));
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_rolls_back_reserved_slot() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let mut supervisor = SessionSupervisor::new(&root);
+        // Use a tmux binary that always fails so create_tmux_session errors out.
+        supervisor.tmux_bin = write_fake_tmux(&root, "echo 'fail' >&2\nexit 1");
+        supervisor.max_sessions = 1;
+
+        let project_id = Uuid::new_v4();
+        let _err = supervisor
+            .spawn_shell(project_id, "will-fail", ".", "")
+            .await
+            .expect_err("spawn should fail with bad tmux");
+
+        // The reserved slot must have been removed — HashMap should be empty.
+        assert_eq!(supervisor.list().await.len(), 0);
+
+        // A subsequent spawn attempt should not hit LimitReached.
+        let err = supervisor
+            .spawn_shell(project_id, "retry", ".", "")
+            .await
+            .expect_err("still fails because tmux is fake");
+        assert!(
+            !matches!(err, SessionError::LimitReached(_)),
+            "slot was freed, should not be LimitReached"
+        );
     }
 }
