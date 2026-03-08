@@ -363,27 +363,38 @@ final class ContentAreaView: NSView {
         dismissNotificationRing(for: paneID)
     }
 
-    /// Remove all pane and divider subviews and clear their tracking collections.
-    private func teardownAllViews() {
-        syncPersistedPanes()
-        for (_, v) in paneViews {
-            v.dispose()
-            v.removeFromSuperview()
-        }
+    /// Detach the currently tracked pane views while leaving them on-screen long
+    /// enough to install the replacement layout above them.
+    private func beginViewSwap() -> [PaneID: NSView & PaneContent] {
+        let outgoingPaneViews = paneViews
         paneViews.removeAll()
         dividerViews.forEach { $0.removeFromSuperview() }
         dividerViews.removeAll()
+        focusBorderView?.removeFromSuperview()
+        focusBorderView = nil
         for (_, ring) in notificationRingViews {
             ring.removeFromSuperview()
         }
         notificationRingViews.removeAll()
+        return outgoingPaneViews
     }
 
-    /// Replace the layout engine (used when switching workspaces).
-    func setLayoutEngine(_ engine: PaneLayoutEngine) {
-        syncPersistedPanes()
-        teardownAllViews()
+    /// Dispose pane views after the new layout is fully registered and laid out.
+    private func disposePaneViews(_ views: [PaneID: NSView & PaneContent]) {
+        for (_, v) in views {
+            v.dispose()
+            v.removeFromSuperview()
+        }
+    }
 
+    /// Remove all pane and divider subviews and clear their tracking collections.
+    private func teardownAllViews() {
+        syncPersistedPanes()
+        let outgoingPaneViews = beginViewSwap()
+        disposePaneViews(outgoingPaneViews)
+    }
+
+    private func installLayoutEngine(_ engine: PaneLayoutEngine) {
         layoutEngine = engine
 
         if let root = engine.root {
@@ -408,19 +419,28 @@ final class ContentAreaView: NSView {
         relayout()
     }
 
+    /// Replace the layout engine (used when switching workspaces).
+    func setLayoutEngine(_ engine: PaneLayoutEngine) {
+        syncPersistedPanes()
+        let outgoingPaneViews = beginViewSwap()
+        installLayoutEngine(engine)
+        disposePaneViews(outgoingPaneViews)
+    }
+
     /// Replace the entire layout with a single root pane.
     /// Used when all panes have been closed and we need a fresh start.
     /// Resets the existing engine in-place to preserve shared references
     /// (e.g. WorkspaceTab.layoutEngine identity).
     func setRootPane(_ view: NSView & PaneContent) {
         syncPersistedPanes()
-        teardownAllViews()
+        let outgoingPaneViews = beginViewSwap()
 
         layoutEngine.reset(rootPaneID: view.paneID)
         registerPaneView(view)
         view.activate()
         onActivePaneChanged?(view.paneID)
         relayout()
+        disposePaneViews(outgoingPaneViews)
     }
 
     /// The currently active pane view.
