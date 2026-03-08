@@ -66,7 +66,8 @@ Assurance target:
 - fail-closed password-file owner/mode checks
 - remote config validation for TLS/origin/rate-limit settings
 - token auth, rate limiting, payload limits, and RPC allowlisting on the remote surface
-- redaction on event/log/context/review persistence paths, including structured JSON sensitive-key redaction
+- a shared redaction engine on session/event/log/context/review persistence paths, including structured JSON sensitive-key redaction plus provider-token and env-assignment coverage
+- remote audit context for issued, used, and revoked tokens using a safe token identifier and subject attribution fallback
 - CI checks for Rust quality/security, shell/workflow hygiene, and entitlement allowlist drift
 - release evidence bundle with SBOM, entitlements, `codesign`, and `spctl` output
 
@@ -76,6 +77,7 @@ Assurance target:
 - WebSocket size/rate/subscription abuse tests
 - password-file hardening tests for remote and socket auth
 - end-to-end redaction tests across structured and unstructured outputs
+- provider-token and env-assignment regression tests across stream buffering, persisted scrollback, event payloads, and compiled context output
 - manual latency validation on release candidates
 - sign/notarize/staple/Gatekeeper verification on release builds
 
@@ -99,7 +101,11 @@ When opening files in an external editor, the `$EDITOR` environment variable is 
 
 ### Prompt injection sanitizer gaps
 
-Secret redaction uses regex patterns that cannot catch all possible secret formats. This is defense-in-depth, not a complete solution. Iterative improvement of redaction patterns is expected.
+Secret redaction now covers provider-token and env-assignment formats in addition to the legacy patterns, but it still relies on regex heuristics. This is defense-in-depth, not a complete solution. Iterative improvement of redaction patterns is expected.
+
+### Shared remote password model
+
+Remote auth now records a subject and safe token identifier for issued, used, and revoked tokens, but the default subject remains `shared-password`. This is weaker than per-user identity and should be treated as acceptable only for single-operator or tightly shared admin use.
 
 ### `npx` in agent command allowlist
 

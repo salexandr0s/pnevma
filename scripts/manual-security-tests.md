@@ -90,6 +90,33 @@ TOKEN="<paste valid token here>"
 
 ---
 
+## G5b: Secret Redaction Regression
+
+Verify that recognizable provider credentials are redacted before persistence and remote fan-out.
+
+### G5b.1: Session output and scrollback
+
+1. In a live terminal/session pane, print sample secrets:
+
+   ```bash
+   printf 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890\n'
+   printf 'ANTHROPIC_API_KEY="sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890"\n'
+   ```
+
+2. Inspect session output in the app and confirm the raw token text is replaced with `[REDACTED]`.
+3. Inspect the corresponding scrollback/timeline view and confirm the raw token text does not appear there either.
+
+### G5b.2: Remote-visible output
+
+1. With a valid remote token, subscribe to the session output stream or open the remote session view.
+2. Repeat the sample output above.
+3. Confirm the remote-visible payload contains `[REDACTED]` and does not expose the raw provider token.
+
+**Pass**: raw provider tokens never appear in live output, persisted scrollback/timeline, or remote-visible session payloads.
+**Fail**: any `sk-proj-...`, `sk-ant-...`, or env-assignment form appears unredacted after emission.
+
+---
+
 ## G6: Sign / Notarize / Staple Pipeline
 
 **Reference**: `scripts/release-macos-sign.sh`, `scripts/release-macos-notarize.sh`, `scripts/release-macos-staple-verify.sh`
@@ -168,6 +195,27 @@ curl -sk "$BASE_URL/api/tasks?token=$TOKEN" | jq .
 
 **Expected**: HTTP 401 (query-string `?token=` only accepted for WS upgrade).
 **Pass**: Status 401.
+
+### G7e: Auth audit telemetry
+
+1. Mint a token as shown in Local setup.
+2. Make one authenticated request:
+
+   ```bash
+   curl -sk -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/tasks" >/dev/null
+   ```
+
+3. Revoke the token:
+
+   ```bash
+   curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/auth/token" | jq .
+   ```
+
+4. Inspect the remote server logs and confirm they include `auth_event`, `subject`, and `token_id`.
+5. Confirm the logs do not include the raw password or bearer token value.
+
+**Pass**: audit logs record token issuance/use/revocation with `subject` and safe `token_id`, and no raw credential material.
+**Fail**: subjectless auth logs or any raw token/password in logs.
 
 ---
 

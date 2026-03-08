@@ -1,9 +1,8 @@
 use crate::error::ContextError;
 use pnevma_core::TaskContract;
-use regex::Regex;
+use pnevma_redaction::{normalize_secrets, redact_text};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
@@ -61,38 +60,25 @@ fn default_max_file_size_kb() -> usize {
     100
 }
 
-pub fn secret_patterns() -> &'static [Regex] {
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
-    PATTERNS.get_or_init(|| {
-        [
-            r"AKIA[0-9A-Z]{16}",
-            r"gh[pousr]_[A-Za-z0-9_]{36,255}",
-            r"sk-[A-Za-z0-9]{20,}",
-            r"sk-ant-[A-Za-z0-9\-]{20,}",
-            "(?m)^[A-Z][A-Z0-9_]{2,}=[\"']?[A-Za-z0-9/+=]{40,}[\"']?",
-            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
-        ]
-        .iter()
-        .map(|p| Regex::new(p).expect("secret pattern must compile"))
-        .collect()
-    })
+pub fn redact_secrets(content: &str) -> String {
+    redact_text(content, &[])
 }
 
-pub fn redact_secrets(content: &str) -> String {
-    let mut result = content.to_string();
-    for pattern in secret_patterns() {
-        result = pattern.replace_all(&result, "[REDACTED]").to_string();
-    }
-    result
+pub fn redact_secrets_with_known_values(content: &str, secrets: &[String]) -> String {
+    redact_text(content, secrets)
 }
 
 pub struct FileDiscovery {
     config: DiscoveryConfig,
+    redaction_secrets: Vec<String>,
 }
 
 impl FileDiscovery {
-    pub fn new(config: DiscoveryConfig) -> Self {
-        Self { config }
+    pub fn new(config: DiscoveryConfig, redaction_secrets: Vec<String>) -> Self {
+        Self {
+            config,
+            redaction_secrets: normalize_secrets(&redaction_secrets),
+        }
     }
 
     /// Discover relevant file contents for a task, respecting the token budget.
@@ -206,14 +192,20 @@ impl FileDiscovery {
                         let trunc_tokens = truncated.len() / CHARS_PER_TOKEN_ESTIMATE;
                         used_tokens += trunc_tokens;
                         seen_paths.insert(rel.clone());
-                        results.push((rel, redact_secrets(&truncated)));
+                        results.push((
+                            rel,
+                            redact_secrets_with_known_values(&truncated, &self.redaction_secrets),
+                        ));
                     }
                     break;
                 }
 
                 used_tokens += token_cost;
                 seen_paths.insert(rel.clone());
-                results.push((rel, redact_secrets(&content)));
+                results.push((
+                    rel,
+                    redact_secrets_with_known_values(&content, &self.redaction_secrets),
+                ));
             }
         }
 
@@ -552,11 +544,14 @@ mod tests {
         let task = make_task((0..10).map(|i| format!("file{i}.txt")).collect());
 
         // Budget of 1 token — file_budget = 0 (1/2), so no files should be included
-        let fd = FileDiscovery::new(DiscoveryConfig {
-            strategies: vec!["scope".to_string()],
-            max_file_size_kb: 1,
-            exclude_patterns: vec![],
-        });
+        let fd = FileDiscovery::new(
+            DiscoveryConfig {
+                strategies: vec!["scope".to_string()],
+                max_file_size_kb: 1,
+                exclude_patterns: vec![],
+            },
+            Vec::new(),
+        );
         let results = fd.discover(&task, root, 1).await.expect("discover");
         // Budget is 1/2 = 0, so no files fit
         assert!(results.is_empty());
@@ -574,11 +569,14 @@ mod tests {
 
         let task = make_task(vec!["small.txt".to_string()]);
 
-        let fd = FileDiscovery::new(DiscoveryConfig {
-            strategies: vec!["scope".to_string()],
-            max_file_size_kb: 1,
-            exclude_patterns: vec![],
-        });
+        let fd = FileDiscovery::new(
+            DiscoveryConfig {
+                strategies: vec!["scope".to_string()],
+                max_file_size_kb: 1,
+                exclude_patterns: vec![],
+            },
+            Vec::new(),
+        );
         // Budget of 1000 tokens => file_budget = 500 >> 1 token needed
         let results = fd.discover(&task, root, 1000).await.expect("discover");
         assert_eq!(results.len(), 1);
@@ -602,11 +600,14 @@ mod tests {
 
         let task = make_task(vec!["Cargo.lock".to_string(), "main.rs".to_string()]);
 
-        let fd = FileDiscovery::new(DiscoveryConfig {
-            strategies: vec!["scope".to_string()],
-            max_file_size_kb: 10,
-            exclude_patterns: vec!["*.lock".to_string()],
-        });
+        let fd = FileDiscovery::new(
+            DiscoveryConfig {
+                strategies: vec!["scope".to_string()],
+                max_file_size_kb: 10,
+                exclude_patterns: vec!["*.lock".to_string()],
+            },
+            Vec::new(),
+        );
         let results = fd.discover(&task, root, 10000).await.expect("discover");
         // Cargo.lock is excluded; only main.rs should be included
         assert_eq!(results.len(), 1);
@@ -627,11 +628,14 @@ mod tests {
         // Scope lists the same file twice
         let task = make_task(vec!["readme.md".to_string(), "readme.md".to_string()]);
 
-        let fd = FileDiscovery::new(DiscoveryConfig {
-            strategies: vec!["scope".to_string()],
-            max_file_size_kb: 10,
-            exclude_patterns: vec![],
-        });
+        let fd = FileDiscovery::new(
+            DiscoveryConfig {
+                strategies: vec!["scope".to_string()],
+                max_file_size_kb: 10,
+                exclude_patterns: vec![],
+            },
+            Vec::new(),
+        );
         let results = fd.discover(&task, root, 10000).await.expect("discover");
         assert_eq!(results.len(), 1);
     }
@@ -644,11 +648,14 @@ mod tests {
         let root = tmp.path();
 
         let task = make_task(vec![]);
-        let fd = FileDiscovery::new(DiscoveryConfig {
-            strategies: vec!["nonexistent_strategy".to_string()],
-            max_file_size_kb: 10,
-            exclude_patterns: vec![],
-        });
+        let fd = FileDiscovery::new(
+            DiscoveryConfig {
+                strategies: vec!["nonexistent_strategy".to_string()],
+                max_file_size_kb: 10,
+                exclude_patterns: vec![],
+            },
+            Vec::new(),
+        );
         // Should not panic or error — just returns empty
         let results = fd.discover(&task, root, 10000).await.expect("discover");
         assert!(results.is_empty());
@@ -678,7 +685,7 @@ mod tests {
     #[test]
     fn default_excludes_secret_file_patterns() {
         let cfg = DiscoveryConfig::default();
-        let fd = FileDiscovery::new(cfg.clone());
+        let fd = FileDiscovery::new(cfg.clone(), Vec::new());
         assert!(fd.is_excluded(".env"));
         assert!(fd.is_excluded(".env.local"));
         assert!(fd.is_excluded("some/path/id_rsa"));
@@ -712,6 +719,13 @@ mod tests {
     }
 
     #[test]
+    fn redact_quoted_provider_key_assignment() {
+        let input = r#"ANTHROPIC_API_KEY="sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890""#;
+        let output = redact_secrets(input);
+        assert_eq!(output, "ANTHROPIC_API_KEY=[REDACTED]");
+    }
+
+    #[test]
     fn redact_private_key_header() {
         let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQ...";
         let output = redact_secrets(input);
@@ -723,6 +737,40 @@ mod tests {
         let input = "This is normal code with no secrets\nfn main() {}";
         let output = redact_secrets(input);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn redact_known_secret_value() {
+        let input = "db password is local-dev-secret-value";
+        let output =
+            redact_secrets_with_known_values(input, &["local-dev-secret-value".to_string()]);
+        assert!(!output.contains("local-dev-secret-value"));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn discover_redacts_known_secret_values() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        tokio::fs::write(root.join("secrets.txt"), "plain-known-secret-value")
+            .await
+            .unwrap();
+
+        let task = make_task(vec!["secrets.txt".to_string()]);
+        let fd = FileDiscovery::new(
+            DiscoveryConfig {
+                strategies: vec!["scope".to_string()],
+                max_file_size_kb: 10,
+                exclude_patterns: vec![],
+            },
+            vec!["plain-known-secret-value".to_string()],
+        );
+
+        let results = fd.discover(&task, root, 10_000).await.expect("discover");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "secrets.txt");
+        assert!(!results[0].1.contains("plain-known-secret-value"));
+        assert_eq!(results[0].1, "[REDACTED]");
     }
 
     #[test]

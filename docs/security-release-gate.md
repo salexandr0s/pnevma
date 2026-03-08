@@ -19,6 +19,12 @@ Do not ship a remote-enabled release if any of the following are true:
 4. `./scripts/release-preflight.sh`
 5. `APP_PATH="native/build/Release/Pnevma.app" ./scripts/check-entitlements.sh` on the packaged candidate bundle
 
+For security-sensitive changes touching redaction or remote auth, the release candidate must also preserve passing coverage for:
+
+- provider-token and env-assignment redaction in `pnevma-session`, `pnevma-commands`, and `pnevma-context`
+- persisted scrollback redaction regressions
+- remote auth token issuance/use/revocation audit-context tests in `pnevma-remote`
+
 ## Required evidence bundle
 
 Every release candidate must preserve:
@@ -41,6 +47,7 @@ GitHub Actions retention policy:
 
 - remote auth and deployment posture match `docs/security-deployment.md`
 - control-plane auth mode matches intended operator guidance
+- provider-token redaction is manually verified in live session output, persisted scrollback/timeline, and remote-visible output
 - operator-facing docs still state that worktrees are not an OS sandbox and agents retain user-level filesystem/network access
 - long-running dispatch, review, replay, and recovery flows behave correctly on the candidate build
 - release documentation matches the shipped architecture

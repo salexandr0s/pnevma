@@ -6,11 +6,29 @@ use argon2::{
 };
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
+
+pub const SHARED_PASSWORD_SUBJECT: &str = "shared-password";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenAuditMetadata {
+    pub subject: String,
+    pub token_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct IssuedToken {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+    pub audit: TokenAuditMetadata,
+}
 
 struct TokenEntry {
     created_at: DateTime<Utc>,
     ip: String,
+    subject: String,
+    token_id: String,
 }
 
 pub struct TokenStore {
@@ -37,20 +55,30 @@ impl TokenStore {
     }
 
     /// Generate a 256-bit random hex token, store it, and return it.
-    pub fn create_token(&self, ip: &str) -> String {
+    pub fn create_token(&self, ip: &str, subject: &str) -> IssuedToken {
         use rand::rngs::OsRng;
         use rand::RngCore;
         let mut bytes = [0u8; 32];
         OsRng.fill_bytes(&mut bytes);
         let token = hex::encode(bytes);
+        let token_id = token_identifier(&token);
         self.tokens.insert(
             token.clone(),
             TokenEntry {
                 created_at: Utc::now(),
                 ip: ip.to_string(),
+                subject: subject.to_string(),
+                token_id: token_id.clone(),
             },
         );
-        token
+        IssuedToken {
+            token,
+            expires_at: self.token_expires_at(),
+            audit: TokenAuditMetadata {
+                subject: subject.to_string(),
+                token_id,
+            },
+        }
     }
 
     /// Validate a bearer token: existence check + expiry check + IP binding.
@@ -58,12 +86,12 @@ impl TokenStore {
     /// NOTE: The DashMap lookup is not constant-time, but with 256-bit random
     /// tokens the timing difference is not practically exploitable — an attacker
     /// cannot meaningfully narrow the key space via timing.
-    pub fn validate_token(&self, token: &str, request_ip: &str) -> bool {
+    pub fn validate_token(&self, token: &str, request_ip: &str) -> Option<TokenAuditMetadata> {
         if let Some(entry) = self.tokens.get(token) {
             let age_secs = (Utc::now() - entry.created_at).num_seconds();
             let ttl_secs = self.ttl_hours as i64 * 3600;
             if age_secs >= ttl_secs {
-                return false;
+                return None;
             }
             if entry.ip != request_ip {
                 tracing::warn!(
@@ -71,11 +99,14 @@ impl TokenStore {
                     request_ip = %request_ip,
                     "token used from different IP than it was created from"
                 );
-                return false;
+                return None;
             }
-            return true;
+            return Some(TokenAuditMetadata {
+                subject: entry.subject.clone(),
+                token_id: entry.token_id.clone(),
+            });
         }
-        false
+        None
     }
 
     /// Validate a password using Argon2id verification (constant-time).
@@ -121,8 +152,13 @@ impl TokenStore {
 
     /// Revoke a token by removing it from the store.
     /// Returns `true` if the token existed and was removed.
-    pub fn revoke_token(&self, token: &str) -> bool {
-        self.tokens.remove(token).is_some()
+    pub fn revoke_token(&self, token: &str) -> Option<TokenAuditMetadata> {
+        self.tokens
+            .remove(token)
+            .map(|(_, entry)| TokenAuditMetadata {
+                subject: entry.subject,
+                token_id: entry.token_id,
+            })
     }
 
     /// Revoke all tokens. Call this when the password is changed to ensure
@@ -137,6 +173,11 @@ impl TokenStore {
     }
 }
 
+fn token_identifier(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    hex::encode(digest)[..12].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,28 +189,35 @@ mod tests {
     #[test]
     fn valid_token_validates() {
         let ts = store();
-        let token = ts.create_token("127.0.0.1");
-        assert!(ts.validate_token(&token, "127.0.0.1"));
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let audit = ts
+            .validate_token(&issued.token, "127.0.0.1")
+            .expect("issued token must validate");
+        assert_eq!(audit.subject, SHARED_PASSWORD_SUBJECT);
+        assert_eq!(audit.token_id, issued.audit.token_id);
     }
 
     #[test]
     fn unknown_token_is_rejected() {
         let ts = store();
-        assert!(!ts.validate_token("notarealtoken", "127.0.0.1"));
+        assert!(ts.validate_token("notarealtoken", "127.0.0.1").is_none());
     }
 
     #[test]
     fn revoked_token_is_rejected() {
         let ts = store();
-        let token = ts.create_token("127.0.0.1");
-        assert!(ts.revoke_token(&token));
-        assert!(!ts.validate_token(&token, "127.0.0.1"));
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let revoked = ts
+            .revoke_token(&issued.token)
+            .expect("token should be revoked");
+        assert_eq!(revoked.token_id, issued.audit.token_id);
+        assert!(ts.validate_token(&issued.token, "127.0.0.1").is_none());
     }
 
     #[test]
     fn revoke_nonexistent_token_returns_false() {
         let ts = store();
-        assert!(!ts.revoke_token("doesnotexist"));
+        assert!(ts.revoke_token("doesnotexist").is_none());
     }
 
     #[test]
@@ -188,9 +236,9 @@ mod tests {
     fn expired_token_ttl_zero_is_rejected() {
         // TTL of 0 hours means tokens expire immediately.
         let ts = TokenStore::new("pass".to_string(), 0);
-        let token = ts.create_token("127.0.0.1");
+        let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         // age_secs (0) >= ttl_secs (0), so token is invalid
-        assert!(!ts.validate_token(&token, "127.0.0.1"));
+        assert!(ts.validate_token(&token.token, "127.0.0.1").is_none());
     }
 
     #[test]
@@ -202,27 +250,28 @@ mod tests {
     #[test]
     fn cleanup_expired_removes_zero_ttl_tokens() {
         let ts = TokenStore::new("pass".to_string(), 0);
-        let token = ts.create_token("127.0.0.1");
+        let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         ts.cleanup_expired();
-        assert!(!ts.tokens.contains_key(&token));
+        assert!(!ts.tokens.contains_key(&token.token));
     }
 
     #[test]
     fn multiple_tokens_can_coexist() {
         let ts = store();
-        let t1 = ts.create_token("10.0.0.1");
-        let t2 = ts.create_token("10.0.0.2");
-        assert!(ts.validate_token(&t1, "10.0.0.1"));
-        assert!(ts.validate_token(&t2, "10.0.0.2"));
-        assert_ne!(t1, t2);
+        let t1 = ts.create_token("10.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let t2 = ts.create_token("10.0.0.2", SHARED_PASSWORD_SUBJECT);
+        assert!(ts.validate_token(&t1.token, "10.0.0.1").is_some());
+        assert!(ts.validate_token(&t2.token, "10.0.0.2").is_some());
+        assert_ne!(t1.token, t2.token);
+        assert_ne!(t1.audit.token_id, t2.audit.token_id);
     }
 
     #[test]
     fn token_rejected_from_different_ip() {
         let ts = store();
-        let token = ts.create_token("10.0.0.1");
-        assert!(ts.validate_token(&token, "10.0.0.1"));
-        assert!(!ts.validate_token(&token, "192.168.1.1"));
+        let token = ts.create_token("10.0.0.1", SHARED_PASSWORD_SUBJECT);
+        assert!(ts.validate_token(&token.token, "10.0.0.1").is_some());
+        assert!(ts.validate_token(&token.token, "192.168.1.1").is_none());
     }
 
     #[test]
@@ -238,6 +287,17 @@ mod tests {
         let password = "b".repeat(128);
         let ts = TokenStore::new(password.clone(), 24);
         assert!(ts.validate_password(&password));
+    }
+
+    #[test]
+    fn token_identifier_does_not_expose_raw_token_prefix() {
+        let ts = store();
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        assert_ne!(
+            issued.audit.token_id,
+            issued.token[..12].to_string(),
+            "audit identifier should not be a raw token prefix"
+        );
     }
 }
 

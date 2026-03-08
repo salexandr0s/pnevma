@@ -5,11 +5,11 @@ use axum::{
     extract::{ConnectInfo, Query},
     http::{Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 
-use crate::auth::TokenStore;
+use crate::{auth::TokenStore, middleware::audit::AuditAuthContext};
 
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
@@ -23,18 +23,36 @@ pub async fn auth_token(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request<Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Response {
     let token = extract_token(&req, query.token.as_deref());
     let request_ip = addr.ip().to_string();
+    let websocket_upgrade = is_websocket_upgrade(&req);
 
     match token {
-        Some(t) if store.validate_token(&t, &request_ip) => Ok(next.run(req).await),
+        Some(t) => match store.validate_token(&t, &request_ip) {
+            Some(audit) => {
+                let mut response = next.run(req).await;
+                response.extensions_mut().insert(if websocket_upgrade {
+                    AuditAuthContext::websocket_authenticated(audit.subject, audit.token_id)
+                } else {
+                    AuditAuthContext::authenticated_request(audit.subject, audit.token_id)
+                });
+                response
+            }
+            None => {
+                tracing::warn!(
+                    path = %req.uri().path(),
+                    "Unauthorized request — missing or invalid token"
+                );
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        },
         _ => {
             tracing::warn!(
                 path = %req.uri().path(),
                 "Unauthorized request — missing or invalid token"
             );
-            Err(StatusCode::UNAUTHORIZED)
+            StatusCode::UNAUTHORIZED.into_response()
         }
     }
 }
@@ -73,7 +91,9 @@ fn is_websocket_upgrade(req: &Request<Body>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
+    use crate::auth::SHARED_PASSWORD_SUBJECT;
+    use axum::{extract::ConnectInfo, http::HeaderValue, middleware, routing::get, Router};
+    use tower::ServiceExt;
 
     fn plain_request() -> Request<Body> {
         Request::builder()
@@ -154,5 +174,82 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(!is_websocket_upgrade(&req));
+    }
+
+    #[tokio::test]
+    async fn middleware_sets_authenticated_request_audit_context() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24));
+        let issued = store.create_token("127.0.0.1", "operator-a");
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {}", issued.token),
+                    )
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let audit = response
+            .extensions()
+            .get::<AuditAuthContext>()
+            .cloned()
+            .expect("audit context");
+        assert_eq!(audit.auth_event, "authenticated_request");
+        assert_eq!(audit.subject, "operator-a");
+        assert_eq!(
+            audit.token_id.as_deref(),
+            Some(issued.audit.token_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn middleware_sets_websocket_audit_context_for_query_token() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24));
+        let issued = store.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let app = Router::new()
+            .route("/api/ws", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/ws?token={}", issued.token))
+                    .header(axum::http::header::UPGRADE, "websocket")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let audit = response
+            .extensions()
+            .get::<AuditAuthContext>()
+            .cloned()
+            .expect("audit context");
+        assert_eq!(audit.auth_event, "websocket_authenticated");
+        assert_eq!(audit.subject, SHARED_PASSWORD_SUBJECT);
+        assert_eq!(
+            audit.token_id.as_deref(),
+            Some(issued.audit.token_id.as_str())
+        );
     }
 }

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pnevma-redaction = { path = "../pnevma-redaction" }
 regex.workspace = true
 serde.workspace = true
 thiserror.workspace = true

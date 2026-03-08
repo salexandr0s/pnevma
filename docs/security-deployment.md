@@ -10,6 +10,7 @@ This guide covers the supported deployment posture for Pnevma's remote server an
 - `remote.tls_allow_self_signed_fallback = true` is a development fallback only.
 - Local automation should prefer `same-user` socket auth unless password mode is explicitly needed.
 - Passwords should come from the environment or Keychain before plaintext files.
+- Shared-password remote auth is intended for a single operator or a tightly controlled admin group, not broad multi-user access.
 - Worktrees isolate git state only. Agent processes still run with the current user's filesystem and network privileges.
 
 ## Password source precedence
@@ -101,6 +102,13 @@ socket_password_file = "/Users/you/.config/pnevma/control-password"
 
 If `socket_auth_mode = "password"`, set the password through `PNEVMA_SOCKET_PASSWORD` or the Keychain item first. Use `socket_password_file` only if you must keep a file-based secret.
 
+## Remote audit attribution
+
+- Successful remote token issuance, authenticated requests, WebSocket upgrades, and token revocations now log a `subject` and safe `token_id`.
+- The default subject is `shared-password` unless stronger operator identity is wired in front of the remote server.
+- Raw passwords and raw bearer tokens must never appear in audit logs.
+- Treat this as correlation and accountability aid, not full per-user identity.
+
 ## Validation rules
 
 Pnevma now fails startup when:
@@ -115,4 +123,5 @@ Pnevma now fails startup when:
 
 - Verify file modes with `ls -l ~/.config/pnevma/remote-password`.
 - Verify Keychain entries with `security find-generic-password -s com.pnevma.remote-access -a shared-password -w`.
+- Issue a token, make one authenticated request, revoke the token, and verify the logs contain `subject` and `token_id` but not the raw token or password.
 - Use `scripts/manual-security-tests.md` to validate remote auth, rate limits, allowlists, and password-file hardening before external rollout.
