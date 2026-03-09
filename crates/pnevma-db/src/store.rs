@@ -1,11 +1,12 @@
 use crate::error::DbError;
 use crate::models::{
-    AgentProfileRow, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow,
-    CostDailyAggregateRow, CostRow, ErrorSignatureDailyRow, ErrorSignatureRow, EventRow,
-    FeedbackRow, MergeQueueRow, NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow,
-    PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, SshProfileRow,
-    StoryProgressRow, TaskRow, TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowRow,
-    WorkflowTaskRow, WorktreeRow,
+    AgentProfileRow, ArtifactRow, AutomationRetryRow, AutomationRunRow, CheckResultRow,
+    CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostDailyAggregateRow, CostRow,
+    ErrorSignatureDailyRow, ErrorSignatureRow, EventRow, FeedbackRow, MergeQueueRow,
+    NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow,
+    RuleRow, SecretRefRow, SessionRow, SshProfileRow, StoryProgressRow, TaskExternalSourceRow,
+    TaskRow, TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow,
+    WorktreeRow,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -2347,6 +2348,291 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn upsert_task_external_source(
+        &self,
+        row: &TaskExternalSourceRow,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO task_external_sources (id, project_id, task_id, kind, external_id, identifier, url, state, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(project_id, kind, external_id) DO UPDATE SET
+                task_id = excluded.task_id,
+                identifier = excluded.identifier,
+                url = excluded.url,
+                state = excluded.state,
+                synced_at = excluded.synced_at",
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.task_id)
+        .bind(&row.kind)
+        .bind(&row.external_id)
+        .bind(&row.identifier)
+        .bind(&row.url)
+        .bind(&row.state)
+        .bind(row.synced_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_task_external_source(
+        &self,
+        project_id: &str,
+        kind: &str,
+        external_id: &str,
+    ) -> Result<Option<TaskExternalSourceRow>, DbError> {
+        let row = sqlx::query_as::<_, TaskExternalSourceRow>(
+            "SELECT * FROM task_external_sources WHERE project_id = ? AND kind = ? AND external_id = ?",
+        )
+        .bind(project_id)
+        .bind(kind)
+        .bind(external_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_task_external_sources(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<TaskExternalSourceRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskExternalSourceRow>(
+            "SELECT * FROM task_external_sources WHERE project_id = ? ORDER BY synced_at DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_external_source_by_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskExternalSourceRow>, DbError> {
+        let row = sqlx::query_as::<_, TaskExternalSourceRow>(
+            "SELECT * FROM task_external_sources WHERE task_id = ?",
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn delete_task_external_source(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM task_external_sources WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_automation_run(&self, row: &AutomationRunRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO automation_runs
+            (id, project_id, task_id, run_id, origin, provider, model, status, attempt,
+             started_at, finished_at, duration_seconds, tokens_in, tokens_out, cost_usd,
+             summary, error_message, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.task_id)
+        .bind(&row.run_id)
+        .bind(&row.origin)
+        .bind(&row.provider)
+        .bind(&row.model)
+        .bind(&row.status)
+        .bind(row.attempt)
+        .bind(row.started_at)
+        .bind(row.finished_at)
+        .bind(row.duration_seconds)
+        .bind(row.tokens_in)
+        .bind(row.tokens_out)
+        .bind(row.cost_usd)
+        .bind(&row.summary)
+        .bind(&row.error_message)
+        .bind(row.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_automation_run_status(
+        &self,
+        id: &str,
+        status: &str,
+        finished_at: Option<DateTime<Utc>>,
+        duration_seconds: Option<f64>,
+        error_message: Option<&str>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE automation_runs
+            SET status = ?2, finished_at = ?3, duration_seconds = ?4, error_message = ?5
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .bind(status)
+        .bind(finished_at)
+        .bind(duration_seconds)
+        .bind(error_message)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_automation_run_usage(
+        &self,
+        id: &str,
+        tokens_in: i64,
+        tokens_out: i64,
+        cost_usd: f64,
+        summary: Option<&str>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE automation_runs
+            SET tokens_in = ?2, tokens_out = ?3, cost_usd = ?4, summary = ?5
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .bind(tokens_in)
+        .bind(tokens_out)
+        .bind(cost_usd)
+        .bind(summary)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_automation_run(&self, id: &str) -> Result<Option<AutomationRunRow>, DbError> {
+        let row = sqlx::query_as::<_, AutomationRunRow>(
+            r#"
+            SELECT id, project_id, task_id, run_id, origin, provider, model, status, attempt,
+                   started_at, finished_at, duration_seconds, tokens_in, tokens_out, cost_usd,
+                   summary, error_message, created_at
+            FROM automation_runs
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_automation_runs(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<AutomationRunRow>, DbError> {
+        let rows = sqlx::query_as::<_, AutomationRunRow>(
+            r#"
+            SELECT id, project_id, task_id, run_id, origin, provider, model, status, attempt,
+                   started_at, finished_at, duration_seconds, tokens_in, tokens_out, cost_usd,
+                   summary, error_message, created_at
+            FROM automation_runs
+            WHERE project_id = ?1
+            ORDER BY started_at DESC
+            LIMIT ?2
+            "#,
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn list_active_automation_runs(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<AutomationRunRow>, DbError> {
+        let rows = sqlx::query_as::<_, AutomationRunRow>(
+            r#"
+            SELECT id, project_id, task_id, run_id, origin, provider, model, status, attempt,
+                   started_at, finished_at, duration_seconds, tokens_in, tokens_out, cost_usd,
+                   summary, error_message, created_at
+            FROM automation_runs
+            WHERE project_id = ?1 AND status = 'running'
+            ORDER BY started_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn create_automation_retry(&self, row: &AutomationRetryRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO automation_retries
+            (id, project_id, run_id, task_id, attempt, reason, retry_after, retried_at, outcome, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.run_id)
+        .bind(&row.task_id)
+        .bind(row.attempt)
+        .bind(&row.reason)
+        .bind(row.retry_after)
+        .bind(row.retried_at)
+        .bind(&row.outcome)
+        .bind(row.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_automation_retry_outcome(
+        &self,
+        id: &str,
+        outcome: &str,
+        retried_at: Option<DateTime<Utc>>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE automation_retries
+            SET outcome = ?2, retried_at = ?3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .bind(outcome)
+        .bind(retried_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_pending_retries(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<AutomationRetryRow>, DbError> {
+        let rows = sqlx::query_as::<_, AutomationRetryRow>(
+            r#"
+            SELECT id, project_id, run_id, task_id, attempt, reason, retry_after,
+                   retried_at, outcome, created_at
+            FROM automation_retries
+            WHERE project_id = ?1 AND retried_at IS NULL
+            ORDER BY retry_after ASC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 }
 

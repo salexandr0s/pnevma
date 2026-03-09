@@ -323,6 +323,7 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            external_source: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

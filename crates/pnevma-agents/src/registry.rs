@@ -19,9 +19,28 @@ impl AdapterRegistry {
             );
         }
         if which("codex") {
-            registry
-                .adapters
-                .insert("codex".to_string(), Arc::new(CodexAdapter::new()));
+            // Detect if codex supports app-server mode and register v2 adapter.
+            let supports_v2 = std::process::Command::new("codex")
+                .args(["app-server", "--help"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            if supports_v2 {
+                let v2: Arc<dyn AgentAdapter> =
+                    Arc::new(crate::adapters::codex_v2::CodexV2Adapter::new());
+                // Register under both names so existing configs using `provider: "codex"` get
+                // the v2 adapter transparently.
+                registry
+                    .adapters
+                    .insert("codex".to_string(), Arc::clone(&v2));
+                registry.adapters.insert("codex-v2".to_string(), v2);
+            } else {
+                // Legacy one-shot adapter only when v2 is unavailable.
+                registry
+                    .adapters
+                    .insert("codex".to_string(), Arc::new(CodexAdapter::new()));
+            }
         }
 
         registry

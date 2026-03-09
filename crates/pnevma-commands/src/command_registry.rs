@@ -358,6 +358,39 @@ fn register_task_commands(registry: CommandRegistry) -> CommandRegistry {
         })
 }
 
+fn register_tracker_commands(registry: CommandRegistry) -> CommandRegistry {
+    registry
+        .register(RegisteredCommand {
+            id: "tracker.poll".to_string(),
+            label: "Poll Tracker".to_string(),
+            description: "Poll the external issue tracker for new or updated items.".to_string(),
+            args: vec![
+                arg(
+                    "limit",
+                    "Limit",
+                    false,
+                    Some("50"),
+                    None,
+                    Some("Maximum number of items to fetch."),
+                ),
+                arg(
+                    "labels",
+                    "Labels",
+                    false,
+                    None,
+                    None,
+                    Some("Comma-separated list of label names to filter by."),
+                ),
+            ],
+        })
+        .register(RegisteredCommand {
+            id: "tracker.status".to_string(),
+            label: "Tracker Status".to_string(),
+            description: "Return the tracker configuration and active status.".to_string(),
+            args: vec![],
+        })
+}
+
 pub fn default_registry() -> &'static CommandRegistry {
     static REGISTRY: OnceLock<CommandRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
@@ -365,6 +398,7 @@ pub fn default_registry() -> &'static CommandRegistry {
         let registry = register_project_commands(registry);
         let registry = register_session_commands(registry);
         let registry = register_pane_commands(registry);
-        register_task_commands(registry)
+        let registry = register_task_commands(registry);
+        register_tracker_commands(registry)
     })
 }

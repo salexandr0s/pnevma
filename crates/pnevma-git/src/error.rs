@@ -13,4 +13,7 @@ pub enum GitError {
 
     #[error("worktree not found: {0}")]
     WorktreeNotFound(String),
+
+    #[error("hook error: {0}")]
+    Hook(String),
 }

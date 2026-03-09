@@ -139,6 +139,8 @@ async fn install_project_runtime(
     sessions: SessionSupervisor,
     project_id: Uuid,
     redaction_secrets: Arc<RwLock<Vec<String>>>,
+    workflow_store: Arc<crate::automation::workflow_store::WorkflowStore>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let session_bridge = spawn_session_bridge(
         Arc::clone(&state.emitter),
@@ -155,9 +157,32 @@ async fn install_project_runtime(
         }
     });
 
+    let coordinator_task = if let Some(state_arc) = state.arc() {
+        let coordinator = Arc::new(crate::automation::coordinator::AutomationCoordinator::new(
+            state_arc,
+            Arc::clone(&workflow_store),
+            shutdown_rx,
+        ));
+        // Store coordinator in ProjectContext
+        {
+            let mut current = state.current.lock().await;
+            if let Some(ctx) = current.as_mut() {
+                ctx.coordinator = Some(Arc::clone(&coordinator));
+            }
+        }
+        let coordinator_clone = Arc::clone(&coordinator);
+        Some(tokio::spawn(async move {
+            coordinator_clone.run().await;
+        }))
+    } else {
+        tracing::warn!("no Arc<AppState> registered; automation coordinator will not start");
+        None
+    };
+
     *state.current_runtime.lock().await = Some(crate::state::ProjectRuntime::new(
         session_bridge,
         health_refresh,
+        coordinator_task,
     ));
 }
 
@@ -303,6 +328,13 @@ pub async fn open_project(
         }
     }
 
+    let workflow_store = Arc::new(crate::automation::workflow_store::WorkflowStore::new(
+        &path_buf,
+    ));
+    workflow_store.load().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     let ctx = ProjectContext {
         project_id,
         project_path: path_buf.clone(),
@@ -314,6 +346,22 @@ pub async fn open_project(
         git,
         adapters,
         pool,
+        tracker: {
+            if cfg.tracker.enabled {
+                match initialize_tracker(&cfg.tracker, &db, project_id).await {
+                    Some(tc) => Some(Arc::new(tc)),
+                    None => {
+                        tracing::warn!("tracker enabled but initialization failed (missing API key?), continuing without tracker");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        },
+        workflow_store: Arc::clone(&workflow_store),
+        coordinator: None,
+        shutdown_tx,
     };
 
     restart_control_plane(state, path_buf.as_path(), &cfg, &global_cfg).await?;
@@ -338,6 +386,8 @@ pub async fn open_project(
         sessions.clone(),
         project_id,
         Arc::clone(&redaction_secrets),
+        workflow_store,
+        shutdown_rx,
     )
     .await;
 
@@ -415,6 +465,14 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
         json!({}),
     )
     .await;
+
+    // Signal the coordinator to shut down gracefully before aborting the runtime task.
+    {
+        let current = state.current.lock().await;
+        if let Some(ctx) = current.as_ref() {
+            let _ = ctx.shutdown_tx.send(true);
+        }
+    }
 
     {
         let mut current = state.current.lock().await;
@@ -3520,6 +3578,18 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
         .list_worktrees(&ctx.project_id.to_string())
         .await
         .map_err(|e| e.to_string())?;
+    let automation = if let Some(ref coord) = ctx.coordinator {
+        Some(
+            super::automation_status_from_snapshot(
+                coord.snapshot().await,
+                &ctx.db,
+                &ctx.project_id,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
     Ok(ProjectStatusView {
         project_id: ctx.project_id.to_string(),
         project_name: ctx.config.project.name.clone(),
@@ -3527,6 +3597,7 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
         sessions: sessions.len(),
         tasks: tasks.len(),
         worktrees: worktrees.len(),
+        automation,
     })
 }
 
@@ -3929,6 +4000,8 @@ pub(crate) async fn try_provider_task_draft(
             auto_approve: false,
             output_format: "stream-json".to_string(),
             context_file: None,
+            thread_id: None,
+            dynamic_tools: vec![],
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -3985,6 +4058,7 @@ User request:\n{}",
             AgentEvent::ToolUse { .. }
             | AgentEvent::StatusChange(_)
             | AgentEvent::UsageUpdate { .. } => {}
+            _ => {}
         }
     }
 
@@ -4332,6 +4406,124 @@ pub async fn check_action_risk(
     Ok(action_kind.risk_info())
 }
 
+pub(crate) async fn automation_status_from_snapshot(
+    snapshot: crate::automation::coordinator::AutomationSnapshot,
+    db: &pnevma_db::Db,
+    project_id: &uuid::Uuid,
+) -> AutomationStatusView {
+    let recent_runs = db
+        .list_automation_runs(&project_id.to_string(), 20)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| AutomationRunView {
+            id: r.id,
+            task_id: r.task_id,
+            run_id: r.run_id,
+            origin: r.origin,
+            provider: r.provider,
+            model: r.model,
+            status: r.status,
+            attempt: r.attempt,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            duration_seconds: r.duration_seconds,
+            tokens_in: r.tokens_in,
+            tokens_out: r.tokens_out,
+            cost_usd: r.cost_usd,
+            summary: r.summary,
+        })
+        .collect();
+
+    AutomationStatusView {
+        enabled: snapshot.enabled,
+        config_source: snapshot.config_source,
+        poll_interval_seconds: snapshot.poll_interval_seconds,
+        max_concurrent: snapshot.max_concurrent,
+        active_runs: snapshot.active_runs,
+        queued_tasks: snapshot.queued_tasks,
+        retry_queue_size: snapshot.retry_queue_size,
+        last_tick_at: snapshot.last_tick_at,
+        total_dispatched: snapshot.total_dispatched,
+        total_completed: snapshot.total_completed,
+        total_failed: snapshot.total_failed,
+        total_retried: snapshot.total_retried,
+        recent_runs,
+    }
+}
+
+pub async fn automation_status(state: &AppState) -> Result<AutomationStatusView, String> {
+    let (db, project_id, coordinator) = {
+        let current = state.current.lock().await;
+        let ctx = current.as_ref().ok_or("no project open")?;
+        (ctx.db.clone(), ctx.project_id, ctx.coordinator.clone())
+    };
+
+    let snapshot = if let Some(ref coord) = coordinator {
+        coord.snapshot().await
+    } else {
+        crate::automation::coordinator::AutomationSnapshot {
+            enabled: false,
+            config_source: "none".to_string(),
+            poll_interval_seconds: 0,
+            max_concurrent: 0,
+            active_runs: 0,
+            queued_tasks: 0,
+            claimed_task_ids: Vec::new(),
+            running_task_ids: Vec::new(),
+            retry_queue_size: 0,
+            last_tick_at: None,
+            total_dispatched: 0,
+            total_completed: 0,
+            total_failed: 0,
+            total_retried: 0,
+        }
+    };
+
+    Ok(automation_status_from_snapshot(snapshot, &db, &project_id).await)
+}
+
+/// Attempt to initialize a TrackerCoordinator from config settings.
+/// Returns None if the API key is not available or setup fails.
+async fn initialize_tracker(
+    config: &pnevma_core::TrackerSection,
+    db: &pnevma_db::Db,
+    project_id: uuid::Uuid,
+) -> Option<pnevma_tracker::poll::TrackerCoordinator> {
+    let api_key_name = config.api_key_secret.as_deref()?;
+
+    // Look up the secret ref by name, then read the value from the keychain.
+    let refs = db
+        .list_secret_refs(&project_id.to_string(), None)
+        .await
+        .ok()?;
+    let secret_ref = refs.iter().find(|r| r.name == api_key_name)?;
+    let api_key = read_keychain_secret(&secret_ref.keychain_service, &secret_ref.keychain_account)
+        .await
+        .ok()?;
+    if api_key.is_empty() {
+        return None;
+    }
+
+    let adapter: Arc<dyn pnevma_tracker::TrackerAdapter> = match config.kind.as_str() {
+        "linear" => Arc::new(pnevma_tracker::linear::LinearAdapter::new(api_key)),
+        other => {
+            tracing::warn!(kind = %other, "unsupported tracker kind");
+            return None;
+        }
+    };
+
+    let filter = pnevma_tracker::TrackerFilter {
+        team_id: config.team_id.clone(),
+        labels: config.labels.clone(),
+        ..Default::default()
+    };
+
+    Some(pnevma_tracker::poll::TrackerCoordinator::new(
+        adapter, filter,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4341,7 +4533,7 @@ mod tests {
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
         RetentionSection,
     };
-    use pnevma_core::RemoteSection;
+    use pnevma_core::{RemoteSection, TrackerSection};
     use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::ffi::OsString;
@@ -4439,6 +4631,7 @@ mod tests {
             rules: PathSection::default(),
             conventions: PathSection::default(),
             remote: RemoteSection::default(),
+            tracker: TrackerSection::default(),
         }
     }
 
@@ -4484,6 +4677,7 @@ mod tests {
     ) -> AppState {
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
         let state = AppState::new(emitter);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         *state.current.lock().await = Some(ProjectContext {
             project_id,
             project_path: project_root.to_path_buf(),
@@ -4495,6 +4689,12 @@ mod tests {
             git: Arc::new(GitService::new(project_root)),
             adapters: AdapterRegistry::default(),
             pool: DispatchPool::new(1),
+            tracker: None,
+            workflow_store: Arc::new(crate::automation::workflow_store::WorkflowStore::new(
+                project_root,
+            )),
+            coordinator: None,
+            shutdown_tx,
         });
         state
     }
@@ -4907,6 +5107,7 @@ mod tests {
 
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
         let state = AppState::new(emitter);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         *state.current.lock().await = Some(ProjectContext {
             project_id,
             project_path: project_root.clone(),
@@ -4918,6 +5119,12 @@ mod tests {
             git: Arc::new(GitService::new(&project_root)),
             adapters: AdapterRegistry::default(),
             pool: DispatchPool::new(1),
+            tracker: None,
+            workflow_store: Arc::new(crate::automation::workflow_store::WorkflowStore::new(
+                &project_root,
+            )),
+            coordinator: None,
+            shutdown_tx,
         });
 
         let live = get_session_binding(live_session_id.to_string(), &state)

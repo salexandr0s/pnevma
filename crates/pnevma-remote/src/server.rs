@@ -64,6 +64,7 @@ pub async fn build_router(
     let api_router = Router::new()
         .route("/api/project/status", get(api::project_status))
         .route("/api/project/daily-brief", get(api::project_daily_brief))
+        .route("/api/project/automation", get(api::project_automation))
         .route("/api/project/search", post(api::project_search))
         .route("/api/tasks", get(api::task_list))
         .route("/api/tasks", post(api::task_create))

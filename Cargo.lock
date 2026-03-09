@@ -1728,11 +1728,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "dashmap",
  "libc",
  "pnevma-core",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1774,14 +1776,17 @@ dependencies = [
  "pnevma-remote",
  "pnevma-session",
  "pnevma-ssh",
+ "pnevma-tracker",
  "regex",
  "security-framework 2.11.1",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "sqlx",
  "subtle",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -1920,6 +1925,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "pnevma-tracker"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

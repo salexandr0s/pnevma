@@ -85,8 +85,18 @@ pub struct TaskContract {
     pub max_retries: Option<i64>,
     pub loop_iteration: i64,
     pub loop_context_json: Option<String>,
+    pub external_source: Option<TaskExternalSource>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskExternalSource {
+    pub kind: String,
+    pub external_id: String,
+    pub identifier: String,
+    pub url: String,
+    pub state: String,
 }
 
 #[derive(Debug, Error)]
@@ -182,6 +192,7 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            external_source: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

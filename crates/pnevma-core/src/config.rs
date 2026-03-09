@@ -175,6 +175,40 @@ fn default_serve_frontend() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackerSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tracker_kind")]
+    pub kind: String,
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default = "default_tracker_poll_interval")]
+    pub poll_interval_seconds: u64,
+    pub api_key_secret: Option<String>,
+}
+
+fn default_tracker_kind() -> String {
+    "linear".to_string()
+}
+fn default_tracker_poll_interval() -> u64 {
+    120
+}
+
+impl Default for TrackerSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: default_tracker_kind(),
+            team_id: None,
+            labels: Vec::new(),
+            poll_interval_seconds: default_tracker_poll_interval(),
+            api_key_secret: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project: ProjectSection,
     pub agents: AgentsSection,
@@ -189,6 +223,8 @@ pub struct ProjectConfig {
     pub conventions: PathSection,
     #[serde(default)]
     pub remote: RemoteSection,
+    #[serde(default)]
+    pub tracker: TrackerSection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,6 +647,7 @@ mod tests {
             rules: PathSection::default(),
             conventions: PathSection::default(),
             remote: RemoteSection::default(),
+            tracker: TrackerSection::default(),
         }
     }
 

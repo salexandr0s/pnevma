@@ -1,5 +1,5 @@
 mod auth_secret;
-pub mod auto_dispatch;
+pub mod automation;
 pub mod command_registry;
 pub mod commands;
 pub mod control;

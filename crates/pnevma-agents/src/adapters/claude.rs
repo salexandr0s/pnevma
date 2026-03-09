@@ -48,6 +48,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
             id,
             provider: "claude-code".to_string(),
             task_id: Uuid::nil(),
+            thread_id: None,
+            turn_id: None,
         })
     }
 
@@ -585,6 +587,8 @@ mod tests {
             id: Uuid::new_v4(),
             provider: "claude-code".to_string(),
             task_id: Uuid::new_v4(),
+            thread_id: None,
+            turn_id: None,
         }
     }
 

@@ -423,6 +423,55 @@ pub struct GlobalWorkflowRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TaskExternalSourceRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub kind: String,
+    pub external_id: String,
+    pub identifier: String,
+    pub url: String,
+    pub state: String,
+    pub synced_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AutomationRunRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub origin: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub status: String,
+    pub attempt: i64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub duration_seconds: Option<f64>,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost_usd: f64,
+    pub summary: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AutomationRetryRow {
+    pub id: String,
+    pub project_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt: i64,
+    pub reason: String,
+    pub retry_after: DateTime<Utc>,
+    pub retried_at: Option<DateTime<Utc>>,
+    pub outcome: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct GlobalAgentProfileRow {
     pub id: String,
     pub name: String,

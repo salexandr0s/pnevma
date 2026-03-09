@@ -16,4 +16,10 @@ pub enum AgentError {
 
     #[error("unsupported operation: {0}")]
     Unsupported(String),
+
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
+    #[error("rate limited: retry after {retry_after_ms}ms")]
+    RateLimit { retry_after_ms: u64 },
 }

@@ -1,0 +1,1325 @@
+use crate::automation::DispatchOrigin;
+// Helpers defined in commands/mod.rs (pub(crate) — accessible via full path within the crate)
+use crate::commands::{
+    append_event, append_telemetry_event, build_secrets_list, check_loop_trigger,
+    check_workflow_completion, cleanup_task_worktree, create_notification_row,
+    current_redaction_secrets, emit_enriched_task_event, emit_task_updated, generate_review_pack,
+    is_terminal_task_status, load_active_scope_texts, load_recent_knowledge_summaries, load_texts,
+    load_workflow_hooks, normalize_redaction_secrets, osc_level, osc_title, parse_osc_attention,
+    parse_status, redact_json_value, redact_text, resolve_secret_env,
+    run_acceptance_checks_for_task, session_row_to_event_payload, slugify_with_fallback,
+    status_to_str, task_contract_to_row, task_row_to_contract, StreamRedactor,
+};
+use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
+// Helpers in commands/tasks.rs (pub(crate))
+use crate::commands::tasks::ensure_scope_rows_from_config;
+use crate::event_emitter::EventEmitter;
+use crate::state::AppState;
+use chrono::Utc;
+use pnevma_agents::{
+    classify_failure, compute_backoff, AgentAdapter, AgentConfig, AgentEvent, AgentHandle,
+    ContinuationState, DispatchPermit, FailureClass, QueuedDispatch, RetryPolicy, StallDetector,
+    StallDetectorConfig, TaskPayload,
+};
+use pnevma_context::{
+    ContextCompileInput, ContextCompileMode, ContextCompiler, ContextCompilerConfig,
+    DiscoveryConfig, FileDiscovery,
+};
+use pnevma_core::{ProjectConfig, TaskContract, TaskStatus};
+use pnevma_db::{ContextRuleUsageRow, CostRow, Db, PaneRow, SessionRow, TaskRow, WorktreeRow};
+use serde_json::json;
+use std::path::PathBuf;
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
+
+#[derive(Debug, Error)]
+pub enum RunnerError {
+    #[error("no open project")]
+    NoProject,
+    #[error("task not found: {0}")]
+    TaskNotFound(String),
+    #[error("task must be Ready before dispatch (current: {0})")]
+    InvalidStatus(String),
+    #[error("agent profile override '{0}' not found")]
+    ProfileNotFound(String),
+    #[error("no available agent adapters found")]
+    NoAdapter,
+    #[error("queued:{0}")]
+    Queued(usize),
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl From<RunnerError> for String {
+    fn from(e: RunnerError) -> String {
+        e.to_string()
+    }
+}
+
+/// All resolved state needed to launch an agent run.
+pub struct PreparedRun {
+    pub project_id: Uuid,
+    pub db: Db,
+    pub config: ProjectConfig,
+    pub global_config: pnevma_core::GlobalConfig,
+    pub provider: String,
+    pub adapter: Arc<dyn pnevma_agents::AgentAdapter>,
+    /// Shared permit holder — the event loop takes the permit from here when it completes.
+    pub permit_holder: Arc<std::sync::Mutex<Option<DispatchPermit>>>,
+    pub working_dir: String,
+    /// Root of the project repository (where WORKFLOW.md lives).
+    pub project_path: PathBuf,
+    pub secret_env: Vec<(String, String)>,
+    pub secret_values: Vec<String>,
+    pub rules: Vec<String>,
+    pub context_path: PathBuf,
+    pub timeout_minutes: u64,
+    pub model: Option<String>,
+    pub auto_approve: bool,
+    pub task: TaskContract,
+    pub task_row: TaskRow,
+    pub origin: DispatchOrigin,
+    pub emitter: Arc<dyn EventEmitter>,
+    pub git: Arc<GitService>,
+    pub redaction_secrets: Arc<RwLock<Vec<String>>>,
+    pub pool: Arc<pnevma_agents::DispatchPool>,
+    pub target_branch: String,
+    pub global_db: Option<pnevma_db::GlobalDb>,
+    /// Tracker adapter for dynamic tool calls, present when the task has an external source
+    /// and the project has a tracker configured.
+    pub tracker: Option<Arc<dyn pnevma_tracker::TrackerAdapter>>,
+    /// Holder for the DB automation_run ID, written by coordinator after create_automation_run.
+    pub db_run_id_holder: Arc<std::sync::Mutex<Option<String>>>,
+    /// Cached WORKFLOW.md hooks (avoids redundant disk reads).
+    pub hooks: pnevma_core::WorkflowHooks,
+}
+
+/// A running agent handle plus its background event-loop task.
+pub struct RunningAgent {
+    pub task_id: Uuid,
+    pub session_id: Uuid,
+    pub handle: AgentHandle,
+    pub event_task: JoinHandle<()>,
+    pub origin: DispatchOrigin,
+    pub permit_holder: Arc<std::sync::Mutex<Option<DispatchPermit>>>,
+    pub db_run_id_holder: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+pub struct AgentRunOutcome {
+    pub task_id: Uuid,
+    pub failed: bool,
+    pub last_summary: Option<String>,
+    pub final_status: TaskStatus,
+}
+
+/// Phase 1 – resolve all context, acquire permit, create worktree, transition to InProgress.
+pub async fn prepare(
+    task_id: String,
+    emitter: &Arc<dyn EventEmitter>,
+    state: &AppState,
+    origin: DispatchOrigin,
+) -> Result<PreparedRun, RunnerError> {
+    let (
+        project_id,
+        db,
+        project_path,
+        config,
+        global_config,
+        pool,
+        adapters,
+        git,
+        redaction_secrets,
+        tracker_coordinator,
+    ) = {
+        let current = state.current.lock().await;
+        let ctx = current.as_ref().ok_or(RunnerError::NoProject)?;
+        (
+            ctx.project_id,
+            ctx.db.clone(),
+            ctx.project_path.clone(),
+            ctx.config.clone(),
+            ctx.global_config.clone(),
+            ctx.pool.clone(),
+            ctx.adapters.clone(),
+            ctx.git.clone(),
+            Arc::clone(&ctx.redaction_secrets),
+            ctx.tracker.clone(),
+        )
+    };
+
+    let global_db = state.global_db.clone();
+
+    let task_id_uuid =
+        Uuid::parse_str(&task_id).map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let row = db
+        .get_task(&task_id)
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?
+        .ok_or_else(|| RunnerError::TaskNotFound(task_id.clone()))?;
+    let mut task = task_row_to_contract(&row).map_err(|e| RunnerError::Internal(e.to_string()))?;
+
+    if task.status != TaskStatus::Ready {
+        return Err(RunnerError::InvalidStatus(
+            status_to_str(&task.status).to_string(),
+        ));
+    }
+
+    let queued = QueuedDispatch {
+        task_id: task_id_uuid,
+        priority: task.priority.clone(),
+    };
+
+    let permit = match pool.try_acquire(queued).await {
+        Ok(permit) => permit,
+        Err(position) => {
+            emitter.emit(
+                "task_queue_updated",
+                json!({"task_id": task_id, "queued_position": position}),
+            );
+            return Err(RunnerError::Queued(position));
+        }
+    };
+
+    // Check for task-level agent profile override first, then fall back to defaults.
+    let profile_override = if let Some(ref override_name) = row.agent_profile_override {
+        let profile = db
+            .get_agent_profile_by_name(&project_id.to_string(), override_name)
+            .await
+            .ok()
+            .flatten();
+        if profile.is_none() {
+            return Err(RunnerError::ProfileNotFound(override_name.clone()));
+        }
+        profile
+    } else {
+        None
+    };
+
+    let preferred_provider = if let Some(ref profile) = profile_override {
+        profile.provider.clone()
+    } else {
+        global_config
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| config.agents.default_provider.clone())
+    };
+    let provider = if adapters.get(&preferred_provider).is_some() {
+        preferred_provider
+    } else if adapters.get("claude-code").is_some() {
+        "claude-code".to_string()
+    } else {
+        "codex".to_string()
+    };
+
+    let adapter = adapters.get(&provider).ok_or(RunnerError::NoAdapter)?;
+
+    let execution_mode = row.execution_mode.as_deref().unwrap_or("worktree");
+    let use_worktree = execution_mode != "main";
+
+    // Load hooks once — used in after_create, before_run, and after_run phases.
+    let cached_hooks = load_workflow_hooks(&project_path);
+
+    let working_dir: String;
+    if use_worktree {
+        let slug = slugify_with_fallback(&task.title, "task");
+        let lease = git
+            .create_worktree(task_id_uuid, &config.branches.target, &slug)
+            .await
+            .map_err(|e| RunnerError::Internal(e.to_string()))?;
+        let worktree_row = WorktreeRow {
+            id: lease.id.to_string(),
+            project_id: project_id.to_string(),
+            task_id: task_id.clone(),
+            path: lease.path.clone(),
+            branch: lease.branch.clone(),
+            lease_status: "Active".to_string(),
+            lease_started: lease.started_at,
+            last_active: lease.last_active,
+        };
+        db.upsert_worktree(&worktree_row)
+            .await
+            .map_err(|e| RunnerError::Internal(e.to_string()))?;
+        working_dir = lease.path.clone();
+        task.branch = Some(lease.branch.clone());
+        task.worktree = Some(worktree_row.id.clone());
+
+        // AfterCreate hooks — fatal: abort dispatch on failure, clean up worktree
+        if let Some(cmds) = &cached_hooks.after_create {
+            let hook_defs = parse_hook_defs(HookPhase::AfterCreate, cmds);
+            if !hook_defs.is_empty() {
+                let secrets = current_redaction_secrets(&redaction_secrets).await;
+                let wt_path = PathBuf::from(&working_dir);
+                let branch = task.branch.clone().unwrap_or_default();
+                if let Err(e) = run_hooks(
+                    &hook_defs,
+                    HookPhase::AfterCreate,
+                    &wt_path,
+                    &task_id,
+                    &branch,
+                    &secrets,
+                )
+                .await
+                {
+                    let _ = cleanup_task_worktree(
+                        &db,
+                        &git,
+                        project_id,
+                        task_id_uuid,
+                        None,
+                        Some(&project_path),
+                    )
+                    .await;
+                    return Err(RunnerError::Internal(format!(
+                        "after_create hook failed: {e}"
+                    )));
+                }
+            }
+        }
+    } else {
+        working_dir = project_path.to_string_lossy().to_string();
+    }
+
+    task.transition(TaskStatus::InProgress)
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let task_row = task_contract_to_row(&task, &project_id.to_string())
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    db.update_task(&task_row)
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    emit_task_updated(&db, project_id, task.id).await;
+    emit_enriched_task_event(emitter, &db, &task.id.to_string()).await;
+    append_telemetry_event(
+        &db,
+        project_id,
+        &global_config,
+        "task.dispatch",
+        json!({"task_id": task.id.to_string(), "provider": provider}),
+    )
+    .await;
+
+    ensure_scope_rows_from_config(&db, project_id, &project_path, &config, "rule")
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    ensure_scope_rows_from_config(&db, project_id, &project_path, &config, "convention")
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let mut rules = load_active_scope_texts(&db, project_id, &project_path, "rule")
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    if rules.is_empty() {
+        rules = load_texts(&config.rules.paths, &project_path).await;
+    }
+    let mut conventions = load_active_scope_texts(&db, project_id, &project_path, "convention")
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    if conventions.is_empty() {
+        conventions = load_texts(&config.conventions.paths, &project_path).await;
+    }
+    let token_budget = match provider.as_str() {
+        "codex" => config
+            .agents
+            .codex
+            .as_ref()
+            .map(|c| c.token_budget)
+            .unwrap_or(60_000),
+        _ => config
+            .agents
+            .claude_code
+            .as_ref()
+            .map(|c| c.token_budget)
+            .unwrap_or(80_000),
+    };
+    let (secret_env, keychain_secret_values) = resolve_secret_env(&db, project_id)
+        .await
+        .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+    let mut secret_values = build_secrets_list();
+    secret_values.extend(keychain_secret_values);
+    let secret_values = normalize_redaction_secrets(&secret_values);
+    let compiler = ContextCompiler::new(
+        ContextCompilerConfig {
+            mode: ContextCompileMode::V2,
+            token_budget,
+        },
+        secret_values.clone(),
+    );
+    let discovery = FileDiscovery::new(DiscoveryConfig::default(), secret_values.clone());
+    let relevant_file_contents = discovery
+        .discover(&task, &project_path, token_budget)
+        .await
+        .unwrap_or_default();
+    let prior_task_summaries =
+        load_recent_knowledge_summaries(&db, project_id, &project_path, 8).await;
+    let ctx_result = compiler
+        .compile(ContextCompileInput {
+            task: task.clone(),
+            project_brief: config.project.brief.clone(),
+            architecture_notes: String::new(),
+            conventions,
+            rules: rules.clone(),
+            relevant_file_contents,
+            prior_task_summaries,
+        })
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let context_path = PathBuf::from(&working_dir)
+        .join(".pnevma")
+        .join("task-context.md");
+    let redacted_context_markdown = redact_text(&ctx_result.markdown, &secret_values);
+    compiler
+        .write_markdown(&redacted_context_markdown, &context_path)
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let manifest_path = PathBuf::from(&working_dir)
+        .join(".pnevma")
+        .join("task-context.manifest.json");
+    let redacted_manifest = redact_json_value(
+        serde_json::to_value(&ctx_result.pack.manifest)
+            .map_err(|e| RunnerError::Internal(e.to_string()))?,
+        &secret_values,
+    );
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&redacted_manifest)
+            .map_err(|e| RunnerError::Internal(e.to_string()))?,
+    )
+    .await
+    .map_err(|e| RunnerError::Internal(e.to_string()))?;
+
+    let context_run_id = format!("{}:{}", task.id, Utc::now().timestamp_millis());
+    let scoped_rows = db
+        .list_rules(&project_id.to_string(), None)
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    for rule_row in scoped_rows {
+        let included = rule_row.active;
+        let reason = if included { "active" } else { "disabled" };
+        let _ = db
+            .create_context_rule_usage(&ContextRuleUsageRow {
+                id: Uuid::new_v4().to_string(),
+                project_id: project_id.to_string(),
+                run_id: context_run_id.clone(),
+                rule_id: rule_row.id,
+                included,
+                reason: reason.to_string(),
+                created_at: Utc::now(),
+            })
+            .await;
+    }
+
+    let timeout_minutes = if let Some(ref profile) = profile_override {
+        profile.timeout_minutes as u64
+    } else if let Some(task_timeout) = row.timeout_minutes.filter(|&t| t > 0) {
+        task_timeout as u64
+    } else {
+        match provider.as_str() {
+            "codex" => config
+                .agents
+                .codex
+                .as_ref()
+                .map(|c| c.timeout_minutes)
+                .unwrap_or(20),
+            _ => config
+                .agents
+                .claude_code
+                .as_ref()
+                .map(|c| c.timeout_minutes)
+                .unwrap_or(30),
+        }
+    };
+    let model = if let Some(ref profile) = profile_override {
+        Some(profile.model.clone())
+    } else {
+        match provider.as_str() {
+            "codex" => config.agents.codex.as_ref().and_then(|c| c.model.clone()),
+            _ => config
+                .agents
+                .claude_code
+                .as_ref()
+                .and_then(|c| c.model.clone()),
+        }
+    };
+    let auto_approve = match provider.as_str() {
+        "codex" => config
+            .agents
+            .codex
+            .as_ref()
+            .map(|c| c.auto_approve)
+            .unwrap_or(false),
+        _ => config
+            .agents
+            .claude_code
+            .as_ref()
+            .map(|c| c.auto_approve)
+            .unwrap_or(false),
+    };
+
+    let target_branch = config.branches.target.clone();
+    let permit_holder = Arc::new(std::sync::Mutex::new(Some(permit)));
+
+    // Resolve tracker adapter: present only when both the project has a tracker configured
+    // and this task has a linked external source row.
+    let tracker = if let Some(coordinator) = tracker_coordinator {
+        let has_external_source = db
+            .get_external_source_by_task(&task_id)
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if has_external_source {
+            Some(Arc::clone(coordinator.adapter()))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(PreparedRun {
+        project_id,
+        db,
+        config,
+        global_config,
+        provider,
+        adapter,
+        permit_holder,
+        working_dir,
+        project_path,
+        secret_env,
+        secret_values,
+        rules,
+        context_path,
+        timeout_minutes,
+        model,
+        auto_approve,
+        task,
+        task_row,
+        origin,
+        emitter: Arc::clone(emitter),
+        git,
+        redaction_secrets,
+        pool,
+        target_branch,
+        global_db,
+        tracker,
+        db_run_id_holder: Arc::new(std::sync::Mutex::new(None)),
+        hooks: cached_hooks,
+    })
+}
+
+/// Phase 2 – spawn the agent process, create session/pane rows, start the event loop.
+pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> {
+    // BeforeRun hooks — fatal: abort if they fail
+    {
+        if let Some(cmds) = &prepared.hooks.before_run {
+            let hook_defs = parse_hook_defs(HookPhase::BeforeRun, cmds);
+            if !hook_defs.is_empty() {
+                let secrets = current_redaction_secrets(&prepared.redaction_secrets).await;
+                let wt_path = PathBuf::from(&prepared.working_dir);
+                let branch = prepared.task.branch.clone().unwrap_or_default();
+                if let Err(e) = run_hooks(
+                    &hook_defs,
+                    HookPhase::BeforeRun,
+                    &wt_path,
+                    &prepared.task.id.to_string(),
+                    &branch,
+                    &secrets,
+                )
+                .await
+                {
+                    let _ = cleanup_task_worktree(
+                        &prepared.db,
+                        &prepared.git,
+                        prepared.project_id,
+                        prepared.task.id,
+                        None,
+                        Some(&prepared.project_path),
+                    )
+                    .await;
+                    return Err(RunnerError::Internal(format!(
+                        "before_run hook failed: {e}"
+                    )));
+                }
+            }
+        }
+    }
+
+    let handle = prepared
+        .adapter
+        .spawn(AgentConfig {
+            provider: prepared.provider.clone(),
+            model: prepared.model.clone(),
+            env: prepared.secret_env.clone(),
+            working_dir: prepared.working_dir.clone(),
+            timeout_minutes: prepared.timeout_minutes,
+            auto_approve: prepared.auto_approve,
+            output_format: "stream-json".to_string(),
+            context_file: Some(prepared.context_path.to_string_lossy().to_string()),
+            thread_id: None,
+            dynamic_tools: if prepared.tracker.is_some() {
+                crate::commands::tracker_tools::tracker_tool_defs()
+            } else {
+                vec![]
+            },
+        })
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+
+    let agent_session_row = SessionRow {
+        id: handle.id.to_string(),
+        project_id: prepared.project_id.to_string(),
+        name: format!("agent-{}", prepared.task.title),
+        r#type: Some("agent".to_string()),
+        status: "running".to_string(),
+        pid: None,
+        cwd: prepared.working_dir.clone(),
+        command: prepared.provider.clone(),
+        branch: prepared.task.branch.clone(),
+        worktree_id: prepared.task.worktree.clone(),
+        started_at: Utc::now(),
+        last_heartbeat: Utc::now(),
+    };
+    prepared
+        .db
+        .upsert_session(&agent_session_row)
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let pane = PaneRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: prepared.project_id.to_string(),
+        session_id: Some(handle.id.to_string()),
+        r#type: "terminal".to_string(),
+        position: "after:pane-board".to_string(),
+        label: format!("Agent {}", prepared.task.title),
+        metadata_json: Some("{\"read_only\":true}".to_string()),
+    };
+    prepared
+        .db
+        .upsert_pane(&pane)
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    prepared.emitter.emit(
+        "session_spawned",
+        json!({
+            "project_id": prepared.project_id,
+            "session_id": handle.id.to_string(),
+            "name": agent_session_row.name,
+            "session": session_row_to_event_payload(&agent_session_row)
+        }),
+    );
+
+    let rx = prepared.adapter.events(&handle);
+
+    let db_for_task = prepared.db.clone();
+    let app_for_task = Arc::clone(&prepared.emitter);
+    let git_for_task = prepared.git.clone();
+    let provider_for_task = prepared.provider.clone();
+    let project_id = prepared.project_id;
+    let task_id = prepared.task.id;
+    let session_id = handle.id;
+    // project_path is the repo root (for loading WORKFLOW.md hooks)
+    let project_path_for_task = prepared.project_path.clone();
+    // worktree_path is where the agent ran (for executing hooks)
+    let worktree_path_for_task = PathBuf::from(&prepared.working_dir);
+    let branch_for_task = prepared.task.branch.clone().unwrap_or_default();
+    let redaction_secrets_for_task = Arc::clone(&prepared.redaction_secrets);
+    let permit_holder_for_task = Arc::clone(&prepared.permit_holder);
+    let target_branch_for_task = prepared.target_branch.clone();
+    let global_db_for_task = prepared.global_db.clone();
+    let adapter_for_task = Arc::clone(&prepared.adapter);
+    let handle_for_task = handle.clone();
+
+    let tracker_for_task = prepared.tracker.clone();
+    let db_run_id_holder_for_task = Arc::clone(&prepared.db_run_id_holder);
+    let hooks_for_task = prepared.hooks.clone();
+
+    let event_task = tokio::spawn(run_event_loop(
+        rx,
+        db_for_task,
+        project_id,
+        task_id,
+        session_id,
+        app_for_task,
+        provider_for_task,
+        git_for_task,
+        project_path_for_task,
+        worktree_path_for_task,
+        branch_for_task,
+        global_db_for_task,
+        target_branch_for_task,
+        redaction_secrets_for_task,
+        permit_holder_for_task,
+        adapter_for_task,
+        handle_for_task,
+        tracker_for_task,
+        db_run_id_holder_for_task,
+        hooks_for_task,
+    ));
+
+    Ok(RunningAgent {
+        task_id,
+        session_id,
+        handle,
+        event_task,
+        origin: prepared.origin,
+        permit_holder: Arc::clone(&prepared.permit_holder),
+        db_run_id_holder: Arc::clone(&prepared.db_run_id_holder),
+    })
+}
+
+/// Phase 3 – build the payload and send to the agent. On error, abort event loop and clean up.
+pub async fn send_payload(prepared: &PreparedRun, running: &RunningAgent) -> Result<(), String> {
+    let task = &prepared.task;
+    let row = &prepared.task_row;
+
+    let payload = TaskPayload {
+        task_id: running.task_id,
+        objective: task.goal.clone(),
+        constraints: task.constraints.clone(),
+        project_rules: prepared.rules.clone(),
+        worktree_path: prepared.working_dir.clone(),
+        branch_name: task.branch.clone().unwrap_or_default(),
+        acceptance_checks: task
+            .acceptance_criteria
+            .iter()
+            .map(|check| check.description.clone())
+            .collect(),
+        relevant_file_paths: task.scope.clone(),
+        prior_context_summary: row.loop_context_json.as_ref().and_then(|json_str| {
+            let ctx: serde_json::Value = serde_json::from_str(json_str).ok()?;
+            let mut parts = Vec::new();
+
+            if let Some(iter) = ctx.get("iteration").and_then(|v| v.as_i64()) {
+                parts.push(format!("This is loop iteration {}.", iter));
+            }
+
+            if let Some(summaries) = ctx.get("accumulated_summaries").and_then(|v| v.as_array()) {
+                if !summaries.is_empty() {
+                    parts.push("## Previous Iteration Results\n".to_string());
+                    for s in summaries {
+                        let iter_n = s.get("iteration").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let text = s.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                        parts.push(format!("**Iteration {} ({}):** {}", iter_n, status, text));
+                    }
+                }
+            }
+
+            if let Some(fb) = ctx.get("feedback").and_then(|v| v.as_str()) {
+                if !fb.is_empty() {
+                    parts.push(format!("\n## Feedback from Previous Attempt\n\n{}", fb));
+                }
+            }
+
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n\n"))
+            }
+        }),
+    };
+
+    if let Err(err) = prepared.adapter.send(&running.handle, payload).await {
+        return Err(handle_send_failure(prepared, running, err).await);
+    }
+
+    Ok(())
+}
+
+async fn handle_send_failure(
+    prepared: &PreparedRun,
+    running: &RunningAgent,
+    err: pnevma_agents::AgentError,
+) -> String {
+    running.event_task.abort();
+    drop(
+        running
+            .permit_holder
+            .lock()
+            .expect("permit lock poisoned")
+            .take(),
+    );
+
+    let error = err.to_string();
+    let failed_summary = redact_text(&error, &prepared.secret_values);
+
+    if let Ok(Some(mut row)) = prepared.db.get_task(&running.task_id.to_string()).await {
+        row.status = status_to_str(&TaskStatus::Failed).to_string();
+        row.handoff_summary = Some(failed_summary.clone());
+        row.updated_at = Utc::now();
+        let _ = prepared.db.update_task(&row).await;
+        emit_enriched_task_event(&prepared.emitter, &prepared.db, &row.id).await;
+    }
+
+    let failed_session_row = SessionRow {
+        id: running.handle.id.to_string(),
+        project_id: prepared.project_id.to_string(),
+        name: format!("agent-{}", prepared.task.title),
+        r#type: Some("agent".to_string()),
+        status: "failed".to_string(),
+        pid: None,
+        cwd: prepared.working_dir.clone(),
+        command: prepared.provider.clone(),
+        branch: prepared.task.branch.clone(),
+        worktree_id: prepared.task.worktree.clone(),
+        started_at: Utc::now(),
+        last_heartbeat: Utc::now(),
+    };
+    let _ = prepared.db.upsert_session(&failed_session_row).await;
+
+    let _ = cleanup_task_worktree(
+        &prepared.db,
+        &prepared.git,
+        prepared.project_id,
+        running.task_id,
+        Some(&prepared.emitter),
+        None,
+    )
+    .await;
+
+    append_event(
+        &prepared.db,
+        prepared.project_id,
+        Some(running.task_id),
+        Some(running.handle.id),
+        "agent",
+        "AgentLaunchFailed",
+        json!({"error": failed_summary}),
+    )
+    .await;
+
+    error
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_event_loop(
+    mut rx: tokio::sync::broadcast::Receiver<AgentEvent>,
+    db: Db,
+    project_id: Uuid,
+    task_id: Uuid,
+    session_id: Uuid,
+    emitter: Arc<dyn EventEmitter>,
+    provider: String,
+    git: Arc<GitService>,
+    project_path: PathBuf,
+    worktree_path: PathBuf,
+    branch: String,
+    global_db: Option<pnevma_db::GlobalDb>,
+    target_branch: String,
+    redaction_secrets: Arc<RwLock<Vec<String>>>,
+    permit_holder: Arc<std::sync::Mutex<Option<DispatchPermit>>>,
+    adapter: Arc<dyn AgentAdapter>,
+    handle: AgentHandle,
+    tracker: Option<Arc<dyn pnevma_tracker::TrackerAdapter>>,
+    db_run_id_holder: Arc<std::sync::Mutex<Option<String>>>,
+    hooks: pnevma_core::WorkflowHooks,
+) {
+    let session_id_str = session_id.to_string();
+    let mut last_summary: Option<String> = None;
+    let mut failed = false;
+    let mut output_redactor = StreamRedactor::new(Arc::clone(&redaction_secrets));
+
+    // Resilience state
+    let retry_policy = RetryPolicy::default();
+    let mut retry_count: u32 = 0;
+    let mut continuation = ContinuationState::new(handle.thread_id.clone(), 10);
+    let mut stall_detector = StallDetector::new(StallDetectorConfig::default());
+    let mut stall_check_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    // Consume the first tick which fires immediately.
+    stall_check_interval.tick().await;
+
+    'event_loop: loop {
+        tokio::select! {
+            biased;
+
+            recv_result = rx.recv() => {
+                let event = match recv_result {
+                    Ok(e) => e,
+                    Err(_) => break 'event_loop,
+                };
+
+                // Any received event counts as activity.
+                stall_detector.record_activity();
+
+                match event {
+                    AgentEvent::OutputChunk(chunk) => {
+                        if let Some(safe_chunk) = output_redactor.push_chunk(&chunk).await {
+                            emitter.emit(
+                                "session_output",
+                                json!({"session_id": session_id_str, "chunk": safe_chunk.clone()}),
+                            );
+                            append_event(
+                                &db,
+                                project_id,
+                                Some(task_id),
+                                None,
+                                "agent",
+                                "AgentOutputChunk",
+                                json!({"chunk": safe_chunk.clone()}),
+                            )
+                            .await;
+                            for attention in parse_osc_attention(&safe_chunk) {
+                                let body = if attention.body.trim().is_empty() {
+                                    format!("OSC {} attention sequence received", attention.code)
+                                } else {
+                                    attention.body
+                                };
+                                let current_secrets =
+                                    current_redaction_secrets(&redaction_secrets).await;
+                                let _ = create_notification_row(
+                                    &db,
+                                    &emitter,
+                                    project_id,
+                                    Some(task_id),
+                                    Some(session_id),
+                                    osc_title(&attention.code),
+                                    &body,
+                                    Some(osc_level(&attention.code)),
+                                    "osc",
+                                    &current_secrets,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    AgentEvent::ToolUse { name, input, output } => {
+                        let current_secrets = current_redaction_secrets(&redaction_secrets).await;
+                        append_event(
+                            &db,
+                            project_id,
+                            Some(task_id),
+                            None,
+                            "agent",
+                            "AgentToolUse",
+                            json!({
+                                "name": name,
+                                "input": redact_text(&input, &current_secrets),
+                                "output": redact_text(&output, &current_secrets)
+                            }),
+                        )
+                        .await;
+                    }
+                    AgentEvent::UsageUpdate { tokens_in, tokens_out, cost_usd } => {
+                        continuation.record_usage(tokens_in, tokens_out, cost_usd);
+                        let _ = db
+                            .append_cost(&CostRow {
+                                id: Uuid::new_v4().to_string(),
+                                agent_run_id: None,
+                                task_id: task_id.to_string(),
+                                session_id: session_id_str.clone(),
+                                provider: provider.clone(),
+                                model: None,
+                                tokens_in: tokens_in as i64,
+                                tokens_out: tokens_out as i64,
+                                estimated_usd: cost_usd,
+                                tracked: true,
+                                timestamp: Utc::now(),
+                            })
+                            .await;
+                        emitter.emit(
+                            "cost_updated",
+                            json!({"task_id": task_id.to_string(), "cost_usd": cost_usd}),
+                        );
+                    }
+                    AgentEvent::SemanticHeartbeat { .. } => {
+                        // Activity already recorded above; nothing else to do.
+                    }
+                    AgentEvent::TurnCompleted { ref finish_reason, .. } => {
+                        continuation.record_turn(finish_reason);
+                        // When max turns are reached and the agent still wants to continue,
+                        // cap execution and treat as completion.
+                        if continuation.turn_count >= continuation.max_turns
+                            && continuation.should_continue()
+                        {
+                            last_summary = Some(format!(
+                                "agent reached max turns limit ({})",
+                                continuation.max_turns
+                            ));
+                            break 'event_loop;
+                        }
+                    }
+                    AgentEvent::Error(message) => {
+                        let class = classify_failure(&message);
+                        match class {
+                            FailureClass::Transient
+                                if retry_count < retry_policy.max_attempts =>
+                            {
+                                retry_count += 1;
+                                let backoff = compute_backoff(retry_count, &retry_policy);
+                                append_event(
+                                    &db,
+                                    project_id,
+                                    Some(task_id),
+                                    None,
+                                    "agent",
+                                    "AgentRetry",
+                                    json!({
+                                        "attempt": retry_count,
+                                        "backoff_secs": backoff.as_secs(),
+                                        "reason": message
+                                    }),
+                                )
+                                .await;
+                                tokio::time::sleep(backoff).await;
+                                stall_detector.reset();
+                                // Continue the loop — the adapter may resume or error again.
+                            }
+                            _ => {
+                                failed = true;
+                                let current_secrets =
+                                    current_redaction_secrets(&redaction_secrets).await;
+                                last_summary = Some(redact_text(&message, &current_secrets));
+                                break 'event_loop;
+                            }
+                        }
+                    }
+                    AgentEvent::Complete { summary } => {
+                        let current_secrets = current_redaction_secrets(&redaction_secrets).await;
+                        last_summary = Some(redact_text(&summary, &current_secrets));
+                        break 'event_loop;
+                    }
+                    AgentEvent::DynamicToolCall { call_id, tool_name, params } => {
+                        if let Some(ref tracker_adapter) = tracker {
+                            let secrets = current_redaction_secrets(&redaction_secrets).await;
+                            let result = crate::commands::tracker_tools::handle_dynamic_tool_call(
+                                &call_id,
+                                &tool_name,
+                                &params,
+                                tracker_adapter,
+                                &task_id.to_string(),
+                                &project_id.to_string(),
+                                &secrets,
+                            )
+                            .await;
+                            if let Err(e) = adapter.send_tool_result(&handle, &call_id, result).await {
+                                tracing::warn!(call_id = %call_id, error = %e, "failed to send tool result back to agent");
+                            }
+                        } else {
+                            tracing::debug!(call_id = %call_id, tool_name = %tool_name, "DynamicToolCall received but no tracker configured");
+                        }
+                    }
+                    AgentEvent::StatusChange(_)
+                    | AgentEvent::ThreadStarted { .. }
+                    | AgentEvent::TurnStarted { .. }
+                    | AgentEvent::RateLimitUpdated { .. } => {}
+                }
+            }
+
+            _ = stall_check_interval.tick() => {
+                if stall_detector.is_stalled() {
+                    let stall_count = stall_detector.increment_stall_count();
+                    if stall_detector.max_stalls_exceeded() {
+                        failed = true;
+                        last_summary = Some(format!(
+                            "agent stalled after {} heartbeat timeout(s) with no activity",
+                            stall_count
+                        ));
+                        append_event(
+                            &db,
+                            project_id,
+                            Some(task_id),
+                            None,
+                            "agent",
+                            "AgentStalled",
+                            json!({"stall_count": stall_count, "terminal": true}),
+                        )
+                        .await;
+                        break 'event_loop;
+                    } else {
+                        // Attempt recovery via interrupt.
+                        append_event(
+                            &db,
+                            project_id,
+                            Some(task_id),
+                            None,
+                            "agent",
+                            "AgentStalled",
+                            json!({
+                                "stall_count": stall_count,
+                                "terminal": false,
+                                "action": "interrupt"
+                            }),
+                        )
+                        .await;
+                        let _ = adapter.interrupt(&handle).await;
+                        stall_detector.reset();
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(safe_chunk) = output_redactor.finish().await {
+        emitter.emit(
+            "session_output",
+            json!({"session_id": session_id_str, "chunk": safe_chunk.clone()}),
+        );
+        append_event(
+            &db,
+            project_id,
+            Some(task_id),
+            None,
+            "agent",
+            "AgentOutputChunk",
+            json!({"chunk": safe_chunk.clone()}),
+        )
+        .await;
+        for attention in parse_osc_attention(&safe_chunk) {
+            let body = if attention.body.trim().is_empty() {
+                format!("OSC {} attention sequence received", attention.code)
+            } else {
+                attention.body
+            };
+            let current_secrets = current_redaction_secrets(&redaction_secrets).await;
+            let _ = create_notification_row(
+                &db,
+                &emitter,
+                project_id,
+                Some(task_id),
+                Some(session_id),
+                osc_title(&attention.code),
+                &body,
+                Some(osc_level(&attention.code)),
+                "osc",
+                &current_secrets,
+            )
+            .await;
+        }
+    }
+
+    drop(permit_holder.lock().expect("permit lock poisoned").take());
+
+    if let Ok(Some(mut row)) = db.get_task(&task_id.to_string()).await {
+        let prev_status = parse_status(&row.status);
+        row.handoff_summary = last_summary.clone();
+        let mut next_status = if failed {
+            TaskStatus::Failed
+        } else {
+            TaskStatus::InProgress
+        };
+
+        if !failed {
+            // Check if this is an until_complete loop task — skip acceptance checks, go straight to Done
+            let is_until_complete = row
+                .loop_context_json
+                .as_ref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| v.get("mode")?.as_str().map(|s| s == "until_complete"))
+                .unwrap_or(false);
+
+            if is_until_complete {
+                next_status = TaskStatus::Done;
+            } else if let Ok(task_contract) = task_row_to_contract(&row) {
+                match run_acceptance_checks_for_task(&db, project_id, &project_path, &task_contract)
+                    .await
+                {
+                    Ok((check_run, check_results, all_automated_passed)) => {
+                        if all_automated_passed {
+                            let current_secrets =
+                                current_redaction_secrets(&redaction_secrets).await;
+                            let cost = db
+                                .task_cost_total(&task_id.to_string())
+                                .await
+                                .unwrap_or(0.0);
+                            if generate_review_pack(
+                                &db,
+                                project_id,
+                                &project_path,
+                                &target_branch,
+                                &task_contract,
+                                &check_run,
+                                &check_results,
+                                cost,
+                                last_summary.as_deref(),
+                                &current_secrets,
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                next_status = TaskStatus::Review;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let current_secrets = current_redaction_secrets(&redaction_secrets).await;
+                        append_event(
+                            &db,
+                            project_id,
+                            Some(task_id),
+                            None,
+                            "core",
+                            "AcceptanceCheckRunFailed",
+                            json!({
+                                "task_id": task_id,
+                                "error": redact_text(&err, &current_secrets)
+                            }),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
+        row.status = status_to_str(&next_status).to_string();
+        row.updated_at = Utc::now();
+        let _ = db.update_task(&row).await;
+        if is_terminal_task_status(&next_status) {
+            let loop_triggered = check_loop_trigger(
+                &db,
+                &row.id,
+                &next_status,
+                &project_path,
+                global_db.as_ref(),
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(task_id = %row.id, error = %e, "check_loop_trigger failed");
+                false
+            });
+            if !loop_triggered {
+                check_workflow_completion(&db, &row.id).await;
+            }
+            // Note: Loop tasks are created as Ready when their pre-loop deps
+            // are satisfied (see create_loop_iteration). The auto_dispatch
+            // background loop picks them up for dispatch.
+
+            // Outbound tracker sync: push terminal status to external tracker.
+            if let Some(ref tracker_adapter) = tracker {
+                if let Ok(Some(source_row)) =
+                    db.get_external_source_by_task(&task_id.to_string()).await
+                {
+                    let to_state = if failed {
+                        pnevma_tracker::ExternalState::Cancelled
+                    } else {
+                        pnevma_tracker::ExternalState::Done
+                    };
+                    let from_state = pnevma_tracker::ExternalState::from_display(&source_row.state);
+                    let transition = pnevma_tracker::StateTransition {
+                        external_id: source_row.external_id.clone(),
+                        kind: source_row.kind.clone(),
+                        from_state,
+                        to_state,
+                        comment: last_summary.clone(),
+                    };
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        tracker_adapter.transition_item(&transition),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {
+                            tracing::info!(external_id = %source_row.external_id, "tracker outbound sync succeeded");
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(external_id = %source_row.external_id, error = %e, "tracker outbound sync failed");
+                        }
+                        Err(_) => {
+                            tracing::warn!(external_id = %source_row.external_id, "tracker outbound sync timed out");
+                        }
+                    }
+                }
+            }
+        }
+        if prev_status != next_status {
+            append_event(
+                &db,
+                project_id,
+                Some(task_id),
+                None,
+                "core",
+                "TaskStatusChanged",
+                json!({
+                    "task_id": task_id,
+                    "from": status_to_str(&prev_status),
+                    "to": status_to_str(&next_status),
+                    "reason": "agent_completion"
+                }),
+            )
+            .await;
+        }
+        emit_enriched_task_event(&emitter, &db, &row.id).await;
+    }
+
+    // Run after_run hooks when not failed. Non-fatal — log errors only.
+    if !failed {
+        if let Some(cmds) = &hooks.after_run {
+            let hook_defs = parse_hook_defs(HookPhase::AfterRun, cmds);
+            if !hook_defs.is_empty() {
+                let secrets = current_redaction_secrets(&redaction_secrets).await;
+                if let Err(e) = run_hooks(
+                    &hook_defs,
+                    HookPhase::AfterRun,
+                    &worktree_path,
+                    &task_id.to_string(),
+                    &branch,
+                    &secrets,
+                )
+                .await
+                {
+                    tracing::warn!(task_id = %task_id, error = %e, "after_run hook failed");
+                }
+            }
+        }
+    }
+
+    if failed {
+        let _ = cleanup_task_worktree(&db, &git, project_id, task_id, Some(&emitter), None).await;
+
+        // Ingest error signature from failure summary
+        if let Some(ref summary) = last_summary {
+            let normalized = pnevma_core::error_signatures::normalize_error(summary);
+            let sig_hash = pnevma_core::error_signatures::signature_hash(&normalized);
+            let category = pnevma_core::error_signatures::categorize_error(&normalized);
+            let hint = pnevma_core::error_signatures::remediation_hint(category);
+            let now = Utc::now();
+            let sig_row = pnevma_db::ErrorSignatureRow {
+                id: Uuid::new_v4().to_string(),
+                project_id: project_id.to_string(),
+                signature_hash: sig_hash,
+                canonical_message: normalized,
+                category: category.to_string(),
+                first_seen: now,
+                last_seen: now,
+                total_count: 1,
+                sample_output: Some(summary.clone()),
+                remediation_hint: hint.map(|s| s.to_string()),
+            };
+            let _ = db.upsert_error_signature(&sig_row).await;
+            let date_str = now.format("%Y-%m-%d").to_string();
+            let _ = db
+                .increment_error_signature_daily(&sig_row.id, &date_str)
+                .await;
+        }
+    }
+
+    // Update automation_run usage if we have a DB run ID (set by coordinator).
+    if let Some(db_run_id) = db_run_id_holder.lock().ok().and_then(|guard| guard.clone()) {
+        let _ = db
+            .update_automation_run_usage(
+                &db_run_id,
+                continuation.accumulated_tokens_in as i64,
+                continuation.accumulated_tokens_out as i64,
+                continuation.accumulated_cost_usd,
+                last_summary.as_deref(),
+            )
+            .await;
+    }
+
+    emitter.emit(
+        "pool_updated",
+        json!({"state": db.path().to_string_lossy()}),
+    );
+    append_event(
+        &db,
+        project_id,
+        Some(task_id),
+        None,
+        "agent",
+        "AgentComplete",
+        json!({
+            "task_id": task_id,
+            "failed": failed,
+            "handoff_summary": last_summary
+        }),
+    )
+    .await;
+}

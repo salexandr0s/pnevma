@@ -3,6 +3,7 @@
 /// and mutation of rules/conventions/keybindings are deliberately excluded.
 pub(crate) const ALLOWED_RPC_METHODS: &[&str] = &[
     "project.status",
+    "project.automation",
     "project.daily_brief",
     "project.search",
     "task.list",

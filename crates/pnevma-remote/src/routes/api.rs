@@ -69,6 +69,10 @@ pub async fn project_daily_brief(State(r): State<Arc<dyn CommandRouter>>) -> imp
     call(&r, "project.daily_brief", Value::Null).await
 }
 
+pub async fn project_automation(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
+    call(&r, "project.automation", Value::Null).await
+}
+
 pub async fn project_search(
     State(r): State<Arc<dyn CommandRouter>>,
     Json(params): Json<Value>,

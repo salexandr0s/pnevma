@@ -263,13 +263,11 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             }
         };
         let state = Arc::new(AppState::new_with_global_db(emitter, global_db));
+        // Register self_arc so internal code can clone it (e.g. AutomationCoordinator).
+        let _ = state.self_arc.set(Arc::clone(&state));
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Start background services
-        let state_clone = Arc::clone(&state);
-        runtime.spawn(async move {
-            pnevma_commands::auto_dispatch::start_auto_dispatch(state_clone);
-        });
         let state_clone = Arc::clone(&state);
         runtime.spawn(async move {
             pnevma_commands::cost_aggregation::start_cost_aggregation(state_clone);

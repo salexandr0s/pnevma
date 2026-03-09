@@ -19,7 +19,7 @@ use pnevma_core::{
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
         RetentionSection,
     },
-    GlobalConfig, Priority, ProjectConfig, RemoteSection,
+    GlobalConfig, Priority, ProjectConfig, RemoteSection, TrackerSection,
 };
 use pnevma_db::{Db, TaskRow};
 use pnevma_git::GitService;
@@ -107,6 +107,8 @@ impl AgentAdapter for StreamingFakeAdapter {
             id: Uuid::new_v4(),
             provider: config.provider,
             task_id: Uuid::new_v4(),
+            thread_id: None,
+            turn_id: None,
         };
         let (tx, _rx) = broadcast::channel(32);
         self.channels
@@ -211,6 +213,7 @@ impl TestHarness {
         adapters.register("claude-code", adapter);
 
         let pool = DispatchPool::new(1);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let ctx = ProjectContext {
             project_id,
             project_path: project_root.clone(),
@@ -225,6 +228,12 @@ impl TestHarness {
             git: Arc::new(GitService::new(&project_root)),
             adapters,
             pool: pool.clone(),
+            tracker: None,
+            workflow_store: Arc::new(
+                pnevma_commands::automation::workflow_store::WorkflowStore::new(&project_root),
+            ),
+            coordinator: None,
+            shutdown_tx,
         };
 
         let emitter = Arc::new(RecordingEmitter::new());
@@ -275,6 +284,7 @@ fn make_project_config() -> ProjectConfig {
         rules: PathSection::default(),
         conventions: PathSection::default(),
         remote: RemoteSection::default(),
+        tracker: TrackerSection::default(),
     }
 }
 

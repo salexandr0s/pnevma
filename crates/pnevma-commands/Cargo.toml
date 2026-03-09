@@ -14,7 +14,10 @@ pnevma-git = { path = "../pnevma-git" }
 pnevma-context = { path = "../pnevma-context" }
 pnevma-ssh = { path = "../pnevma-ssh" }
 pnevma-remote = { path = "../pnevma-remote" }
+pnevma-tracker = { path = "../pnevma-tracker" }
 async-trait.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2"

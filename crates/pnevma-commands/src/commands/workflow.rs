@@ -765,7 +765,7 @@ mod tests {
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
         RetentionSection,
     };
-    use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection};
+    use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection, TrackerSection};
     use pnevma_db::Db;
     use pnevma_git::GitService;
     use pnevma_session::SessionSupervisor;
@@ -806,6 +806,7 @@ mod tests {
             rules: PathSection::default(),
             conventions: PathSection::default(),
             remote: RemoteSection::default(),
+            tracker: TrackerSection::default(),
         }
     }
 
@@ -830,9 +831,10 @@ mod tests {
         let pool = DispatchPool::new(1);
         let adapters = AdapterRegistry::default();
 
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let ctx = ProjectContext {
             project_id,
-            project_path: tmp_path,
+            project_path: tmp_path.clone(),
             config: make_project_config(),
             global_config: GlobalConfig::default(),
             db: db.clone(),
@@ -841,6 +843,12 @@ mod tests {
             git,
             adapters,
             pool,
+            tracker: None,
+            workflow_store: Arc::new(crate::automation::workflow_store::WorkflowStore::new(
+                &tmp_path,
+            )),
+            coordinator: None,
+            shutdown_tx,
         };
 
         let (remote_events, _rx) = tokio::sync::broadcast::channel(2048);
@@ -855,6 +863,7 @@ mod tests {
             remote_handle: Mutex::new(None),
             remote_events,
             emitter: Arc::new(NullEmitter),
+            self_arc: std::sync::OnceLock::new(),
         };
 
         (state, project_id, db)

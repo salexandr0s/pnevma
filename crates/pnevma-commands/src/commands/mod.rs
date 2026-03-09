@@ -6,6 +6,8 @@ pub mod global_workflow;
 pub mod project;
 pub mod ssh;
 pub mod tasks;
+pub mod tracker;
+pub mod tracker_tools;
 pub mod workflow;
 
 // Re-export all command functions from submodules
@@ -16,6 +18,7 @@ pub use self::global_workflow::*;
 pub use self::project::*;
 pub use self::ssh::*;
 pub use self::tasks::*;
+pub use self::tracker::*;
 pub use self::workflow::*;
 
 // ── Shared types, helpers, and utilities ──────────────────────────────────────
@@ -25,23 +28,19 @@ use crate::control::resolve_control_plane_settings;
 use crate::event_emitter::EventEmitter;
 use crate::state::{AppState, ProjectContext, RecentProject};
 use chrono::{DateTime, Utc};
-use pnevma_agents::{AgentConfig, AgentEvent, DispatchPool, QueuedDispatch, TaskPayload};
-use pnevma_context::{
-    ContextCompileInput, ContextCompileMode, ContextCompiler, ContextCompilerConfig,
-    DiscoveryConfig, FileDiscovery,
-};
+use pnevma_agents::{AgentConfig, AgentEvent, DispatchPool, TaskPayload};
 use pnevma_core::{
     global_config_path, load_global_config, load_project_config, save_global_config, Check,
     CheckType, GlobalConfig, Priority, ProjectConfig, TaskContract, TaskStatus, WorkflowDef,
+    WorkflowDocument, WorkflowHooks,
 };
 use pnevma_db::{
-    sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, ContextRuleUsageRow,
-    CostRow, Db, EventQueryFilter, EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow,
-    OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SecretRefRow,
-    SessionRow, SshProfileRow, TaskRow, TelemetryEventRow, TrustRecord, WorkflowInstanceRow,
-    WorkflowRow, WorktreeRow,
+    sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, Db, EventQueryFilter,
+    EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow, OnboardingStateRow,
+    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, SshProfileRow,
+    TaskRow, TelemetryEventRow, TrustRecord, WorkflowInstanceRow, WorkflowRow,
 };
-use pnevma_git::GitService;
+use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
 use pnevma_redaction::{
     normalize_secrets as shared_normalize_secrets, redact_json_value as shared_redact_json_value,
     redact_text as shared_redact_text, StreamRedactionBuffer,
@@ -325,6 +324,8 @@ pub struct ProjectStatusView {
     pub sessions: usize,
     pub tasks: usize,
     pub worktrees: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automation: Option<AutomationStatusView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -824,6 +825,42 @@ pub struct PartnerMetricsReportView {
     pub avg_task_cycle_hours: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationRunView {
+    pub id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub origin: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub status: String,
+    pub attempt: i64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub duration_seconds: Option<f64>,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost_usd: f64,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationStatusView {
+    pub enabled: bool,
+    pub config_source: String,
+    pub poll_interval_seconds: u64,
+    pub max_concurrent: usize,
+    pub active_runs: usize,
+    pub queued_tasks: usize,
+    pub retry_queue_size: usize,
+    pub last_tick_at: Option<DateTime<Utc>>,
+    pub total_dispatched: u64,
+    pub total_completed: u64,
+    pub total_failed: u64,
+    pub total_retried: u64,
+    pub recent_runs: Vec<AutomationRunView>,
+}
+
 /// Reject path components that could traverse directories.
 pub(crate) fn validate_path_component(name: &str, label: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -846,7 +883,7 @@ fn map_priority(priority: &str) -> Priority {
     }
 }
 
-fn parse_status(status: &str) -> TaskStatus {
+pub(crate) fn parse_status(status: &str) -> TaskStatus {
     match status {
         "Ready" => TaskStatus::Ready,
         "InProgress" => TaskStatus::InProgress,
@@ -859,7 +896,7 @@ fn parse_status(status: &str) -> TaskStatus {
     }
 }
 
-fn status_to_str(status: &TaskStatus) -> &'static str {
+pub(crate) fn status_to_str(status: &TaskStatus) -> &'static str {
     match status {
         TaskStatus::Planned => "Planned",
         TaskStatus::Ready => "Ready",
@@ -887,7 +924,7 @@ fn parse_dt(input: Option<String>) -> Option<DateTime<Utc>> {
         .map(|v| v.with_timezone(&Utc))
 }
 
-fn normalize_rule_scope(scope: &str) -> &'static str {
+pub(crate) fn normalize_rule_scope(scope: &str) -> &'static str {
     if scope.eq_ignore_ascii_case("convention") || scope.eq_ignore_ascii_case("conventions") {
         "convention"
     } else {
@@ -903,7 +940,7 @@ fn scope_default_dir(scope: &str) -> &'static str {
     }
 }
 
-fn slugify_with_fallback(input: &str, fallback: &str) -> String {
+pub(crate) fn slugify_with_fallback(input: &str, fallback: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut last_sep = false;
     for ch in input.chars() {
@@ -1085,7 +1122,7 @@ async fn discover_markdown_files(
     Ok(out)
 }
 
-async fn ensure_rule_rows(
+pub(crate) async fn ensure_rule_rows(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,
@@ -1130,7 +1167,7 @@ async fn ensure_rule_rows(
     Ok(())
 }
 
-async fn load_active_scope_texts(
+pub(crate) async fn load_active_scope_texts(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,
@@ -1450,7 +1487,7 @@ fn session_meta_from_row(row: &SessionRow, data_root: &Path) -> Option<SessionMe
     })
 }
 
-fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
+pub(crate) fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
     let scope: Vec<String> = serde_json::from_str(&row.scope_json).map_err(|e| e.to_string())?;
     let dependencies: Vec<String> =
         serde_json::from_str(&row.dependencies_json).map_err(|e| e.to_string())?;
@@ -1486,12 +1523,18 @@ fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String> {
         max_retries: row.max_retries,
         loop_iteration: row.loop_iteration,
         loop_context_json: row.loop_context_json.clone(),
+        // External source is stored in a separate DB table (task_external_sources)
+        // and populated by the automation runner at dispatch time, not during row conversion.
+        external_source: None,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
 }
 
-fn task_contract_to_row(task: &TaskContract, project_id: &str) -> Result<TaskRow, String> {
+pub(crate) fn task_contract_to_row(
+    task: &TaskContract,
+    project_id: &str,
+) -> Result<TaskRow, String> {
     Ok(TaskRow {
         id: task.id.to_string(),
         project_id: project_id.to_string(),
@@ -1563,7 +1606,11 @@ fn task_row_to_view(row: TaskRow, cost_usd: Option<f64>) -> Result<TaskView, Str
 
 /// Emit a `task_updated` event with the full task view when possible.
 /// Falls back to just the task_id if fetching/converting the row fails.
-async fn emit_enriched_task_event(emitter: &Arc<dyn EventEmitter>, db: &Db, task_id: &str) {
+pub(crate) async fn emit_enriched_task_event(
+    emitter: &Arc<dyn EventEmitter>,
+    db: &Db,
+    task_id: &str,
+) {
     let view = async {
         let row = db.get_task(task_id).await.ok()??;
         let cost = db.task_cost_total(task_id).await.ok();
@@ -1581,11 +1628,11 @@ async fn emit_enriched_task_event(emitter: &Arc<dyn EventEmitter>, db: &Db, task
 }
 
 /// Build a serializable session view from a SessionRow.
-fn session_row_to_event_payload(row: &SessionRow) -> serde_json::Value {
+pub(crate) fn session_row_to_event_payload(row: &SessionRow) -> serde_json::Value {
     serde_json::to_value(live_session_view_from_row(row)).expect("LiveSessionView must serialize")
 }
 
-async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
+pub(crate) async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
     let project_canonical = match project_path.canonicalize() {
         Ok(p) => p,
         Err(_) => return Vec::new(),
@@ -1613,7 +1660,7 @@ async fn load_texts(paths: &[String], project_path: &Path) -> Vec<String> {
     out
 }
 
-async fn load_recent_knowledge_summaries(
+pub(crate) async fn load_recent_knowledge_summaries(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,
@@ -1644,7 +1691,7 @@ async fn load_recent_knowledge_summaries(
     out
 }
 
-async fn emit_task_updated(db: &Db, project_id: Uuid, task_id: Uuid) {
+pub(crate) async fn emit_task_updated(db: &Db, project_id: Uuid, task_id: Uuid) {
     append_event(
         db,
         project_id,
@@ -1855,7 +1902,7 @@ fn redact_patterns(input: &str) -> String {
     shared_redact_text(input, &[])
 }
 
-fn redact_text(input: &str, secrets: &[String]) -> String {
+pub(crate) fn redact_text(input: &str, secrets: &[String]) -> String {
     shared_redact_text(input, secrets)
 }
 
@@ -1945,7 +1992,7 @@ impl StreamRedactor {
     }
 }
 
-fn redact_json_value(value: serde_json::Value, secrets: &[String]) -> serde_json::Value {
+pub(crate) fn redact_json_value(value: serde_json::Value, secrets: &[String]) -> serde_json::Value {
     shared_redact_json_value(value, secrets)
 }
 
@@ -1965,12 +2012,12 @@ pub(crate) fn redact_payload_for_project_log(
 }
 
 #[derive(Debug, Clone)]
-struct OscAttention {
-    code: String,
-    body: String,
+pub(crate) struct OscAttention {
+    pub(crate) code: String,
+    pub(crate) body: String,
 }
 
-fn parse_osc_attention(chunk: &str) -> Vec<OscAttention> {
+pub(crate) fn parse_osc_attention(chunk: &str) -> Vec<OscAttention> {
     let bytes = chunk.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -2028,7 +2075,7 @@ fn parse_osc_attention(chunk: &str) -> Vec<OscAttention> {
     out
 }
 
-fn osc_level(code: &str) -> &'static str {
+pub(crate) fn osc_level(code: &str) -> &'static str {
     match code {
         "777" => "critical",
         "99" => "warning",
@@ -2036,7 +2083,7 @@ fn osc_level(code: &str) -> &'static str {
     }
 }
 
-fn osc_title(code: &str) -> &'static str {
+pub(crate) fn osc_title(code: &str) -> &'static str {
     match code {
         "777" => "Agent Attention (Urgent)",
         "99" => "Agent Attention",
@@ -2045,7 +2092,7 @@ fn osc_title(code: &str) -> &'static str {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn create_notification_row(
+pub(crate) async fn create_notification_row(
     db: &Db,
     emitter: &Arc<dyn EventEmitter>,
     project_id: Uuid,
@@ -2139,7 +2186,7 @@ async fn read_keychain_secret(service: &str, account: &str) -> Result<String, St
     }
 }
 
-async fn resolve_secret_env(
+pub(crate) async fn resolve_secret_env(
     db: &Db,
     project_id: Uuid,
 ) -> Result<(Vec<(String, String)>, Vec<String>), String> {
@@ -2216,7 +2263,7 @@ fn split_test_command(command: &str) -> Result<(String, Vec<String>), String> {
     Ok((program, parts.into_iter().skip(1).collect()))
 }
 
-async fn run_acceptance_checks_for_task(
+pub(crate) async fn run_acceptance_checks_for_task(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,
@@ -2415,7 +2462,7 @@ async fn run_acceptance_checks_for_task(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn generate_review_pack(
+pub(crate) async fn generate_review_pack(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,
@@ -2571,7 +2618,7 @@ async fn generate_review_pack(
     Ok(review_row)
 }
 
-fn is_terminal_task_status(status: &TaskStatus) -> bool {
+pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     matches!(
         status,
         TaskStatus::Done | TaskStatus::Failed | TaskStatus::Looped
@@ -2579,7 +2626,7 @@ fn is_terminal_task_status(status: &TaskStatus) -> bool {
 }
 
 /// Check if all tasks in a workflow instance are terminal and update the instance status.
-async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str) {
+pub(crate) async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str) {
     let wt = match db.find_workflow_by_task(task_id).await {
         Ok(Some(wt)) => wt,
         _ => return,
@@ -2665,7 +2712,7 @@ async fn resolve_workflow_def(
 ///
 /// This function is safe to call from spawned closures because it derives all context
 /// from the DB and project_path, without requiring AppState.
-async fn check_loop_trigger(
+pub(crate) async fn check_loop_trigger(
     db: &Db,
     task_id: &str,
     task_status: &TaskStatus,
@@ -3094,12 +3141,21 @@ pub async fn restart_control_plane(
     Ok(())
 }
 
-async fn cleanup_task_worktree(
+/// Load hooks from WORKFLOW.md at the given project path. Returns defaults (empty hooks) on any error.
+pub(crate) fn load_workflow_hooks(project_path: &Path) -> WorkflowHooks {
+    match WorkflowDocument::from_file(&project_path.join("WORKFLOW.md")) {
+        Ok(doc) => doc.config.hooks,
+        Err(_) => WorkflowHooks::default(),
+    }
+}
+
+pub(crate) async fn cleanup_task_worktree(
     db: &Db,
     git: &Arc<GitService>,
     project_id: Uuid,
     task_id: Uuid,
     emitter: Option<&Arc<dyn EventEmitter>>,
+    project_path: Option<&Path>,
 ) -> Result<(), String> {
     let task_id_str = task_id.to_string();
     if let Some(worktree) = db
@@ -3107,6 +3163,25 @@ async fn cleanup_task_worktree(
         .await
         .map_err(|e| e.to_string())?
     {
+        // BeforeRemove hooks — best-effort (never abort cleanup)
+        if let Some(pp) = project_path {
+            let hooks_config = load_workflow_hooks(pp);
+            if let Some(cmds) = &hooks_config.before_remove {
+                let hook_defs = parse_hook_defs(HookPhase::BeforeRemove, cmds);
+                let secrets: Vec<String> = Vec::new();
+                let worktree_path = PathBuf::from(&worktree.path);
+                let _ = run_hooks(
+                    &hook_defs,
+                    HookPhase::BeforeRemove,
+                    &worktree_path,
+                    &task_id_str,
+                    &worktree.branch,
+                    &secrets,
+                )
+                .await;
+            }
+        }
+
         if let Err(err) = git
             .cleanup_persisted_worktree(task_id, &worktree.path, Some(&worktree.branch), false)
             .await

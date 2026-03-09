@@ -46,6 +46,8 @@ impl AgentAdapter for CodexAdapter {
             id,
             provider: "codex".to_string(),
             task_id: Uuid::nil(),
+            thread_id: None,
+            turn_id: None,
         })
     }
 
@@ -388,6 +390,8 @@ mod tests {
             auto_approve: false,
             output_format: "stream-json".to_string(),
             context_file: None,
+            thread_id: None,
+            dynamic_tools: vec![],
         }
     }
 
@@ -396,6 +400,8 @@ mod tests {
             id: Uuid::new_v4(),
             provider: "codex".to_string(),
             task_id: Uuid::new_v4(),
+            thread_id: None,
+            turn_id: None,
         }
     }
 
@@ -471,6 +477,8 @@ mod tests {
             auto_approve: true,
             output_format: "text".to_string(),
             context_file: Some("/tmp/context.md".to_string()),
+            thread_id: None,
+            dynamic_tools: vec![],
         };
 
         let json = serde_json::to_string(&config).expect("serialize");

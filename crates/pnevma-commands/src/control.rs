@@ -644,6 +644,12 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.automation" => serde_json::to_value(
+            commands::automation_status(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "project.summary" => serde_json::to_value(
             commands::project_summary(state)
                 .await
@@ -2019,6 +2025,22 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "tracker.poll" => {
+            let limit = parse_optional_i64_param(params, "limit").map(|v| v as usize);
+            let labels = parse_optional_string_list_param(params, "labels");
+            serde_json::to_value(
+                commands::tracker_poll(commands::TrackerPollInput { limit, labels }, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "tracker.status" => serde_json::to_value(
+            commands::tracker_status(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         _ => {
             return Err((
                 "method_not_found".to_string(),

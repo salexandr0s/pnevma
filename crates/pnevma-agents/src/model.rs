@@ -21,6 +21,12 @@ pub struct AgentConfig {
     /// Path to compiled task-context.md to inject as CLAUDE.md in worktree.
     #[serde(default)]
     pub context_file: Option<String>,
+    /// Optional thread ID for resuming an existing conversation thread.
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    /// Dynamic tool definitions to register with the agent.
+    #[serde(default)]
+    pub dynamic_tools: Vec<DynamicToolDef>,
 }
 
 fn default_output_format() -> String {
@@ -67,6 +73,38 @@ pub enum AgentEvent {
     Complete {
         summary: String,
     },
+    ThreadStarted {
+        thread_id: String,
+    },
+    TurnStarted {
+        turn_id: String,
+        thread_id: String,
+    },
+    TurnCompleted {
+        turn_id: String,
+        thread_id: String,
+        finish_reason: String,
+    },
+    RateLimitUpdated {
+        remaining: u32,
+        reset_at: Option<DateTime<Utc>>,
+    },
+    SemanticHeartbeat {
+        thread_id: String,
+        timestamp: DateTime<Utc>,
+    },
+    DynamicToolCall {
+        call_id: String,
+        tool_name: String,
+        params: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicToolDef {
+    pub name: String,
+    pub description: String,
+    pub parameters_schema: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +124,8 @@ pub struct AgentHandle {
     pub id: Uuid,
     pub provider: String,
     pub task_id: Uuid,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
 }
 
 #[async_trait]
@@ -96,4 +136,14 @@ pub trait AgentAdapter: Send + Sync {
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError>;
     fn events(&self, handle: &AgentHandle) -> broadcast::Receiver<AgentEvent>;
     async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError>;
+    async fn send_tool_result(
+        &self,
+        _handle: &AgentHandle,
+        _call_id: &str,
+        _result: serde_json::Value,
+    ) -> Result<(), AgentError> {
+        Err(AgentError::Unsupported(
+            "send_tool_result not supported".into(),
+        ))
+    }
 }
