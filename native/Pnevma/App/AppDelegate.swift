@@ -30,9 +30,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var contentLeadingConstraint: NSLayoutConstraint?
     private var statusLeadingConstraint: NSLayoutConstraint?
+    private var tabBarLeadingConstraint: NSLayoutConstraint?
+    private var contentTopToTabBar: NSLayoutConstraint?
+    private var contentTopToSafeArea: NSLayoutConstraint?
     private var commandPalette: CommandPalette?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
+    private var closeConfirmed = false
     private var toastController: ToastWindowController?
     private var settingsWindow: NSWindow?
     private var smokeWindow: NSWindow?
@@ -211,6 +215,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard contentAreaView?.anyPaneHasActiveProcess == true else { return .terminateNow }
+        confirmClose(
+            title: "Quit Pnevma?",
+            message: "The terminal still has a running process. If you quit the process will be killed."
+        ) {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     private func applyRuntimeSettings() {
         persistence?.isPersistenceEnabled = AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
         sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
@@ -235,12 +250,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.appearance = NSAppearance(named: .darkAqua)
         win.toolbarStyle = .unified
 
-        // Create tab bar before toolbar so it's available when the delegate is called
+        // Tab bar — added as a content-level view below the toolbar, not a toolbar item
         let tabBar = TabBarView()
-        tabBar.sidebarWidth = DesignTokens.Layout.sidebarWidth
         tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
         tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
         tabBar.onAddTab = { [weak self] in self?.newTab() }
+        tabBar.isHidden = true
         self.tabBarView = tabBar
 
         let toolbar = NSToolbar(identifier: "MainToolbar")
@@ -315,21 +330,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
 
-        for view in [sidebarBacking, contentAreaView!, statusBar!] as [NSView] {
+        for view in [sidebarBacking, tabBar, contentAreaView!, statusBar!] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let statusHeight = DesignTokens.Layout.statusBarHeight
+        let tabBarHeight = DesignTokens.Layout.tabBarHeight
 
         let swc = sidebarBacking.widthAnchor.constraint(equalToConstant: sidebarWidth)
         let clc = contentAreaView!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let slc = statusBar!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+        let tblc = tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+
+        // Content area top: switches between below-tab-bar and directly below toolbar
+        let topToTab = contentAreaView!.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
+        let topToSafe = contentAreaView!.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor)
+        // Tab bar starts hidden (single tab), so content goes to safe area
+        topToTab.isActive = false
+        topToSafe.isActive = true
 
         sidebarWidthConstraint = swc
         contentLeadingConstraint = clc
         statusLeadingConstraint = slc
+        tabBarLeadingConstraint = tblc
+        contentTopToTabBar = topToTab
+        contentTopToSafeArea = topToSafe
 
         let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
@@ -343,9 +370,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             swc,
 
+            // Tab bar: flush below toolbar, tracks sidebar edge
+            tblc,
+            tabBar.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            tabBar.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            tabBar.heightAnchor.constraint(equalToConstant: tabBarHeight),
+
             clc,
             contentAreaView!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            contentAreaView!.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
             contentAreaView!.bottomAnchor.constraint(equalTo: statusBar!.topAnchor),
             contentAreaView!.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
 
@@ -366,6 +398,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             win.backgroundColor = theme.backgroundColor
         }
 
+        win.delegate = self
         self.window = win
         if showWindow {
             win.makeKeyAndOrderFront(nil)
@@ -631,6 +664,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func closeTab(at index: Int) {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         guard workspace.tabs.count > 1 else { return }
+        let isActiveTab = index == workspace.activeTabIndex
+
+        // If closing the active tab and it has running processes, confirm first.
+        if isActiveTab, contentAreaView?.anyPaneHasActiveProcess == true {
+            confirmClose(title: "Close Tab?", message: "The terminal still has a running process. If you close the tab the process will be killed.") { [weak self] in
+                self?.performCloseTab(at: index)
+            }
+        } else {
+            performCloseTab(at: index)
+        }
+    }
+
+    private func performCloseTab(at index: Int) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        guard workspace.tabs.count > 1 else { return }
         let wasActive = index == workspace.activeTabIndex
         contentAreaView?.syncPersistedPanes()
         workspace.closeTab(at: index)
@@ -646,25 +694,51 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTabBar() {
         guard let workspace = workspaceManager?.activeWorkspace else {
             tabBarView?.tabs = []
-            tabBarView?.isHidden = true
-            tabBarView?.invalidateIntrinsicContentSize()
+            setTabBarVisible(false)
             return
         }
         let showTabBar = workspace.tabs.count > 1
-        tabBarView?.isHidden = !showTabBar
+        setTabBarVisible(showTabBar)
         tabBarView?.tabs = workspace.tabs.enumerated().map { (i, tab) in
             TabBarView.Tab(id: tab.id, title: tab.title, isActive: i == workspace.activeTabIndex)
         }
-        tabBarView?.invalidateIntrinsicContentSize()
+    }
+
+    private func setTabBarVisible(_ visible: Bool) {
+        let currentlyVisible = tabBarView?.isHidden == false
+        guard visible != currentlyVisible else { return }
+        tabBarView?.isHidden = !visible
+        if visible {
+            contentTopToSafeArea?.isActive = false
+            contentTopToTabBar?.isActive = true
+        } else {
+            contentTopToTabBar?.isActive = false
+            contentTopToSafeArea?.isActive = true
+        }
+        window?.contentView?.needsLayout = true
     }
 
     @objc func newTerminal() {
         let projectPath = workspaceManager?.activeWorkspace?.projectPath
         let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
-        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        if contentAreaView?.activePaneView?.paneType == "welcome" {
+            contentAreaView?.replaceActivePane(with: pane)
+        } else {
+            contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        }
     }
 
-    @objc func closePaneAction() { contentAreaView?.closeActivePane() }
+    @objc func closePaneAction() {
+        guard let contentArea = contentAreaView else { return }
+        if contentArea.activePaneHasActiveProcess {
+            confirmClose(title: "Close Terminal?", message: "The terminal still has a running process. If you close the terminal the process will be killed.") {
+                contentArea.closeActivePane()
+            }
+        } else {
+            contentArea.closeActivePane()
+        }
+    }
+
     @objc func openProjectAction() { openProject() }
     @objc private func openSettingsAction() { openSettingsPane() }
 
@@ -734,7 +808,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func gotoLastPane() { contentAreaView?.focusLastPane() }
 
-    @objc private func closeWindowAction() { window?.close() }
+    @objc private func closeWindowAction() {
+        guard let win = window else { return }
+        // Trigger the standard close flow which goes through windowShouldClose
+        win.performClose(nil)
+    }
+
     @objc private func toggleFullScreenAction() { window?.toggleFullScreen(nil) }
 
     @objc private func toggleSidebar() {
@@ -748,9 +827,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.duration = DesignTokens.Motion.normal
             ctx.allowsImplicitAnimation = true
             sidebarWidthConstraint?.animator().constant = width
-            // Set inside animation block so implicit animations apply to the
-            // subsequent layout pass; the property itself is not interpolated.
-            tabBarView?.sidebarWidth = width
         }, completionHandler: {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -998,7 +1074,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
         sidebarWidthConstraint?.constant = width
         sidebarHostView?.isHidden = !isSidebarVisible
-        tabBarView?.sidebarWidth = CGFloat(width)
         let paneMinWidth: CGFloat = 800 - DesignTokens.Layout.sidebarWidth
         window?.minSize.width = isSidebarVisible ? 800 : paneMinWidth
 
@@ -1068,7 +1143,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSToolbarDelegate {
     static let sidebarToggleIdentifier = NSToolbarItem.Identifier("sidebarToggle")
-    static let tabBarIdentifier = NSToolbarItem.Identifier("tabBar")
     static let notificationsIdentifier = NSToolbarItem.Identifier("notifications")
     static let addWorkspaceIdentifier = NSToolbarItem.Identifier("addWorkspace")
 
@@ -1082,13 +1156,6 @@ extension AppDelegate: NSToolbarDelegate {
             item.target = self
             item.action = #selector(toggleSidebar)
             item.isBordered = true
-            return item
-        case Self.tabBarIdentifier:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            if let tabBar = tabBarView {
-                item.view = tabBar
-            }
-            item.label = "Tabs"
             return item
         case Self.notificationsIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -1118,11 +1185,51 @@ extension AppDelegate: NSToolbarDelegate {
     }
 
     public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggleIdentifier, Self.tabBarIdentifier, .flexibleSpace, Self.notificationsIdentifier, Self.addWorkspaceIdentifier]
+        [Self.sidebarToggleIdentifier, .flexibleSpace, Self.notificationsIdentifier, Self.addWorkspaceIdentifier]
     }
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggleIdentifier, Self.tabBarIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
+        [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
+    }
+}
+
+// MARK: - NSWindowDelegate
+
+extension AppDelegate: NSWindowDelegate {
+    public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closeConfirmed {
+            closeConfirmed = false
+            return true
+        }
+        guard contentAreaView?.anyPaneHasActiveProcess == true else { return true }
+        confirmClose(
+            title: "Close Window?",
+            message: "The terminal still has a running process. If you close the window the process will be killed."
+        ) { [weak self] in
+            self?.closeConfirmed = true
+            self?.window?.close()
+        }
+        return false
+    }
+}
+
+// MARK: - Close Confirmation
+
+extension AppDelegate {
+    /// Show a confirmation alert styled like Ghostty's close prompts.
+    func confirmClose(title: String, message: String, onConfirm: @escaping () -> Void) {
+        guard let win = window, win.attachedSheet == nil else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: win) { response in
+            if response == .alertFirstButtonReturn {
+                onConfirm()
+            }
+        }
     }
 }
 

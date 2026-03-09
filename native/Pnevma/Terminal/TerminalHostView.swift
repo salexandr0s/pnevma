@@ -272,6 +272,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     override func rightMouseDown(with event: NSEvent) {
         forwardMousePosition(event)
         forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event)
+        super.rightMouseDown(with: event)
     }
 
     override func rightMouseUp(with event: NSEvent) {

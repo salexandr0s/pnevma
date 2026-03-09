@@ -289,15 +289,20 @@ final class ContentAreaView: NSView {
     @discardableResult
     func replaceActivePane(with newPaneView: NSView & PaneContent) -> PaneID? {
         guard let activeID = layoutEngine.activePaneID else { return nil }
+        return replacePane(activeID, with: newPaneView)
+    }
 
+    /// Replace a specific pane's view without changing the tree structure.
+    @discardableResult
+    func replacePane(_ paneID: PaneID, with newPaneView: NSView & PaneContent) -> PaneID? {
         let newID = newPaneView.paneID
-        guard layoutEngine.replacePane(activeID, with: newID) else { return nil }
+        guard layoutEngine.replacePane(paneID, with: newID) else { return nil }
 
-        if let oldView = paneViews.removeValue(forKey: activeID) {
+        if let oldView = paneViews.removeValue(forKey: paneID) {
             oldView.dispose()
             oldView.removeFromSuperview()
         }
-        layoutEngine.removePersistedPane(activeID)
+        layoutEngine.removePersistedPane(paneID)
 
         registerPaneView(newPaneView)
         newPaneView.activate()
@@ -339,6 +344,17 @@ final class ContentAreaView: NSView {
     func closeActivePane() {
         guard let active = layoutEngine.activePaneID else { return }
         closePane(active)
+    }
+
+    /// Whether the active pane has a running process that would be killed.
+    var activePaneHasActiveProcess: Bool {
+        guard let active = layoutEngine.activePaneID else { return false }
+        return paneViews[active]?.hasActiveProcess ?? false
+    }
+
+    /// Whether any pane in the current layout has a running process.
+    var anyPaneHasActiveProcess: Bool {
+        paneViews.values.contains { $0.hasActiveProcess }
     }
 
     /// Navigate focus in the given direction.
@@ -627,6 +643,39 @@ final class ContentAreaView: NSView {
         splitDownItem.representedObject = paneID
         menu.addItem(splitDownItem)
 
+        menu.addItem(.separator())
+
+        let currentType = paneViews[paneID]?.paneType
+        let replaceSubmenu = NSMenu()
+        let paneTypes: [(label: String, type: String)] = [
+            ("Terminal",      "terminal"),
+            ("Task Board",    "taskboard"),
+            ("Replay",        "replay"),
+            ("File Browser",  "file_browser"),
+            ("SSH Manager",   "ssh"),
+            ("Workflow",      "workflow"),
+            ("Review",        "review"),
+            ("Merge Queue",   "merge_queue"),
+            ("Diff",          "diff"),
+            ("Search",        "search"),
+            ("Analytics",     "analytics"),
+            ("Notifications", "notifications"),
+            ("Daily Brief",   "daily_brief"),
+            ("Rules",         "rules"),
+            ("Browser",       "browser"),
+        ]
+        for entry in paneTypes {
+            let item = NSMenuItem(title: entry.label, action: #selector(contextMenuReplacePane(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ["paneID": paneID, "type": entry.type] as [String: Any]
+            if entry.type == currentType { item.state = .on }
+            replaceSubmenu.addItem(item)
+        }
+
+        let replaceItem = NSMenuItem(title: "Replace With", action: nil, keyEquivalent: "")
+        replaceItem.submenu = replaceSubmenu
+        menu.addItem(replaceItem)
+
         return menu
     }
 
@@ -647,6 +696,14 @@ final class ContentAreaView: NSView {
         focusPane(paneID)
         let (_, newPane) = PaneFactory.makeTerminal()
         splitActivePane(direction: .vertical, newPaneView: newPane)
+    }
+
+    @objc private func contextMenuReplacePane(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: Any],
+              let paneID = info["paneID"] as? PaneID,
+              let paneType = info["type"] as? String,
+              let (_, newPane) = PaneFactory.make(type: paneType) else { return }
+        replacePane(paneID, with: newPane)
     }
 }
 

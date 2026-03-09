@@ -40,6 +40,9 @@ protocol PaneContent: AnyObject {
 
     /// Called before the pane is removed from the layout. Clean up resources.
     func dispose()
+
+    /// Whether this pane has a live process that would be killed on close.
+    var hasActiveProcess: Bool { get }
 }
 
 @MainActor
@@ -57,6 +60,7 @@ extension PaneContent {
     var taskID: String? { nil }
     var metadataJSON: String? { nil }
     var shouldPersist: Bool { true }
+    var hasActiveProcess: Bool { false }
 
     func persistedPane() -> PersistedPane {
         PersistedPane(
@@ -102,6 +106,8 @@ private final class RestoredPaneContainer: NSView, PaneContent {
     var taskID: String? { wrapped.taskID ?? persisted.taskID }
     var metadataJSON: String? { wrapped.metadataJSON ?? persisted.metadataJSON }
     var shouldPersist: Bool { true }
+
+    var hasActiveProcess: Bool { wrapped.hasActiveProcess }
 
     func activate() { wrapped.activate() }
     func deactivate() { wrapped.deactivate() }
@@ -645,6 +651,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             }
             hostView.setPaneFocused(false)
         }
+    }
+
+    /// A terminal pane has an active process if it has a live surface.
+    var hasActiveProcess: Bool {
+        hostView?.terminalSurface?.isAlive ?? false
     }
 
     func dispose() {

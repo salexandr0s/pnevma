@@ -148,6 +148,9 @@ class TerminalSurface {
     /// when routing action callbacks to the correct TerminalHostView.
     var surfacePointer: ghostty_surface_t? { surface }
 
+    /// Whether the terminal surface is alive (has a backing ghostty surface).
+    var isAlive: Bool { surface != nil }
+
     var isRendererReady: Bool {
         surface != nil
     }
@@ -513,6 +516,7 @@ class TerminalSurface {
     var onClose: (() -> Void)?
 
     var isRendererReady: Bool { false }
+    var isAlive: Bool { false }
 
     static var isRealRendererAvailable: Bool { false }
 
