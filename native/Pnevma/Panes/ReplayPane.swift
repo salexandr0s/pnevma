@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Cocoa
 
 struct ReplayTimelinePayload: Decodable {
@@ -58,11 +59,11 @@ enum ReplayFrameBuilder {
 }
 
 struct ReplayView: View {
-    @StateObject private var viewModel: ReplayViewModel
+    @State private var viewModel: ReplayViewModel
 
     @MainActor
     init(sessionID: String?, viewModel: ReplayViewModel? = nil) {
-        _viewModel = StateObject(wrappedValue: viewModel ?? ReplayViewModel(sessionID: sessionID))
+        _viewModel = State(wrappedValue: viewModel ?? ReplayViewModel(sessionID: sessionID))
     }
 
     var body: some View {
@@ -144,12 +145,12 @@ struct ReplayView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 }
 
-@MainActor
-final class ReplayViewModel: ObservableObject {
+@Observable @MainActor
+final class ReplayViewModel {
     private enum ViewState: Equatable {
         case noSession
         case closed(String)
@@ -159,10 +160,10 @@ final class ReplayViewModel: ObservableObject {
         case failed(String)
     }
 
-    @Published var currentFrame: String?
-    @Published var isPlaying = false
-    @Published var playbackSpeed: Double = 1.0
-    @Published var progress: Double = 0.0
+    var currentFrame: String?
+    var isPlaying = false
+    var playbackSpeed: Double = 1.0
+    var progress: Double = 0.0
 
     var currentTimeLabel: String { formatTime(progress * totalDuration) }
     var totalTimeLabel: String { formatTime(totalDuration) }
@@ -177,16 +178,23 @@ final class ReplayViewModel: ObservableObject {
         }
     }
 
+    @ObservationIgnored
     private let sessionID: String?
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private let sessionOutputHub: SessionOutputHub
     private var frames: [String] = []
     private var currentFrameIndex: Int = 0
     private var totalDuration: Double = 0
-    @Published private var viewState: ViewState
+    private var viewState: ViewState
+    @ObservationIgnored
     private var sessionObserverID: UUID?
+    @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
     private var bufferedLiveChunks: [String] = []
     private enum BootstrapPhase {
         case idle, inProgress, completed
@@ -227,7 +235,7 @@ final class ReplayViewModel: ObservableObject {
         }
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 
@@ -385,9 +393,8 @@ final class ReplayViewModel: ObservableObject {
     }
 
     private func formatTime(_ seconds: Double) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
+        let duration = Duration.seconds(seconds)
+        return duration.formatted(.time(pattern: .minuteSecond))
     }
 }
 

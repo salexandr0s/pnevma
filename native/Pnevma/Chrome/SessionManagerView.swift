@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct SessionManagerView: View {
-    @ObservedObject var store: SessionStore
-    @ObservedObject private var theme = GhosttyThemeProvider.shared
+    var store: SessionStore
+    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +24,7 @@ struct SessionManagerView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(store.activeCount == 0)
+                .accessibilityLabel("Kill all sessions")
 
                 Button {
                     store.refresh()
@@ -32,6 +33,7 @@ struct SessionManagerView: View {
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Refresh sessions")
             }
             .padding(12)
 
@@ -58,9 +60,10 @@ struct SessionManagerView: View {
                     )
                 default:
                     if store.sessions.isEmpty {
-                        SessionManagerEmptyState(
-                            icon: "terminal",
-                            title: "No sessions"
+                        ContentUnavailableView(
+                            "No Sessions",
+                            systemImage: "terminal",
+                            description: Text("No active terminal sessions")
                         )
                     } else {
                         List {
@@ -87,7 +90,7 @@ struct SessionManagerView: View {
                     .background(Color(nsColor: theme.backgroundColor))
             }
         }
-        .onAppear { store.activate() }
+        .task { await store.activate() }
     }
 }
 
@@ -144,10 +147,10 @@ private struct SessionRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.name)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.callout.weight(.medium))
                     .lineLimit(1)
                 Text(session.shortCwd)
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -156,7 +159,7 @@ private struct SessionRow: View {
 
             if let pid = session.pid {
                 Text("PID \(pid)")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
 
@@ -170,9 +173,10 @@ private struct SessionRow: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovering = $0 }
+                .accessibilityLabel("Kill session")
             } else {
                 Text(session.statusDisplayName)
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -211,7 +215,7 @@ private struct SessionRow: View {
 }
 
 struct SessionManagerPopoverView: View {
-    @ObservedObject var store: SessionStore
+    var store: SessionStore
 
     var body: some View {
         SessionManagerView(store: store)

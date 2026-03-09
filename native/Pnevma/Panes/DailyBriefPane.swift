@@ -1,68 +1,6 @@
 import SwiftUI
+import Observation
 import Cocoa
-
-// MARK: - Data Models
-
-struct DailyBrief: Decodable {
-    let generatedAt: String
-    let totalTasks: Int
-    let readyTasks: Int
-    let reviewTasks: Int
-    let blockedTasks: Int
-    let failedTasks: Int
-    let totalCostUsd: Double
-    let recentEvents: [BriefEvent]
-    let recommendedActions: [String]
-    let activeSessions: Int
-    let costLast24hUsd: Double
-    let tasksCompletedLast24h: Int
-    let tasksFailedLast24h: Int
-    let staleReadyCount: Int
-    let longestRunningTask: String?
-    let topCostTasks: [TopCostTask]
-}
-
-struct BriefEvent: Identifiable, Decodable {
-    let timestamp: String
-    let kind: String
-    let summary: String
-    let payload: JSONValue
-
-    var id: String { "\(timestamp)-\(kind)-\(summary)" }
-
-    var level: EventLevel {
-        switch kind {
-        case "TaskFailed":        return .error
-        case "TaskBlocked":       return .warning
-        case "TaskCompleted":     return .success
-        case "TaskDispatched",
-             "TaskStarted":       return .info
-        default:                  return .info
-        }
-    }
-
-    enum EventLevel {
-        case error, warning, success, info
-
-        var color: Color {
-            switch self {
-            case .error:   return .red
-            case .warning: return .orange
-            case .success: return .green
-            case .info:    return .blue
-            }
-        }
-    }
-}
-
-struct TopCostTask: Decodable, Identifiable {
-    let taskID: String
-    let title: String
-    let costUsd: Double
-
-    var id: String { taskID }
-    var taskId: String { taskID }
-}
 
 // MARK: - Timestamp Formatting
 
@@ -84,10 +22,10 @@ private func formatRelativeTimestamp(_ raw: String) -> String {
     let date = briefISOFormatter.date(from: raw)
         ?? briefISOFormatterNoFraction.date(from: raw)
     if let date {
-        return briefRelativeFormatter.localizedString(for: date, relativeTo: Date())
+        return briefRelativeFormatter.localizedString(for: date, relativeTo: Date.now)
     }
     return raw
-        .replacingOccurrences(of: "T", with: " ")
+        .replacing("T", with: " ")
         .prefix(19)
         .description
 }
@@ -204,7 +142,7 @@ private struct GroupedEventRow: View {
 // MARK: - DailyBriefView
 
 struct DailyBriefView: View {
-    @StateObject private var viewModel = DailyBriefViewModel()
+    @State private var viewModel = DailyBriefViewModel()
 
     var body: some View {
         Group {
@@ -217,7 +155,7 @@ struct DailyBriefView: View {
                 contentView(brief: brief)
             }
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 
     @ViewBuilder
@@ -327,7 +265,7 @@ struct DailyBriefView: View {
     }
 
     private func formatCost(_ usd: Double) -> String {
-        String(format: "$%.2f", usd)
+        usd.formatted(.currency(code: "USD"))
     }
 }
 
@@ -336,13 +274,13 @@ struct DailyBriefView: View {
 struct MetricCard: View {
     let label: String
     let value: String
-    @ObservedObject private var theme = GhosttyThemeProvider.shared
+    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         VStack(spacing: 4) {
             Text(value)
                 .font(.title)
-                .fontWeight(.bold)
+                .bold()
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -353,110 +291,6 @@ struct MetricCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
         )
-    }
-}
-
-// MARK: - ViewModel
-
-@MainActor
-final class DailyBriefViewModel: ObservableObject {
-    private enum ViewState: Equatable {
-        case waiting(String)
-        case loading
-        case ready
-        case failed(String)
-    }
-
-    @Published var brief: DailyBrief?
-    @Published private var viewState: ViewState = .waiting("Open a project to load the daily brief.")
-
-    private let commandBus: (any CommandCalling)?
-    private let activationHub: ActiveWorkspaceActivationHub
-    private var activationObserverID: UUID?
-
-    init(
-        commandBus: (any CommandCalling)? = CommandBus.shared,
-        activationHub: ActiveWorkspaceActivationHub = .shared
-    ) {
-        self.commandBus = commandBus
-        self.activationHub = activationHub
-
-        activationObserverID = activationHub.addObserver { [weak self] state in
-            Task { @MainActor [weak self] in
-                self?.handleActivationState(state)
-            }
-        }
-    }
-
-    deinit {
-        if let activationObserverID {
-            activationHub.removeObserver(activationObserverID)
-        }
-    }
-
-    var statusMessage: String? {
-        switch viewState {
-        case .waiting(let message), .failed(let message):
-            return message
-        case .loading:
-            return "Loading daily brief..."
-        case .ready:
-            return nil
-        }
-    }
-
-    func activate() {
-        handleActivationState(activationHub.currentState)
-    }
-
-    private var loadTask: Task<Void, Never>?
-
-    func load() {
-        guard let bus = commandBus else {
-            viewState = .failed("Daily brief is unavailable because the command bus is not configured.")
-            return
-        }
-        if brief == nil {
-            viewState = .loading
-        }
-        loadTask?.cancel()
-        loadTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let result: DailyBrief = try await bus.call(method: "project.daily_brief", params: nil)
-                guard !Task.isCancelled else { return }
-                self.brief = result
-                self.viewState = .ready
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.handleLoadFailure(error)
-            }
-        }
-    }
-
-    private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
-        switch state {
-        case .idle:
-            viewState = .waiting("Waiting for project activation...")
-        case .opening:
-            viewState = .waiting("Waiting for project activation...")
-        case .open:
-            load()
-        case .failed(_, _, let message):
-            viewState = .failed(message)
-        case .closed:
-            loadTask?.cancel()
-            brief = nil
-            viewState = .waiting("Open a project to load the daily brief.")
-        }
-    }
-
-    private func handleLoadFailure(_ error: Error) {
-        if PnevmaError.isProjectNotReady(error) {
-            viewState = .waiting("Waiting for project activation...")
-            return
-        }
-        viewState = .failed(error.localizedDescription)
     }
 }
 

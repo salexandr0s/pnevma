@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 struct LiveSession: Identifiable, Decodable, Equatable {
     let id: String
@@ -83,20 +84,27 @@ private struct SessionBridgePayload: Decodable {
     let session: LiveSession?
 }
 
+@Observable
 @MainActor
-final class SessionStore: ObservableObject {
-    @Published private(set) var sessions: [LiveSession] = []
-    @Published private(set) var availability: SessionAvailability = .noProject(
+final class SessionStore {
+    private(set) var sessions: [LiveSession] = []
+    private(set) var availability: SessionAvailability = .noProject(
         "Open a project to manage sessions."
     )
-    @Published private(set) var isLoading = false
-    @Published var actionError: String?
+    private(set) var isLoading = false
+    var actionError: String?
 
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let bridgeEventHub: BridgeEventHub
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
+    @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
     private var eventRevision: UInt64 = 0
 
     init(
@@ -163,7 +171,7 @@ final class SessionStore: ObservableObject {
         return nil
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Cocoa
 import Charts
 
@@ -45,7 +46,7 @@ struct ErrorSignatureItem: Decodable, Identifiable {
 // MARK: - AnalyticsView
 
 struct AnalyticsView: View {
-    @StateObject private var viewModel = AnalyticsViewModel()
+    @State private var viewModel = AnalyticsViewModel()
 
     var body: some View {
         Group {
@@ -58,7 +59,7 @@ struct AnalyticsView: View {
                 analyticsContent
             }
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 
     @ViewBuilder
@@ -118,7 +119,7 @@ struct AnalyticsView: View {
                                         .font(.body)
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 2) {
-                                        Text(String(format: "$%.4f", item.estimatedUsd))
+                                        Text(item.estimatedUsd, format: .currency(code: "USD").precision(.fractionLength(4)))
                                             .font(.body.monospacedDigit())
                                         Text("\(item.tokensIn + item.tokensOut) tokens · \(item.recordCount) records")
                                             .font(.caption)
@@ -187,8 +188,8 @@ struct AnalyticsView: View {
 
 // MARK: - ViewModel
 
-@MainActor
-final class AnalyticsViewModel: ObservableObject {
+@Observable @MainActor
+final class AnalyticsViewModel {
     private enum ViewState: Equatable {
         case waiting(String)
         case loading(String)
@@ -196,15 +197,18 @@ final class AnalyticsViewModel: ObservableObject {
         case failed(String)
     }
 
-    @Published var breakdown: [UsageBreakdown] = []
-    @Published var byModel: [UsageByModel] = []
-    @Published var dailyTrend: [UsageDailyTrend] = []
-    @Published var errors: [ErrorSignatureItem] = []
+    var breakdown: [UsageBreakdown] = []
+    var byModel: [UsageByModel] = []
+    var dailyTrend: [UsageDailyTrend] = []
+    var errors: [ErrorSignatureItem] = []
 
-    @Published private var viewState: ViewState = .waiting("Open a project to load analytics.")
+    private var viewState: ViewState = .waiting("Open a project to load analytics.")
 
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var activationObserverID: UUID?
 
     init(
@@ -236,7 +240,7 @@ final class AnalyticsViewModel: ObservableObject {
         }
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 

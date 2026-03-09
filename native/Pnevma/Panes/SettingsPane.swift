@@ -1,10 +1,10 @@
 import Cocoa
-import Combine
+import Observation
 import SwiftUI
 
 struct SettingsView: View {
-    @StateObject private var appViewModel = SettingsViewModel()
-    @StateObject private var ghosttyViewModel = GhosttySettingsViewModel()
+    @State private var appViewModel = SettingsViewModel()
+    @State private var ghosttyViewModel = GhosttySettingsViewModel()
 
     var body: some View {
         TabView {
@@ -24,7 +24,7 @@ struct SettingsView: View {
                 .tabItem { Label("Telemetry", systemImage: "chart.bar") }
         }
         .padding(16)
-        .onAppear {
+        .task {
             appViewModel.load()
             ghosttyViewModel.load()
         }
@@ -32,7 +32,7 @@ struct SettingsView: View {
 }
 
 struct GeneralSettingsTab: View {
-    @ObservedObject var viewModel: SettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
 
     var body: some View {
         Form {
@@ -152,7 +152,7 @@ struct GeneralSettingsTab: View {
 }
 
 struct AppKeybindingsSettingsTab: View {
-    @ObservedObject var viewModel: SettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -184,7 +184,7 @@ struct AppKeybindingsSettingsTab: View {
 }
 
 struct TerminalSettingsTab: View {
-    @ObservedObject var viewModel: SettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
 
     var body: some View {
         Form {
@@ -212,7 +212,7 @@ struct TerminalSettingsTab: View {
 // MARK: - Ghostty Settings Tab (Two-Column Layout)
 
 struct GhosttySettingsTab: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
     @State private var showDiagnostics = false
     @State private var showPreview = false
     @State private var showThemeBrowser = false
@@ -271,7 +271,7 @@ struct GhosttySettingsTab: View {
 // MARK: - Toolbar
 
 private struct GhosttySettingsToolbar: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
     @Binding var showDiagnostics: Bool
     @Binding var showThemeBrowser: Bool
 
@@ -329,7 +329,7 @@ private struct GhosttySettingsToolbar: View {
 // MARK: - Diagnostics Popover
 
 private struct GhosttyDiagnosticsPopover: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
@@ -364,7 +364,7 @@ private struct GhosttyDiagnosticsPopover: View {
 // MARK: - Category Sidebar
 
 private struct GhosttyCategorySidebar: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
 
     var body: some View {
         List(selection: $viewModel.selectedCategory) {
@@ -412,7 +412,7 @@ private struct GhosttyCategorySidebar: View {
 // MARK: - Settings Detail
 
 private struct GhosttySettingsDetail: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -457,7 +457,7 @@ private struct GhosttySettingsDetail: View {
 // MARK: - Compact Field Row
 
 private struct GhosttyCompactFieldRow: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
     let descriptor: GhosttyConfigDescriptor
     @State private var isHovering = false
 
@@ -488,7 +488,7 @@ private struct GhosttyCompactFieldRow: View {
                     }
                 }
                 Text(descriptor.key)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
             }
 
@@ -612,7 +612,7 @@ private struct GhosttyCompactFieldRow: View {
 // MARK: - Keybindings Panel
 
 private struct GhosttyKeybindingsPanel: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -715,7 +715,7 @@ private struct GhosttyKeybindRow: View {
 // MARK: - Bottom Bar
 
 private struct GhosttySettingsBottomBar: View {
-    @ObservedObject var viewModel: GhosttySettingsViewModel
+    @Bindable var viewModel: GhosttySettingsViewModel
     @Binding var showPreview: Bool
 
     var body: some View {
@@ -802,35 +802,35 @@ private struct GhosttyPreviewSheet: View {
     }
 }
 
-@MainActor
-final class SettingsViewModel: ObservableObject {
+@Observable @MainActor
+final class SettingsViewModel {
     private let commandBus: (any CommandCalling)?
 
-    @Published var autoSave = true {
+    var autoSave = true {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var restoreWindows = true {
+    var restoreWindows = true {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var autoUpdate = true {
+    var autoUpdate = true {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var defaultShell = "" {
+    var defaultShell = "" {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var keybindings: [KeybindingEntry] = [
+    var keybindings: [KeybindingEntry] = [
         KeybindingEntry(action: "New Tab", shortcut: "Cmd+T"),
         KeybindingEntry(action: "Split Right", shortcut: "Cmd+D"),
         KeybindingEntry(action: "Split Down", shortcut: "Shift+Cmd+D"),
@@ -850,25 +850,25 @@ final class SettingsViewModel: ObservableObject {
         KeybindingEntry(action: "Toggle Full Screen", shortcut: "Cmd+Enter"),
         KeybindingEntry(action: "Close Window", shortcut: "Shift+Cmd+W"),
     ]
-    @Published var terminalFont = "SF Mono" {
+    var terminalFont = "SF Mono" {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var terminalFontSize = 13 {
+    var terminalFontSize = 13 {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var scrollbackLines = 10000 {
+    var scrollbackLines = 10000 {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var sidebarBackgroundOffset: Double = SidebarPreferences.backgroundOffset {
+    var sidebarBackgroundOffset: Double = SidebarPreferences.backgroundOffset {
         didSet {
             guard !isRestoring else { return }
             SidebarPreferences.backgroundOffset = sidebarBackgroundOffset
@@ -876,7 +876,7 @@ final class SettingsViewModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
+    var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
         didSet {
             guard !isRestoring else { return }
             FocusBorderPreferences.enabled = focusBorderEnabled
@@ -884,7 +884,7 @@ final class SettingsViewModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published var focusBorderOpacity: CGFloat = FocusBorderPreferences.opacity {
+    var focusBorderOpacity: CGFloat = FocusBorderPreferences.opacity {
         didSet {
             guard !isRestoring else { return }
             FocusBorderPreferences.opacity = focusBorderOpacity
@@ -892,7 +892,7 @@ final class SettingsViewModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published var focusBorderWidth: CGFloat = FocusBorderPreferences.width {
+    var focusBorderWidth: CGFloat = FocusBorderPreferences.width {
         didSet {
             guard !isRestoring else { return }
             FocusBorderPreferences.width = focusBorderWidth
@@ -900,7 +900,7 @@ final class SettingsViewModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published var focusBorderColor: Color = Color(nsColor: .controlAccentColor) {
+    var focusBorderColor: Color = Color(nsColor: .controlAccentColor) {
         didSet {
             guard !isRestoring else { return }
             let ns = NSColor(focusBorderColor).usingColorSpace(.sRGB)
@@ -909,7 +909,7 @@ final class SettingsViewModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published var focusBorderUseAccent: Bool = true {
+    var focusBorderUseAccent: Bool = true {
         didSet {
             guard !isRestoring else { return }
             if focusBorderUseAccent {
@@ -926,24 +926,20 @@ final class SettingsViewModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published var telemetryEnabled = false {
+    var telemetryEnabled = false {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
-    @Published var crashReports = false {
+    var crashReports = false {
         didSet {
             guard !isRestoring else { return }
             scheduleSave()
         }
     }
 
-    @Published var updateCoordinator: AppUpdateCoordinator? {
-        didSet { bindCoordinatorObserver() }
-    }
-    private var coordinatorCancellable: AnyCancellable?
-
+    var updateCoordinator: AppUpdateCoordinator?
     private var isRestoring = false
     private var didLoadFromBackend = false
     private var saveTask: Task<Void, Never>?
@@ -952,12 +948,6 @@ final class SettingsViewModel: ObservableObject {
 
     init(commandBus: (any CommandCalling)? = CommandBus.shared) {
         self.commandBus = commandBus
-    }
-
-    private func bindCoordinatorObserver() {
-        coordinatorCancellable = updateCoordinator?.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     func load() {
@@ -1049,7 +1039,7 @@ final class SettingsViewModel: ObservableObject {
         latestSaveGeneration &+= 1
         let generation = latestSaveGeneration
         saveTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             persistSettings(generation: generation)
         }
@@ -1118,7 +1108,7 @@ final class SettingsViewModel: ObservableObject {
 }
 
 struct TelemetrySettingsTab: View {
-    @ObservedObject var viewModel: SettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
 
     var body: some View {
         Form {

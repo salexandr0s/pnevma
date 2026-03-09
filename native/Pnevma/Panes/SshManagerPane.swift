@@ -1,30 +1,12 @@
 import SwiftUI
+import Observation
 import Cocoa
-
-// MARK: - Data Models
-
-struct SshProfile: Identifiable, Codable {
-    let id: String
-    var name: String
-    var host: String
-    var port: Int
-    var user: String
-    var identityFile: String?
-    var isConnected: Bool
-}
-
-struct TailscaleDevice: Identifiable, Codable {
-    let id: String
-    let hostname: String
-    let ipAddress: String
-    let isOnline: Bool
-}
 
 // MARK: - SshManagerView
 
 struct SshManagerView: View {
-    @StateObject private var viewModel = SshManagerViewModel()
-    @ObservedObject private var theme = GhosttyThemeProvider.shared
+    @State private var viewModel = SshManagerViewModel()
+    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,10 +54,12 @@ struct SshManagerView: View {
                     .background(Color(nsColor: theme.backgroundColor))
             }
         }
+        // sheet(isPresented:) is intentional: the sheet creates a new profile from scratch
+        // with no pre-existing item, so sheet(item:) does not apply here.
         .sheet(isPresented: $viewModel.showAddSheet) {
             AddSshProfileSheet(onAdd: { viewModel.addProfile($0) })
         }
-        .onAppear { viewModel.load() }
+        .task { await viewModel.activate() }
     }
 }
 
@@ -185,127 +169,6 @@ struct AddSshProfileSheet: View {
         }
         .padding(20)
         .frame(width: 400)
-    }
-}
-
-// MARK: - ViewModel
-
-@MainActor
-final class SshManagerViewModel: ObservableObject {
-    @Published var profiles: [SshProfile] = []
-    @Published var tailscaleDevices: [TailscaleDevice] = []
-    @Published var showAddSheet = false
-    @Published var actionError: String?
-
-    func load() {
-        guard let bus = CommandBus.shared else {
-            actionError = "Backend connection unavailable"
-            scheduleDismissActionError()
-            return
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                async let profilesResult: [SshProfile] = bus.call(method: "ssh.list_profiles")
-                async let devicesResult: [TailscaleDevice] = bus.call(method: "ssh.discover_tailscale")
-                let (p, d) = try await (profilesResult, devicesResult)
-                self.profiles = p
-                self.tailscaleDevices = d
-            } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
-            }
-        }
-    }
-
-    func addProfile(_ profile: SshProfile) {
-        profiles.append(profile)
-        guard let bus = CommandBus.shared else {
-            actionError = "Backend connection unavailable"
-            scheduleDismissActionError()
-            return
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                struct Params: Encodable {
-                    let name: String; let host: String; let port: Int
-                    let user: String; let identityFile: String?
-                }
-                let _: SshProfile = try await bus.call(
-                    method: "ssh.create_profile",
-                    params: Params(name: profile.name, host: profile.host, port: profile.port,
-                                   user: profile.user, identityFile: profile.identityFile)
-                )
-            } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
-            }
-        }
-    }
-
-    func connect(_ profile: SshProfile) {
-        guard let bus = CommandBus.shared else {
-            actionError = "Backend connection unavailable"
-            scheduleDismissActionError()
-            return
-        }
-        Task {
-            do {
-                struct Params: Encodable { let profileId: String }
-                let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(profileId: profile.id))
-                if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
-                    self.profiles[idx].isConnected = true
-                }
-            } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
-            }
-        }
-    }
-
-    func disconnect(_ profile: SshProfile) {
-        guard let bus = CommandBus.shared else {
-            actionError = "Backend connection unavailable"
-            scheduleDismissActionError()
-            return
-        }
-        Task {
-            do {
-                struct Params: Encodable { let profileId: String }
-                let _: [String: Bool] = try await bus.call(method: "ssh.disconnect", params: Params(profileId: profile.id))
-                if let idx = self.profiles.firstIndex(where: { $0.id == profile.id }) {
-                    self.profiles[idx].isConnected = false
-                }
-            } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
-            }
-        }
-    }
-
-    func connectTailscale(_ device: TailscaleDevice) {
-        guard let bus = CommandBus.shared else {
-            actionError = "Backend connection unavailable"
-            scheduleDismissActionError()
-            return
-        }
-        Task {
-            do {
-                struct Params: Encodable { let host: String }
-                let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(host: device.ipAddress))
-            } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
-            }
-        }
-    }
-
-    private func scheduleDismissActionError() {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
-            self?.actionError = nil
-        }
     }
 }
 

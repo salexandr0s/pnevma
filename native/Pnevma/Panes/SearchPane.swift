@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Cocoa
 
 // MARK: - Data Models
@@ -28,7 +29,7 @@ private struct SearchParams: Encodable {
 // MARK: - SearchView
 
 struct SearchView: View {
-    @StateObject private var viewModel = SearchViewModel()
+    @State private var viewModel = SearchViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,28 +108,32 @@ struct SearchView: View {
                 .listStyle(.plain)
             }
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 }
 
 // MARK: - ViewModel
 
-@MainActor
-final class SearchViewModel: ObservableObject {
+@Observable @MainActor
+final class SearchViewModel {
     private enum ViewState: Equatable {
         case waiting(String)
         case ready
         case failed(String)
     }
 
-    @Published var query: String = ""
-    @Published var results: [SearchResult] = []
-    @Published var isSearching = false
-    @Published private var viewState: ViewState = .waiting("Open a project to search.")
+    var query: String = ""
+    var results: [SearchResult] = []
+    var isSearching = false
+    private var viewState: ViewState = .waiting("Open a project to search.")
 
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
     private var searchTask: Task<Void, Never>?
 
     init(
@@ -160,7 +165,7 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 

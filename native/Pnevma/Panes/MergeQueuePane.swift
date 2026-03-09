@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Cocoa
 
 // MARK: - Data Models
@@ -19,7 +20,7 @@ struct MergeQueueItem: Identifiable, Decodable {
 // MARK: - MergeQueueView
 
 struct MergeQueueView: View {
-    @StateObject private var viewModel = MergeQueueViewModel()
+    @State private var viewModel = MergeQueueViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,7 +70,7 @@ struct MergeQueueView: View {
                     .padding(.bottom, 8)
             }
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 }
 
@@ -149,8 +150,8 @@ struct MergeQueueRow: View {
 
 // MARK: - ViewModel
 
-@MainActor
-final class MergeQueueViewModel: ObservableObject {
+@Observable @MainActor
+final class MergeQueueViewModel {
     private enum ViewState: Equatable {
         case waiting(String)
         case loading(String)
@@ -158,14 +159,19 @@ final class MergeQueueViewModel: ObservableObject {
         case failed(String)
     }
 
-    @Published var items: [MergeQueueItem] = []
-    @Published var actionError: String?
-    @Published private var viewState: ViewState = .waiting("Open a project to load the merge queue.")
+    var items: [MergeQueueItem] = []
+    var actionError: String?
+    private var viewState: ViewState = .waiting("Open a project to load the merge queue.")
 
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let bridgeEventHub: BridgeEventHub
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
+    @ObservationIgnored
     private var activationObserverID: UUID?
 
     init(
@@ -208,7 +214,7 @@ final class MergeQueueViewModel: ObservableObject {
         }
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 

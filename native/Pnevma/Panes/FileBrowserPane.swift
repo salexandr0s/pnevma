@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Cocoa
 
 // MARK: - Data Models
@@ -19,8 +20,8 @@ private struct FileTreeParams: Encodable {
 // MARK: - FileBrowserView
 
 struct FileBrowserView: View {
-    @StateObject private var viewModel = FileBrowserViewModel()
-    @ObservedObject private var theme = GhosttyThemeProvider.shared
+    @State private var viewModel = FileBrowserViewModel()
+    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         HSplitView {
@@ -97,14 +98,14 @@ struct FileBrowserView: View {
                     .background(Color(nsColor: theme.backgroundColor))
             }
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 }
 
 // MARK: - Tree Views
 
 private struct FileTreeList: View {
-    @ObservedObject var viewModel: FileBrowserViewModel
+    var viewModel: FileBrowserViewModel
 
     var body: some View {
         ScrollView {
@@ -121,7 +122,7 @@ private struct FileTreeList: View {
 private struct FileTreeRow: View {
     let node: FileNode
     let depth: Int
-    @ObservedObject var viewModel: FileBrowserViewModel
+    var viewModel: FileBrowserViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -164,6 +165,7 @@ private struct FileTreeRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(rowBackground)
             .contentShape(Rectangle())
+            .accessibilityAddTraits(.isButton)
             .onTapGesture {
                 viewModel.select(node)
             }
@@ -223,27 +225,36 @@ private struct FileTreeRow: View {
 
 // MARK: - ViewModel
 
-@MainActor
-final class FileBrowserViewModel: ObservableObject {
-    @Published var rootNodes: [FileNode] = []
-    @Published var expandedPaths: Set<String> = []
-    @Published var selectedPath: String?
-    @Published private(set) var selectedFilePath: String?
-    @Published var previewContent: String?
-    @Published var actionError: String?
-    @Published private(set) var isProjectOpen = false
-    @Published private(set) var isLoadingRoot = false
-    @Published private(set) var isLoadingPreview = false
-    @Published private(set) var loadingDirectories: Set<String> = []
+@Observable @MainActor
+final class FileBrowserViewModel {
+    var rootNodes: [FileNode] = []
+    var expandedPaths: Set<String> = []
+    var selectedPath: String?
+    private(set) var selectedFilePath: String?
+    var previewContent: String?
+    var actionError: String?
+    private(set) var isProjectOpen = false
+    private(set) var isLoadingRoot = false
+    private(set) var isLoadingPreview = false
+    private(set) var loadingDirectories: Set<String> = []
 
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
     private var activationGeneration: UInt64 = 0
+    @ObservationIgnored
     private var rootLoadToken: UInt64 = 0
+    @ObservationIgnored
     private var previewLoadToken: UInt64 = 0
+    @ObservationIgnored
     private var rootLoadTask: Task<Void, Never>?
+    @ObservationIgnored
     private var previewLoadTask: Task<Void, Never>?
+    @ObservationIgnored
     private var directoryLoadTasks: [String: Task<Void, Never>] = [:]
 
     init(
@@ -265,7 +276,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 

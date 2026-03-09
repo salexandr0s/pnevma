@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Cocoa
 
 // MARK: - Data Models
@@ -32,8 +33,8 @@ private struct ToggleRuleParams: Encodable {
 // MARK: - RulesManagerView
 
 struct RulesManagerView: View {
-    @StateObject private var viewModel = RulesManagerViewModel()
-    @ObservedObject private var theme = GhosttyThemeProvider.shared
+    @State private var viewModel = RulesManagerViewModel()
+    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,12 +86,14 @@ struct RulesManagerView: View {
                     .background(Color(nsColor: theme.backgroundColor))
             }
         }
+        // sheet(isPresented:) is intentional: the sheet creates a new rule from scratch
+        // with no pre-existing item, so sheet(item:) does not apply here.
         .sheet(isPresented: $viewModel.showAddSheet) {
             AddRuleSheet(onAdd: { name, content, scope in
                 viewModel.addRule(name: name, description: content, type: scope)
             })
         }
-        .onAppear { viewModel.activate() }
+        .task { await viewModel.activate() }
     }
 }
 
@@ -180,17 +183,22 @@ struct AddRuleSheet: View {
 
 // MARK: - ViewModel
 
-@MainActor
-final class RulesManagerViewModel: ObservableObject {
-    @Published var rules: [ProjectRule] = []
-    @Published var showAddSheet = false
-    @Published var actionError: String?
-    @Published private(set) var isProjectOpen = false
+@Observable @MainActor
+final class RulesManagerViewModel {
+    var rules: [ProjectRule] = []
+    var showAddSheet = false
+    var actionError: String?
+    private(set) var isProjectOpen = false
 
+    @ObservationIgnored
     private let commandBus: (any CommandCalling)?
+    @ObservationIgnored
     private let bridgeEventHub: BridgeEventHub
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
+    @ObservationIgnored
     private var activationObserverID: UUID?
 
     init(
@@ -224,7 +232,7 @@ final class RulesManagerViewModel: ObservableObject {
         }
     }
 
-    func activate() {
+    func activate() async {
         handleActivationState(activationHub.currentState)
     }
 

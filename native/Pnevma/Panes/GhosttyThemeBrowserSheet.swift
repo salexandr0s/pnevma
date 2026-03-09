@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GhosttyThemeBrowserSheet: View {
-    @StateObject private var browser = GhosttyThemeBrowserViewModel()
+    @State private var browser = GhosttyThemeBrowserViewModel()
     let currentThemeName: String?
     let onApply: (String) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -15,7 +15,7 @@ struct GhosttyThemeBrowserSheet: View {
             bottomBar
         }
         .frame(minWidth: 700, minHeight: 500)
-        .onAppear {
+        .task {
             browser.currentThemeName = currentThemeName
             browser.loadThemes()
         }
@@ -65,6 +65,8 @@ struct GhosttyThemeBrowserSheet: View {
                                 theme: theme,
                                 isActive: theme.name == browser.currentThemeName
                             )
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel("Select theme: \(theme.name)")
                             .onTapGesture {
                                 browser.currentThemeName = theme.name
                                 onApply(theme.name)

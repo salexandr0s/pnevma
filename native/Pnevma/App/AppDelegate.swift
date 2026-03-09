@@ -147,7 +147,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandBus.shared = commandBus
         }
 
-        DispatchQueue.global(qos: .utility).async { [weak bridge] in
+        Task { [weak bridge] in
             if let result = bridge?.call(method: "task.list", params: "{}") {
                 Log.bridge.info("Bridge test ok=\(result.ok) payload=\(result.payload)")
             }
@@ -165,7 +165,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             PaneFactory.sessionBridge = sessionBridge
             let sessionStore = SessionStore(commandBus: bus)
             self.sessionStore = sessionStore
-            sessionStore.activate()
+            Task { await sessionStore.activate() }
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
             _ = engine
@@ -313,7 +313,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onOpenSettings: { [weak self] in self?.openSettingsPane() },
             onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) }
         )
-        let sidebarHost = NSHostingView(rootView: sidebarView)
+        let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
         let sidebarBacking = ThemedSidebarBackingView()
         sidebarBacking.addSubview(sidebarHost)
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
@@ -330,7 +330,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
 
-        for view in [sidebarBacking, tabBar, contentAreaView!, statusBar!] as [NSView] {
+        guard let contentArea = contentAreaView, let statusBarView = statusBar else {
+            Log.general.error("contentAreaView or statusBar not initialized")
+            return
+        }
+
+        for view in [sidebarBacking, tabBar, contentArea, statusBarView] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
@@ -340,13 +345,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let tabBarHeight = DesignTokens.Layout.tabBarHeight
 
         let swc = sidebarBacking.widthAnchor.constraint(equalToConstant: sidebarWidth)
-        let clc = contentAreaView!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
-        let slc = statusBar!.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+        let clc = contentArea.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+        let slc = statusBarView.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let tblc = tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
 
         // Content area top: switches between below-tab-bar and directly below toolbar
-        let topToTab = contentAreaView!.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
-        let topToSafe = contentAreaView!.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor)
+        let topToTab = contentArea.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
+        let topToSafe = contentArea.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor)
         // Tab bar starts hidden (single tab), so content goes to safe area
         topToTab.isActive = false
         topToSafe.isActive = true
@@ -377,14 +382,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             tabBar.heightAnchor.constraint(equalToConstant: tabBarHeight),
 
             clc,
-            contentAreaView!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            contentAreaView!.bottomAnchor.constraint(equalTo: statusBar!.topAnchor),
-            contentAreaView!.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
+            contentArea.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            contentArea.bottomAnchor.constraint(equalTo: statusBarView.topAnchor),
+            contentArea.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
 
             slc,
-            statusBar!.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            statusBar!.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
-            statusBar!.heightAnchor.constraint(equalToConstant: statusHeight),
+            statusBarView.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            statusBarView.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+            statusBarView.heightAnchor.constraint(equalToConstant: statusHeight),
         ])
 
         // For terminal transparency (background-opacity < 1.0), the window must
@@ -424,7 +429,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 workspaceManager?.createWorkspace(name: "Default")
             }
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 self?.finishSmoke(success: true, message: "launch smoke ready")
             }
 
@@ -438,7 +443,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.finishSmoke(success: false, message: "ghostty smoke timed out")
             }
             smokeTimeoutWorkItem = timeoutWorkItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeoutWorkItem)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(10))
+                guard !timeoutWorkItem.isCancelled else { return }
+                timeoutWorkItem.perform()
+            }
 
             let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 960, height: 640)
             let win = NSWindow(
@@ -468,7 +477,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             smokeWindow = win
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 hostView.ensureSurfaceCreated()
             }
         }
@@ -828,7 +837,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.allowsImplicitAnimation = true
             sidebarWidthConstraint?.animator().constant = width
         }, completionHandler: {
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 if !self.isSidebarVisible { self.sidebarHostView?.isHidden = true }
             }
@@ -1002,7 +1011,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.title = "Settings"
         win.appearance = NSAppearance(named: .darkAqua)
         win.minSize = NSSize(width: 600, height: 400)
-        win.contentView = NSHostingView(rootView: SettingsView())
+        win.contentView = NSHostingView(rootView: SettingsView().environment(GhosttyThemeProvider.shared))
         win.center()
         win.makeKeyAndOrderFront(nil)
         settingsWindow = win
