@@ -19,7 +19,7 @@ struct SidebarToolItem: Identifiable {
 let sidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "terminal", title: "Terminal", icon: "terminal"),
     SidebarToolItem(id: "tasks", title: "Task Board", icon: "checklist"),
-    SidebarToolItem(id: "workflow", title: "Workflow", icon: "arrow.triangle.branch"),
+    SidebarToolItem(id: "workflow", title: "Agents", icon: "arrow.triangle.branch"),
     SidebarToolItem(id: "notifications", title: "Notifications", icon: "bell"),
     SidebarToolItem(id: "files", title: "File Browser", icon: "folder"),
     SidebarToolItem(id: "ssh", title: "SSH Manager", icon: "network"),

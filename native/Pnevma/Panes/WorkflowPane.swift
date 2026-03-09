@@ -168,52 +168,82 @@ enum OrchestrationScope: String, CaseIterable {
 struct WorkflowView: View {
     @StateObject private var viewModel = WorkflowViewModel()
     @StateObject private var agentViewModel = AgentViewModel()
-    @State private var selectedTab: Tab = .library
+    @State private var topLevel: TopLevel = .agents
+    @State private var workflowTab: WorkflowTab = .library
     @State private var scope: OrchestrationScope = .global
 
-    enum Tab: String, CaseIterable {
+    enum TopLevel: String, CaseIterable {
+        case agents = "Agents"
+        case workflows = "Workflows"
+    }
+
+    enum WorkflowTab: String, CaseIterable {
         case library = "Library"
         case active = "Active"
         case builder = "Builder"
-        case agents = "Agents"
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            HStack {
-                Text("Agents")
+            HStack(spacing: 12) {
+                Text(topLevel.rawValue)
                     .font(.headline)
+
                 Spacer()
+
                 // Scope selector
-                Picker("Scope", selection: $scope) {
-                    ForEach(OrchestrationScope.allCases, id: \.self) { s in
-                        Text(s.rawValue).tag(s)
+                HStack(spacing: 6) {
+                    Text("Scope")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    Picker("Scope", selection: $scope) {
+                        ForEach(OrchestrationScope.allCases, id: \.self) { s in
+                            Text(s.rawValue).tag(s)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 150)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
                 .onChange(of: scope) {
                     viewModel.scope = scope
                     agentViewModel.scope = scope
                     viewModel.load()
                     agentViewModel.load()
                 }
-                Picker("", selection: $selectedTab) {
-                    ForEach(Tab.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
+
+                // Top-level toggle: Agents / Workflows
+                Picker("", selection: $topLevel) {
+                    ForEach(TopLevel.allCases, id: \.self) { t in
+                        Text(t.rawValue).tag(t)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 340)
-                if selectedTab == .library {
-                    Button(action: { selectedTab = .builder; viewModel.resetBuilder() }) {
+                .labelsHidden()
+                .frame(width: 180)
+
+                // Sub-tabs for Workflows
+                if topLevel == .workflows {
+                    Picker("", selection: $workflowTab) {
+                        ForEach(WorkflowTab.allCases, id: \.self) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 240)
+                }
+
+                // Plus button
+                if topLevel == .agents {
+                    Button(action: { agentViewModel.startCreating() }) {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
-                }
-                if selectedTab == .agents {
-                    Button(action: { agentViewModel.startCreating() }) {
+                } else if workflowTab == .library {
+                    Button(action: { workflowTab = .builder; viewModel.resetBuilder() }) {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
@@ -223,22 +253,24 @@ struct WorkflowView: View {
             Divider()
 
             // Content
-            switch selectedTab {
-            case .library:
-                LibrarySection(viewModel: viewModel, onEdit: { def in
-                    viewModel.loadForEditing(def)
-                    selectedTab = .builder
-                })
-            case .active:
-                ActiveSection(viewModel: viewModel)
-            case .builder:
-                BuilderSection(viewModel: viewModel, onSaved: {
-                    selectedTab = .library
-                }, onRun: {
-                    selectedTab = .active
-                })
-            case .agents:
+            if topLevel == .agents {
                 AgentsSection(viewModel: agentViewModel)
+            } else {
+                switch workflowTab {
+                case .library:
+                    LibrarySection(viewModel: viewModel, onEdit: { def in
+                        viewModel.loadForEditing(def)
+                        workflowTab = .builder
+                    })
+                case .active:
+                    ActiveSection(viewModel: viewModel)
+                case .builder:
+                    BuilderSection(viewModel: viewModel, onSaved: {
+                        workflowTab = .library
+                    }, onRun: {
+                        workflowTab = .active
+                    })
+                }
             }
         }
         .onAppear {
