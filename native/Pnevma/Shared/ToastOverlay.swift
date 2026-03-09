@@ -1,6 +1,6 @@
 import SwiftUI
 import Cocoa
-import Combine
+import Observation
 
 // MARK: - Toast Model
 
@@ -17,25 +17,36 @@ struct ToastMessage: Identifiable {
 
 // MARK: - Toast Manager
 
+@Observable
 @MainActor
-final class ToastManager: ObservableObject {
+final class ToastManager {
     static let shared = ToastManager()
 
-    @Published private(set) var currentToast: ToastMessage?
+    private(set) var currentToast: ToastMessage? {
+        didSet { onToastChange?(currentToast) }
+    }
+
+    /// Callback invoked whenever `currentToast` changes (used by ToastWindowController).
+    @ObservationIgnored
+    var onToastChange: ((ToastMessage?) -> Void)?
+
+    @ObservationIgnored
     private var dismissTask: Task<Void, Never>?
+    @ObservationIgnored
     private var lastShownText: String?
+    @ObservationIgnored
     private var lastShownTime: Date?
 
     func show(_ text: String, icon: String? = nil, style: ToastMessage.ToastStyle = .info) {
-        if text == lastShownText, let lastTime = lastShownTime, Date().timeIntervalSince(lastTime) < 1.0 {
+        if text == lastShownText, let lastTime = lastShownTime, Date.now.timeIntervalSince(lastTime) < 1.0 {
             return
         }
         dismissTask?.cancel()
         currentToast = ToastMessage(text: text, icon: icon, style: style)
         lastShownText = text
-        lastShownTime = Date()
+        lastShownTime = Date.now
         dismissTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(for: .seconds(2.5))
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: DesignTokens.Motion.normal)) {
                 self.currentToast = nil
@@ -54,7 +65,7 @@ final class ToastManager: ObservableObject {
 // MARK: - Toast Overlay View
 
 struct ToastOverlayView: View {
-    @ObservedObject var manager: ToastManager
+    var manager: ToastManager
 
     var body: some View {
         VStack {
@@ -66,7 +77,7 @@ struct ToastOverlayView: View {
                             .foregroundStyle(iconColor(toast.style))
                     }
                     Text(toast.text)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.body.weight(.medium))
                         .lineLimit(2)
                 }
                 .padding(.horizontal, 16)
@@ -78,6 +89,8 @@ struct ToastOverlayView: View {
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .padding(.bottom, 40)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("Dismiss notification")
                 .onTapGesture { manager.dismiss() }
             }
         }
@@ -100,7 +113,6 @@ struct ToastOverlayView: View {
 final class ToastWindowController {
     private var overlayWindow: NSWindow?
     private let manager: ToastManager
-    private var cancellables = Set<AnyCancellable>()
     private var resizeObserver: NSObjectProtocol?
     private var moveObserver: NSObjectProtocol?
 
@@ -129,7 +141,7 @@ final class ToastWindowController {
         overlay.hasShadow = false
         overlay.level = .floating
         overlay.ignoresMouseEvents = true
-        overlay.contentView = NSHostingView(rootView: ToastOverlayView(manager: manager))
+        overlay.contentView = NSHostingView(rootView: ToastOverlayView(manager: manager).environment(GhosttyThemeProvider.shared))
         overlay.contentView?.wantsLayer = true
         overlay.contentView?.layer?.backgroundColor = .clear
 
@@ -137,12 +149,9 @@ final class ToastWindowController {
         overlayWindow = overlay
 
         // Toggle mouse event passthrough based on toast visibility
-        manager.$currentToast
-            .receive(on: RunLoop.main)
-            .sink { [weak overlay] toast in
-                overlay?.ignoresMouseEvents = (toast == nil)
-            }
-            .store(in: &cancellables)
+        manager.onToastChange = { [weak overlay] toast in
+            overlay?.ignoresMouseEvents = (toast == nil)
+        }
 
         // Keep overlay sized to parent
         resizeObserver = NotificationCenter.default.addObserver(

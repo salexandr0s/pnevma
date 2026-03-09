@@ -54,7 +54,7 @@ final class BridgeEventHub {
         let callbacks = Array(observers.values)
         lock.unlock()
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
             callbacks.forEach { $0(event) }
         }
     }
@@ -160,7 +160,7 @@ final class SessionOutputHub {
             self.flushScheduled = false
 
             guard !deliveries.isEmpty else { return }
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 for (event, callbacks) in deliveries {
                     callbacks.forEach { $0(event) }
                 }

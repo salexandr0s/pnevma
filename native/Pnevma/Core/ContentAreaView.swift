@@ -604,7 +604,8 @@ final class ContentAreaView: NSView {
         onTerminalNotification?()
 
         // Auto-dismiss after 5 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak ring] in
+        Task { @MainActor [weak self, weak ring] in
+            try? await Task.sleep(for: .seconds(5))
             guard let self, let ring, ring.superview != nil else { return }
             self.dismissNotificationRing(for: paneID)
         }
@@ -919,7 +920,8 @@ private final class NotificationRingView: NSView {
         CATransaction.commit()
 
         // Fade out after delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3.0))
             guard let self, self.superview != nil else { return }
             CATransaction.begin()
             CATransaction.setAnimationDuration(1.0)

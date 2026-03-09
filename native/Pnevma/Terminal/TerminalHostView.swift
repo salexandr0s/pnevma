@@ -444,7 +444,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private func scheduleEnsureSurfaceCreated() {
         guard terminalSurface == nil, !surfaceCreateScheduled else { return }
         surfaceCreateScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             self.surfaceCreateScheduled = false
             self.ensureSurfaceCreated()

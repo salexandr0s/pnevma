@@ -62,8 +62,11 @@ enum JSONValue: Decodable {
 /// Extensions on NSView and SwiftUI types used throughout the app.
 extension NSView {
     /// Embed a SwiftUI view inside this NSView using NSHostingView.
-    func addSwiftUISubview<Content: View>(_ view: Content) -> NSHostingView<Content> {
-        let host = NSHostingView(rootView: view)
+    /// Automatically injects the shared theme provider into the SwiftUI environment.
+    @discardableResult
+    func addSwiftUISubview<Content: View>(_ view: Content) -> NSHostingView<some View> {
+        let themed = view.environment(GhosttyThemeProvider.shared)
+        let host = NSHostingView(rootView: themed)
         host.translatesAutoresizingMaskIntoConstraints = false
         addSubview(host)
         NSLayoutConstraint.activate([

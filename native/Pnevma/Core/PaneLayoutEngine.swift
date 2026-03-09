@@ -434,7 +434,11 @@ class PaneLayoutEngine {
             }
 
             if isNeighbor {
-                if best == nil || distance < best!.1 {
+                guard let currentBest = best else {
+                    best = (id, distance)
+                    continue
+                }
+                if distance < currentBest.1 {
                     best = (id, distance)
                 }
             }

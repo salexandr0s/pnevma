@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import WebKit
 
 // MARK: - MarkdownResult
@@ -116,13 +117,13 @@ final class BrowserMarkdownConverter {
 
     private static func escapeForJS(_ str: String) -> String {
         let escaped = str
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            .replacing("\\", with: "\\\\")
+            .replacing("'", with: "\\'")
+            .replacing("\n", with: "\\n")
+            .replacing("\r", with: "\\r")
+            .replacing("\t", with: "\\t")
+            .replacing("\u{2028}", with: "\\u2028")
+            .replacing("\u{2029}", with: "\\u2029")
         return "'\(escaped)'"
     }
 
@@ -288,7 +289,7 @@ struct BrowserReaderModeView: View {
                 .buttonStyle(.plain)
 
                 Text("Reader Mode")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(.secondary)
 
                 Spacer()
@@ -312,7 +313,7 @@ struct BrowserReaderModeView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(LocalizedStringKey(formatMarkdownForDisplay(result.markdown)))
                         .textSelection(.enabled)
-                        .font(.system(size: 14, design: .default))
+                        .font(.body)
                         .lineSpacing(4)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -332,11 +333,11 @@ struct BrowserReaderModeView: View {
 
 // MARK: - Reader Mode Integration
 
-@MainActor
-final class BrowserReaderState: ObservableObject {
-    @Published var isActive: Bool = false
-    @Published var result: MarkdownResult?
-    @Published var isExtracting: Bool = false
+@Observable @MainActor
+final class BrowserReaderState {
+    var isActive: Bool = false
+    var result: MarkdownResult?
+    var isExtracting: Bool = false
 
     func toggle(webView: WKWebView) {
         if isActive {

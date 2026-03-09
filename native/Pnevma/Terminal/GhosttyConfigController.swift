@@ -193,8 +193,8 @@ enum GhosttyManagedConfigCodec {
 
     static func escapeStringLiteral(_ raw: String) -> String {
         raw
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacing("\\", with: "\\\\")
+            .replacing("\"", with: "\\\"")
     }
 
     private static func parseEntry(_ line: String) -> (key: String, value: String)? {
@@ -260,8 +260,8 @@ enum GhosttyManagedConfigCodec {
         let start = value.index(after: value.startIndex)
         let end = value.index(before: value.endIndex)
         return String(value[start..<end])
-            .replacingOccurrences(of: "\\\"", with: "\"")
-            .replacingOccurrences(of: "\\\\", with: "\\")
+            .replacing("\\\"", with: "\"")
+            .replacing("\\\\", with: "\\")
     }
 }
 
@@ -517,8 +517,8 @@ final class GhosttyConfigController {
             }
 
             // Skip existing keybind lines — we'll rewrite all keybinds at the end
-            if !trimmed.isEmpty, !trimmed.hasPrefix("#"), trimmed.contains("=") {
-                let eqIdx = trimmed.firstIndex(of: "=")!
+            if !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+               let eqIdx = trimmed.firstIndex(of: "=") {
                 let lineKey = trimmed[..<eqIdx].trimmingCharacters(in: .whitespaces)
                 if lineKey == "keybind" {
                     continue

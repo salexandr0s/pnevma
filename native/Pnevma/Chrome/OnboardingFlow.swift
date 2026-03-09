@@ -1,15 +1,16 @@
 import SwiftUI
+import Observation
 import Cocoa
 import os
 
 // MARK: - OnboardingView
 
 struct OnboardingView: View {
-    @StateObject private var viewModel: OnboardingViewModel
+    @State private var viewModel: OnboardingViewModel
     var onComplete: (() -> Void)?
 
     init(commandBus: CommandBus? = nil, onComplete: (() -> Void)? = nil) {
-        _viewModel = StateObject(wrappedValue: OnboardingViewModel(commandBus: commandBus))
+        _viewModel = State(wrappedValue: OnboardingViewModel(commandBus: commandBus))
         self.onComplete = onComplete
     }
 
@@ -20,9 +21,10 @@ struct OnboardingView: View {
                 Image(systemName: "terminal")
                     .font(.system(size: 48))
                     .foregroundStyle(Color.accentColor)
+                    .accessibilityHidden(true)
                 Text("Welcome to Pnevma")
                     .font(.largeTitle)
-                    .fontWeight(.bold)
+                    .bold()
                 Text("AI-native terminal workspace")
                     .font(.title3)
                     .foregroundStyle(.secondary)
@@ -118,12 +120,13 @@ struct ReadinessRow: View {
 
 // MARK: - ViewModel
 
-final class OnboardingViewModel: ObservableObject {
-    @Published var rustReady = false
-    @Published var ghosttyReady = false
-    @Published var gitReady = false
-    @Published var shellReady = false
-    @Published var projectOpened = false
+@Observable @MainActor
+final class OnboardingViewModel {
+    var rustReady = false
+    var ghosttyReady = false
+    var gitReady = false
+    var shellReady = false
+    var projectOpened = false
 
     /// Injected command bus for backend calls.
     let commandBus: CommandBus?
@@ -213,7 +216,7 @@ final class OnboardingWindow {
             completion()
         })
 
-        let hostingView = NSHostingView(rootView: view)
+        let hostingView = NSHostingView(rootView: view.environment(GhosttyThemeProvider.shared))
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
                            styleMask: [.titled, .closable],
                            backing: .buffered, defer: false)

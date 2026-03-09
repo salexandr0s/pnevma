@@ -1,8 +1,9 @@
 import AppKit
+import Observation
 import SwiftUI
 
-@MainActor
-final class GhosttySettingsViewModel: ObservableObject {
+@Observable @MainActor
+final class GhosttySettingsViewModel {
     enum FilterMode: String, CaseIterable, Identifiable {
         case common
         case all
@@ -22,16 +23,16 @@ final class GhosttySettingsViewModel: ObservableObject {
         }
     }
 
-    @Published private(set) var snapshot: GhosttyConfigSnapshot?
-    @Published var editedValues: [String: [String]] = [:]
-    @Published var keybinds: [GhosttyManagedKeybind] = []
-    @Published var searchText = ""
-    @Published var filterMode: FilterMode = .common
-    @Published var selectedCategory: GhosttyConfigCategory = .appearance
-    @Published var isLoading = false
-    @Published var statusMessage: String?
-    @Published var errorMessage: String?
-    @Published var validationMessages: [String] = []
+    private(set) var snapshot: GhosttyConfigSnapshot?
+    var editedValues: [String: [String]] = [:]
+    var keybinds: [GhosttyManagedKeybind] = []
+    var searchText = ""
+    var filterMode: FilterMode = .common
+    var selectedCategory: GhosttyConfigCategory = .appearance
+    var isLoading = false
+    var statusMessage: String?
+    var errorMessage: String?
+    var validationMessages: [String] = []
 
     func load() {
         guard TerminalSurface.isRealRendererAvailable else {
@@ -331,7 +332,7 @@ final class GhosttySettingsViewModel: ObservableObject {
 extension NSColor {
     convenience init?(hexString: String) {
         let trimmed = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "#", with: "")
+            .replacing("#", with: "")
         guard trimmed.count == 6, let value = UInt32(trimmed, radix: 16) else {
             return nil
         }

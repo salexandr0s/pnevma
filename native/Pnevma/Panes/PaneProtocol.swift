@@ -355,7 +355,7 @@ private struct WelcomeContentView: View {
                         .foregroundStyle(.primary.opacity(0.9))
 
                     Text("Terminal-first workspace for AI-agent-driven delivery")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.bottom, 36)
@@ -444,10 +444,10 @@ private struct WelcomeCard: View {
 
                 VStack(spacing: 3) {
                     Text(title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(.primary.opacity(0.9))
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -477,7 +477,7 @@ private struct WelcomeShortcut: View {
             HStack(spacing: 3) {
                 ForEach(keys, id: \.self) { key in
                     Text(key)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
@@ -488,7 +488,7 @@ private struct WelcomeShortcut: View {
                 }
             }
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.primary.opacity(0.7))
         }
         .frame(maxWidth: .infinity)
@@ -1012,19 +1012,19 @@ private struct TerminalStateView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(title)
-                            .font(.system(size: 24, weight: .semibold, design: .rounded))
+                            .font(.title.weight(.semibold))
                         HStack(spacing: 8) {
                             if isLoading {
                                 ProgressView()
                                     .controlSize(.small)
                             }
                             Text(message)
-                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .font(.body.weight(.medium))
                                 .foregroundStyle(.secondary)
                         }
                         if let detail, !detail.isEmpty {
                             Text(detail)
-                                .font(.system(size: 12, weight: .regular, design: .rounded))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                     }

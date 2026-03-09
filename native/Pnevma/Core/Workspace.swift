@@ -1,5 +1,5 @@
 import Foundation
-import Combine
+import Observation
 
 /// A single tab within a workspace. Each tab has its own pane layout.
 final class WorkspaceTab: Identifiable {
@@ -49,26 +49,27 @@ final class WorkspaceTab: Identifiable {
 
 /// A workspace represents an open project with its own tabs, terminal sessions,
 /// and connection to the Rust backend (via a shared PnevmaBridge).
-final class Workspace: ObservableObject, Identifiable {
+@Observable
+final class Workspace: Identifiable {
 
     let id: UUID
-    @Published var name: String
-    @Published var projectPath: String?
-    @Published var gitBranch: String?
-    @Published var activeTasks: Int = 0
-    @Published var activeAgents: Int = 0
-    @Published var costToday: Double = 0.0
-    @Published var unreadNotifications: Int = 0
-    @Published var terminalNotificationCount: Int = 0
-    @Published var customColor: String?
-    @Published var isPinned: Bool = false
-    @Published var gitDirty: Bool = false
+    var name: String
+    var projectPath: String?
+    var gitBranch: String?
+    var activeTasks: Int = 0
+    var activeAgents: Int = 0
+    var costToday: Double = 0.0
+    var unreadNotifications: Int = 0
+    var terminalNotificationCount: Int = 0
+    var customColor: String?
+    var isPinned: Bool = false
+    var gitDirty: Bool = false
 
     /// Tabs within this workspace.
-    @Published var tabs: [WorkspaceTab]
+    var tabs: [WorkspaceTab]
 
     /// Index of the currently active tab.
-    @Published var activeTabIndex: Int = 0
+    var activeTabIndex: Int = 0
 
     /// The active tab's pane layout engine.
     var layoutEngine: PaneLayoutEngine {
@@ -95,7 +96,7 @@ final class Workspace: ObservableObject, Identifiable {
         )
         self.tabs = [initialTab]
         self.activeTabIndex = 0
-        self.createdAt = Date()
+        self.createdAt = Date.now
     }
 
     /// Initialize with pre-built tabs (used for restore).
@@ -112,7 +113,7 @@ final class Workspace: ObservableObject, Identifiable {
         let resolvedTabs = tabs.isEmpty ? [WorkspaceTab(title: "Terminal")] : tabs
         self.tabs = resolvedTabs
         self.activeTabIndex = min(activeTabIndex, resolvedTabs.count - 1)
-        self.createdAt = Date()
+        self.createdAt = Date.now
     }
 
     // MARK: - Tab Operations

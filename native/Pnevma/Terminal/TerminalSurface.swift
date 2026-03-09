@@ -82,7 +82,7 @@ class TerminalSurface {
             userdata: nil,
             supports_selection_clipboard: false,
             wakeup_cb: { _ in
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     if let app = TerminalSurface.ghosttyApp {
                         ghostty_app_tick(app)
                     }
@@ -108,7 +108,7 @@ class TerminalSurface {
             close_surface_cb: { userdata, processAlive in
                 guard let userdata else { return }
                 let surface = Unmanaged<TerminalSurface>.fromOpaque(userdata).takeRetainedValue()
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     surface.handleClose(processAlive: processAlive)
                 }
             }
@@ -439,7 +439,7 @@ class TerminalSurface {
             let title = n.title.map { String(cString: $0) } ?? ""
             let body = n.body.map { String(cString: $0) } ?? ""
             let surfacePtr = target.target.surface
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NotificationCenter.default.post(
                     name: .ghosttyDesktopNotification,
                     object: nil,
@@ -456,7 +456,7 @@ class TerminalSurface {
             let v = action.action.set_title
             let title = v.title.map { String(cString: $0) } ?? ""
             let surfacePtr = target.target.surface
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NotificationCenter.default.post(
                     name: .ghosttySetTitle,
                     object: nil,
@@ -469,7 +469,7 @@ class TerminalSurface {
             let v = action.action.pwd
             let path = v.pwd.map { String(cString: $0) } ?? ""
             let surfacePtr = target.target.surface
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NotificationCenter.default.post(
                     name: .ghosttyPwdChanged,
                     object: nil,
@@ -480,7 +480,7 @@ class TerminalSurface {
 
         case GHOSTTY_ACTION_RING_BELL:
             let surfacePtr = target.target.surface
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NotificationCenter.default.post(
                     name: .ghosttyRingBell,
                     object: nil,
@@ -490,7 +490,7 @@ class TerminalSurface {
             return true
 
         case GHOSTTY_ACTION_COLOR_CHANGE, GHOSTTY_ACTION_CONFIG_CHANGE, GHOSTTY_ACTION_RELOAD_CONFIG:
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 GhosttyThemeProvider.shared.refresh()
             }
             return true

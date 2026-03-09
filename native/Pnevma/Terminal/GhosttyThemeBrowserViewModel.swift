@@ -1,7 +1,8 @@
 import Foundation
+import Observation
 
-@MainActor
-class GhosttyThemeBrowserViewModel: ObservableObject {
+@Observable @MainActor
+final class GhosttyThemeBrowserViewModel {
     enum FilterMode: String, CaseIterable, Identifiable {
         case all, dark, light
 
@@ -16,9 +17,9 @@ class GhosttyThemeBrowserViewModel: ObservableObject {
         }
     }
 
-    @Published var themes: [GhosttyThemeFile] = []
-    @Published var searchText = ""
-    @Published var filterMode: FilterMode = .all
+    var themes: [GhosttyThemeFile] = []
+    var searchText = ""
+    var filterMode: FilterMode = .all
     var currentThemeName: String?
 
     var filteredThemes: [GhosttyThemeFile] {

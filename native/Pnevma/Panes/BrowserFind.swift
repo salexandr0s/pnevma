@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import WebKit
 
 // MARK: - BrowserFindJavaScript
@@ -7,12 +8,12 @@ enum BrowserFindJavaScript {
     /// Inject find-in-page search. Returns match count.
     static func search(in webView: WKWebView, query: String) async -> Int {
         let escaped = query
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            .replacing("\\", with: "\\\\")
+            .replacing("'", with: "\\'")
+            .replacing("\n", with: "\\n")
+            .replacing("\r", with: "\\r")
+            .replacing("\u{2028}", with: "\\u2028")
+            .replacing("\u{2029}", with: "\\u2029")
 
         let js = """
         (function() {
@@ -161,18 +162,18 @@ enum BrowserFindJavaScript {
 
 // MARK: - BrowserFindState
 
-@MainActor
-final class BrowserFindState: ObservableObject {
-    @Published var needle: String = ""
-    @Published var currentMatch: Int = 0
-    @Published var totalMatches: Int = 0
+@Observable @MainActor
+final class BrowserFindState {
+    var needle: String = ""
+    var currentMatch: Int = 0
+    var totalMatches: Int = 0
 }
 
 // MARK: - BrowserFindOverlay
 
 struct BrowserFindOverlay: View {
-    @ObservedObject var state: BrowserFindState
-    @ObservedObject private var theme = GhosttyThemeProvider.shared
+    @Bindable var state: BrowserFindState
+    @Environment(GhosttyThemeProvider.self) var theme
     let webView: WKWebView
     let onClose: () -> Void
 
@@ -183,7 +184,7 @@ struct BrowserFindOverlay: View {
             // Search field
             TextField("Find in page", text: $state.needle)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.body)
                 .frame(minWidth: 120)
                 .onSubmit {
                     navigateNext()
@@ -195,7 +196,7 @@ struct BrowserFindOverlay: View {
             // Match count
             if state.totalMatches > 0 || !state.needle.isEmpty {
                 Text("\(state.currentMatch)/\(state.totalMatches)")
-                    .font(.system(size: 11))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -203,18 +204,20 @@ struct BrowserFindOverlay: View {
             // Previous
             Button(action: { navigatePrev() }) {
                 Image(systemName: "chevron.up")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.caption.weight(.medium))
             }
             .buttonStyle(.plain)
             .disabled(state.totalMatches == 0)
+            .accessibilityLabel("Previous match")
 
             // Next
             Button(action: { navigateNext() }) {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.caption.weight(.medium))
             }
             .buttonStyle(.plain)
             .disabled(state.totalMatches == 0)
+            .accessibilityLabel("Next match")
 
             // Close
             Button(action: {
@@ -222,9 +225,10 @@ struct BrowserFindOverlay: View {
                 onClose()
             }) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.caption.weight(.medium))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close find")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -239,7 +243,7 @@ struct BrowserFindOverlay: View {
         searchTask?.cancel()
         searchTask = Task { @MainActor in
             // Small debounce
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled else { return }
 
             let total = await BrowserFindJavaScript.search(in: webView, query: query)

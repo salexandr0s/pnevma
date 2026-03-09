@@ -1,13 +1,15 @@
 import Cocoa
+import Observation
 import os
 
 /// Manages workspace lifecycle — creation, switching, persistence, and teardown.
 /// Only the selected workspace is bound to the backend at any time.
+@Observable
 @MainActor
-final class WorkspaceManager: ObservableObject {
+final class WorkspaceManager {
 
-    @Published private(set) var workspaces: [Workspace] = []
-    @Published private(set) var activeWorkspaceID: UUID?
+    private(set) var workspaces: [Workspace] = []
+    private(set) var activeWorkspaceID: UUID?
 
     var activeWorkspace: Workspace? {
         guard let id = activeWorkspaceID else { return nil }
@@ -15,10 +17,14 @@ final class WorkspaceManager: ObservableObject {
     }
 
     /// Called when the active workspace changes, providing the new workspace's layout engine.
+    @ObservationIgnored
     var onActiveWorkspaceChanged: ((PaneLayoutEngine) -> Void)?
 
+    @ObservationIgnored
     private let commandBus: any CommandCalling
+    @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
 
     private struct PendingActivationTarget {
@@ -27,10 +33,15 @@ final class WorkspaceManager: ObservableObject {
         let generation: UInt64
     }
 
+    @ObservationIgnored
     private var nextRequestGeneration: UInt64 = 0
+    @ObservationIgnored
     private var workspaceGenerations: [UUID: UInt64] = [:]
+    @ObservationIgnored
     private var workspaceProjectIDs: [UUID: String] = [:]
+    @ObservationIgnored
     private var desiredActivationTarget: PendingActivationTarget?
+    @ObservationIgnored
     private var activationTask: Task<Void, Never>?
 
     init(

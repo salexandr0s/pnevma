@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 // MARK: - Types
 
@@ -105,10 +106,11 @@ enum SemanticVersion {
 
 // MARK: - Coordinator
 
+@Observable
 @MainActor
-final class AppUpdateCoordinator: ObservableObject {
+final class AppUpdateCoordinator {
 
-    @Published private(set) var state: AppUpdateState
+    private(set) var state: AppUpdateState
 
     private let versionChecker: any ReleaseVersionChecking
     private let userDefaults: UserDefaults
@@ -147,7 +149,7 @@ final class AppUpdateCoordinator: ObservableObject {
         guard AppRuntimeSettings.shared.autoUpdate else { return }
 
         if let lastCheck = state.lastCheckAt,
-           Date().timeIntervalSince(lastCheck) < checkInterval {
+           Date.now.timeIntervalSince(lastCheck) < checkInterval {
             return
         }
 
@@ -166,7 +168,7 @@ final class AppUpdateCoordinator: ObservableObject {
 
         do {
             let (version, url) = try await versionChecker.fetchLatestRelease()
-            let now = Date()
+            let now = Date.now
 
             state.lastCheckAt = now
             state.latestVersion = version
