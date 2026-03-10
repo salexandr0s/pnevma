@@ -997,7 +997,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowsMultipleSelection = false
         panel.message = "Select a project directory"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        workspaceManager?.createWorkspace(name: url.lastPathComponent, projectPath: url.path)
+        workspaceManager?.bindProjectToActiveWorkspace(
+            name: url.lastPathComponent,
+            projectPath: url.path
+        )
         ToastManager.shared.show("Project opened: \(url.lastPathComponent)", icon: "folder.badge.checkmark", style: .success)
     }
 

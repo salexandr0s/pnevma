@@ -31,7 +31,24 @@ final class WorkspaceTab: Identifiable {
 
         let paneIDs = layoutEngine.root?.allPaneIDs ?? [rootPaneID]
         guard paneIDs.count == 1 else { return false }
-        guard paneIDs.allSatisfy({ layoutEngine.persistedPane(for: $0) == nil }) else { return false }
+
+        if let existingPane = layoutEngine.persistedPane(for: rootPaneID) {
+            guard existingPane.type == "welcome", let workingDirectory else {
+                return false
+            }
+
+            layoutEngine.upsertPersistedPane(
+                PersistedPane(
+                    paneID: rootPaneID,
+                    type: "terminal",
+                    workingDirectory: workingDirectory,
+                    sessionID: existingPane.sessionID,
+                    taskID: existingPane.taskID,
+                    metadataJSON: existingPane.metadataJSON
+                )
+            )
+            return true
+        }
 
         layoutEngine.upsertPersistedPane(
             PersistedPane(

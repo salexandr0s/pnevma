@@ -76,6 +76,27 @@ final class WorkspaceManager {
         return workspace
     }
 
+    @discardableResult
+    func bindProjectToActiveWorkspace(name: String, projectPath: String) -> Workspace {
+        let workspace: Workspace
+        if let activeWorkspace {
+            workspace = activeWorkspace
+        } else {
+            workspace = createWorkspace(name: name)
+        }
+
+        removeOtherProjectWorkspaces(excluding: workspace.id)
+        workspace.name = name
+        workspace.projectPath = projectPath
+        resetMetadata(for: workspace)
+        _ = workspace.ensureActiveTabHasDisplayableRootPane()
+        activateWorkspace(id: workspace.id)
+        Log.workspace.info(
+            "Bound workspace \(workspace.id, privacy: .public) to project \(projectPath, privacy: .public)"
+        )
+        return workspace
+    }
+
     func switchToWorkspace(_ id: UUID) {
         guard workspaces.contains(where: { $0.id == id }) else { return }
         activateWorkspace(id: id)
@@ -118,6 +139,7 @@ final class WorkspaceManager {
         activeWorkspaceID restoredActiveWorkspaceID: UUID?
     ) {
         workspaces = snapshots.map(Workspace.init(snapshot:))
+        collapseDuplicateProjectWorkspaces(preferredProjectWorkspaceID: restoredActiveWorkspaceID)
         for workspace in workspaces {
             ensurePlaceholderPaneIfNeeded(for: workspace)
         }
@@ -440,6 +462,40 @@ final class WorkspaceManager {
         workspace.activeAgents = 0
         workspace.costToday = 0
         workspace.unreadNotifications = 0
+        workspace.gitDirty = false
+    }
+
+    private func removeOtherProjectWorkspaces(excluding retainedWorkspaceID: UUID) {
+        let removedIDs: [UUID] = workspaces.compactMap { workspace in
+            guard workspace.id != retainedWorkspaceID, workspace.projectPath != nil else {
+                return nil
+            }
+            return workspace.id
+        }
+        guard !removedIDs.isEmpty else { return }
+
+        let removedIDSet = Set(removedIDs)
+        workspaces.removeAll { removedIDSet.contains($0.id) }
+        for removedID in removedIDs {
+            invalidateRequestState(for: removedID)
+        }
+    }
+
+    private func collapseDuplicateProjectWorkspaces(preferredProjectWorkspaceID: UUID?) {
+        let projectWorkspaceIDs = workspaces.compactMap { workspace in
+            workspace.projectPath == nil ? nil : workspace.id
+        }
+        guard projectWorkspaceIDs.count > 1 else { return }
+
+        let retainedWorkspaceID =
+            preferredProjectWorkspaceID
+            .flatMap { preferredID in
+                projectWorkspaceIDs.contains(preferredID) ? preferredID : nil
+            }
+            ?? projectWorkspaceIDs.first
+
+        guard let retainedWorkspaceID else { return }
+        removeOtherProjectWorkspaces(excluding: retainedWorkspaceID)
     }
 
     private func postProjectOpenFailure(message: String, workspaceID: UUID, generation: UInt64) {

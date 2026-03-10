@@ -50,7 +50,15 @@ struct RulesManagerView: View {
 
             Divider()
 
-            if !viewModel.isProjectOpen {
+            if let waitingMessage = viewModel.projectStatusMessage {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text(waitingMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !viewModel.isProjectOpen {
                 EmptyStateView(
                     icon: "folder.badge.questionmark",
                     title: "No project open",
@@ -189,6 +197,7 @@ final class RulesManagerViewModel {
     var showAddSheet = false
     var actionError: String?
     private(set) var isProjectOpen = false
+    private(set) var projectStatusMessage: String?
 
     @ObservationIgnored
     private let commandBus: (any CommandCalling)?
@@ -238,6 +247,7 @@ final class RulesManagerViewModel {
 
     func load() {
         rulesGeneration &+= 1
+        let generation = rulesGeneration
         guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
@@ -247,10 +257,12 @@ final class RulesManagerViewModel {
             guard let self else { return }
             do {
                 let fetched: [ProjectRule] = try await bus.call(method: "rules.list", params: nil)
+                guard self.rulesGeneration == generation else { return }
                 self.rules = fetched
+                self.projectStatusMessage = nil
             } catch {
-                self.actionError = error.localizedDescription
-                self.scheduleDismissActionError()
+                guard self.rulesGeneration == generation else { return }
+                self.handleLoadFailure(error)
             }
         }
     }
@@ -342,19 +354,40 @@ final class RulesManagerViewModel {
     // MARK: - Private
 
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        rulesGeneration &+= 1
         switch state {
-        case .idle, .opening, .closed:
+        case .idle, .opening:
             isProjectOpen = false
+            projectStatusMessage = "Waiting for project activation..."
+            rules = []
+        case .closed:
+            isProjectOpen = false
+            projectStatusMessage = nil
             rules = []
         case .open:
             isProjectOpen = true
+            projectStatusMessage = nil
             load()
         case .failed(_, _, let message):
             isProjectOpen = false
+            projectStatusMessage = nil
             rules = []
             actionError = message
             scheduleDismissActionError()
         }
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        if PnevmaError.isProjectNotReady(error) {
+            isProjectOpen = false
+            projectStatusMessage = "Waiting for project activation..."
+            rules = []
+            actionError = nil
+            return
+        }
+
+        actionError = error.localizedDescription
+        scheduleDismissActionError()
     }
 
     private func scheduleDismissActionError() {

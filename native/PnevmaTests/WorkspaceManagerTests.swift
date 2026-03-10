@@ -363,6 +363,65 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(rootPane?.workingDirectory, "/tmp/a")
     }
 
+    func testBindingProjectToActiveWorkspaceReusesWorkspaceAndRemovesOlderProjectWorkspace() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            ),
+            .init(
+                projectID: "project-b",
+                projectPath: "/tmp/b",
+                gitBranch: "branch-b",
+                activeTasks: 2,
+                activeAgents: 1,
+                costToday: 2.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+
+        let projectWorkspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        try await waitUntil {
+            await bus.currentProjectID() == "project-a"
+        }
+
+        let scratch = manager.createWorkspace(name: "Scratch")
+        try await waitUntil {
+            let rootPaneID = scratch.layoutEngine.root?.allPaneIDs.first
+            let rootPane = rootPaneID.flatMap { scratch.layoutEngine.persistedPane(for: $0) }
+            return manager.activeWorkspaceID == scratch.id && rootPane?.type == "welcome"
+        }
+
+        let rebound = manager.bindProjectToActiveWorkspace(name: "B", projectPath: "/tmp/b")
+
+        try await waitUntil {
+            let currentProjectID = await bus.currentProjectID()
+            let rootPaneID = rebound.layoutEngine.root?.allPaneIDs.first
+            let rootPane = rootPaneID.flatMap { rebound.layoutEngine.persistedPane(for: $0) }
+            let projectWorkspaceCount = manager.workspaces.filter { $0.projectPath != nil }.count
+            return manager.activeWorkspaceID == scratch.id
+                && currentProjectID == "project-b"
+                && projectWorkspaceCount == 1
+                && rootPane?.type == "terminal"
+                && rootPane?.workingDirectory == "/tmp/b"
+        }
+
+        XCTAssertEqual(rebound.id, scratch.id)
+        XCTAssertEqual(rebound.name, "B")
+        XCTAssertEqual(rebound.projectPath, "/tmp/b")
+        XCTAssertFalse(manager.workspaces.contains(where: { $0.id == projectWorkspace.id }))
+        XCTAssertEqual(manager.workspaces.count, 1)
+    }
+
     func testActivationHubTracksWorkspaceOpenAndScratchClose() async throws {
         let bus = MockCommandBus(specs: [
             .init(

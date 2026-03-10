@@ -71,6 +71,26 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(workspace.layoutEngine.persistedPane(for: rootPaneID)?.type, "welcome")
     }
 
+    func testEnsureActiveTabHasDisplayableRootPaneUpgradesWelcomePaneForProjectWorkspace() {
+        let workspace = Workspace(name: "Test", projectPath: "/tmp/project")
+        let rootPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
+        workspace.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: rootPaneID,
+            type: "welcome",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        let changed = workspace.ensureActiveTabHasDisplayableRootPane()
+        let pane = workspace.layoutEngine.persistedPane(for: rootPaneID)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(pane?.type, "terminal")
+        XCTAssertEqual(pane?.workingDirectory, "/tmp/project")
+    }
+
     func testCloseTabRemovesIt() {
         let workspace = Workspace(name: "Test")
         workspace.addTab(title: "Tab 2")

@@ -39,7 +39,15 @@ struct FileBrowserView: View {
 
                 Divider()
 
-                if !viewModel.isProjectOpen {
+                if let waitingMessage = viewModel.projectStatusMessage {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text(waitingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !viewModel.isProjectOpen {
                     EmptyStateView(
                         icon: "folder",
                         title: "No project open",
@@ -235,6 +243,7 @@ final class FileBrowserViewModel {
     var previewContent: String?
     var actionError: String?
     private(set) var isProjectOpen = false
+    private(set) var projectStatusMessage: String?
     private(set) var isLoadingRoot = false
     private(set) var isLoadingPreview = false
     private(set) var loadingDirectories: Set<String> = []
@@ -465,15 +474,22 @@ final class FileBrowserViewModel {
         invalidatePendingLoads()
 
         switch state {
-        case .idle, .opening, .closed:
+        case .idle, .opening:
             isProjectOpen = false
+            projectStatusMessage = "Waiting for project activation..."
+            clearContentState()
+        case .closed:
+            isProjectOpen = false
+            projectStatusMessage = nil
             clearContentState()
         case .open:
             isProjectOpen = true
+            projectStatusMessage = nil
             clearContentState()
             loadRoot()
         case .failed(_, _, let message):
             isProjectOpen = false
+            projectStatusMessage = nil
             clearContentState()
             actionError = message
             scheduleDismissActionError()
@@ -483,6 +499,7 @@ final class FileBrowserViewModel {
     private func handleLoadFailure(_ error: Error) {
         if PnevmaError.isProjectNotReady(error) {
             isProjectOpen = false
+            projectStatusMessage = "Waiting for project activation..."
             clearContentState()
             actionError = nil
             return

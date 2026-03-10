@@ -188,6 +188,26 @@ final class WorkspaceRestoreTests: XCTestCase {
         XCTAssertEqual(manager.activeWorkspace?.name, "Two")
     }
 
+    func testWorkspaceManagerRestoreCollapsesDuplicateProjectWorkspaces() {
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: CommandBus(bridge: bridge))
+
+        let scratch = Workspace(name: "Scratch")
+        let firstProject = Workspace(name: "One", projectPath: "/tmp/one")
+        let secondProject = Workspace(name: "Two", projectPath: "/tmp/two")
+
+        manager.restore(
+            snapshots: [scratch.snapshot(), firstProject.snapshot(), secondProject.snapshot()],
+            activeWorkspaceID: secondProject.id
+        )
+
+        let projectWorkspaces = manager.workspaces.filter { $0.projectPath != nil }
+        XCTAssertEqual(projectWorkspaces.count, 1)
+        XCTAssertEqual(projectWorkspaces.first?.id, secondProject.id)
+        XCTAssertEqual(manager.activeWorkspaceID, secondProject.id)
+        XCTAssertTrue(manager.workspaces.contains(where: { $0.id == scratch.id }))
+    }
+
     func testContentAreaViewShowsRestoreErrorPaneWithoutMutatingStateWhenDescriptorMissing() {
         let (_, rootPane) = PaneFactory.makeWelcome()
         let contentArea = ContentAreaView(

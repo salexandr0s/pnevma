@@ -215,6 +215,19 @@ final class FileBrowserPaneTests: XCTestCase {
         XCTAssertNil(viewModel.previewContent)
     }
 
+    func testOpeningStateShowsWaitingMessageInsteadOfNoProjectState() async throws {
+        let activationHub = ActiveWorkspaceActivationHub()
+        let viewModel = FileBrowserViewModel(commandBus: nil, activationHub: activationHub)
+
+        activationHub.update(.opening(workspaceID: UUID(), generation: 1))
+
+        try await waitUntil {
+            !viewModel.isProjectOpen
+                && viewModel.projectStatusMessage == "Waiting for project activation..."
+                && viewModel.rootNodes.isEmpty
+        }
+    }
+
     func testStaleRootResponseDoesNotOverwriteNewWorkspaceTree() async throws {
         let bus = MockFileBrowserCommandBus(
             treeResponsesByPath: [
