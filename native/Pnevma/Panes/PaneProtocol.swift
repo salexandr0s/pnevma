@@ -363,6 +363,7 @@ private struct WelcomeContentView: View {
                 // Action cards
                 HStack(spacing: 12) {
                     WelcomeCard(
+                        accessibilityID: "welcome.openProject",
                         icon: "folder.badge.plus",
                         title: "Open Project",
                         subtitle: "Resume or start a workspace",
@@ -372,6 +373,7 @@ private struct WelcomeContentView: View {
                     }
 
                     WelcomeCard(
+                        accessibilityID: "welcome.newTerminal",
                         icon: "terminal",
                         title: "New Terminal",
                         subtitle: "Launch a standalone shell",
@@ -418,10 +420,12 @@ private struct WelcomeContentView: View {
                 appeared = true
             }
         }
+        .accessibilityIdentifier("welcome.root")
     }
 }
 
 private struct WelcomeCard: View {
+    let accessibilityID: String
     let icon: String
     let title: String
     let subtitle: String
@@ -465,6 +469,7 @@ private struct WelcomeCard: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.15), value: isHovering)
+        .accessibilityIdentifier(accessibilityID)
     }
 }
 

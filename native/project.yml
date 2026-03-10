@@ -26,6 +26,7 @@ schemes:
       config: Debug
       targets:
         - PnevmaTests
+        - PnevmaUITests
   PnevmaTests:
     build:
       targets:
@@ -35,6 +36,15 @@ schemes:
       config: Debug
       targets:
         - PnevmaTests
+  PnevmaUITests:
+    build:
+      targets:
+        Pnevma: [test]
+        PnevmaUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - PnevmaUITests
 
 targets:
   Pnevma:
@@ -87,4 +97,21 @@ targets:
         PRODUCT_NAME: PnevmaTests
         PRODUCT_MODULE_NAME: PnevmaTests
         PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  PnevmaUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: PnevmaUITests
+    dependencies:
+      - target: Pnevma
+    settings:
+      base:
+        PRODUCT_NAME: PnevmaUITests
+        PRODUCT_MODULE_NAME: PnevmaUITests
+        PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.uitests
+        ENABLE_APP_INTENTS_METADATA_GENERATION: NO
+        ENABLE_HARDENED_RUNTIME: NO
         GENERATE_INFOPLIST_FILE: YES

@@ -101,11 +101,13 @@ struct SidebarView: View {
                     onOpenSettings?()
                 }
                 .padding(.vertical, 4)
+                .accessibilityIdentifier("sidebar.settings")
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
         }
         .frame(width: DesignTokens.Layout.sidebarWidth)
         .background(sidebarBackground)
+        .accessibilityIdentifier("sidebar.view")
     }
 }

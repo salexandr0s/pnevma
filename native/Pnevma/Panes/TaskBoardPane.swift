@@ -179,6 +179,7 @@ struct TaskBoardView: View {
             )
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.taskBoard")
     }
 
     private func openCreateSheet() {

@@ -109,6 +109,7 @@ struct SearchView: View {
             }
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.search")
     }
 }
 

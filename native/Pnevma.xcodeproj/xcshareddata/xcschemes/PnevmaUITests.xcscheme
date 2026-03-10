@@ -9,15 +9,29 @@
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "8C49E62DAF419010764E16C6"
                BuildableName = "Pnevma.app"
                BlueprintName = "Pnevma"
+               ReferencedContainer = "container:Pnevma.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "BC40694AB5F83ABE3F86F258"
+               BuildableName = "PnevmaUITests.xctest"
+               BlueprintName = "PnevmaUITests"
                ReferencedContainer = "container:Pnevma.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -39,17 +53,6 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "847F36B446EC99E0A02AD68D"
-               BuildableName = "PnevmaTests.xctest"
-               BlueprintName = "PnevmaTests"
-               ReferencedContainer = "container:Pnevma.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
          <TestableReference
             skipped = "NO"
             parallelizable = "NO">
@@ -85,8 +88,6 @@
             ReferencedContainer = "container:Pnevma.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <CommandLineArguments>
-      </CommandLineArguments>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

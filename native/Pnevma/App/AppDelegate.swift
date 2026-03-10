@@ -2,16 +2,6 @@ import Cocoa
 import SwiftUI
 import os
 
-enum AppSmokeMode: String {
-    case launch
-    case ghostty
-
-    static var current: AppSmokeMode? {
-        ProcessInfo.processInfo.environment["PNEVMA_SMOKE_MODE"]
-            .flatMap(AppSmokeMode.init(rawValue:))
-    }
-}
-
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -64,9 +54,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishLaunchingAfterSettingsLoad() {
         let restoredState = persistence?.restore(
-            ifEnabled: AppRuntimeSettings.shared.restoreWindowsOnLaunch
+            ifEnabled: AppLaunchContext.shouldRestoreWindowsOnLaunch
         )
-        if let smokeMode = AppSmokeMode.current {
+        if let smokeMode = AppLaunchContext.smokeMode {
             runSmoke(mode: smokeMode, restoredState: restoredState)
             return
         }
@@ -85,15 +75,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let restoredState {
             applyRestoredState(restoredState)
         } else {
-            workspaceManager?.createWorkspace(name: "Default")
+            workspaceManager?.createWorkspace(name: AppLaunchContext.initialWorkspaceName)
         }
 
         // Build menu bar
         NSApplication.shared.mainMenu = buildMainMenu()
 
         // Initialize update coordinator
-        updateCoordinator = AppUpdateCoordinator()
-        updateCoordinator?.automaticCheck()
+        if !AppLaunchContext.isUITesting {
+            updateCoordinator = AppUpdateCoordinator()
+            if AppLaunchContext.shouldRunAutomaticUpdateChecks {
+                updateCoordinator?.automaticCheck()
+            }
+        }
 
         // Attach toast overlay
         if let win = window {
@@ -107,18 +101,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Start auto-save with state provider
         persistence?.stateProvider = { [weak self] in
-            guard let self = self else {
+            guard let self else {
                 return SessionPersistence.SessionState(
-                    windowFrame: nil, workspaces: [], activeWorkspaceID: nil, sidebarVisible: true)
+                    windowFrame: nil,
+                    workspaces: [],
+                    activeWorkspaceID: nil,
+                    sidebarVisible: true
+                )
             }
             return self.buildSessionState()
         }
-        persistence?.startAutoSave()
+        if !AppLaunchContext.isUITesting {
+            persistence?.startAutoSave()
+        }
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
-        persistence?.save(state: buildSessionState())
         persistence?.stopAutoSave()
+        if !AppLaunchContext.isUITesting {
+            persistence?.save(state: buildSessionState())
+        }
         shutdownRuntime()
     }
 
@@ -181,6 +183,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         persistence = SessionPersistence()
+        persistence?.isPersistenceEnabled = !AppLaunchContext.isUITesting
         runtimeSettingsObserver = NotificationCenter.default.addObserver(
             forName: .appRuntimeSettingsDidChange,
             object: AppRuntimeSettings.shared,
@@ -227,9 +230,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyRuntimeSettings() {
-        persistence?.isPersistenceEnabled = AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
+        persistence?.isPersistenceEnabled =
+            !AppLaunchContext.isUITesting && AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
         sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
-        if AppRuntimeSettings.shared.autoUpdate {
+        if AppLaunchContext.shouldRunAutomaticUpdateChecks {
             updateCoordinator?.automaticCheck()
         }
     }
@@ -427,7 +431,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if let restoredState {
                 applyRestoredState(restoredState)
             } else {
-                workspaceManager?.createWorkspace(name: "Default")
+                workspaceManager?.createWorkspace(name: AppLaunchContext.initialWorkspaceName)
             }
             Task { @MainActor [weak self] in
                 self?.finishSmoke(success: true, message: "launch smoke ready")
@@ -503,7 +507,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.general.error("Smoke failed: \(message)")
         }
 
-        if AppSmokeMode.current == .ghostty {
+        if AppLaunchContext.smokeMode == .ghostty {
             _exit(Int32(success ? 0 : 1))
         }
 

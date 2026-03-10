@@ -33,6 +33,7 @@ struct AddButton: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel("Add workspace")
+        .accessibilityIdentifier("sidebar.addWorkspace")
     }
 }
 
@@ -86,6 +87,7 @@ struct ToolsSectionHeader: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel(isExpanded ? "Collapse tools section" : "Expand tools section")
+        .accessibilityIdentifier("sidebar.tools.toggle")
     }
 }
 

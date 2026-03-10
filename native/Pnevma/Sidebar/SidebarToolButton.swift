@@ -37,5 +37,6 @@ struct SidebarToolButton: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel(tool.title + (tool.isStub ? ", coming soon" : ""))
+        .accessibilityIdentifier("sidebar.tool.\(tool.id)")
     }
 }

@@ -28,6 +28,7 @@ struct SettingsView: View {
             appViewModel.load()
             ghosttyViewModel.load()
         }
+        .accessibilityIdentifier("settings.root")
     }
 }
 

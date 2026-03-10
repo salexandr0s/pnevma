@@ -68,6 +68,7 @@ struct NotificationsView: View {
             }
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.notifications")
     }
 }
 

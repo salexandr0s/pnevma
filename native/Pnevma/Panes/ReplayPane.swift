@@ -146,6 +146,7 @@ struct ReplayView: View {
             .padding(.vertical, 8)
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.replay")
     }
 }
 
