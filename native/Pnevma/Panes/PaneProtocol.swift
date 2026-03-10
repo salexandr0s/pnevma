@@ -650,6 +650,8 @@ private struct ProjectOpenFailureEventPayload: Decodable {
 
 /// Wraps TerminalHostView to conform to PaneContent.
 final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
+    private static let maxManagedSessionProjectNotReadyRetries = 5
+    private static let managedSessionRetryDelayNanos: UInt64 = 250_000_000
 
     let paneID = PaneID()
     let paneType = "terminal"
@@ -666,6 +668,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private var loadTask: Task<Void, Never>?
     private var recoveryOptions: [SessionRecoveryOption] = []
     private var awaitingProjectActivation = false
+    private var projectNotReadyRetryCount = 0
     private let activationHub: ActiveWorkspaceActivationHub
     var onPersistedStateChange: ((PersistedPane) -> Void)?
 
@@ -875,6 +878,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func showProjectActivationFailureMessage(_ message: String) {
+        projectNotReadyRetryCount = 0
         awaitingProjectActivation = true
         showState(
             title: "Project Activation Failed",
@@ -895,6 +899,18 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             scrollback: nil,
             actions: []
         )
+    }
+
+    private func scheduleManagedSessionRetryAfterProjectNotReady() {
+        loadTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.managedSessionRetryDelayNanos)
+            } catch {
+                return
+            }
+            guard let self, self.awaitingProjectActivation else { return }
+            self.retryAfterProjectActivation()
+        }
     }
 
     private func loadOrRestoreSession() {
@@ -989,13 +1005,29 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             case .failed(_, _, let message):
                 showProjectActivationFailureMessage(message)
             case .idle, .closed:
+                projectNotReadyRetryCount = 0
                 awaitingProjectActivation = false
                 showEphemeralTerminal()
             case .open:
-                break
+                projectNotReadyRetryCount += 1
+                if projectNotReadyRetryCount > Self.maxManagedSessionProjectNotReadyRetries {
+                    awaitingProjectActivation = false
+                    showState(
+                        title: "Terminal Error",
+                        message: "The project backend is still not ready.",
+                        detail: "Try again in a moment.",
+                        scrollback: nil,
+                        actions: makeFallbackActions(),
+                        isLoading: false
+                    )
+                } else {
+                    showProjectActivationPending()
+                    scheduleManagedSessionRetryAfterProjectNotReady()
+                }
             }
             return
         }
+        projectNotReadyRetryCount = 0
         let message = error.localizedDescription
 
         showState(
@@ -1020,6 +1052,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func showEphemeralTerminal() {
+        projectNotReadyRetryCount = 0
         let hostView = TerminalHostView()
         hostView.launchConfiguration = .shell(
             workingDirectory: shellWorkingDirectory,
@@ -1046,6 +1079,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func apply(binding: SessionBindingDescriptor) async {
+        projectNotReadyRetryCount = 0
         currentSessionID = binding.sessionID
         currentWorkingDirectory = binding.cwd
         recoveryOptions = binding.recoveryOptions
