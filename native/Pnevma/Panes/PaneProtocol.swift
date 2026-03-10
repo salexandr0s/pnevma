@@ -1264,7 +1264,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     func launchAgent(_ agent: AgentKind) {
         removeAgentLauncher()
-        hostView?.terminalSurface?.sendText("\(agent.command)\n")
+        hostView?.terminalSurface?.sendText("\(agent.command)\r")
     }
 
     private func replaceContent(with view: NSView) {
