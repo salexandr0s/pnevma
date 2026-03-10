@@ -651,8 +651,8 @@ final class FileBrowserViewModel {
 
                 struct FilePreview: Decodable {
                     let content: String
-                    let truncated: Bool
-                    let is_binary: Bool  // swiftlint:disable:this identifier_name
+                    let truncated: Bool?
+                    let is_binary: Bool?  // swiftlint:disable:this identifier_name
                 }
 
                 let preview: FilePreview = try await bus.call(
@@ -667,8 +667,8 @@ final class FileBrowserViewModel {
                 self.previewContent = preview.content
                 self.originalContent = preview.content
                 self.editableContent = preview.content
-                self.isBinary = preview.is_binary
-                self.isTruncated = preview.truncated
+                self.isBinary = preview.is_binary ?? false
+                self.isTruncated = preview.truncated ?? false
                 self.actionError = nil
             } catch {
                 guard self.activationGeneration == generation,
