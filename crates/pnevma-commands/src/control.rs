@@ -1749,7 +1749,16 @@ pub async fn route_method(
             let result =
                 commands::write_file_target(commands::WriteFileInput { path, content }, state)
                     .await
-                    .map_err(|e| ("internal_error".to_string(), e))?;
+                    .map_err(|e| {
+                        let code = if e.contains("not found") || e.contains("escapes") || e.contains("not a file") {
+                            "invalid_params"
+                        } else if e.contains("no open project") {
+                            "precondition_failed"
+                        } else {
+                            "internal_error"
+                        };
+                        (code.to_string(), e)
+                    })?;
             serde_json::to_value(result)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }

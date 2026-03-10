@@ -452,6 +452,10 @@ final class FileBrowserViewModel {
         if node.isDirectory {
             selectedFilePath = nil
             previewContent = nil
+            originalContent = nil
+            editableContent = ""
+            isBinary = false
+            isTruncated = false
             isLoadingPreview = false
             return
         }
@@ -747,6 +751,7 @@ final class FileBrowserViewModel {
         editableContent = ""
         isBinary = false
         isTruncated = false
+        isSaving = false
     }
 
     private func children(for path: String) -> [FileNode]? {
