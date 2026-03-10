@@ -2192,6 +2192,7 @@ pub async fn open_file_target(
                 content: "[Binary file preview unavailable]".to_string(),
                 truncated: false,
                 launched_editor,
+                is_binary: true,
             });
         }
     };
@@ -2208,6 +2209,48 @@ pub async fn open_file_target(
         content,
         truncated,
         launched_editor,
+    })
+}
+
+pub async fn write_file_target(
+    input: WriteFileInput,
+    state: &AppState,
+) -> Result<FileWriteResultView, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        ctx.project_path.clone()
+    };
+    let rel = input.path.trim().trim_start_matches('/');
+    ensure_safe_path_input(rel, "file path")?;
+    if rel.is_empty() {
+        return Err("invalid path".to_string());
+    }
+    let abs = project_path.join(rel);
+    // The file must already exist — we don't create new files through this endpoint.
+    if !abs.exists() {
+        return Err(format!("file not found: {}", input.path));
+    }
+    let canonical = abs.canonicalize().map_err(|e| e.to_string())?;
+    let canonical_project = project_path.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&canonical_project) {
+        return Err("path escapes project directory".to_string());
+    }
+    if !canonical.is_file() {
+        return Err("path is not a file".to_string());
+    }
+
+    let bytes = input.content.as_bytes();
+    let bytes_written = bytes.len() as u64;
+    tokio::fs::write(&canonical, bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(FileWriteResultView {
+        path: rel.to_string(),
+        bytes_written,
     })
 }
 

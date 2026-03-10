@@ -29,7 +29,7 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "review", title: "Review", icon: "eye"),
     SidebarToolItem(id: "merge", title: "Merge Queue", icon: "arrow.triangle.merge"),
     SidebarToolItem(id: "diff", title: "Diff Viewer", icon: "doc.text.magnifyingglass"),
-    SidebarToolItem(id: "analytics", title: "Analytics", icon: "chart.bar"),
+    SidebarToolItem(id: "analytics", title: "Usage", icon: "chart.bar"),
     SidebarToolItem(id: "brief", title: "Daily Brief", icon: "newspaper"),
     SidebarToolItem(id: "rules", title: "Rules Manager", icon: "list.bullet.rectangle"),
 ]

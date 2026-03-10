@@ -89,7 +89,7 @@ struct DiffView: View {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.08))
+                            .background(Color.secondary.opacity(0.15))
 
                         ForEach(hunk.lines) { line in
                             DiffLineView(line: line)
@@ -150,6 +150,7 @@ struct DiffLineView: View {
             // Content
             Text(line.content)
                 .font(.system(.body, design: .monospaced))
+                .foregroundStyle(contentColor)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -173,10 +174,18 @@ struct DiffLineView: View {
         }
     }
 
+    private var contentColor: Color {
+        switch line.type {
+        case .addition: return Color(.sRGB, red: 0.6, green: 1.0, blue: 0.6)
+        case .deletion: return Color(.sRGB, red: 1.0, green: 0.6, blue: 0.6)
+        case .context: return .primary
+        }
+    }
+
     private var backgroundColor: Color {
         switch line.type {
-        case .addition: return .green.opacity(0.08)
-        case .deletion: return .red.opacity(0.08)
+        case .addition: return .green.opacity(0.18)
+        case .deletion: return .red.opacity(0.18)
         case .context: return .clear
         }
     }

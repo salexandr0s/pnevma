@@ -24,6 +24,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var contentTopToTabBar: NSLayoutConstraint?
     private var contentTopToSafeArea: NSLayoutConstraint?
     private var toolbarSeparator: NSView?
+    private var titlebarFillView: ThemedTitlebarFillView?
+    private var titlebarFillBottomConstraint: NSLayoutConstraint?
+    private var titlebarFillMinHeightConstraint: NSLayoutConstraint?
     private var titlebarOpenBtn: CapsuleButton?
     private var titlebarCommitBtn: CapsuleButton?
     private var titlebarPushBtn: CapsuleButton?
@@ -336,6 +339,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let titlebarFill = ThemedTitlebarFillView()
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
+        self.titlebarFillView = titlebarFill
 
         guard let contentArea = contentAreaView, let statusBarView = statusBar else {
             Log.general.error("contentAreaView or statusBar not initialized")
@@ -425,10 +429,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         contentTopToTabBar = topToTab
         contentTopToSafeArea = topToSafe
 
+        // Titlebar fill bottom tracks the safe area in windowed mode but
+        // gets a minimum height in fullscreen so buttons don't get clipped.
+        let titlebarBottom = titlebarFill.bottomAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor)
+        titlebarBottom.priority = .defaultHigh
+        self.titlebarFillBottomConstraint = titlebarBottom
+
+        let titlebarMinHeight = titlebarFill.heightAnchor.constraint(greaterThanOrEqualToConstant: 38)
+        titlebarMinHeight.isActive = false
+        self.titlebarFillMinHeightConstraint = titlebarMinHeight
+
         let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
             titlebarFill.topAnchor.constraint(equalTo: windowContent.topAnchor),
-            titlebarFill.bottomAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            titlebarBottom,
             titlebarFill.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
             titlebarFill.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
 
@@ -454,7 +468,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             statusBarView.heightAnchor.constraint(equalToConstant: statusHeight),
 
             // Horizontal separator between titlebar and content (not over sidebar)
-            toolbarSep.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            toolbarSep.topAnchor.constraint(equalTo: titlebarFill.bottomAnchor),
             toolbarSep.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
             toolbarSep.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
             toolbarSep.heightAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
@@ -1571,6 +1585,14 @@ final class HoverTintButton: NSButton {
 // MARK: - NSWindowDelegate
 
 extension AppDelegate: NSWindowDelegate {
+    public func windowDidEnterFullScreen(_ notification: Notification) {
+        titlebarFillMinHeightConstraint?.isActive = true
+    }
+
+    public func windowDidExitFullScreen(_ notification: Notification) {
+        titlebarFillMinHeightConstraint?.isActive = false
+    }
+
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
         if closeConfirmed {
             closeConfirmed = false

@@ -1737,6 +1737,22 @@ pub async fn route_method(
             serde_json::to_value(opened)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "workspace.file.write" => {
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            // Use raw extraction instead of parse_string_param so empty/whitespace content is allowed.
+            let content = params
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| ("invalid_params".to_string(), "missing required param: content".to_string()))?;
+            let result =
+                commands::write_file_target(commands::WriteFileInput { path, content }, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "notification.create" => {
             let title = parse_string_param(params, "title")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
@@ -2167,6 +2183,11 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "usage.local_snapshot" => {
+            let days = parse_optional_i64_param(params, "days");
+            serde_json::to_value(commands::get_local_usage(days).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "analytics.usage_breakdown" => {
             let days = parse_optional_i64_param(params, "days");
             serde_json::to_value(

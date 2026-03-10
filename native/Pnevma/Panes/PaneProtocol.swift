@@ -247,7 +247,7 @@ enum PaneFactory {
     }
 
     static func makeAnalytics() -> (PaneID, NSView & PaneContent) {
-        paneTuple(AnalyticsPaneView(frame: .zero))
+        paneTuple(UsagePaneView(frame: .zero))
     }
 
     static func makeSettings() -> (PaneID, NSView & PaneContent) {
@@ -307,7 +307,7 @@ enum PaneFactory {
         case "search":
             inner = SearchPaneView(frame: .zero)
         case "analytics":
-            inner = AnalyticsPaneView(frame: .zero)
+            inner = UsagePaneView(frame: .zero)
         case "settings":
             inner = SettingsPaneView(frame: .zero)
         case "notifications":
@@ -659,6 +659,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     private var hostView: TerminalHostView?
     private var stateHostView: NSHostingView<TerminalStateView>?
+    private var agentLauncherView: NSHostingView<AgentLauncherOverlay>?
+    private var agentLauncherKeyMonitor: Any?
     private let autoStartIfNeeded: Bool
     private var launchMetadata: TerminalLaunchMetadata
     private var currentWorkingDirectory: String?
@@ -771,6 +773,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     func dispose() {
         loadTask?.cancel()
+        removeAgentLauncher()
         if let bridgeObserverID {
             BridgeEventHub.shared.removeObserver(bridgeObserverID)
         }
@@ -955,7 +958,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 guard let self else { return }
                 do {
                     let binding = try await sessionBridge.binding(for: sessionID)
-                    await self.apply(binding: binding)
+                    await self.apply(binding: binding, isNewSession: false)
                 } catch {
                     await self.handleSessionLoadFailure(error)
                 }
@@ -987,7 +990,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                         workingDirectory: self.shellWorkingDirectory,
                         command: self.managedSessionCommand
                     )
-                    await self.apply(binding: binding)
+                    await self.apply(binding: binding, isNewSession: true)
                 } catch {
                     await self.handleSessionLoadFailure(error)
                 }
@@ -1063,6 +1066,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 self?.handleEphemeralTerminalExit()
             }
         }
+        hostView.onSurfaceReady = { [weak self] in
+            self?.installAgentLauncher()
+        }
         replaceContent(with: hostView)
         self.hostView = hostView
         hostView.ensureSurfaceCreated()
@@ -1078,7 +1084,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         showDeferredLaunchState()
     }
 
-    private func apply(binding: SessionBindingDescriptor) async {
+    private func apply(binding: SessionBindingDescriptor, isNewSession: Bool) async {
         projectNotReadyRetryCount = 0
         currentSessionID = binding.sessionID
         currentWorkingDirectory = binding.cwd
@@ -1086,13 +1092,13 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         notifyPersistedStateChanged()
 
         if binding.isLiveAttach {
-            showLiveTerminal(binding)
+            showLiveTerminal(binding, isNewSession: isNewSession)
         } else {
             await showArchivedTerminal(binding)
         }
     }
 
-    private func showLiveTerminal(_ binding: SessionBindingDescriptor) {
+    private func showLiveTerminal(_ binding: SessionBindingDescriptor, isNewSession: Bool) {
         let hostView = TerminalHostView()
         hostView.launchConfiguration = binding.makeLaunchConfiguration()
         hostView.attachedSessionID = binding.sessionID
@@ -1110,6 +1116,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                     columns: columns,
                     rows: rows
                 )
+            }
+        }
+        if isNewSession {
+            hostView.onSurfaceReady = { [weak self] in
+                self?.installAgentLauncher()
             }
         }
         replaceContent(with: hostView)
@@ -1218,9 +1229,48 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         onPersistedStateChange?(persistedPane())
     }
 
+    // MARK: - Agent Launcher Overlay
+
+    private func installAgentLauncher() {
+        removeAgentLauncher()
+        let overlay = AgentLauncherOverlay { [weak self] agent in
+            self?.launchAgent(agent)
+        }
+        let hosting = NSHostingView(rootView: overlay)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            hosting.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+        ])
+        agentLauncherView = hosting
+
+        agentLauncherKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.agentLauncherView != nil,
+                  self.window?.firstResponder === self.hostView else { return event }
+            self.removeAgentLauncher()
+            return event
+        }
+    }
+
+    private func removeAgentLauncher() {
+        agentLauncherView?.removeFromSuperview()
+        agentLauncherView = nil
+        if let monitor = agentLauncherKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            agentLauncherKeyMonitor = nil
+        }
+    }
+
+    func launchAgent(_ agent: AgentKind) {
+        removeAgentLauncher()
+        hostView?.terminalSurface?.sendText("\(agent.command)\n")
+    }
+
     private func replaceContent(with view: NSView) {
         hostView?.removeFromSuperview()
         stateHostView?.removeFromSuperview()
+        removeAgentLauncher()
         hostView = nil
         stateHostView = nil
 
@@ -1375,5 +1425,65 @@ private struct TerminalStateView: View {
                     .foregroundStyle(Color.white.opacity(0.9))
             }
         }
+    }
+}
+
+// MARK: - Agent Launcher
+
+enum AgentKind: String {
+    case claude
+    case codex
+
+    var command: String {
+        switch self {
+        case .claude: return "claude"
+        case .codex: return "codex"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        }
+    }
+
+    var logoAsset: String {
+        switch self {
+        case .claude: return "anthropic-logo"
+        case .codex: return "openai-logo"
+        }
+    }
+}
+
+private struct AgentLauncherOverlay: View {
+    let onSelect: (AgentKind) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            agentButton(.claude)
+            agentButton(.codex)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.ultraThinMaterial)
+        )
+    }
+
+    private func agentButton(_ agent: AgentKind) -> some View {
+        Button {
+            onSelect(agent)
+        } label: {
+            Image(agent.logoAsset)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 14, height: 14)
+                .padding(4)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .help("Launch \(agent.label)")
     }
 }

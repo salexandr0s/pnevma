@@ -8,6 +8,7 @@ pub mod ssh;
 pub mod tasks;
 pub mod tracker;
 pub mod tracker_tools;
+pub mod usage_local;
 pub mod workflow;
 
 // Re-export all command functions from submodules
@@ -19,6 +20,7 @@ pub use self::project::*;
 pub use self::ssh::*;
 pub use self::tasks::*;
 pub use self::tracker::*;
+pub use self::usage_local::*;
 pub use self::workflow::*;
 
 // ── Shared types, helpers, and utilities ──────────────────────────────────────
@@ -192,6 +194,20 @@ pub struct FileOpenResultView {
     pub content: String,
     pub truncated: bool,
     pub launched_editor: bool,
+    #[serde(default)]
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteFileInput {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileWriteResultView {
+    pub path: String,
+    pub bytes_written: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

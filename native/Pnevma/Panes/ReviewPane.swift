@@ -19,8 +19,10 @@ struct ReviewView: View {
                     taskListPanel
                     detailPanel
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await viewModel.activate() }
     }
 
@@ -54,7 +56,7 @@ struct ReviewView: View {
                 .listStyle(.sidebar)
             }
         }
-        .frame(minWidth: 200, idealWidth: 240)
+        .frame(minWidth: 200, idealWidth: 240, maxHeight: .infinity)
     }
 
     // MARK: Right panel — review details
@@ -130,7 +132,7 @@ struct ReviewView: View {
                     .padding(.bottom, 12)
                 }
                 .padding(.horizontal, 12)
-                .frame(minWidth: 280)
+                .frame(minWidth: 280, maxHeight: .infinity)
             }
         } else {
             VStack {

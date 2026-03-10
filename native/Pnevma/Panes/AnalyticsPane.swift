@@ -5,48 +5,78 @@ import Charts
 
 // MARK: - Data Models
 
-struct UsageBreakdown: Decodable, Identifiable {
+struct ProviderUsageSnapshot: Decodable, Identifiable {
     var id: String { provider }
     let provider: String
-    let tokensIn: Int
-    let tokensOut: Int
-    let estimatedUsd: Double
-    let recordCount: Int
+    let status: String
+    let errorMessage: String?
+    let days: [DailyTokenUsage]
+    let totals: UsageSummary
+    let topModels: [ModelShare]
+
+    var displayName: String {
+        switch provider {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        default: return provider.capitalized
+        }
+    }
+
+    var logoAsset: String {
+        provider == "claude" ? "anthropic-logo" : "openai-logo"
+    }
+
+    var hasData: Bool { totals.totalRequests > 0 }
 }
 
-struct UsageByModel: Decodable, Identifiable {
-    var id: String { provider + ":" + model }
-    let provider: String
-    let model: String
-    let tokensIn: Int
-    let tokensOut: Int
-    let estimatedUsd: Double
-}
-
-struct UsageDailyTrend: Decodable, Identifiable {
+struct DailyTokenUsage: Decodable, Identifiable {
     var id: String { date }
     let date: String
-    let tokensIn: Int
-    let tokensOut: Int
-    let estimatedUsd: Double
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadTokens: Int
+    let cacheWriteTokens: Int
+    let requests: Int
+
+    private static let dateParser: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withFullDate]
+        return f
+    }()
+
+    var parsedDate: Date {
+        Self.dateParser.date(from: date) ?? .distantPast
+    }
 }
 
-struct ErrorSignatureItem: Decodable, Identifiable {
-    let id: String
-    let signatureHash: String
-    let canonicalMessage: String
-    let category: String
-    let firstSeen: String
-    let lastSeen: String
-    let totalCount: Int
-    let sampleOutput: String?
-    let remediationHint: String?
+struct UsageSummary: Decodable {
+    let totalInputTokens: Int
+    let totalOutputTokens: Int
+    let totalCacheReadTokens: Int
+    let totalCacheWriteTokens: Int
+    let totalRequests: Int
+    let avgDailyTokens: Int
+    let peakDay: String?
+    let peakDayTokens: Int
 }
 
-// MARK: - AnalyticsView
+struct ModelShare: Decodable, Identifiable {
+    var id: String { model }
+    let model: String
+    let tokens: Int
+    let sharePercent: Double
+}
 
-struct AnalyticsView: View {
-    @State private var viewModel = AnalyticsViewModel()
+// MARK: - Helpers
+
+private func formatTokens(_ value: Int) -> String {
+    value.formatted(.number.grouping(.automatic))
+}
+
+// MARK: - UsageView
+
+struct UsageView: View {
+    @State private var viewModel = UsageViewModel()
 
     var body: some View {
         Group {
@@ -56,129 +86,18 @@ struct AnalyticsView: View {
                     title: statusMessage
                 )
             } else {
-                analyticsContent
+                usageContent
             }
         }
         .task { await viewModel.activate() }
     }
 
     @ViewBuilder
-    private var analyticsContent: some View {
+    private var usageContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-
-                // Cost Overview — daily trend bar chart
-                GroupBox("Cost Overview") {
-                    if viewModel.dailyTrend.isEmpty {
-                        Text("No cost data available")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                    } else {
-                        Chart(viewModel.dailyTrend) { point in
-                            BarMark(
-                                x: .value("Date", point.date),
-                                y: .value("Cost (USD)", point.estimatedUsd)
-                            )
-                        }
-                        .frame(height: 200)
-                    }
-                }
-
-                // Model Comparison — pie/sector chart
-                GroupBox("Model Comparison") {
-                    if viewModel.byModel.isEmpty {
-                        Text("No model data available")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                    } else {
-                        Chart(viewModel.byModel) { item in
-                            SectorMark(
-                                angle: .value("Cost", item.estimatedUsd),
-                                innerRadius: .ratio(0.5)
-                            )
-                            .foregroundStyle(by: .value("Model", item.model))
-                        }
-                        .frame(height: 180)
-                    }
-                }
-
-                // Provider Breakdown
-                GroupBox("Provider Breakdown") {
-                    if viewModel.breakdown.isEmpty {
-                        Text("No provider data available")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(viewModel.breakdown) { item in
-                                HStack {
-                                    Text(item.provider)
-                                        .font(.body)
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(item.estimatedUsd, format: .currency(code: "USD").precision(.fractionLength(4)))
-                                            .font(.body.monospacedDigit())
-                                        Text("\(item.tokensIn + item.tokensOut) tokens · \(item.recordCount) records")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 6)
-                                Divider()
-                            }
-                        }
-                    }
-                }
-
-                // Error Hotspots
-                GroupBox("Error Hotspots") {
-                    if viewModel.errors.isEmpty {
-                        Text("No errors recorded")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(viewModel.errors) { error in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(alignment: .top) {
-                                        Text(error.canonicalMessage)
-                                            .font(.body)
-                                            .lineLimit(2)
-                                        Spacer()
-                                        Text("\(error.totalCount)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Capsule().fill(Color.red.opacity(0.15)))
-                                    }
-                                    HStack(spacing: 6) {
-                                        Text(error.category)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 1)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 3)
-                                                    .fill(Color.secondary.opacity(0.12))
-                                            )
-                                        if let hint = error.remediationHint {
-                                            Text(hint)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                }
-                                .padding(.vertical, 6)
-                                Divider()
-                            }
-                        }
-                    }
+                ForEach(viewModel.providers) { snapshot in
+                    ProviderCard(snapshot: snapshot)
                 }
             }
             .padding(16)
@@ -186,10 +105,212 @@ struct AnalyticsView: View {
     }
 }
 
+// MARK: - ProviderCard
+
+private struct ProviderCard: View {
+    let snapshot: ProviderUsageSnapshot
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                cardBody
+            }
+        } label: {
+            providerHeader
+        }
+    }
+
+    @ViewBuilder
+    private var providerHeader: some View {
+        HStack(spacing: 6) {
+            Image(snapshot.logoAsset)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 14, height: 14)
+            Text(snapshot.displayName)
+                .font(.headline)
+            Spacer()
+            statusBadge
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        let (color, label) = badgeInfo
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var badgeInfo: (Color, String) {
+        switch snapshot.status {
+        case "ok":      return (.green, "OK")
+        case "no_data": return (.yellow, "No Data")
+        case "error":   return (.red, "Error")
+        default:        return (.secondary, snapshot.status)
+        }
+    }
+
+    @ViewBuilder
+    private var cardBody: some View {
+        switch snapshot.status {
+        case "ok" where snapshot.hasData:
+            statsGrid
+            if !snapshot.topModels.isEmpty {
+                topModelsSection
+            }
+            if !snapshot.days.isEmpty {
+                dailyChart
+            }
+        case "ok":
+            Text("No usage data for this period")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 8)
+        case "no_data":
+            Text("No session files found — use \(snapshot.displayName) to generate usage data")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 8)
+        case "error":
+            Text(snapshot.errorMessage ?? "An unknown error occurred")
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+        default:
+            EmptyView()
+        }
+    }
+
+    // MARK: Stats Grid
+
+    private var statsGrid: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            StatCell(label: "Input Tokens",       value: formatTokens(snapshot.totals.totalInputTokens))
+            StatCell(label: "Output Tokens",      value: formatTokens(snapshot.totals.totalOutputTokens))
+            StatCell(label: "Cache Read",         value: formatTokens(snapshot.totals.totalCacheReadTokens))
+            StatCell(label: "Cache Write",        value: formatTokens(snapshot.totals.totalCacheWriteTokens))
+            StatCell(label: "Total Requests",     value: formatTokens(snapshot.totals.totalRequests))
+            StatCell(label: "Avg Daily Tokens",   value: formatTokens(snapshot.totals.avgDailyTokens))
+        }
+    }
+
+    // MARK: Top Models
+
+    private var topModelsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Top Models")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            ForEach(snapshot.topModels) { model in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(model.model)
+                            .font(.caption.monospacedDigit())
+                            .lineLimit(1)
+                        Spacer()
+                        Text(formatTokens(model.tokens))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "%.1f%%", model.sharePercent))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                    GeometryReader { geo in
+                        Capsule()
+                            .fill(Color.accentColor.opacity(0.25))
+                            .frame(width: geo.size.width * model.sharePercent / 100, height: 4)
+                    }
+                    .frame(height: 4)
+                }
+            }
+        }
+    }
+
+    // MARK: Daily Chart
+
+    @ViewBuilder
+    private var dailyChart: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Daily Token Usage (last 30 days)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            let inputColor: Color = snapshot.provider == "claude" ? .blue : .indigo
+            let outputColor: Color = .green
+
+            Chart {
+                ForEach(snapshot.days) { day in
+                    BarMark(
+                        x: .value("Date", day.parsedDate),
+                        y: .value("Tokens", day.inputTokens)
+                    )
+                    .foregroundStyle(by: .value("Type", "Input"))
+
+                    BarMark(
+                        x: .value("Date", day.parsedDate),
+                        y: .value("Tokens", day.outputTokens)
+                    )
+                    .foregroundStyle(by: .value("Type", "Output"))
+                }
+            }
+            .chartForegroundStyleScale(["Input": inputColor, "Output": outputColor])
+            .chartXAxis {
+                AxisMarks(values: .stride(by: .day, count: 7)) { _ in
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel(format: .dateTime.month().day(), centered: true)
+                }
+            }
+            .chartYAxis {
+                AxisMarks { value in
+                    AxisGridLine()
+                    AxisValueLabel {
+                        if let intVal = value.as(Int.self) {
+                            Text(formatTokens(intVal))
+                                .font(.caption.monospacedDigit())
+                        }
+                    }
+                }
+            }
+            .frame(height: 180)
+        }
+    }
+}
+
+// MARK: - StatCell
+
+private struct StatCell: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.monospacedDigit())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+}
+
 // MARK: - ViewModel
 
 @Observable @MainActor
-final class AnalyticsViewModel {
+final class UsageViewModel {
     private enum ViewState: Equatable {
         case waiting(String)
         case loading(String)
@@ -197,12 +318,8 @@ final class AnalyticsViewModel {
         case failed(String)
     }
 
-    var breakdown: [UsageBreakdown] = []
-    var byModel: [UsageByModel] = []
-    var dailyTrend: [UsageDailyTrend] = []
-    var errors: [ErrorSignatureItem] = []
-
-    private var viewState: ViewState = .waiting("Loading analytics...")
+    var providers: [ProviderUsageSnapshot] = []
+    private var viewState: ViewState = .waiting("Loading usage data...")
 
     @ObservationIgnored
     private let commandBus: (any CommandCalling)?
@@ -244,51 +361,28 @@ final class AnalyticsViewModel {
         handleActivationState(activationHub.currentState)
     }
 
+    @ObservationIgnored
     private var loadTask: Task<Void, Never>?
 
     func load(showLoadingState: Bool = true) {
         guard let bus = commandBus else {
-            viewState = .failed("Analytics is unavailable because the command bus is not configured.")
+            viewState = .failed("Usage is unavailable because the command bus is not configured.")
             return
         }
-        if showLoadingState, breakdown.isEmpty {
-            viewState = .loading("Loading analytics...")
+        if showLoadingState, providers.isEmpty {
+            viewState = .loading("Loading usage data...")
         }
         loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                struct DaysParams: Encodable { let days: Int? }
-                struct LimitParams: Encodable { let limit: Int? }
-
-                async let fetchBreakdown: [UsageBreakdown] = bus.call(
-                    method: "analytics.usage_breakdown",
-                    params: DaysParams(days: nil)
-                )
-                async let fetchByModel: [UsageByModel] = bus.call(
-                    method: "analytics.usage_by_model",
-                    params: nil
-                )
-                async let fetchTrend: [UsageDailyTrend] = bus.call(
-                    method: "analytics.usage_daily_trend",
-                    params: DaysParams(days: nil)
-                )
-                async let fetchErrors: [ErrorSignatureItem] = bus.call(
-                    method: "analytics.error_signatures",
-                    params: LimitParams(limit: nil)
-                )
-
-                let (breakdown, byModel, trend, errors) = try await (
-                    fetchBreakdown,
-                    fetchByModel,
-                    fetchTrend,
-                    fetchErrors
+                struct DaysParams: Encodable { let days: Int }
+                let result: [ProviderUsageSnapshot] = try await bus.call(
+                    method: "usage.local_snapshot",
+                    params: DaysParams(days: 30)
                 )
                 guard !Task.isCancelled else { return }
-                self.breakdown = breakdown
-                self.byModel = byModel
-                self.dailyTrend = trend
-                self.errors = errors
+                self.providers = result
                 self.viewState = .ready
             } catch {
                 guard !Task.isCancelled else { return }
@@ -300,19 +394,16 @@ final class AnalyticsViewModel {
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
         switch state {
         case .idle:
-            load(showLoadingState: breakdown.isEmpty)
+            load(showLoadingState: providers.isEmpty)
         case .opening:
             viewState = .waiting("Waiting for project activation...")
         case .open:
-            load(showLoadingState: breakdown.isEmpty)
+            load(showLoadingState: providers.isEmpty)
         case .failed(_, _, let message):
             viewState = .failed(message)
         case .closed:
             loadTask?.cancel()
-            breakdown = []
-            byModel = []
-            dailyTrend = []
-            errors = []
+            providers = []
             load(showLoadingState: true)
         }
     }
@@ -328,15 +419,15 @@ final class AnalyticsViewModel {
 
 // MARK: - NSView Wrapper
 
-final class AnalyticsPaneView: NSView, PaneContent {
+final class UsagePaneView: NSView, PaneContent {
     let paneID = PaneID()
-    let paneType = "analytics"
+    let paneType = "analytics"  // Keep internal type for backwards compatibility
     let shouldPersist = false
-    var title: String { "Analytics" }
+    var title: String { "Usage" }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(AnalyticsView())
+        _ = addSwiftUISubview(UsageView())
     }
 
     required init?(coder: NSCoder) { fatalError() }

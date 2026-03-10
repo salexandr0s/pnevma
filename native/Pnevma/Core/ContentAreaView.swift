@@ -665,6 +665,25 @@ final class ContentAreaView: NSView {
         splitDownItem.representedObject = paneID
         menu.addItem(splitDownItem)
 
+        if let terminalPane = paneViews[paneID] as? TerminalPaneView, terminalPane.hasActiveProcess {
+            menu.addItem(.separator())
+            for agent in [AgentKind.claude, .codex] {
+                let item = NSMenuItem(
+                    title: "Launch \(agent.label)",
+                    action: #selector(contextMenuLaunchAgent(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = ["paneID": paneID, "agent": agent] as [String: Any]
+                if let original = NSImage(named: agent.logoAsset),
+                   let image = original.copy() as? NSImage {
+                    image.size = NSSize(width: 14, height: 14)
+                    item.image = image
+                }
+                menu.addItem(item)
+            }
+        }
+
         menu.addItem(.separator())
 
         let currentType = paneViews[paneID]?.paneType
@@ -680,7 +699,7 @@ final class ContentAreaView: NSView {
             ("Merge Queue",   "merge_queue",   "arrow.triangle.merge"),
             ("Diff",          "diff",          "doc.text.magnifyingglass"),
             ("Search",        "search",        "magnifyingglass"),
-            ("Analytics",     "analytics",     "chart.bar"),
+            ("Usage",         "analytics",     "chart.bar"),
             ("Notifications", "notifications", "bell"),
             ("Daily Brief",   "daily_brief",   "newspaper"),
             ("Rules",         "rules",         "list.bullet.rectangle"),
@@ -732,6 +751,14 @@ final class ContentAreaView: NSView {
               let paneType = info["type"] as? String,
               let (_, newPane) = PaneFactory.make(type: paneType) else { return }
         replacePane(paneID, with: newPane)
+    }
+
+    @objc private func contextMenuLaunchAgent(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: Any],
+              let paneID = info["paneID"] as? PaneID,
+              let agent = info["agent"] as? AgentKind,
+              let terminalPane = paneViews[paneID] as? TerminalPaneView else { return }
+        terminalPane.launchAgent(agent)
     }
 }
 
