@@ -37,16 +37,31 @@ struct NotificationsView: View {
             Divider()
 
             if let statusMessage = viewModel.statusMessage {
-                ContentUnavailableView(
-                    statusMessage,
-                    systemImage: "bell.badge"
-                )
+                VStack(spacing: 10) {
+                    Image(systemName: "bell.badge")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text(statusMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 40)
+                Spacer()
             } else if viewModel.filteredNotifications.isEmpty {
-                ContentUnavailableView(
-                    "No Notifications",
-                    systemImage: "bell.slash",
-                    description: Text("You're all caught up")
-                )
+                VStack(spacing: 10) {
+                    Image(systemName: "bell.slash")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text("No Notifications")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                    Text("You're all caught up")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.top, 40)
+                Spacer()
             } else {
                 List(viewModel.filteredNotifications) { notification in
                     NotificationRow(notification: notification)

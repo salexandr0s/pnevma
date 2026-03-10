@@ -23,6 +23,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tabBarLeadingConstraint: NSLayoutConstraint?
     private var contentTopToTabBar: NSLayoutConstraint?
     private var contentTopToSafeArea: NSLayoutConstraint?
+    private var toolbarSeparator: NSView?
     private var commandPalette: CommandPalette?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
@@ -256,9 +257,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
-        win.toolbarStyle = .unifiedCompact
-
-        // Tab bar — added as a content-level view below the toolbar, not a toolbar item
+        // Tab bar — added as a content-level view below the titlebar, not a toolbar item
         let tabBar = TabBarView()
         tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
         tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
@@ -266,12 +265,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         tabBar.isHidden = true
         self.tabBarView = tabBar
 
-        let toolbar = NSToolbar(identifier: "MainToolbar")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.sizeMode = .small
-        toolbar.showsBaselineSeparator = false
-        win.toolbar = toolbar
         win.center()
         win.minSize = NSSize(width: 800, height: 500)
 
@@ -344,7 +337,45 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        for view in [sidebarBacking, tabBar, contentArea, statusBarView] as [NSView] {
+        // Subtle horizontal separator between titlebar and content area (not over sidebar)
+        let toolbarSep = ThemedSeparatorView(axis: .horizontal)
+        toolbarSep.translatesAutoresizingMaskIntoConstraints = false
+        self.toolbarSeparator = toolbarSep
+
+        // Titlebar buttons — placed directly in the titlebar area (no NSToolbar)
+        let titlebarButtonSize = NSSize(width: 26, height: 22)
+        let titlebarSymbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+
+        let sidebarToggleBtn = makeTitlebarButton(
+            symbolName: "sidebar.left",
+            accessibilityDescription: "Toggle Sidebar",
+            toolTip: "Toggle Sidebar",
+            action: #selector(toggleSidebar),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig
+        )
+        let notificationsBtn = makeTitlebarButton(
+            symbolName: "bell",
+            accessibilityDescription: "Notifications",
+            toolTip: "Notifications",
+            action: #selector(showNotifications),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig,
+            hoverTintColor: .systemYellow
+        )
+        notificationToolbarButton = notificationsBtn
+        let addWorkspaceBtn = makeTitlebarButton(
+            symbolName: "plus",
+            accessibilityDescription: "Open Workspace",
+            toolTip: "Open Workspace",
+            action: #selector(openWorkspaceAction),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig,
+            hoverTintColor: .systemGreen
+        )
+
+        for view in [sidebarBacking, tabBar, contentArea, statusBarView, toolbarSep,
+                      sidebarToggleBtn, notificationsBtn, addWorkspaceBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
@@ -358,9 +389,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let slc = statusBarView.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let tblc = tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
 
-        // Content area top: switches between below-tab-bar and directly below toolbar
+        // Content area top: switches between below-tab-bar and directly below toolbar separator
         let topToTab = contentArea.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
-        let topToSafe = contentArea.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor)
+        let topToSafe = contentArea.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor)
         // Tab bar starts hidden (single tab), so content goes to safe area
         topToTab.isActive = false
         topToSafe.isActive = true
@@ -384,10 +415,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             swc,
 
-            // Tab bar: flush below toolbar, tracks sidebar edge
+            // Tab bar: flush below toolbar separator, tracks sidebar edge
             tblc,
             tabBar.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            tabBar.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            tabBar.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: tabBarHeight),
 
             clc,
@@ -399,6 +430,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             statusBarView.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
             statusBarView.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             statusBarView.heightAnchor.constraint(equalToConstant: statusHeight),
+
+            // Horizontal separator between titlebar and content (not over sidebar)
+            toolbarSep.topAnchor.constraint(equalTo: windowContent.safeAreaLayoutGuide.topAnchor),
+            toolbarSep.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            toolbarSep.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            toolbarSep.heightAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
+
+            // Titlebar buttons — vertically centered in titlebar area
+            sidebarToggleBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            sidebarToggleBtn.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor, constant: 76),
+            sidebarToggleBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            sidebarToggleBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+
+            notificationsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            notificationsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
+            notificationsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            notificationsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+
+            addWorkspaceBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            addWorkspaceBtn.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor, constant: -12),
+            addWorkspaceBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            addWorkspaceBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
         ])
 
         // For terminal transparency (background-opacity < 1.0), the window must
@@ -1321,76 +1374,35 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - NSToolbarDelegate
+// MARK: - Titlebar Buttons
 
-extension AppDelegate: NSToolbarDelegate {
-    static let sidebarToggleIdentifier = NSToolbarItem.Identifier("sidebarToggle")
-    static let notificationsIdentifier = NSToolbarItem.Identifier("notifications")
-    static let addWorkspaceIdentifier = NSToolbarItem.Identifier("addWorkspace")
-    private static let toolbarButtonSize = NSSize(width: 22, height: 18)
-    private static let toolbarSymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
-
-    public func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case Self.sidebarToggleIdentifier:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.view = makeToolbarButton(
-                symbolName: "sidebar.left",
-                accessibilityDescription: "Toggle Sidebar",
-                toolTip: "Toggle Sidebar",
-                action: #selector(toggleSidebar)
-            )
-            item.label = "Sidebar"
-            return item
-        case Self.notificationsIdentifier:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            let button = makeToolbarButton(
-                symbolName: "bell",
-                accessibilityDescription: "Notifications",
-                toolTip: "Notifications",
-                action: #selector(showNotifications)
-            )
-            item.view = button
-            item.label = "Notifications"
-            notificationToolbarButton = button
-            return item
-        case Self.addWorkspaceIdentifier:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.view = makeToolbarButton(
-                symbolName: "plus",
-                accessibilityDescription: "Open Workspace",
-                toolTip: "Open Workspace",
-                action: #selector(openWorkspaceAction)
-            )
-            item.label = "New"
-            return item
-        default:
-            return nil
-        }
-    }
-
-    public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggleIdentifier, .flexibleSpace, Self.notificationsIdentifier, Self.addWorkspaceIdentifier]
-    }
-
-    public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
-    }
-
-    private func makeToolbarButton(
+extension AppDelegate {
+    func makeTitlebarButton(
         symbolName: String,
         accessibilityDescription: String,
         toolTip: String,
-        action: Selector
+        action: Selector,
+        size: NSSize,
+        symbolConfig: NSImage.SymbolConfiguration,
+        hoverTintColor: NSColor? = nil
     ) -> NSButton {
-        let button = NSButton(frame: NSRect(origin: .zero, size: Self.toolbarButtonSize))
+        let button: NSButton
+        if let hoverColor = hoverTintColor {
+            button = HoverTintButton(
+                frame: NSRect(origin: .zero, size: size),
+                normalColor: .secondaryLabelColor,
+                hoverColor: hoverColor
+            )
+        } else {
+            button = NSButton(frame: NSRect(origin: .zero, size: size))
+        }
         button.isBordered = false
         button.focusRingType = .none
         button.bezelStyle = .inline
         button.image = NSImage(
             systemSymbolName: symbolName,
             accessibilityDescription: accessibilityDescription
-        )?.withSymbolConfiguration(Self.toolbarSymbolConfiguration)
+        )?.withSymbolConfiguration(symbolConfig)
         button.imagePosition = .imageOnly
         button.imageScaling = .scaleProportionallyDown
         button.contentTintColor = .secondaryLabelColor
@@ -1399,6 +1411,48 @@ extension AppDelegate: NSToolbarDelegate {
         button.toolTip = toolTip
         button.setAccessibilityLabel(accessibilityDescription)
         return button
+    }
+}
+
+// MARK: - HoverTintButton
+
+final class HoverTintButton: NSButton {
+    private let normalColor: NSColor
+    private let hoverColor: NSColor
+    private var trackingArea: NSTrackingArea?
+
+    init(frame: NSRect, normalColor: NSColor, hoverColor: NSColor) {
+        self.normalColor = normalColor
+        self.hoverColor = hoverColor
+        super.init(frame: frame)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        contentTintColor = hoverColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        contentTintColor = normalColor
     }
 }
 
@@ -1556,6 +1610,42 @@ private final class ThemedSidebarBackingView: NSView {
         layer?.backgroundColor = resolved.cgColor
         rightSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
         needsDisplay = true
+    }
+}
+
+// MARK: - ThemedSeparatorView
+
+/// A subtle 1pt separator line that follows the ghostty split divider color.
+private final class ThemedSeparatorView: NSView {
+    enum Axis { case horizontal, vertical }
+    private let axis: Axis
+    private var themeObserver: NSObjectProtocol?
+
+    init(axis: Axis) {
+        self.axis = axis
+        super.init(frame: .zero)
+        wantsLayer = true
+        updateColor()
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyThemeProvider.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateColor()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
+
+    private func updateColor() {
+        let theme = GhosttyThemeProvider.shared
+        layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
     }
 }
 

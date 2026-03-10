@@ -93,8 +93,12 @@ final class TabBarView: NSView {
             tabButtons.append(button)
         }
 
-        // "+" button
-        let plusBtn = NSButton(frame: .zero)
+        // "+" button — green on hover, matching sidebar
+        let plusBtn = HoverTintButton(
+            frame: .zero,
+            normalColor: theme.foregroundColor.withAlphaComponent(0.64),
+            hoverColor: .systemGreen
+        )
         plusBtn.bezelStyle = .inline
         plusBtn.isBordered = false
         plusBtn.image = NSImage(
@@ -160,7 +164,7 @@ final class TabBarView: NSView {
 private final class TabButton: NSView {
     private enum Metrics {
         static let horizontalInset: CGFloat = 2
-        static let verticalInset: CGFloat = 3
+        static let verticalInset: CGFloat = 1
         static let cornerRadius: CGFloat = 4
         static let closeSize: CGFloat = 12
         static let horizontalPadding: CGFloat = 7
@@ -186,7 +190,12 @@ private final class TabButton: NSView {
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
 
-        closeButton = NSButton(frame: .zero)
+        let normalCloseAlpha: CGFloat = isActive ? 0.58 : 0.36
+        closeButton = HoverTintButton(
+            frame: .zero,
+            normalColor: theme.foregroundColor.withAlphaComponent(normalCloseAlpha),
+            hoverColor: .systemRed
+        )
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
         closeButton.image = NSImage(
@@ -194,6 +203,7 @@ private final class TabButton: NSView {
             accessibilityDescription: "Close tab"
         )?.withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
         closeButton.imageScaling = .scaleProportionallyDown
+        closeButton.contentTintColor = theme.foregroundColor.withAlphaComponent(normalCloseAlpha)
         closeButton.setAccessibilityLabel("Close tab")
         closeButton.isHidden = !showClose
 
@@ -203,7 +213,6 @@ private final class TabButton: NSView {
         addSubview(closeButton)
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
-        updateCloseButtonTint()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -276,32 +285,16 @@ private final class TabButton: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isHovering = true
-        updateCloseButtonTint()
         needsDisplay = true
     }
 
     override func mouseExited(with event: NSEvent) {
         isHovering = false
-        updateCloseButtonTint()
         needsDisplay = true
     }
 
     func applyTheme(_ theme: GhosttyThemeProvider) {
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? 0.92 : 0.56)
-        updateCloseButtonTint()
         needsDisplay = true
-    }
-
-    private func updateCloseButtonTint() {
-        let baseAlpha: CGFloat
-        if isHovering {
-            baseAlpha = 0.74
-        } else if isActive {
-            baseAlpha = 0.58
-        } else {
-            baseAlpha = 0.36
-        }
-
-        closeButton.contentTintColor = GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(baseAlpha)
     }
 }
