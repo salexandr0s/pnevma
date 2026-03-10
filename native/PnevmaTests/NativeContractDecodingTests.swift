@@ -20,7 +20,7 @@ final class NativeContractDecodingTests: XCTestCase {
             )
         )
         XCTAssertEqual(workflowDefs.first?.dbId, "wf-1")
-        XCTAssertEqual(workflowDefs.first?.steps.first?.executionMode, "worktree")
+        XCTAssertEqual(workflowDefs.first?.steps?.first?.executionMode, "worktree")
 
         let workflowInstances = try decoder.decode(
             [WorkflowInstanceItem].self,
@@ -33,7 +33,7 @@ final class NativeContractDecodingTests: XCTestCase {
         let workflowDetail = try decoder.decode(
             WorkflowInstanceDetail.self,
             from: Data(
-                #"{"id":"instance-1","workflow_name":"Ship","description":null,"status":"running","steps":[{"step_index":0,"task_id":"task-1","title":"Build","goal":"Compile","status":"running","priority":"P1","depends_on":[],"agent_profile":"swift","execution_mode":"worktree","branch":"task/build","created_at":"2026-03-08T00:00:00Z","updated_at":"2026-03-08T00:05:00Z"}],"created_at":"2026-03-08T00:00:00Z","updated_at":"2026-03-08T00:05:00Z"}"#.utf8
+                #"{"id":"instance-1","workflow_name":"Ship","description":null,"status":"running","steps":[{"step_index":0,"iteration":0,"task_id":"task-1","title":"Build","goal":"Compile","status":"running","priority":"P1","depends_on":[],"agent_profile":"swift","execution_mode":"worktree","branch":"task/build","created_at":"2026-03-08T00:00:00Z","updated_at":"2026-03-08T00:05:00Z"}],"created_at":"2026-03-08T00:00:00Z","updated_at":"2026-03-08T00:05:00Z"}"#.utf8
             )
         )
         XCTAssertEqual(workflowDetail.steps.first?.taskId, "task-1")

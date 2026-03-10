@@ -157,7 +157,7 @@ final class FileBrowserPaneTests: XCTestCase {
         let activationHub = ActiveWorkspaceActivationHub()
         let viewModel = FileBrowserViewModel(commandBus: bus, activationHub: activationHub)
 
-        viewModel.activate()
+        await viewModel.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
 
         try await waitUntil {

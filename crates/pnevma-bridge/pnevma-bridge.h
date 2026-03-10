@@ -10,8 +10,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef struct Option_AsyncContextRelease Option_AsyncContextRelease;
-
 /**
  * Opaque handle holding all Pnevma runtime state.
  */
@@ -35,6 +33,11 @@ typedef struct PnevmaResult {
  * Callback for async call completion.
  */
 typedef void (*AsyncCallback)(const struct PnevmaResult *result, void *ctx);
+
+/**
+ * Callback for releasing async callback context.
+ */
+typedef void (*AsyncContextRelease)(void *ctx);
 
 /**
  * Callback for high-frequency session PTY output.
@@ -93,8 +96,9 @@ struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
  * LIFETIME CONTRACT: `cb_ctx` must remain valid until the callback fires or
  * its `release_cb` is invoked. Destroying the handle cancels pending async
  * calls without invoking their completion callbacks, but still invokes
- * `release_cb` exactly once for each pending callback. Passing NULL is valid
- * only if both callbacks handle NULL context.
+ * `release_cb` exactly once for each pending callback. `release_cb` must be a
+ * valid function pointer; use a no-op function when `cb_ctx` requires no
+ * cleanup. Passing NULL is valid only if both callbacks handle NULL context.
  */
 
 void pnevma_call_async(struct PnevmaHandle *handle,
@@ -103,7 +107,7 @@ void pnevma_call_async(struct PnevmaHandle *handle,
                        uintptr_t params_len,
                        AsyncCallback cb,
                        void *cb_ctx,
-                       struct Option_AsyncContextRelease release_cb);
+                       AsyncContextRelease release_cb);
 
 /**
  * Free a `PnevmaResult` returned by `pnevma_call`.

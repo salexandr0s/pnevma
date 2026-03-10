@@ -970,7 +970,7 @@ final class SettingsViewModel {
                 AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
                 if self.updateCoordinator == nil,
-                   let delegate = NSApp.delegate as? AppDelegate {
+                   let delegate = NSApp?.delegate as? AppDelegate {
                     self.updateCoordinator = delegate.updateCoordinator
                 }
             } catch {

@@ -271,7 +271,7 @@ final class WorkspaceRestoreTests: XCTestCase {
             activationHub: activationHub
         )
 
-        viewModel.activate()
+        await viewModel.activate()
         XCTAssertEqual(viewModel.statusMessage, "Waiting for project activation...")
         let initialTaskCalls = await bus.taskListCallCount()
         XCTAssertEqual(initialTaskCalls, 0)
@@ -373,7 +373,7 @@ final class WorkspaceRestoreTests: XCTestCase {
             activationHub: activationHub
         )
 
-        viewModel.activate()
+        await viewModel.activate()
         XCTAssertEqual(viewModel.statusMessage, "Waiting for project activation...")
         let initialNotificationCalls = await bus.notificationListCallCount()
         XCTAssertEqual(initialNotificationCalls, 0)

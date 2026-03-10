@@ -81,7 +81,7 @@ unsafe impl Sync for SessionOutputCallbackWrapper {}
 struct AsyncCallbackWrapper {
     cb: AsyncCallback,
     ctx: *mut (),
-    release_cb: Option<AsyncContextRelease>,
+    release_cb: AsyncContextRelease,
 }
 unsafe impl Send for AsyncCallbackWrapper {}
 unsafe impl Sync for AsyncCallbackWrapper {}
@@ -141,9 +141,7 @@ fn make_error_result(msg: &str) -> *mut PnevmaResult {
 }
 
 fn release_async_context(callback: AsyncCallbackWrapper) {
-    if let Some(release_cb) = callback.release_cb {
-        release_cb(callback.ctx);
-    }
+    (callback.release_cb)(callback.ctx);
 }
 
 fn finish_async_callback(callback: AsyncCallbackWrapper, result: *mut PnevmaResult) {
@@ -446,8 +444,9 @@ pub extern "C" fn pnevma_call(
 /// LIFETIME CONTRACT: `cb_ctx` must remain valid until the callback fires or
 /// its `release_cb` is invoked. Destroying the handle cancels pending async
 /// calls without invoking their completion callbacks, but still invokes
-/// `release_cb` exactly once for each pending callback. Passing NULL is valid
-/// only if both callbacks handle NULL context.
+/// `release_cb` exactly once for each pending callback. `release_cb` must be a
+/// valid function pointer; use a no-op function when `cb_ctx` requires no
+/// cleanup. Passing NULL is valid only if both callbacks handle NULL context.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_call_async(
@@ -457,12 +456,10 @@ pub extern "C" fn pnevma_call_async(
     params_len: usize,
     cb: AsyncCallback,
     cb_ctx: *mut (),
-    release_cb: Option<AsyncContextRelease>,
+    release_cb: AsyncContextRelease,
 ) {
     if handle.is_null() || method.is_null() {
-        if let Some(release_cb) = release_cb {
-            release_cb(cb_ctx);
-        }
+        release_cb(cb_ctx);
         return;
     }
 
@@ -888,7 +885,7 @@ mod tests {
             params.as_bytes().len(),
             async_cb,
             (&RELEASED as *const AtomicUsize).cast_mut().cast(),
-            Some(release_cb),
+            release_cb,
         );
 
         // Give the async task time to complete
@@ -936,7 +933,7 @@ mod tests {
             (&RELEASED_AFTER_DESTROY as *const AtomicUsize)
                 .cast_mut()
                 .cast(),
-            Some(release_cb),
+            release_cb,
         );
         let h = unsafe { &*handle };
         assert_eq!(

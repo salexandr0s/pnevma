@@ -180,7 +180,7 @@ final class SessionStoreTests: XCTestCase {
         let bridgeHub = BridgeEventHub()
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
 
         try await waitUntil {
@@ -202,7 +202,7 @@ final class SessionStoreTests: XCTestCase {
         let bridgeHub = BridgeEventHub()
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
 
         try await waitUntil {
@@ -235,7 +235,7 @@ final class SessionStoreTests: XCTestCase {
         let bridgeHub = BridgeEventHub()
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
 
         try await waitUntil {
@@ -258,7 +258,7 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
         let projectID = "project-1"
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: projectID))
 
         try await waitUntil {
@@ -332,7 +332,7 @@ final class SessionStoreTests: XCTestCase {
         let bridgeHub = BridgeEventHub()
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-a"))
 
         try await waitUntil {
@@ -359,7 +359,7 @@ final class SessionStoreTests: XCTestCase {
         let bridgeHub = BridgeEventHub()
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-b"))
 
         try await waitUntil {
@@ -419,7 +419,7 @@ final class SessionStoreTests: XCTestCase {
         let bridgeHub = BridgeEventHub()
         let store = SessionStore(commandBus: bus, bridgeEventHub: bridgeHub, activationHub: activationHub)
 
-        store.activate()
+        await store.activate()
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
 
         try await waitUntil {

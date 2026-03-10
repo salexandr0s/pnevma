@@ -207,6 +207,7 @@ private struct EmptyScaffoldResponse: Decodable {}
 
 // MARK: - OnboardingWindow
 
+@MainActor
 final class OnboardingWindow {
     private var window: NSWindow?
 

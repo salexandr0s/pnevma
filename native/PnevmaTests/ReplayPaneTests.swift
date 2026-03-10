@@ -143,7 +143,7 @@ final class ReplayViewModelTests: XCTestCase {
             sessionOutputHub: sessionOutputHub
         )
 
-        viewModel.activate()
+        await viewModel.activate()
         XCTAssertEqual(viewModel.emptyStateMessage, "Waiting for project activation...")
         let initialCallCount = await bus.callCount()
         XCTAssertEqual(initialCallCount, 0)
@@ -171,7 +171,7 @@ final class ReplayViewModelTests: XCTestCase {
         )
 
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
-        viewModel.activate()
+        await viewModel.activate()
         sessionOutputHub.publish(sessionID: "session-1", chunk: "live\n")
 
         try await waitUntil {
@@ -194,7 +194,7 @@ final class ReplayViewModelTests: XCTestCase {
         )
 
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
-        viewModel.activate()
+        await viewModel.activate()
         sessionOutputHub.publish(sessionID: "session-1", chunk: "live\n")
 
         try await waitUntil {
