@@ -43,11 +43,20 @@ struct ReviewView: View {
             Divider()
 
             if viewModel.reviewTasks.isEmpty {
-                ContentUnavailableView(
-                    "No Tasks",
-                    systemImage: "checkmark.seal",
-                    description: Text("No tasks awaiting review")
-                )
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.tertiary)
+                    Text("No Tasks")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("No tasks awaiting review")
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                Spacer()
             } else {
                 List(viewModel.reviewTasks, selection: $viewModel.selectedTaskID) { task in
                     ReviewTaskRow(task: task)
@@ -56,7 +65,7 @@ struct ReviewView: View {
                 .listStyle(.sidebar)
             }
         }
-        .frame(minWidth: 200, idealWidth: 240, maxHeight: .infinity)
+        .frame(minWidth: 200, idealWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: Right panel — review details
@@ -135,12 +144,16 @@ struct ReviewView: View {
                 .frame(minWidth: 280, maxHeight: .infinity)
             }
         } else {
-            VStack {
+            VStack(spacing: 8) {
                 Spacer()
                 if viewModel.isLoadingPack {
                     ProgressView("Loading review pack...")
                 } else {
+                    Image(systemName: "eye.circle")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.tertiary)
                     Text("Select a task to review")
+                        .font(.title3)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()

@@ -1461,8 +1461,8 @@ private struct AgentLauncherOverlay: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            agentButton(.claude)
-            agentButton(.codex)
+            AgentLogoButton(agent: .claude, onSelect: onSelect)
+            AgentLogoButton(agent: .codex, onSelect: onSelect)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -1471,8 +1471,14 @@ private struct AgentLauncherOverlay: View {
                 .fill(.ultraThinMaterial)
         )
     }
+}
 
-    private func agentButton(_ agent: AgentKind) -> some View {
+private struct AgentLogoButton: View {
+    let agent: AgentKind
+    let onSelect: (AgentKind) -> Void
+    @State private var isHovered = false
+
+    var body: some View {
         Button {
             onSelect(agent)
         } label: {
@@ -1481,9 +1487,16 @@ private struct AgentLauncherOverlay: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 14, height: 14)
                 .padding(4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isHovered ? Color.white.opacity(0.15) : Color.clear)
+                )
+                .scaleEffect(isHovered ? 1.1 : 1.0)
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
+        .onHover { hovering in isHovered = hovering }
         .help("Launch \(agent.label)")
     }
 }
