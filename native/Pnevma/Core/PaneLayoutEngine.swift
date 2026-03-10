@@ -319,21 +319,40 @@ class PaneLayoutEngine {
     /// Adjust the split ratio of the parent of the given pane.
     /// `delta` is added to the ratio (positive = first child grows).
     /// Only works correctly for simple (leaf-child) splits. For nested
-    /// splits, use `resizeSplit(firstChildPaneIDs:delta:)` instead.
-    func resizeSplit(containing paneID: PaneID, delta: CGFloat) {
+    /// splits, use `resizeSplit(firstChildPaneIDs:delta:parentSize:)` instead.
+    func resizeSplit(containing paneID: PaneID, delta: CGFloat, parentSize: CGFloat = 0) {
         guard let root = root else { return }
-        self.root = adjustRatio(in: root, target: paneID, delta: delta)
+        self.root = adjustRatio(in: root, target: paneID, delta: delta, parentSize: parentSize)
     }
 
     /// Adjust the split ratio of the split node whose first child contains
-    /// exactly the given set of pane IDs. This correctly identifies the
-    /// target split even in deeply nested trees.
-    func resizeSplit(firstChildPaneIDs: Set<PaneID>, delta: CGFloat) {
+    /// exactly the given set of pane IDs. `parentSize` is the pixel size of
+    /// the split's container along the split axis, used for minimum-size clamping.
+    func resizeSplit(firstChildPaneIDs: Set<PaneID>, delta: CGFloat, parentSize: CGFloat = 0) {
         guard let root = root else { return }
-        self.root = adjustRatioByFirstChild(in: root, firstChildPaneIDs: firstChildPaneIDs, delta: delta)
+        self.root = adjustRatioByFirstChild(in: root, firstChildPaneIDs: firstChildPaneIDs, delta: delta, parentSize: parentSize)
     }
 
-    private func adjustRatio(in node: SplitNode, target: PaneID, delta: CGFloat) -> SplitNode {
+    /// Clamp a ratio so neither child falls below the minimum pane size.
+    /// `parentSize` is the pixel size of the split's container along the split axis.
+    private func clampedRatio(_ ratio: CGFloat, direction: SplitDirection, parentSize: CGFloat) -> CGFloat {
+        let divider = DesignTokens.Layout.dividerWidth
+        let minSize = direction == .horizontal
+            ? DesignTokens.Layout.paneMinWidth
+            : DesignTokens.Layout.paneMinHeight
+
+        let available = parentSize - divider
+        guard available > minSize * 2 else {
+            // Container too small for pixel-based clamping; fall back to ratio limits.
+            return min(0.9, max(0.1, ratio))
+        }
+
+        let minRatio = minSize / available
+        let maxRatio = 1.0 - minRatio
+        return min(maxRatio, max(minRatio, ratio))
+    }
+
+    private func adjustRatio(in node: SplitNode, target: PaneID, delta: CGFloat, parentSize: CGFloat) -> SplitNode {
         guard case .split(let dir, let ratio, let first, let second) = node else {
             return node
         }
@@ -347,16 +366,16 @@ class PaneLayoutEngine {
             }()
 
             if isImmediate {
-                let newRatio = min(0.9, max(0.1, ratio + delta))
+                let newRatio = clampedRatio(ratio + delta, direction: dir, parentSize: parentSize)
                 return .split(direction: dir, ratio: newRatio, first: first, second: second)
             }
 
             // Recurse only into the child that contains the target.
             if first.contains(target) {
-                let newFirst = adjustRatio(in: first, target: target, delta: delta)
+                let newFirst = adjustRatio(in: first, target: target, delta: delta, parentSize: parentSize)
                 return .split(direction: dir, ratio: ratio, first: newFirst, second: second)
             } else {
-                let newSecond = adjustRatio(in: second, target: target, delta: delta)
+                let newSecond = adjustRatio(in: second, target: target, delta: delta, parentSize: parentSize)
                 return .split(direction: dir, ratio: ratio, first: first, second: newSecond)
             }
         }
@@ -364,20 +383,20 @@ class PaneLayoutEngine {
         return node
     }
 
-    private func adjustRatioByFirstChild(in node: SplitNode, firstChildPaneIDs: Set<PaneID>, delta: CGFloat) -> SplitNode {
+    private func adjustRatioByFirstChild(in node: SplitNode, firstChildPaneIDs: Set<PaneID>, delta: CGFloat, parentSize: CGFloat) -> SplitNode {
         guard case .split(let dir, let ratio, let first, let second) = node else {
             return node
         }
 
         // Match: this split's first child has exactly the target pane ID set.
         if Set(first.allPaneIDs) == firstChildPaneIDs {
-            let newRatio = min(0.9, max(0.1, ratio + delta))
+            let newRatio = clampedRatio(ratio + delta, direction: dir, parentSize: parentSize)
             return .split(direction: dir, ratio: newRatio, first: first, second: second)
         }
 
         // Recurse into both children to find the target split.
-        let newFirst = adjustRatioByFirstChild(in: first, firstChildPaneIDs: firstChildPaneIDs, delta: delta)
-        let newSecond = adjustRatioByFirstChild(in: second, firstChildPaneIDs: firstChildPaneIDs, delta: delta)
+        let newFirst = adjustRatioByFirstChild(in: first, firstChildPaneIDs: firstChildPaneIDs, delta: delta, parentSize: parentSize)
+        let newSecond = adjustRatioByFirstChild(in: second, firstChildPaneIDs: firstChildPaneIDs, delta: delta, parentSize: parentSize)
         return .split(direction: dir, ratio: ratio, first: newFirst, second: newSecond)
     }
 

@@ -33,6 +33,12 @@ final class ContentAreaView: NSView {
     init(frame: NSRect, rootPaneView: NSView & PaneContent) {
         layoutEngine = PaneLayoutEngine(rootPaneID: rootPaneView.paneID)
         super.init(frame: frame)
+
+        // Give the content area a themed background so tab/workspace transitions
+        // don't flash an empty gap while new pane views are being created.
+        wantsLayer = true
+        updateOwnBackground()
+
         registerPaneView(rootPaneView)
         rootPaneView.activate()
         installClickMonitor()
@@ -48,6 +54,7 @@ final class ContentAreaView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            self?.updateOwnBackground()
             self?.updateNonTerminalPaneBackgrounds()
         }
     }
@@ -67,6 +74,13 @@ final class ContentAreaView: NSView {
     /// Use flipped coordinate system (top-left origin) so vertical splits
     /// render correctly: first=top, second=bottom.
     override var isFlipped: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Layer may not exist yet during init; apply the background once the
+        // view is installed in the window and the backing layer is guaranteed.
+        if window != nil { updateOwnBackground() }
+    }
 
     // MARK: - Layout
 
@@ -191,7 +205,7 @@ final class ContentAreaView: NSView {
             guard let self = self, let divider = divider else { return }
             let size = divider.parentSize
             guard size > 0 else { return }
-            self.layoutEngine.resizeSplit(firstChildPaneIDs: firstPaneIDs, delta: delta / size)
+            self.layoutEngine.resizeSplit(firstChildPaneIDs: firstPaneIDs, delta: delta / size, parentSize: size)
             self.repositionPanes()
             self.repositionDividers()
         }
@@ -256,6 +270,13 @@ final class ContentAreaView: NSView {
                 self?.onPanePersistenceChanged?()
             }
         }
+    }
+
+    /// Keep the content area's own background in sync with the terminal theme
+    /// so pane transitions don't flash an empty gap.
+    private func updateOwnBackground() {
+        let theme = GhosttyThemeProvider.shared
+        layer?.backgroundColor = theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).cgColor
     }
 
     /// Update background color for all non-terminal pane views after a theme change.

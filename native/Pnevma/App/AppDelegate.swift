@@ -1286,7 +1286,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         case "diff":        return DiffPaneView()
         case "search":      return SearchPaneView()
         case "files":       return FileBrowserPaneView()
-        case "analytics":   return AnalyticsPaneView()
+        case "analytics":   return UsagePaneView()
         case "brief":       return DailyBriefPaneView()
         case "notifications": return NotificationsPaneView()
         case "rules":       return RulesManagerPaneView()
@@ -1308,7 +1308,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openToolAsTab(_ toolID: String) {
-        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        guard let workspace = workspaceManager?.activeWorkspace,
+              makeToolPane(toolID) != nil else { return }
         let title = sidebarTools(for: workspace).first(where: { $0.id == toolID })?.title ?? toolID.capitalized
         contentAreaView?.syncPersistedPanes()
         _ = workspace.addTab(title: title)
@@ -1672,6 +1673,7 @@ private final class ThemedSidebarBackingView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.isOpaque = true
+        layer?.masksToBounds = true
 
         // Right-edge separator matching ghostty split dividers
         rightSeparator.wantsLayer = true
