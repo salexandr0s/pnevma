@@ -5,6 +5,8 @@ import SwiftUI
 struct SidebarToolButton: View {
     let tool: SidebarToolItem
     var isActive: Bool = false
+    var onOpenAsTab: (() -> Void)?
+    var onOpenAsPane: (() -> Void)?
     let action: () -> Void
 
     @State private var isHovering = false
@@ -36,6 +38,20 @@ struct SidebarToolButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .contextMenu {
+            if !tool.isStub {
+                Button {
+                    onOpenAsTab?()
+                } label: {
+                    Label("Open as Tab", systemImage: "plus.square")
+                }
+                Button {
+                    onOpenAsPane?()
+                } label: {
+                    Label("Open as Pane", systemImage: "rectangle.split.2x1")
+                }
+            }
+        }
         .accessibilityLabel(tool.title + (tool.isStub ? ", coming soon" : ""))
         .accessibilityIdentifier("sidebar.tool.\(tool.id)")
     }

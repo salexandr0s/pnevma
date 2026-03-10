@@ -12,6 +12,10 @@ struct SidebarView: View {
     var onOpenSettings: (() -> Void)?
     /// Called when the user wants to open a tool pane.
     var onOpenTool: ((String) -> Void)?
+    /// Called when the user wants to open a tool as a new tab.
+    var onOpenToolAsTab: ((String) -> Void)?
+    /// Called when the user wants to open a tool as a split pane.
+    var onOpenToolAsPane: ((String) -> Void)?
 
     @State private var activeToolID: String?
     @State private var isToolsExpanded: Bool = true
@@ -61,7 +65,10 @@ struct SidebarView: View {
                             onRename: { newName in
                                 workspaceManager.renameWorkspace(workspace.id, to: newName)
                             },
-                            onPin: { workspaceManager.togglePinWorkspace(workspace.id) }
+                            onPin: { workspaceManager.togglePinWorkspace(workspace.id) },
+                            onSetColor: { hex in
+                                workspaceManager.setWorkspaceColor(workspace.id, hex: hex)
+                            }
                         )
                     }
                 }
@@ -81,7 +88,12 @@ struct SidebarView: View {
                 if isToolsExpanded {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(sidebarTools(for: workspaceManager.activeWorkspace)) { tool in
-                            SidebarToolButton(tool: tool, isActive: activeToolID == tool.id) {
+                            SidebarToolButton(
+                                tool: tool,
+                                isActive: activeToolID == tool.id,
+                                onOpenAsTab: { onOpenToolAsTab?(tool.id) },
+                                onOpenAsPane: { onOpenToolAsPane?(tool.id) }
+                            ) {
                                 activeToolID = tool.id
                                 onOpenTool?(tool.id)
                             }

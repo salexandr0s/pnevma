@@ -648,22 +648,22 @@ final class ContentAreaView: NSView {
 
         let currentType = paneViews[paneID]?.paneType
         let replaceSubmenu = NSMenu()
-        let paneTypes: [(label: String, type: String)] = [
-            ("Terminal",      "terminal"),
-            ("Task Board",    "taskboard"),
-            ("Replay",        "replay"),
-            ("File Browser",  "file_browser"),
-            ("SSH Manager",   "ssh"),
-            ("Workflow",      "workflow"),
-            ("Review",        "review"),
-            ("Merge Queue",   "merge_queue"),
-            ("Diff",          "diff"),
-            ("Search",        "search"),
-            ("Analytics",     "analytics"),
-            ("Notifications", "notifications"),
-            ("Daily Brief",   "daily_brief"),
-            ("Rules",         "rules"),
-            ("Browser",       "browser"),
+        let paneTypes: [(label: String, type: String, icon: String)] = [
+            ("Terminal",      "terminal",      "terminal"),
+            ("Task Board",    "taskboard",     "checklist"),
+            ("Replay",        "replay",        "play.rectangle"),
+            ("File Browser",  "file_browser",  "folder"),
+            ("SSH Manager",   "ssh",           "network"),
+            ("Workflow",      "workflow",      "arrow.triangle.branch"),
+            ("Review",        "review",        "eye"),
+            ("Merge Queue",   "merge_queue",   "arrow.triangle.merge"),
+            ("Diff",          "diff",          "doc.text.magnifyingglass"),
+            ("Search",        "search",        "magnifyingglass"),
+            ("Analytics",     "analytics",     "chart.bar"),
+            ("Notifications", "notifications", "bell"),
+            ("Daily Brief",   "daily_brief",   "newspaper"),
+            ("Rules",         "rules",         "list.bullet.rectangle"),
+            ("Browser",       "browser",       "globe"),
         ]
         for entry in paneTypes {
             guard PaneFactory.isPaneTypeAvailable(entry.type, in: PaneFactory.activeWorkspaceProvider?()) else {
@@ -673,6 +673,9 @@ final class ContentAreaView: NSView {
             item.target = self
             item.representedObject = ["paneID": paneID, "type": entry.type] as [String: Any]
             if entry.type == currentType { item.state = .on }
+            if let image = NSImage(systemSymbolName: entry.icon, accessibilityDescription: entry.label) {
+                item.image = image
+            }
             replaceSubmenu.addItem(item)
         }
 

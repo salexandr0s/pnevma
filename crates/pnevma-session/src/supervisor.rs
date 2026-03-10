@@ -851,12 +851,14 @@ impl SessionSupervisor {
     fn tmux_command(&self) -> Command {
         let mut cmd = Command::new(&self.tmux_bin);
         cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
+        cmd.env("PATH", gui_safe_path());
         cmd
     }
 
     fn script_command(&self) -> Command {
         let mut cmd = Command::new(&self.script_bin);
         cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
+        cmd.env("PATH", gui_safe_path());
         if let Some(term) = fallback_script_term(std::env::var_os("TERM")) {
             cmd.env("TERM", term);
         }
@@ -875,6 +877,25 @@ impl SessionSupervisor {
 
 fn tmux_name(session_id: Uuid) -> String {
     format!("pnevma_{}", session_id.simple())
+}
+
+/// Build a PATH that includes Homebrew and other common directories.
+/// GUI apps launched from Finder inherit a minimal PATH that lacks
+/// `/opt/homebrew/bin` and similar locations.  The tmux server inherits
+/// its environment at first launch, so every child shell would also
+/// miss these paths unless we inject them here.
+fn gui_safe_path() -> String {
+    let extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<&str> = extra
+        .iter()
+        .copied()
+        .filter(|dir| !current.split(':').any(|p| p == *dir))
+        .collect();
+    if !current.is_empty() {
+        parts.push(&current);
+    }
+    parts.join(":")
 }
 
 fn explicit_shell_command(command: &str) -> Option<String> {

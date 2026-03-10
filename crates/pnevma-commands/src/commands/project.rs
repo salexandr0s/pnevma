@@ -3574,41 +3574,44 @@ pub async fn recover_session(
 }
 
 pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let sessions = ctx
-        .db
-        .list_sessions(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let tasks = ctx
-        .db
-        .list_tasks(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let worktrees = ctx
-        .db
-        .list_worktrees(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let automation = if let Some(ref coord) = ctx.coordinator {
-        Some(
-            super::automation_status_from_snapshot(
-                coord.snapshot().await,
-                &ctx.db,
-                &ctx.project_id,
-            )
-            .await,
+    // Extract everything we need from the lock scope first, then release
+    // the lock before calling coord.snapshot() — snapshot() also acquires
+    // state.current, and Tokio mutexes are not reentrant.
+    let (db, project_id, project_name, project_path, coordinator) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (
+            ctx.db.clone(),
+            ctx.project_id,
+            ctx.config.project.name.clone(),
+            ctx.project_path.to_string_lossy().to_string(),
+            ctx.coordinator.clone(),
         )
+    };
+
+    let sessions = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let tasks = db
+        .list_tasks(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let worktrees = db
+        .list_worktrees(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let automation = if let Some(ref coord) = coordinator {
+        Some(super::automation_status_from_snapshot(coord.snapshot().await, &db, &project_id).await)
     } else {
         None
     };
     Ok(ProjectStatusView {
-        project_id: ctx.project_id.to_string(),
-        project_name: ctx.config.project.name.clone(),
-        project_path: ctx.project_path.to_string_lossy().to_string(),
+        project_id: project_id.to_string(),
+        project_name,
+        project_path,
         sessions: sessions.len(),
         tasks: tasks.len(),
         worktrees: worktrees.len(),

@@ -181,6 +181,12 @@ final class WorkspaceManager {
         Log.workspace.info("Toggled pin for workspace \(id), isPinned=\(workspace.isPinned)")
     }
 
+    func setWorkspaceColor(_ id: UUID, hex: String?) {
+        guard let workspace = workspace(withID: id) else { return }
+        workspace.customColor = hex
+        Log.workspace.info("Set color for workspace \(id) to \(hex ?? "none")")
+    }
+
     func closeWorkspace(_ id: UUID) {
         guard let index = workspaces.firstIndex(where: { $0.id == id }) else { return }
         guard !workspaces[index].isPermanent else { return }

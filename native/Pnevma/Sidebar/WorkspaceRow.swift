@@ -10,6 +10,7 @@ struct WorkspaceRow: View {
     let onClose: () -> Void
     var onRename: ((String) -> Void)?
     var onPin: (() -> Void)?
+    var onSetColor: ((String?) -> Void)?
 
     @State private var isHovering = false
     @State private var isRenaming = false
@@ -198,6 +199,26 @@ struct WorkspaceRow: View {
             Button(workspace.isPinned ? "Unpin" : "Pin") {
                 onPin?()
             }
+
+            Menu("Tab Color") {
+                ForEach(WorkspaceColor.allCases) { color in
+                    Button {
+                        onSetColor?(color.hex)
+                    } label: {
+                        HStack {
+                            Circle()
+                                .fill(color.swiftUIColor)
+                                .frame(width: 10, height: 10)
+                            Text(color.name)
+                        }
+                    }
+                }
+                Divider()
+                Button("Clear Color") {
+                    onSetColor?(nil)
+                }
+            }
+
             if let path = workspace.displayPath {
                 Button("Copy Path") {
                     NSPasteboard.general.clearContents()
@@ -217,5 +238,41 @@ struct WorkspaceRow: View {
             }
         }
         .accessibilityLabel("Workspace: \(workspace.name)\(workspace.isPinned ? ", pinned" : "")")
+    }
+}
+
+// MARK: - WorkspaceColor
+
+enum WorkspaceColor: String, CaseIterable, Identifiable {
+    case red, crimson, orange, amber, olive, green, teal, aqua
+    case blue, navy, indigo, purple, magenta, rose, brown, charcoal
+
+    var id: String { rawValue }
+
+    var name: String { rawValue.capitalized }
+
+    var hex: String {
+        switch self {
+        case .red:      return "#FF3B30"
+        case .crimson:  return "#DC3545"
+        case .orange:   return "#FF9500"
+        case .amber:    return "#FFCC00"
+        case .olive:    return "#A8B820"
+        case .green:    return "#34C759"
+        case .teal:     return "#5AC8C8"
+        case .aqua:     return "#32ADE6"
+        case .blue:     return "#007AFF"
+        case .navy:     return "#5856D6"
+        case .indigo:   return "#7B61FF"
+        case .purple:   return "#AF52DE"
+        case .magenta:  return "#FF2D55"
+        case .rose:     return "#FF6482"
+        case .brown:    return "#A2845E"
+        case .charcoal: return "#636366"
+        }
+    }
+
+    var swiftUIColor: Color {
+        Color(nsColor: NSColor(hexString: hex) ?? .labelColor)
     }
 }

@@ -316,7 +316,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceManager: mgr,
             onAddWorkspace: { [weak self] in self?.openWorkspace() },
             onOpenSettings: { [weak self] in self?.openSettingsPane() },
-            onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) }
+            onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) },
+            onOpenToolAsTab: { [weak self] (toolID: String) in self?.openToolAsTab(toolID) },
+            onOpenToolAsPane: { [weak self] (toolID: String) in self?.openToolAsPane(toolID) }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
         let sidebarBacking = ThemedSidebarBackingView()
@@ -1274,50 +1276,53 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow = win
     }
 
+    private func makeToolPane(_ toolID: String) -> (NSView & PaneContent)? {
+        switch toolID {
+        case "terminal":    return PaneFactory.workspaceAwareTerminal().1
+        case "tasks":       return TaskBoardPaneView()
+        case "workflow":    return WorkflowPaneView()
+        case "review":      return ReviewPaneView()
+        case "merge":       return MergeQueuePaneView()
+        case "diff":        return DiffPaneView()
+        case "search":      return SearchPaneView()
+        case "files":       return FileBrowserPaneView()
+        case "analytics":   return AnalyticsPaneView()
+        case "brief":       return DailyBriefPaneView()
+        case "notifications": return NotificationsPaneView()
+        case "rules":       return RulesManagerPaneView()
+        case "ssh":         return SshManagerPaneView()
+        case "replay":      return ReplayPaneView(frame: .zero)
+        case "browser":     return BrowserPaneView(frame: .zero, url: nil)
+        default:            return nil
+        }
+    }
+
     private func openToolPane(_ toolID: String) {
         guard sidebarTools(for: workspaceManager?.activeWorkspace).contains(where: { $0.id == toolID }) else {
             return
         }
-        let pane: (NSView & PaneContent)?
-        switch toolID {
-        case "terminal":
-            pane = PaneFactory.workspaceAwareTerminal().1
-        case "tasks":
-            pane = TaskBoardPaneView()
-        case "workflow":
-            pane = WorkflowPaneView()
-        case "review":
-            pane = ReviewPaneView()
-        case "merge":
-            pane = MergeQueuePaneView()
-        case "diff":
-            pane = DiffPaneView()
-        case "search":
-            pane = SearchPaneView()
-        case "files":
-            pane = FileBrowserPaneView()
-        case "analytics":
-            pane = AnalyticsPaneView()
-        case "brief":
-            pane = DailyBriefPaneView()
-        case "notifications":
-            pane = NotificationsPaneView()
-        case "rules":
-            pane = RulesManagerPaneView()
-        case "ssh":
-            pane = SshManagerPaneView()
-        case "replay":
-            pane = ReplayPaneView(frame: .zero)
-        case "browser":
-            pane = BrowserPaneView(frame: .zero, url: nil)
-        default:
-            return
+        guard let pane = makeToolPane(toolID) else { return }
+        if contentAreaView?.replaceActivePane(with: pane) == nil {
+            contentAreaView?.setRootPane(pane)
         }
-        if let pane {
-            if contentAreaView?.replaceActivePane(with: pane) == nil {
-                contentAreaView?.setRootPane(pane)
-            }
-        }
+    }
+
+    private func openToolAsTab(_ toolID: String) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        let title = sidebarTools(for: workspace).first(where: { $0.id == toolID })?.title ?? toolID.capitalized
+        contentAreaView?.syncPersistedPanes()
+        _ = workspace.addTab(title: title)
+        workspace.ensureActiveTabHasDisplayableRootPane()
+        contentAreaView?.setLayoutEngine(workspace.layoutEngine)
+        updateTabBar()
+        openToolPane(toolID)
+        persistence?.markDirty()
+    }
+
+    private func openToolAsPane(_ toolID: String) {
+        guard let pane = makeToolPane(toolID) else { return }
+        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        persistence?.markDirty()
     }
 
     private func buildSessionState() -> SessionPersistence.SessionState {
@@ -1632,6 +1637,14 @@ private final class ThemedTitlebarFillView: NSView {
     }
 
     override var isOpaque: Bool { true }
+
+    override func mouseUp(with event: NSEvent) {
+        if event.clickCount == 2 {
+            window?.toggleFullScreen(nil)
+        } else {
+            super.mouseUp(with: event)
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let theme = GhosttyThemeProvider.shared
