@@ -9,11 +9,15 @@ use pnevma_commands::{route_method, NullEmitter};
 use pnevma_db::GlobalDb;
 use pnevma_session::SessionEvent;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -25,6 +29,9 @@ type EventCallback = extern "C" fn(event: *const c_char, payload_json: *const c_
 
 /// Callback for async call completion.
 type AsyncCallback = extern "C" fn(result: *const PnevmaResult, ctx: *mut ());
+
+/// Callback for releasing async callback context.
+type AsyncContextRelease = extern "C" fn(ctx: *mut ());
 
 /// Callback for high-frequency session PTY output.
 type SessionOutputCallback =
@@ -44,6 +51,9 @@ pub struct PnevmaHandle {
     state: Arc<AppState>,
     session_output_cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
     session_output_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pending_async_callbacks: Arc<std::sync::Mutex<HashMap<u64, AsyncCallbackWrapper>>>,
+    next_async_callback_id: AtomicU64,
+    shutting_down: Arc<AtomicBool>,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
@@ -67,6 +77,14 @@ struct SessionOutputCallbackWrapper {
 }
 unsafe impl Send for SessionOutputCallbackWrapper {}
 unsafe impl Sync for SessionOutputCallbackWrapper {}
+
+struct AsyncCallbackWrapper {
+    cb: AsyncCallback,
+    ctx: *mut (),
+    release_cb: Option<AsyncContextRelease>,
+}
+unsafe impl Send for AsyncCallbackWrapper {}
+unsafe impl Sync for AsyncCallbackWrapper {}
 
 // ---------------------------------------------------------------------------
 // FFI EventEmitter implementation
@@ -120,6 +138,19 @@ fn make_result(ok: bool, data: &str) -> *mut PnevmaResult {
 
 fn make_error_result(msg: &str) -> *mut PnevmaResult {
     make_result(false, msg)
+}
+
+fn release_async_context(callback: AsyncCallbackWrapper) {
+    if let Some(release_cb) = callback.release_cb {
+        release_cb(callback.ctx);
+    }
+}
+
+fn finish_async_callback(callback: AsyncCallbackWrapper, result: *mut PnevmaResult) {
+    (callback.cb)(result, callback.ctx);
+    release_async_context(callback);
+    // Free the result after callback returns.
+    unsafe { pnevma_free_result(result) };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +297,8 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         // Register self_arc so internal code can clone it (e.g. AutomationCoordinator).
         let _ = state.self_arc.set(Arc::clone(&state));
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let pending_async_callbacks = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
 
         // Start background services
         let state_clone = Arc::clone(&state);
@@ -278,6 +311,9 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             state,
             session_output_cb: Arc::new(std::sync::Mutex::new(None)),
             session_output_task: std::sync::Mutex::new(None),
+            pending_async_callbacks,
+            next_async_callback_id: AtomicU64::new(1),
+            shutting_down,
             shutdown: shutdown_tx,
         }))
     });
@@ -297,9 +333,21 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { Box::from_raw(handle) };
         // Signal all tasks to shut down
+        handle.shutting_down.store(true, Ordering::SeqCst);
         let _ = handle.shutdown.send(true);
         if let Ok(mut cb_guard) = handle.session_output_cb.lock() {
             *cb_guard = None;
+        }
+        let pending_callbacks = if let Ok(mut callbacks) = handle.pending_async_callbacks.lock() {
+            callbacks
+                .drain()
+                .map(|(_, callback)| callback)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for callback in pending_callbacks {
+            release_async_context(callback);
         }
         if let Ok(mut task_guard) = handle.session_output_task.lock() {
             if let Some(task) = task_guard.take() {
@@ -395,10 +443,11 @@ pub extern "C" fn pnevma_call(
 /// `params_json` must point to a valid allocation of at least `params_len`
 /// bytes. Passing a length exceeding the allocation is undefined behavior.
 ///
-/// LIFETIME CONTRACT: `cb_ctx` must remain valid until `cb` is invoked.
-/// The caller must NOT free, deallocate, or mutate the memory pointed to
-/// by `cb_ctx` until the callback has returned. Passing NULL is valid
-/// only if the callback handles NULL context.
+/// LIFETIME CONTRACT: `cb_ctx` must remain valid until the callback fires or
+/// its `release_cb` is invoked. Destroying the handle cancels pending async
+/// calls without invoking their completion callbacks, but still invokes
+/// `release_cb` exactly once for each pending callback. Passing NULL is valid
+/// only if both callbacks handle NULL context.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_call_async(
@@ -408,8 +457,12 @@ pub extern "C" fn pnevma_call_async(
     params_len: usize,
     cb: AsyncCallback,
     cb_ctx: *mut (),
+    release_cb: Option<AsyncContextRelease>,
 ) {
     if handle.is_null() || method.is_null() {
+        if let Some(release_cb) = release_cb {
+            release_cb(cb_ctx);
+        }
         return;
     }
 
@@ -420,38 +473,71 @@ pub extern "C" fn pnevma_call_async(
             Ok(s) => s.to_owned(),
             Err(_) => {
                 let r = make_error_result("invalid UTF-8 in method");
-                cb(r, cb_ctx);
-                unsafe { pnevma_free_result(r) };
+                finish_async_callback(
+                    AsyncCallbackWrapper {
+                        cb,
+                        ctx: cb_ctx,
+                        release_cb,
+                    },
+                    r,
+                );
                 return;
             }
         };
         if let Err(r) = validate_method_name(&method_str) {
-            cb(r, cb_ctx);
-            unsafe { pnevma_free_result(r) };
+            finish_async_callback(
+                AsyncCallbackWrapper {
+                    cb,
+                    ctx: cb_ctx,
+                    release_cb,
+                },
+                r,
+            );
             return;
         }
 
         let params = match parse_params(params_json, params_len) {
             Ok(v) => v,
             Err(r) => {
-                cb(r, cb_ctx);
-                unsafe { pnevma_free_result(r) };
+                finish_async_callback(
+                    AsyncCallbackWrapper {
+                        cb,
+                        ctx: cb_ctx,
+                        release_cb,
+                    },
+                    r,
+                );
                 return;
             }
         };
 
-        // SAFETY: `cb_ctx` is an opaque pointer supplied by the Swift caller.
-        // The caller guarantees that the pointed-to memory remains valid for
-        // the entire lifetime of this async task — i.e., until `cb` is invoked
-        // and returns. We cast it to `usize` to cross the `Send` boundary
-        // imposed by `tokio::spawn`; the raw pointer is re-materialised inside
-        // the spawned future only immediately before the callback is called.
-        // No aliasing occurs because the caller must not mutate the context
-        // concurrently while this task is alive. NULL is a valid sentinel meaning
-        // "no context" — callers that pass null must ensure the callback handles it.
-        let cb_ctx_usize = cb_ctx as usize;
-
         let state = Arc::clone(&handle.state);
+        let callback_id = handle
+            .next_async_callback_id
+            .fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut callbacks) = handle.pending_async_callbacks.lock() {
+            callbacks.insert(
+                callback_id,
+                AsyncCallbackWrapper {
+                    cb,
+                    ctx: cb_ctx,
+                    release_cb,
+                },
+            );
+        } else {
+            let r = make_error_result("async callback registry poisoned");
+            finish_async_callback(
+                AsyncCallbackWrapper {
+                    cb,
+                    ctx: cb_ctx,
+                    release_cb,
+                },
+                r,
+            );
+            return;
+        }
+        let callbacks = Arc::clone(&handle.pending_async_callbacks);
+        let shutting_down = Arc::clone(&handle.shutting_down);
         handle.runtime.spawn(async move {
             let result = route_method(&state, &method_str, &params).await;
             let r = match result {
@@ -473,9 +559,22 @@ pub extern "C" fn pnevma_call_async(
                 }
                 Err((_code, msg)) => make_error_result(&msg),
             };
-            cb(r, cb_ctx_usize as *mut ());
-            // Free the result after callback returns
-            unsafe { pnevma_free_result(r) };
+            if shutting_down.load(Ordering::SeqCst) {
+                if let Ok(mut callbacks) = callbacks.lock() {
+                    callbacks.remove(&callback_id);
+                }
+                unsafe { pnevma_free_result(r) };
+                return;
+            }
+            let callback = callbacks
+                .lock()
+                .ok()
+                .and_then(|mut callbacks| callbacks.remove(&callback_id));
+            if let Some(callback) = callback {
+                finish_async_callback(callback, r);
+            } else {
+                unsafe { pnevma_free_result(r) };
+            }
         });
     }));
 }
@@ -763,16 +862,21 @@ mod tests {
 
     #[test]
     fn pnevma_call_async_invokes_callback() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
         let handle = pnevma_create(noop_cb, ptr::null_mut());
         assert!(!handle.is_null());
 
         static CALLED: AtomicBool = AtomicBool::new(false);
+        static RELEASED: AtomicUsize = AtomicUsize::new(0);
 
         extern "C" fn async_cb(_result: *const PnevmaResult, _ctx: *mut ()) {
             CALLED.store(true, Ordering::SeqCst);
+        }
+        extern "C" fn release_cb(ctx: *mut ()) {
+            let released = unsafe { &*(ctx as *const AtomicUsize) };
+            released.fetch_add(1, Ordering::SeqCst);
         }
 
         let method = CString::new("task.list").unwrap();
@@ -783,7 +887,8 @@ mod tests {
             params.as_ptr(),
             params.as_bytes().len(),
             async_cb,
-            ptr::null_mut(),
+            (&RELEASED as *const AtomicUsize).cast_mut().cast(),
+            Some(release_cb),
         );
 
         // Give the async task time to complete
@@ -792,7 +897,64 @@ mod tests {
             CALLED.load(Ordering::SeqCst),
             "async callback should have been invoked"
         );
+        assert_eq!(
+            RELEASED.load(Ordering::SeqCst),
+            1,
+            "async callback context should be released once after completion"
+        );
 
         pnevma_destroy(handle);
+    }
+
+    #[test]
+    fn pnevma_destroy_cancels_pending_async_callbacks() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(!handle.is_null());
+
+        static CALLED_AFTER_DESTROY: AtomicBool = AtomicBool::new(false);
+        static RELEASED_AFTER_DESTROY: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn async_cb(_result: *const PnevmaResult, _ctx: *mut ()) {
+            CALLED_AFTER_DESTROY.store(true, Ordering::SeqCst);
+        }
+        extern "C" fn release_cb(ctx: *mut ()) {
+            let released = unsafe { &*(ctx as *const AtomicUsize) };
+            released.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let method = CString::new("task.list").unwrap();
+        let params = CString::new("{}").unwrap();
+        pnevma_call_async(
+            handle,
+            method.as_ptr(),
+            params.as_ptr(),
+            params.as_bytes().len(),
+            async_cb,
+            (&RELEASED_AFTER_DESTROY as *const AtomicUsize)
+                .cast_mut()
+                .cast(),
+            Some(release_cb),
+        );
+        let h = unsafe { &*handle };
+        assert_eq!(
+            h.pending_async_callbacks.lock().unwrap().len(),
+            1,
+            "callback should be pending before destroy"
+        );
+
+        pnevma_destroy(handle);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(
+            !CALLED_AFTER_DESTROY.load(Ordering::SeqCst),
+            "destroyed handles must not invoke pending async callbacks"
+        );
+        assert_eq!(
+            RELEASED_AFTER_DESTROY.load(Ordering::SeqCst),
+            1,
+            "destroy must release pending async callback context exactly once"
+        );
     }
 }

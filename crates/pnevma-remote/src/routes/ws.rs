@@ -1,9 +1,9 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        ConnectInfo, State,
+        ConnectInfo, Extension, State,
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use dashmap::DashMap;
@@ -22,6 +22,7 @@ use std::{
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
+use crate::middleware::audit::{AuditAuthContext, AuthTokenSource};
 use crate::CommandRouter;
 use crate::RemoteEventEnvelope;
 
@@ -35,6 +36,8 @@ pub struct WsState {
     pub remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
     pub connection_counts: WsConnectionCounts,
     pub max_ws_per_ip: usize,
+    pub allowed_origins: Vec<String>,
+    pub allow_session_input: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -108,9 +111,17 @@ struct SessionListEntry {
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<WsState>,
+    auth: Option<Extension<AuditAuthContext>>,
 ) -> impl IntoResponse {
+    let auth_context = auth.map(|Extension(ctx)| ctx);
+    if let Err(status) = validate_ws_origin(&headers, auth_context.as_ref(), &state.allowed_origins)
+    {
+        return status.into_response();
+    }
+
     let ip = addr.ip();
     let counts = state.connection_counts.clone();
     let max = state.max_ws_per_ip;
@@ -131,7 +142,14 @@ pub async fn ws_handler(
 
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| async move {
-            handle_socket(socket, state.router, state.remote_events).await;
+            handle_socket(
+                socket,
+                state.router,
+                state.remote_events,
+                auth_context,
+                state.allow_session_input,
+            )
+            .await;
             // Release the slot when the connection closes.
             counter.fetch_sub(1, Ordering::SeqCst);
         })
@@ -160,6 +178,49 @@ fn is_valid_channel(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
+}
+
+fn normalize_origin(origin: &str) -> String {
+    origin.trim().trim_end_matches('/').to_string()
+}
+
+fn configured_ws_origins(allowed_origins: &[String]) -> Vec<String> {
+    if allowed_origins.is_empty() {
+        vec!["https://localhost".to_string()]
+    } else {
+        allowed_origins
+            .iter()
+            .map(|origin| normalize_origin(origin))
+            .collect()
+    }
+}
+
+fn validate_ws_origin(
+    headers: &HeaderMap,
+    auth_context: Option<&AuditAuthContext>,
+    allowed_origins: &[String],
+) -> Result<(), StatusCode> {
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
+        let origin = origin.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
+        if configured_ws_origins(allowed_origins)
+            .iter()
+            .any(|allowed| allowed == &normalize_origin(origin))
+        {
+            return Ok(());
+        }
+        tracing::warn!(origin, "WebSocket origin rejected");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    if matches!(
+        auth_context.and_then(|ctx| ctx.token_source),
+        Some(AuthTokenSource::QueryParam)
+    ) {
+        tracing::warn!("WebSocket upgrade missing Origin while using query-token auth");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(())
 }
 
 fn session_channel_id(name: &str) -> Option<&str> {
@@ -255,6 +316,8 @@ async fn handle_socket(
     socket: WebSocket,
     router: Arc<dyn CommandRouter>,
     remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
+    auth_context: Option<AuditAuthContext>,
+    allow_session_input: bool,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let mut subscribed_sessions: HashSet<String> = HashSet::new();
@@ -409,6 +472,22 @@ async fn handle_socket(
                     WsClientMessage::SessionInput { session_id, data } => {
                         if let Err(message) = validate_session_input(&session_id, &data) {
                             WsServerMessage::Error { message }
+                        } else if !allow_session_input {
+                            tracing::warn!(
+                                subject = auth_context
+                                    .as_ref()
+                                    .map(|ctx| ctx.subject.as_str())
+                                    .unwrap_or("-"),
+                                token_id = auth_context
+                                    .as_ref()
+                                    .and_then(|ctx| ctx.token_id.as_deref())
+                                    .unwrap_or("-"),
+                                session_id = %session_id,
+                                "blocked remote session input attempt"
+                            );
+                            WsServerMessage::Error {
+                                message: "remote session input is disabled by policy".to_string(),
+                            }
                         } else if !subscribed_sessions.contains(&session_id) {
                             WsServerMessage::Error {
                                 message: format!(
@@ -416,6 +495,18 @@ async fn handle_socket(
                                 ),
                             }
                         } else {
+                            tracing::warn!(
+                                subject = auth_context
+                                    .as_ref()
+                                    .map(|ctx| ctx.subject.as_str())
+                                    .unwrap_or("-"),
+                                token_id = auth_context
+                                    .as_ref()
+                                    .and_then(|ctx| ctx.token_id.as_deref())
+                                    .unwrap_or("-"),
+                                session_id = %session_id,
+                                "remote session input accepted"
+                            );
                             let params = serde_json::json!({
                                 "session_id": session_id,
                                 "input": data
@@ -451,12 +542,14 @@ async fn handle_socket(
 mod tests {
     use super::super::rpc_allowlist;
     use super::{
-        authorize_session_channel, event_channels, is_allowed_channel, is_valid_channel,
-        is_valid_rpc_id, is_valid_rpc_method, validate_session_input, MAX_RPC_ID_LEN,
-        MAX_RPC_METHOD_LEN, MAX_SESSION_INPUT_BYTES,
+        authorize_session_channel, configured_ws_origins, event_channels, is_allowed_channel,
+        is_valid_channel, is_valid_rpc_id, is_valid_rpc_method, validate_session_input,
+        validate_ws_origin, MAX_RPC_ID_LEN, MAX_RPC_METHOD_LEN, MAX_SESSION_INPUT_BYTES,
     };
+    use crate::middleware::audit::{AuditAuthContext, AuthTokenSource};
     use crate::CommandRouter;
     use async_trait::async_trait;
+    use axum::http::{header, HeaderMap, StatusCode};
     use serde_json::{json, Value};
     use std::sync::Arc;
     use uuid::Uuid;
@@ -525,6 +618,48 @@ mod tests {
             &"x".repeat(MAX_SESSION_INPUT_BYTES + 1)
         )
         .is_err());
+    }
+
+    #[test]
+    fn configured_ws_origins_fall_back_to_localhost() {
+        assert_eq!(
+            configured_ws_origins(&[]),
+            vec!["https://localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_ws_origin_accepts_configured_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://example.com".parse().unwrap());
+        assert!(validate_ws_origin(&headers, None, &["https://example.com".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn validate_ws_origin_rejects_query_token_without_origin() {
+        let headers = HeaderMap::new();
+        let auth = AuditAuthContext::websocket_authenticated(
+            "operator".to_string(),
+            "token123".to_string(),
+            AuthTokenSource::QueryParam,
+        );
+        assert_eq!(
+            validate_ws_origin(&headers, Some(&auth), &["https://example.com".to_string()]),
+            Err(StatusCode::FORBIDDEN)
+        );
+    }
+
+    #[test]
+    fn validate_ws_origin_allows_header_auth_without_origin() {
+        let headers = HeaderMap::new();
+        let auth = AuditAuthContext::websocket_authenticated(
+            "operator".to_string(),
+            "token123".to_string(),
+            AuthTokenSource::AuthorizationHeader,
+        );
+        assert!(
+            validate_ws_origin(&headers, Some(&auth), &["https://example.com".to_string()]).is_ok()
+        );
     }
 
     #[test]

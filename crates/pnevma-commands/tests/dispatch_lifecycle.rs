@@ -17,7 +17,7 @@ use pnevma_commands::{
 use pnevma_core::{
     config::{
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
-        RetentionSection,
+        RedactionSection, RetentionSection,
     },
     GlobalConfig, Priority, ProjectConfig, RemoteSection, TrackerSection,
 };
@@ -285,6 +285,7 @@ fn make_project_config() -> ProjectConfig {
         conventions: PathSection::default(),
         remote: RemoteSection::default(),
         tracker: TrackerSection::default(),
+        redaction: RedactionSection::default(),
     }
 }
 

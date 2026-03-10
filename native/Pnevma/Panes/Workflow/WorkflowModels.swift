@@ -27,7 +27,8 @@ struct LoopConfig: Codable {
     var mode: LoopMode = .onFailure
 }
 
-struct WorkflowStepDef: Codable {
+struct WorkflowStepDef: Identifiable, Codable {
+    var id: UUID = UUID()
     var title: String = ""
     var goal: String = ""
     var scope: [String] = []
@@ -42,6 +43,12 @@ struct WorkflowStepDef: Codable {
     var constraints: [String] = []
     var onFailure: String = "Pause"
     var loopConfig: LoopConfig?
+
+    enum CodingKeys: String, CodingKey {
+        case title, goal, scope, priority, dependsOn, autoDispatch
+        case agentProfile, executionMode, timeoutMinutes, maxRetries
+        case acceptanceCriteria, constraints, onFailure, loopConfig
+    }
 }
 
 struct WorkflowInstanceItem: Identifiable, Codable {

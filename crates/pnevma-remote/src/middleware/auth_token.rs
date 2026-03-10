@@ -9,7 +9,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{auth::TokenStore, middleware::audit::AuditAuthContext};
+use crate::{
+    auth::TokenStore,
+    middleware::audit::{AuditAuthContext, AuthTokenSource},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
@@ -29,14 +32,25 @@ pub async fn auth_token(
     let websocket_upgrade = is_websocket_upgrade(&req);
 
     match token {
-        Some(t) => match store.validate_token(&t, &request_ip) {
+        Some((t, token_source)) => match store.validate_token(&t, &request_ip) {
             Some(audit) => {
-                let mut response = next.run(req).await;
-                response.extensions_mut().insert(if websocket_upgrade {
-                    AuditAuthContext::websocket_authenticated(audit.subject, audit.token_id)
+                let audit_ctx = if websocket_upgrade {
+                    AuditAuthContext::websocket_authenticated(
+                        audit.subject,
+                        audit.token_id,
+                        token_source,
+                    )
                 } else {
-                    AuditAuthContext::authenticated_request(audit.subject, audit.token_id)
-                });
+                    AuditAuthContext::authenticated_request(
+                        audit.subject,
+                        audit.token_id,
+                        token_source,
+                    )
+                };
+                let mut req = req;
+                req.extensions_mut().insert(audit_ctx.clone());
+                let mut response = next.run(req).await;
+                response.extensions_mut().insert(audit_ctx);
                 response
             }
             None => {
@@ -57,12 +71,15 @@ pub async fn auth_token(
     }
 }
 
-fn extract_token(req: &Request<Body>, query_token: Option<&str>) -> Option<String> {
+fn extract_token(
+    req: &Request<Body>,
+    query_token: Option<&str>,
+) -> Option<(String, AuthTokenSource)> {
     // Try Authorization: Bearer <token> first
     if let Some(header_val) = req.headers().get(axum::http::header::AUTHORIZATION) {
         if let Ok(val) = header_val.to_str() {
             if let Some(token) = val.strip_prefix("Bearer ") {
-                return Some(token.to_string());
+                return Some((token.to_string(), AuthTokenSource::AuthorizationHeader));
             }
         }
     }
@@ -73,7 +90,7 @@ fn extract_token(req: &Request<Body>, query_token: Option<&str>) -> Option<Strin
                 path = %req.uri().path(),
                 "auth via ?token= query param (WebSocket upgrade)"
             );
-            return Some(t.to_string());
+            return Some((t.to_string(), AuthTokenSource::QueryParam));
         }
     }
     None
@@ -125,7 +142,13 @@ mod tests {
     fn extract_bearer_from_auth_header() {
         let req = bearer_request("mytoken123");
         let token = extract_token(&req, None);
-        assert_eq!(token.as_deref(), Some("mytoken123"));
+        assert_eq!(
+            token,
+            Some((
+                "mytoken123".to_string(),
+                AuthTokenSource::AuthorizationHeader
+            ))
+        );
     }
 
     #[test]
@@ -139,7 +162,10 @@ mod tests {
     fn query_token_allowed_only_for_websocket_upgrade() {
         let ws_req = ws_request();
         let token = extract_token(&ws_req, Some("wstoken"));
-        assert_eq!(token.as_deref(), Some("wstoken"));
+        assert_eq!(
+            token,
+            Some(("wstoken".to_string(), AuthTokenSource::QueryParam))
+        );
 
         let plain_req = plain_request();
         let token = extract_token(&plain_req, Some("wstoken"));
@@ -153,7 +179,13 @@ mod tests {
     fn bearer_header_takes_priority_over_query_token() {
         let req = bearer_request("headertoken");
         let token = extract_token(&req, Some("querytoken"));
-        assert_eq!(token.as_deref(), Some("headertoken"));
+        assert_eq!(
+            token,
+            Some((
+                "headertoken".to_string(),
+                AuthTokenSource::AuthorizationHeader
+            ))
+        );
     }
 
     #[test]
@@ -214,6 +246,10 @@ mod tests {
             audit.token_id.as_deref(),
             Some(issued.audit.token_id.as_str())
         );
+        assert_eq!(
+            audit.token_source,
+            Some(AuthTokenSource::AuthorizationHeader)
+        );
     }
 
     #[tokio::test]
@@ -251,5 +287,6 @@ mod tests {
             audit.token_id.as_deref(),
             Some(issued.audit.token_id.as_str())
         );
+        assert_eq!(audit.token_source, Some(AuthTokenSource::QueryParam));
     }
 }

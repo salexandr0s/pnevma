@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use tracing::{debug, warn};
 
-const LINEAR_API_URL: &str = "https://linear.app/api/graphql";
+const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 pub struct LinearAdapter {
     client: Client,
@@ -64,39 +64,12 @@ impl TrackerAdapter for LinearAdapter {
         &self,
         filter: &TrackerFilter,
     ) -> Result<Vec<TrackerItem>, TrackerError> {
-        let mut filter_parts = Vec::new();
-
-        if let Some(ref team_id) = filter.team_id {
-            filter_parts.push(format!("team: {{ id: {{ eq: \"{}\" }} }}", team_id));
-        }
-        if let Some(ref project_id) = filter.project_id {
-            filter_parts.push(format!("project: {{ id: {{ eq: \"{}\" }} }}", project_id));
-        }
-        if !filter.labels.is_empty() {
-            let labels_str: Vec<String> =
-                filter.labels.iter().map(|l| format!("\"{}\"", l)).collect();
-            filter_parts.push(format!(
-                "labels: {{ name: {{ in: [{}] }} }}",
-                labels_str.join(", ")
-            ));
-        }
-        if let Some(ref since) = filter.updated_since {
-            filter_parts.push(format!("updatedAt: {{ gte: \"{}\" }}", since.to_rfc3339()));
-        }
-
-        let filter_str = if filter_parts.is_empty() {
-            String::new()
-        } else {
-            format!("filter: {{ {} }}", filter_parts.join(", "))
-        };
-
         let limit = filter.limit.unwrap_or(50);
 
-        let query = format!(
-            r#"
-            query {{
-                issues(first: {limit}, {filter_str}) {{
-                    nodes {{
+        let query = r#"
+            query($filter: IssueFilter, $first: Int!) {
+                issues(first: $first, filter: $filter) {
+                    nodes {
                         id
                         identifier
                         title
@@ -104,24 +77,55 @@ impl TrackerAdapter for LinearAdapter {
                         url
                         priority
                         updatedAt
-                        state {{
+                        state {
                             name
-                        }}
-                        labels {{
-                            nodes {{
+                        }
+                        labels {
+                            nodes {
                                 name
-                            }}
-                        }}
-                        assignee {{
+                            }
+                        }
+                        assignee {
                             name
-                        }}
-                    }}
-                }}
-            }}
-        "#
-        );
+                        }
+                    }
+                }
+            }
+        "#;
 
-        let data = self.graphql_query(&query, serde_json::json!({})).await?;
+        let mut filter_obj = serde_json::Map::new();
+
+        if let Some(ref team_id) = filter.team_id {
+            filter_obj.insert(
+                "team".into(),
+                serde_json::json!({ "id": { "eq": team_id } }),
+            );
+        }
+        if let Some(ref project_id) = filter.project_id {
+            filter_obj.insert(
+                "project".into(),
+                serde_json::json!({ "id": { "eq": project_id } }),
+            );
+        }
+        if !filter.labels.is_empty() {
+            filter_obj.insert(
+                "labels".into(),
+                serde_json::json!({ "name": { "in": filter.labels } }),
+            );
+        }
+        if let Some(ref since) = filter.updated_since {
+            filter_obj.insert(
+                "updatedAt".into(),
+                serde_json::json!({ "gte": since.to_rfc3339() }),
+            );
+        }
+
+        let variables = serde_json::json!({
+            "first": limit,
+            "filter": serde_json::Value::Object(filter_obj),
+        });
+
+        let data = self.graphql_query(query, variables).await?;
 
         let nodes = data
             .get("issues")
@@ -276,20 +280,35 @@ impl TrackerAdapter for LinearAdapter {
     }
 
     async fn transition_item(&self, transition: &StateTransition) -> Result<(), TrackerError> {
-        let state_query = r#"
-            query {
-                workflowStates {
-                    nodes {
-                        id
-                        name
+        // When team_id is available, scope the query to that team's workflow states
+        // to avoid name collisions across teams. Otherwise fall back to unscoped query.
+        let data = if let Some(ref team_id) = transition.team_id {
+            let scoped_query = r#"
+                query($teamId: ID!) {
+                    workflowStates(filter: { team: { id: { eq: $teamId } } }) {
+                        nodes {
+                            id
+                            name
+                        }
                     }
                 }
-            }
-        "#;
-
-        let data = self
-            .graphql_query(state_query, serde_json::json!({}))
-            .await?;
+            "#;
+            self.graphql_query(scoped_query, serde_json::json!({ "teamId": team_id }))
+                .await?
+        } else {
+            let unscoped_query = r#"
+                query {
+                    workflowStates {
+                        nodes {
+                            id
+                            name
+                        }
+                    }
+                }
+            "#;
+            self.graphql_query(unscoped_query, serde_json::json!({}))
+                .await?
+        };
         let target_state_name = match &transition.to_state {
             ExternalState::Todo => "Todo",
             ExternalState::InProgress => "In Progress",

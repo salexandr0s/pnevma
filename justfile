@@ -65,6 +65,9 @@ rust-audit:
       exit 1; \
     fi
 
+migration-checksums:
+    ./scripts/check-migration-checksums.sh
+
 # ── Stage 3: Xcode (Swift) ───────────────────────────────────────────────────
 
 # Generate .xcodeproj from native/project.yml using xcodegen
@@ -130,7 +133,7 @@ dev: rust-build xcode-build
     @echo "Dev build complete"
 
 # Run all checks
-check: rust-check rust-test rust-audit
+check: rust-check rust-test rust-audit migration-checksums
     @echo "All checks passed"
 
 # Run all tests

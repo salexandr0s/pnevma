@@ -19,6 +19,9 @@ pub struct AgentProviderConfig {
     /// Allow the agent to skip permission prompts. Defaults to false.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Allow npm exec / npx access for auto-approved Claude sessions.
+    #[serde(default)]
+    pub allow_npx: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +51,8 @@ pub struct AutomationSection {
     pub socket_path: String,
     #[serde(default = "default_socket_auth")]
     pub socket_auth: String,
+    #[serde(default = "default_socket_rate_limit_rpm")]
+    pub socket_rate_limit_rpm: u32,
     /// Enable automatic dispatch of Ready tasks when pool has capacity.
     #[serde(default)]
     pub auto_dispatch: bool,
@@ -72,6 +77,7 @@ impl Default for AutomationSection {
             socket_enabled: default_socket_enabled(),
             socket_path: default_socket_path(),
             socket_auth: default_socket_auth(),
+            socket_rate_limit_rpm: default_socket_rate_limit_rpm(),
             auto_dispatch: false,
             auto_dispatch_interval_seconds: default_auto_dispatch_interval(),
             allowed_commands: default_allowed_commands(),
@@ -137,6 +143,9 @@ pub struct RemoteSection {
     /// Allow self-signed TLS certificate fallback when Tailscale certs are unavailable.
     #[serde(default)]
     pub tls_allow_self_signed_fallback: bool,
+    /// Allow remote WebSocket clients to send terminal input to live sessions.
+    #[serde(default)]
+    pub allow_session_input: bool,
 }
 
 impl Default for RemoteSection {
@@ -151,8 +160,17 @@ impl Default for RemoteSection {
             serve_frontend: default_serve_frontend(),
             allowed_origins: vec![],
             tls_allow_self_signed_fallback: false,
+            allow_session_input: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RedactionSection {
+    #[serde(default)]
+    pub extra_patterns: Vec<String>,
+    #[serde(default)]
+    pub enable_entropy_guard: bool,
 }
 
 fn default_remote_port() -> u16 {
@@ -223,6 +241,8 @@ pub struct ProjectConfig {
     pub conventions: PathSection,
     #[serde(default)]
     pub remote: RemoteSection,
+    #[serde(default)]
+    pub redaction: RedactionSection,
     #[serde(default)]
     pub tracker: TrackerSection,
 }
@@ -305,6 +325,10 @@ fn default_socket_path() -> String {
 
 fn default_socket_auth() -> String {
     "same-user".to_string()
+}
+
+fn default_socket_rate_limit_rpm() -> u32 {
+    300
 }
 
 fn default_socket_enabled() -> bool {
@@ -425,6 +449,11 @@ fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
             "automation.socket_path must not be empty".to_string(),
         ));
     }
+    if cfg.automation.socket_rate_limit_rpm == 0 {
+        return Err(CoreError::InvalidConfig(
+            "automation.socket_rate_limit_rpm must be greater than 0".to_string(),
+        ));
+    }
     if cfg.retention.artifact_days <= 0 {
         return Err(CoreError::InvalidConfig(
             "retention.artifact_days must be greater than 0".to_string(),
@@ -472,6 +501,13 @@ fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
                 "remote.allowed_origins contains an invalid origin: {origin}"
             )));
         }
+    }
+    for pattern in &cfg.redaction.extra_patterns {
+        regex::Regex::new(pattern).map_err(|err| {
+            CoreError::InvalidConfig(format!(
+                "redaction.extra_patterns contains an invalid regex {pattern:?}: {err}"
+            ))
+        })?;
     }
     Ok(())
 }
@@ -647,6 +683,7 @@ mod tests {
             rules: PathSection::default(),
             conventions: PathSection::default(),
             remote: RemoteSection::default(),
+            redaction: RedactionSection::default(),
             tracker: TrackerSection::default(),
         }
     }
@@ -682,6 +719,22 @@ mod tests {
         cfg.retention.review_days = 0;
         let err = validate_project_config(&cfg).expect_err("invalid retention days");
         assert!(err.to_string().contains("retention.review_days"));
+    }
+
+    #[test]
+    fn automation_socket_rate_limit_must_be_positive() {
+        let mut cfg = valid_project_config();
+        cfg.automation.socket_rate_limit_rpm = 0;
+        let err = validate_project_config(&cfg).expect_err("invalid socket rate limit");
+        assert!(err.to_string().contains("automation.socket_rate_limit_rpm"));
+    }
+
+    #[test]
+    fn redaction_extra_patterns_must_compile() {
+        let mut cfg = valid_project_config();
+        cfg.redaction.extra_patterns = vec!["[".to_string()];
+        let err = validate_project_config(&cfg).expect_err("invalid regex");
+        assert!(err.to_string().contains("redaction.extra_patterns"));
     }
 
     #[test]

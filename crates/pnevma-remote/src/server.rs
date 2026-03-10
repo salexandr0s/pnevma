@@ -53,6 +53,8 @@ pub async fn build_router(
         remote_events,
         connection_counts: ws_counts,
         max_ws_per_ip: config.max_ws_per_ip,
+        allowed_origins: config.allowed_origins.clone(),
+        allow_session_input: config.allow_session_input,
     };
 
     // WebSocket route — needs its own state because ws_handler extracts WsState.

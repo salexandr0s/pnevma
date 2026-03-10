@@ -79,6 +79,7 @@ pub struct PreparedRun {
     pub timeout_minutes: u64,
     pub model: Option<String>,
     pub auto_approve: bool,
+    pub allow_npx: bool,
     pub task: TaskContract,
     pub task_row: TaskRow,
     pub origin: DispatchOrigin,
@@ -453,6 +454,20 @@ pub async fn prepare(
             .map(|c| c.auto_approve)
             .unwrap_or(false),
     };
+    let allow_npx = match provider.as_str() {
+        "codex" => config
+            .agents
+            .codex
+            .as_ref()
+            .map(|c| c.allow_npx)
+            .unwrap_or(false),
+        _ => config
+            .agents
+            .claude_code
+            .as_ref()
+            .map(|c| c.allow_npx)
+            .unwrap_or(false),
+    };
 
     let target_branch = config.branches.target.clone();
     let permit_holder = Arc::new(std::sync::Mutex::new(Some(permit)));
@@ -491,6 +506,7 @@ pub async fn prepare(
         timeout_minutes,
         model,
         auto_approve,
+        allow_npx,
         task,
         task_row,
         origin,
@@ -552,6 +568,7 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
             working_dir: prepared.working_dir.clone(),
             timeout_minutes: prepared.timeout_minutes,
             auto_approve: prepared.auto_approve,
+            allow_npx: prepared.allow_npx,
             output_format: "stream-json".to_string(),
             context_file: Some(prepared.context_path.to_string_lossy().to_string()),
             thread_id: None,
@@ -632,28 +649,28 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
     let db_run_id_holder_for_task = Arc::clone(&prepared.db_run_id_holder);
     let hooks_for_task = prepared.hooks.clone();
 
-    let event_task = tokio::spawn(run_event_loop(
+    let event_task = tokio::spawn(run_event_loop(RunEventLoopContext {
         rx,
-        db_for_task,
+        db: db_for_task,
         project_id,
         task_id,
         session_id,
-        app_for_task,
-        provider_for_task,
-        git_for_task,
-        project_path_for_task,
-        worktree_path_for_task,
-        branch_for_task,
-        global_db_for_task,
-        target_branch_for_task,
-        redaction_secrets_for_task,
-        permit_holder_for_task,
-        adapter_for_task,
-        handle_for_task,
-        tracker_for_task,
-        db_run_id_holder_for_task,
-        hooks_for_task,
-    ));
+        emitter: app_for_task,
+        provider: provider_for_task,
+        git: git_for_task,
+        project_path: project_path_for_task,
+        worktree_path: worktree_path_for_task,
+        branch: branch_for_task,
+        global_db: global_db_for_task,
+        target_branch: target_branch_for_task,
+        redaction_secrets: redaction_secrets_for_task,
+        permit_holder: permit_holder_for_task,
+        adapter: adapter_for_task,
+        handle: handle_for_task,
+        tracker: tracker_for_task,
+        db_run_id_holder: db_run_id_holder_for_task,
+        hooks: hooks_for_task,
+    }));
 
     Ok(RunningAgent {
         task_id,
@@ -790,9 +807,8 @@ async fn handle_send_failure(
     error
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_event_loop(
-    mut rx: tokio::sync::broadcast::Receiver<AgentEvent>,
+struct RunEventLoopContext {
+    rx: tokio::sync::broadcast::Receiver<AgentEvent>,
     db: Db,
     project_id: Uuid,
     task_id: Uuid,
@@ -812,7 +828,31 @@ async fn run_event_loop(
     tracker: Option<Arc<dyn pnevma_tracker::TrackerAdapter>>,
     db_run_id_holder: Arc<std::sync::Mutex<Option<String>>>,
     hooks: pnevma_core::WorkflowHooks,
-) {
+}
+
+async fn run_event_loop(ctx: RunEventLoopContext) {
+    let RunEventLoopContext {
+        mut rx,
+        db,
+        project_id,
+        task_id,
+        session_id,
+        emitter,
+        provider,
+        git,
+        project_path,
+        worktree_path,
+        branch,
+        global_db,
+        target_branch,
+        redaction_secrets,
+        permit_holder,
+        adapter,
+        handle,
+        tracker,
+        db_run_id_holder,
+        hooks,
+    } = ctx;
     let session_id_str = session_id.to_string();
     let mut last_summary: Option<String> = None;
     let mut failed = false;
@@ -1196,6 +1236,7 @@ async fn run_event_loop(
                     let transition = pnevma_tracker::StateTransition {
                         external_id: source_row.external_id.clone(),
                         kind: source_row.kind.clone(),
+                        team_id: None,
                         from_state,
                         to_state,
                         comment: last_summary.clone(),

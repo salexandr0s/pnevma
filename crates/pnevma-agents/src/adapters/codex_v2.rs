@@ -62,10 +62,10 @@ struct AppServerConnection {
 
 #[derive(Default)]
 pub struct CodexV2Adapter {
-    channels: Arc<std::sync::RwLock<HashMap<Uuid, broadcast::Sender<AgentEvent>>>>,
-    configs: Arc<std::sync::RwLock<HashMap<Uuid, AgentConfig>>>,
+    channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<AgentEvent>>>>,
+    configs: Arc<RwLock<HashMap<Uuid, AgentConfig>>>,
     connections: Arc<RwLock<HashMap<Uuid, AppServerConnection>>>,
-    costs: Arc<std::sync::RwLock<HashMap<Uuid, CostRecord>>>,
+    costs: Arc<RwLock<HashMap<Uuid, CostRecord>>>,
 }
 
 impl CodexV2Adapter {
@@ -164,14 +164,8 @@ impl AgentAdapter for CodexV2Adapter {
         let id = Uuid::new_v4();
         let (event_tx, _) = broadcast::channel(2048);
 
-        self.channels
-            .write()
-            .expect("channel lock poisoned")
-            .insert(id, event_tx.clone());
-        self.configs
-            .write()
-            .expect("config lock poisoned")
-            .insert(id, config.clone());
+        self.channels.write().await.insert(id, event_tx.clone());
+        self.configs.write().await.insert(id, config.clone());
 
         let (child, stdin, stdout) = Self::start_server(&config).await?;
 
@@ -219,21 +213,19 @@ impl AgentAdapter for CodexV2Adapter {
                             cost_usd,
                         } = &event
                         {
-                            if let Ok(mut costs) = costs_clone.write() {
-                                costs.insert(
-                                    handle_id,
-                                    CostRecord {
-                                        provider: "codex-v2".to_string(),
-                                        model: None,
-                                        tokens_in: *tokens_in,
-                                        tokens_out: *tokens_out,
-                                        estimated_cost_usd: *cost_usd,
-                                        timestamp: Utc::now(),
-                                        task_id: Uuid::nil(),
-                                        session_id: handle_id,
-                                    },
-                                );
-                            }
+                            costs_clone.write().await.insert(
+                                handle_id,
+                                CostRecord {
+                                    provider: "codex-v2".to_string(),
+                                    model: None,
+                                    tokens_in: *tokens_in,
+                                    tokens_out: *tokens_out,
+                                    estimated_cost_usd: *cost_usd,
+                                    timestamp: Utc::now(),
+                                    task_id: Uuid::nil(),
+                                    session_id: handle_id,
+                                },
+                            );
                         }
                         let _ = event_tx_clone.send(event);
                     }
@@ -365,12 +357,7 @@ impl AgentAdapter for CodexV2Adapter {
         *conn.turn_id.write().await = turn_id.clone();
 
         if let Some(ref tid) = turn_id {
-            if let Some(tx) = self
-                .channels
-                .read()
-                .expect("channel lock poisoned")
-                .get(&handle.id)
-            {
+            if let Some(tx) = self.channels.read().await.get(&handle.id) {
                 let _ = tx.send(AgentEvent::TurnStarted {
                     turn_id: tid.clone(),
                     thread_id: thread_id.clone(),
@@ -414,12 +401,7 @@ impl AgentAdapter for CodexV2Adapter {
         )
         .await?;
 
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
+        if let Some(tx) = self.channels.read().await.get(&handle.id) {
             let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Paused));
         }
 
@@ -454,12 +436,7 @@ impl AgentAdapter for CodexV2Adapter {
             conn.stdin_task.abort();
         }
 
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
+        if let Some(tx) = self.channels.read().await.get(&handle.id) {
             let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
         }
 
@@ -467,22 +444,18 @@ impl AgentAdapter for CodexV2Adapter {
     }
 
     fn events(&self, handle: &AgentHandle) -> broadcast::Receiver<AgentEvent> {
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
-            tx.subscribe()
-        } else {
-            let (tx, rx) = broadcast::channel(4);
-            let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
-            rx
+        if let Ok(guard) = self.channels.try_read() {
+            if let Some(tx) = guard.get(&handle.id) {
+                return tx.subscribe();
+            }
         }
+        let (tx, rx) = broadcast::channel(4);
+        let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
+        rx
     }
 
     async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
-        let costs = self.costs.read().expect("costs lock poisoned");
+        let costs = self.costs.read().await;
         Ok(costs.get(&handle.id).cloned().unwrap_or(CostRecord {
             provider: "codex-v2".to_string(),
             model: None,
@@ -618,6 +591,7 @@ mod tests {
             working_dir: "/tmp".to_string(),
             timeout_minutes: 30,
             auto_approve: false,
+            allow_npx: false,
             output_format: "stream-json".to_string(),
             context_file: None,
             thread_id: None,
@@ -638,15 +612,15 @@ mod tests {
     #[test]
     fn new_creates_empty_adapter() {
         let adapter = CodexV2Adapter::new();
-        assert!(adapter.channels.read().unwrap().is_empty());
-        assert!(adapter.configs.read().unwrap().is_empty());
-        assert!(adapter.costs.read().unwrap().is_empty());
+        assert!(adapter.channels.blocking_read().is_empty());
+        assert!(adapter.configs.blocking_read().is_empty());
+        assert!(adapter.costs.blocking_read().is_empty());
     }
 
     #[test]
     fn default_creates_empty_adapter() {
         let adapter = CodexV2Adapter::default();
-        assert!(adapter.channels.read().unwrap().is_empty());
+        assert!(adapter.channels.blocking_read().is_empty());
     }
 
     #[test]

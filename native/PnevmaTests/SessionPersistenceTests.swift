@@ -121,6 +121,22 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restored?.sidebarVisible, false)
     }
 
+    func testSaveWritesSessionFileWith0600Permissions() throws {
+        let state = SessionPersistence.SessionState(
+            windowFrame: nil,
+            workspaces: [],
+            activeWorkspaceID: nil,
+            sidebarVisible: true
+        )
+
+        persistence.save(state: state)
+
+        let saveURL = tempDir.appendingPathComponent("session.json")
+        let attributes = try FileManager.default.attributesOfItem(atPath: saveURL.path)
+        let permissions = attributes[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+    }
+
     func testMarkDirtyFromMultipleThreads() {
         // Verify thread-safety of markDirty — should not crash or race.
         let group = DispatchGroup()

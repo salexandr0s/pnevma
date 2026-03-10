@@ -58,7 +58,8 @@ struct SidebarView: View {
                             onClose: { workspaceManager.closeWorkspace(workspace.id) },
                             onRename: { newName in
                                 workspaceManager.renameWorkspace(workspace.id, to: newName)
-                            }
+                            },
+                            onPin: { workspaceManager.togglePinWorkspace(workspace.id) }
                         )
                     }
                 }

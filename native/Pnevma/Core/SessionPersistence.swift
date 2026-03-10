@@ -48,7 +48,7 @@ final class SessionPersistence {
         } else {
             let configDir = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/pnevma", isDirectory: true)
-            try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+            try? Self.ensureSecureDirectory(configDir)
             self.saveURL = configDir.appendingPathComponent("session.json")
         }
     }
@@ -88,7 +88,11 @@ final class SessionPersistence {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(state)
+            if let parent = saveURL.deletingLastPathComponent() as URL? {
+                try Self.ensureSecureDirectory(parent)
+            }
             try data.write(to: saveURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: saveURL.path)
         } catch {
             Log.persistence.error("Save failed: \(error)")
         }
@@ -108,5 +112,14 @@ final class SessionPersistence {
             Log.persistence.error("Restore failed: \(error)")
             return nil
         }
+    }
+
+    private static func ensureSecureDirectory(_ url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
     }
 }

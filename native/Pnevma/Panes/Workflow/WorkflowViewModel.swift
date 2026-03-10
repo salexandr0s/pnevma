@@ -40,17 +40,13 @@ final class WorkflowViewModel {
                     loadedInsts = []
                 }
                 let (d, p) = try await (defs, profiles)
-                await MainActor.run {
-                    self.definitions = d
-                    self.instances = loadedInsts
-                    self.availableProfiles = p
-                    self.isLoading = false
-                }
+                self.definitions = d
+                self.instances = loadedInsts
+                self.availableProfiles = p
+                self.isLoading = false
             } catch {
-                await MainActor.run {
-                    self.error = error.localizedDescription
-                    self.isLoading = false
-                }
+                self.error = error.localizedDescription
+                self.isLoading = false
             }
         }
     }
@@ -64,9 +60,9 @@ final class WorkflowViewModel {
             do {
                 struct Params: Encodable { let id: String }
                 let detail: WorkflowInstanceDetail = try await bus.call(method: "workflow.get_instance", params: Params(id: id))
-                await MainActor.run { self.selectedDetail = detail }
+                self.selectedDetail = detail
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -82,7 +78,7 @@ final class WorkflowViewModel {
                 let _: WorkflowInstanceItem = try await bus.call(method: "workflow.instantiate", params: Params(workflowName: name))
                 load()
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -111,19 +107,17 @@ final class WorkflowViewModel {
                     )
                 }
                 load()
-                await MainActor.run {
-                    self.error = nil
-                    completion()
-                }
+                self.error = nil
+                completion()
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }
 
     func saveAndRun(completion: @escaping () -> Void) {
-        save {
-            self.instantiate(self.builderName)
+        save { [weak self] in
+            self?.instantiate(self?.builderName ?? "")
             completion()
         }
     }
@@ -140,7 +134,7 @@ final class WorkflowViewModel {
                 let _: OkResponse = try await bus.call(method: deleteMethod, params: Params(id: id))
                 load()
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -446,15 +440,11 @@ final class AgentViewModel {
         Task {
             do {
                 let items: [AgentProfileFullItem] = try await bus.call(method: method)
-                await MainActor.run {
-                    self.agents = items
-                    self.isLoading = false
-                }
+                self.agents = items
+                self.isLoading = false
             } catch {
-                await MainActor.run {
-                    self.error = error.localizedDescription
-                    self.isLoading = false
-                }
+                self.error = error.localizedDescription
+                self.isLoading = false
             }
         }
     }
@@ -563,15 +553,11 @@ final class AgentViewModel {
                         )
                     )
                 }
-                await MainActor.run {
-                    self.editingAgent = nil
-                    self.isCreating = false
-                }
+                self.editingAgent = nil
+                self.isCreating = false
                 load()
             } catch {
-                await MainActor.run {
-                    self.error = error.localizedDescription
-                }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -585,7 +571,7 @@ final class AgentViewModel {
                 let _: OkResponse = try await bus.call(method: method, params: Params(id: id))
                 load()
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -597,7 +583,7 @@ final class AgentViewModel {
                 struct Params: Encodable { let id: String }
                 let _: CopyResponse = try await bus.call(method: "global_agent.copy_to_project", params: Params(id: id))
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -609,7 +595,7 @@ final class AgentViewModel {
                 struct Params: Encodable { let id: String }
                 let _: CopyResponse = try await bus.call(method: "agent_profile.copy_to_global", params: Params(id: id))
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                self.error = error.localizedDescription
             }
         }
     }

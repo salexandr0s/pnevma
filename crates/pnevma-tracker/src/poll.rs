@@ -11,14 +11,17 @@ pub struct TrackerCoordinator {
     adapter: Arc<dyn TrackerAdapter>,
     filter: TrackerFilter,
     last_poll_at: RwLock<Option<DateTime<Utc>>>,
+    /// Provider name (e.g. "linear") — used when constructing state transitions.
+    kind: String,
 }
 
 impl TrackerCoordinator {
-    pub fn new(adapter: Arc<dyn TrackerAdapter>, filter: TrackerFilter) -> Self {
+    pub fn new(adapter: Arc<dyn TrackerAdapter>, filter: TrackerFilter, kind: String) -> Self {
         Self {
             adapter,
             filter,
             last_poll_at: RwLock::new(None),
+            kind,
         }
     }
 
@@ -51,7 +54,8 @@ impl TrackerCoordinator {
     ) -> Result<(), TrackerError> {
         let transition = crate::types::StateTransition {
             external_id: external_id.to_string(),
-            kind: "linear".to_string(),
+            kind: self.kind.clone(),
+            team_id: None,
             from_state,
             to_state,
             comment: comment.clone(),
@@ -126,7 +130,7 @@ mod tests {
             items: vec![sample_item()],
         });
         let filter = TrackerFilter::default();
-        let coordinator = TrackerCoordinator::new(adapter, filter);
+        let coordinator = TrackerCoordinator::new(adapter, filter, "linear".to_string());
 
         // Initially last_poll_at is None
         assert!(coordinator.last_poll_at.read().await.is_none());
@@ -145,7 +149,7 @@ mod tests {
             items: vec![sample_item()],
         });
         let filter = TrackerFilter::default();
-        let coordinator = TrackerCoordinator::new(adapter, filter);
+        let coordinator = TrackerCoordinator::new(adapter, filter, "linear".to_string());
 
         let items = coordinator.poll_once().await.unwrap();
         // Verify the result is serializable (for redaction pipeline)
@@ -158,7 +162,7 @@ mod tests {
     async fn sync_outbound_succeeds() {
         let adapter = Arc::new(MockAdapter { items: vec![] });
         let filter = TrackerFilter::default();
-        let coordinator = TrackerCoordinator::new(adapter, filter);
+        let coordinator = TrackerCoordinator::new(adapter, filter, "linear".to_string());
 
         let result = coordinator
             .sync_outbound(

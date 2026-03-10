@@ -61,9 +61,10 @@ impl TokenStore {
         let mut bytes = [0u8; 32];
         OsRng.fill_bytes(&mut bytes);
         let token = hex::encode(bytes);
-        let token_id = token_identifier(&token);
+        let token_hash = token_lookup_key(&token);
+        let token_id = token_identifier(&token_hash);
         self.tokens.insert(
-            token.clone(),
+            token_hash,
             TokenEntry {
                 created_at: Utc::now(),
                 ip: ip.to_string(),
@@ -82,12 +83,9 @@ impl TokenStore {
     }
 
     /// Validate a bearer token: existence check + expiry check + IP binding.
-    ///
-    /// NOTE: The DashMap lookup is not constant-time, but with 256-bit random
-    /// tokens the timing difference is not practically exploitable — an attacker
-    /// cannot meaningfully narrow the key space via timing.
     pub fn validate_token(&self, token: &str, request_ip: &str) -> Option<TokenAuditMetadata> {
-        if let Some(entry) = self.tokens.get(token) {
+        let token_key = token_lookup_key(token);
+        if let Some(entry) = self.tokens.get(&token_key) {
             let age_secs = (Utc::now() - entry.created_at).num_seconds();
             let ttl_secs = self.ttl_hours as i64 * 3600;
             if age_secs >= ttl_secs {
@@ -153,8 +151,9 @@ impl TokenStore {
     /// Revoke a token by removing it from the store.
     /// Returns `true` if the token existed and was removed.
     pub fn revoke_token(&self, token: &str) -> Option<TokenAuditMetadata> {
+        let token_key = token_lookup_key(token);
         self.tokens
-            .remove(token)
+            .remove(&token_key)
             .map(|(_, entry)| TokenAuditMetadata {
                 subject: entry.subject,
                 token_id: entry.token_id,
@@ -173,9 +172,12 @@ impl TokenStore {
     }
 }
 
-fn token_identifier(token: &str) -> String {
-    let digest = Sha256::digest(token.as_bytes());
-    hex::encode(digest)[..12].to_string()
+fn token_lookup_key(token: &str) -> String {
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+fn token_identifier(token_key: &str) -> String {
+    token_key[..12].to_string()
 }
 
 #[cfg(test)]
@@ -252,7 +254,7 @@ mod tests {
         let ts = TokenStore::new("pass".to_string(), 0);
         let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         ts.cleanup_expired();
-        assert!(!ts.tokens.contains_key(&token.token));
+        assert!(!ts.tokens.contains_key(&token_lookup_key(&token.token)));
     }
 
     #[test]
@@ -298,6 +300,14 @@ mod tests {
             issued.token[..12].to_string(),
             "audit identifier should not be a raw token prefix"
         );
+    }
+
+    #[test]
+    fn raw_token_is_not_used_as_store_key() {
+        let ts = store();
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        assert!(!ts.tokens.contains_key(&issued.token));
+        assert!(ts.tokens.contains_key(&token_lookup_key(&issued.token)));
     }
 }
 

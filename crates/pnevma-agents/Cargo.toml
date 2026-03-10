@@ -16,6 +16,7 @@ tracing.workspace = true
 uuid.workspace = true
 libc.workspace = true
 dashmap = { workspace = true }
+rand.workspace = true
 pnevma-core = { path = "../pnevma-core" }
 
 [dev-dependencies]

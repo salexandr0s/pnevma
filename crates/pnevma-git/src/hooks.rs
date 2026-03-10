@@ -245,6 +245,18 @@ pub async fn run_hooks(
         return Ok(Vec::new());
     }
 
+    // Validate hook binaries that exist on disk (symlink-escape check).
+    // Absolute paths and bare command names (resolved via PATH at runtime) are
+    // skipped — only repo-relative paths can be meaningfully validated.
+    for hook in hooks {
+        let argv0 = &hook.argv[0];
+        let argv0_path = Path::new(argv0);
+        if !argv0_path.is_absolute() && argv0_path.components().count() > 1 {
+            // Repo-relative path (e.g. ".hooks/lint.sh") — validate it.
+            validate_hook_binary(argv0, worktree_path)?;
+        }
+    }
+
     let severity = phase.severity();
     let mut results = Vec::with_capacity(hooks.len());
 

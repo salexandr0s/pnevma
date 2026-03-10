@@ -44,6 +44,8 @@ pub struct RemoteAccessConfig {
     pub allowed_origins: Vec<String>,
     #[serde(default)]
     pub tls_allow_self_signed_fallback: bool,
+    #[serde(default)]
+    pub allow_session_input: bool,
 }
 
 impl Default for RemoteAccessConfig {
@@ -58,6 +60,7 @@ impl Default for RemoteAccessConfig {
             serve_frontend: default_serve_frontend(),
             allowed_origins: vec![],
             tls_allow_self_signed_fallback: false,
+            allow_session_input: false,
         }
     }
 }

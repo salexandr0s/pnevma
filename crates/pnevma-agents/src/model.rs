@@ -15,6 +15,9 @@ pub struct AgentConfig {
     /// Pass --dangerously-skip-permissions (worktree isolation is the safety boundary).
     #[serde(default)]
     pub auto_approve: bool,
+    /// Allow npm exec / npx in provider allowlists when auto-approve is enabled.
+    #[serde(default)]
+    pub allow_npx: bool,
     /// Output format: "stream-json" for structured output, "text" for raw.
     #[serde(default = "default_output_format")]
     pub output_format: String,

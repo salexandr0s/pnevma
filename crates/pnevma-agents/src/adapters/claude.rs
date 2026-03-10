@@ -30,6 +30,31 @@ impl ClaudeCodeAdapter {
     }
 }
 
+fn auto_approve_allowed_tools(cfg: &AgentConfig) -> Vec<String> {
+    let mut allowed_tools = vec![
+        "Edit".to_string(),
+        "Write".to_string(),
+        "Read".to_string(),
+        "Bash(git *)".to_string(),
+        "Bash(cargo *)".to_string(),
+        "Bash(npm install)".to_string(),
+        "Bash(npm install *)".to_string(),
+        "Bash(npm test)".to_string(),
+        "Bash(npm test *)".to_string(),
+        "Bash(npm run *)".to_string(),
+        "Bash(just *)".to_string(),
+        "Glob".to_string(),
+        "Grep".to_string(),
+    ];
+    if cfg.allow_npx {
+        allowed_tools.push("Bash(npm exec)".to_string());
+        allowed_tools.push("Bash(npm exec *)".to_string());
+        allowed_tools.push("Bash(npx)".to_string());
+        allowed_tools.push("Bash(npx *)".to_string());
+    }
+    allowed_tools
+}
+
 #[async_trait]
 impl AgentAdapter for ClaudeCodeAdapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
@@ -84,11 +109,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         if cfg.auto_approve {
             warn!("auto_approve is enabled — using --allowedTools whitelist instead of --dangerously-skip-permissions");
-            args.extend([
-                "--allowedTools".into(),
-                "Edit,Write,Read,Bash(git *),Bash(cargo *),Bash(npm *),Bash(just *),Glob,Grep"
-                    .into(),
-            ]);
+            let allowed_tools = auto_approve_allowed_tools(&cfg);
+            args.extend(["--allowedTools".into(), allowed_tools.join(",")]);
         }
 
         if let Some(ref model) = cfg.model {
@@ -745,5 +767,47 @@ mod tests {
             !source.contains("args.push(\"--dangerously-skip-permissions\""),
             "source must not push --dangerously-skip-permissions into args"
         );
+    }
+
+    fn test_agent_config(allow_npx: bool) -> AgentConfig {
+        AgentConfig {
+            provider: "claude-code".to_string(),
+            model: None,
+            env: vec![],
+            working_dir: "/tmp".to_string(),
+            timeout_minutes: 5,
+            auto_approve: true,
+            allow_npx,
+            output_format: "stream-json".to_string(),
+            context_file: None,
+            thread_id: None,
+            dynamic_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn auto_approve_allowed_tools_cover_bare_npm_commands() {
+        let allowed = auto_approve_allowed_tools(&test_agent_config(false));
+
+        assert!(allowed.contains(&"Bash(npm install)".to_string()));
+        assert!(allowed.contains(&"Bash(npm install *)".to_string()));
+        assert!(allowed.contains(&"Bash(npm test)".to_string()));
+        assert!(allowed.contains(&"Bash(npm test *)".to_string()));
+        assert!(allowed.contains(&"Bash(npm run *)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm *)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm exec)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm exec *)".to_string()));
+        assert!(!allowed.contains(&"Bash(npx)".to_string()));
+        assert!(!allowed.contains(&"Bash(npx *)".to_string()));
+    }
+
+    #[test]
+    fn auto_approve_allowed_tools_gate_npx_patterns() {
+        let allowed = auto_approve_allowed_tools(&test_agent_config(true));
+
+        assert!(allowed.contains(&"Bash(npm exec)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec *)".to_string()));
+        assert!(allowed.contains(&"Bash(npx)".to_string()));
+        assert!(allowed.contains(&"Bash(npx *)".to_string()));
     }
 }

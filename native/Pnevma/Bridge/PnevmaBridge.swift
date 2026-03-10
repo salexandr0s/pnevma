@@ -253,7 +253,7 @@ final class PnevmaBridge: @unchecked Sendable {
 
         let callback: @convention(c) (UnsafePointer<PnevmaResult>?, UnsafeMutableRawPointer?) -> Void = { result, ctx in
             guard let ctx = ctx else { return }
-            let rawObj = Unmanaged<AnyObject>.fromOpaque(ctx).takeRetainedValue()
+            let rawObj = Unmanaged<AnyObject>.fromOpaque(ctx).takeUnretainedValue()
             guard let box_ = rawObj as? CompletionBox else {
                 assertionFailure("Unexpected context type in async FFI callback")
                 return
@@ -271,9 +271,22 @@ final class PnevmaBridge: @unchecked Sendable {
             )
         }
 
+        let releaseContext: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ctx in
+            guard let ctx = ctx else { return }
+            Unmanaged<AnyObject>.fromOpaque(ctx).release()
+        }
+
         method.withCString { methodPtr in
             params.withCString { paramsPtr in
-                pnevma_call_async(h, methodPtr, paramsPtr, UInt(params.utf8.count), callback, context)
+                pnevma_call_async(
+                    h,
+                    methodPtr,
+                    paramsPtr,
+                    UInt(params.utf8.count),
+                    callback,
+                    context,
+                    releaseContext
+                )
             }
         }
     }

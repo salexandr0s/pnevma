@@ -118,23 +118,13 @@ pub fn compute_backoff(attempt: u32, policy: &RetryPolicy) -> Duration {
 
     let delay = if policy.jitter {
         // Add jitter: random value between 50% and 100% of computed delay
-        let jitter_factor = 0.5 + (pseudo_random_f64() * 0.5);
+        let jitter_factor = 0.5 + (rand::random::<f64>() * 0.5);
         capped * jitter_factor
     } else {
         capped
     };
 
     Duration::from_secs_f64(delay.max(1.0))
-}
-
-/// Simple pseudo-random f64 in [0, 1) for jitter — avoids pulling in rand crate.
-fn pseudo_random_f64() -> f64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    Instant::now().hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    (hasher.finish() % 1000) as f64 / 1000.0
 }
 
 /// Tracks continuation state across turns within a single thread.

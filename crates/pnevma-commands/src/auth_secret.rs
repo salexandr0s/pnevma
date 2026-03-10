@@ -105,26 +105,89 @@ fn read_keychain_password(service: &str, account: &str) -> Result<Option<String>
 }
 
 fn read_password_file_secure(path: &Path) -> Result<String, PasswordFileError> {
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(PasswordFileError::NotFound);
-        }
-        Err(err) => {
-            return Err(PasswordFileError::Io(format!(
+    #[cfg(unix)]
+    let value = {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(PasswordFileError::NotFound);
+            }
+            Err(err) if err.raw_os_error() == Some(libc::ELOOP) => {
+                return Err(PasswordFileError::Insecure(format!(
+                    "password file {} must not be a symlink",
+                    path.display()
+                )));
+            }
+            Err(err) => {
+                return Err(PasswordFileError::Io(format!(
+                    "failed to open password file {}: {err}",
+                    path.display()
+                )));
+            }
+        };
+
+        let meta = file.metadata().map_err(|err| {
+            PasswordFileError::Io(format!(
                 "failed to stat password file {}: {err}",
                 path.display()
-            )));
-        }
+            ))
+        })?;
+        validate_password_file_metadata(&meta, path)?;
+
+        let mut value = String::new();
+        file.read_to_string(&mut value).map_err(|err| {
+            PasswordFileError::Io(format!(
+                "failed to read password file {}: {err}",
+                path.display()
+            ))
+        })?;
+        value
     };
 
-    if meta.file_type().is_symlink() {
+    #[cfg(not(unix))]
+    let value = {
+        let meta = match std::fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(PasswordFileError::NotFound);
+            }
+            Err(err) => {
+                return Err(PasswordFileError::Io(format!(
+                    "failed to stat password file {}: {err}",
+                    path.display()
+                )));
+            }
+        };
+        validate_password_file_metadata(&meta, path)?;
+        std::fs::read_to_string(path).map_err(|err| {
+            PasswordFileError::Io(format!(
+                "failed to read password file {}: {err}",
+                path.display()
+            ))
+        })?
+    };
+
+    let value = value.trim().to_string();
+    if value.is_empty() {
         return Err(PasswordFileError::Insecure(format!(
-            "password file {} must not be a symlink",
+            "password file {} is empty",
             path.display()
         )));
     }
+    Ok(value)
+}
 
+fn validate_password_file_metadata(
+    meta: &std::fs::Metadata,
+    path: &Path,
+) -> Result<(), PasswordFileError> {
     if !meta.is_file() {
         return Err(PasswordFileError::Insecure(format!(
             "password file {} must be a regular file",
@@ -156,20 +219,7 @@ fn read_password_file_secure(path: &Path) -> Result<String, PasswordFileError> {
         }
     }
 
-    let value = std::fs::read_to_string(path).map_err(|err| {
-        PasswordFileError::Io(format!(
-            "failed to read password file {}: {err}",
-            path.display()
-        ))
-    })?;
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(PasswordFileError::Insecure(format!(
-            "password file {} is empty",
-            path.display()
-        )));
-    }
-    Ok(value)
+    Ok(())
 }
 
 #[cfg(test)]

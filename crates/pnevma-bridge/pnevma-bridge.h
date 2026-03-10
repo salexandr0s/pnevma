@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef struct Option_AsyncContextRelease Option_AsyncContextRelease;
+
 /**
  * Opaque handle holding all Pnevma runtime state.
  */
@@ -88,10 +90,11 @@ struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
  * `params_json` must point to a valid allocation of at least `params_len`
  * bytes. Passing a length exceeding the allocation is undefined behavior.
  *
- * LIFETIME CONTRACT: `cb_ctx` must remain valid until `cb` is invoked.
- * The caller must NOT free, deallocate, or mutate the memory pointed to
- * by `cb_ctx` until the callback has returned. Passing NULL is valid
- * only if the callback handles NULL context.
+ * LIFETIME CONTRACT: `cb_ctx` must remain valid until the callback fires or
+ * its `release_cb` is invoked. Destroying the handle cancels pending async
+ * calls without invoking their completion callbacks, but still invokes
+ * `release_cb` exactly once for each pending callback. Passing NULL is valid
+ * only if both callbacks handle NULL context.
  */
 
 void pnevma_call_async(struct PnevmaHandle *handle,
@@ -99,7 +102,8 @@ void pnevma_call_async(struct PnevmaHandle *handle,
                        const char *params_json,
                        uintptr_t params_len,
                        AsyncCallback cb,
-                       void *cb_ctx);
+                       void *cb_ctx,
+                       struct Option_AsyncContextRelease release_cb);
 
 /**
  * Free a `PnevmaResult` returned by `pnevma_call`.

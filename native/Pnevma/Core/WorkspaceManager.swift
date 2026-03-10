@@ -88,6 +88,12 @@ final class WorkspaceManager {
         Log.workspace.info("Renamed workspace \(id) to '\(newName)'")
     }
 
+    func togglePinWorkspace(_ id: UUID) {
+        guard let workspace = workspace(withID: id) else { return }
+        workspace.isPinned.toggle()
+        Log.workspace.info("Toggled pin for workspace \(id), isPinned=\(workspace.isPinned)")
+    }
+
     func closeWorkspace(_ id: UUID) {
         guard let index = workspaces.firstIndex(where: { $0.id == id }) else { return }
         let closingWasActive = activeWorkspaceID == id

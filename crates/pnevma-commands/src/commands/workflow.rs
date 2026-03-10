@@ -763,7 +763,7 @@ mod tests {
     use pnevma_agents::{AdapterRegistry, DispatchPool};
     use pnevma_core::config::{
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
-        RetentionSection,
+        RedactionSection, RetentionSection,
     };
     use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection, TrackerSection};
     use pnevma_db::Db;
@@ -807,6 +807,7 @@ mod tests {
             conventions: PathSection::default(),
             remote: RemoteSection::default(),
             tracker: TrackerSection::default(),
+            redaction: RedactionSection::default(),
         }
     }
 

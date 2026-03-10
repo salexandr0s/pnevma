@@ -40,6 +40,30 @@ impl StreamRedactor {
     }
 }
 
+fn open_append_only_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(tokio::fs::File::from_std(file))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(tokio::fs::File::from_std(file))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     Spawned(SessionMetadata),
@@ -226,16 +250,8 @@ impl SessionSupervisor {
         if let Some(parent) = scrollback_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(scrollback_path)
-            .await?;
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&scrollback_index_path)
-            .await?;
+        let _ = open_append_only_file(scrollback_path)?;
+        let _ = open_append_only_file(&scrollback_index_path)?;
 
         self.create_tmux_session(session_id, cwd, command).await?;
         self.attach_tmux_client(session_id).await?;
@@ -508,20 +524,12 @@ impl SessionSupervisor {
                 }
             }
 
-            let file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(scrollback_path.clone())
-                .await;
+            let file = open_append_only_file(scrollback_path.as_path());
             let Ok(file) = file else {
                 return;
             };
             let file = Arc::new(Mutex::new(file));
-            let index = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(scrollback_index_path)
-                .await;
+            let index = open_append_only_file(scrollback_index_path.as_path());
             let Ok(index) = index else {
                 return;
             };

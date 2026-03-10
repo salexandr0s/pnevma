@@ -9,6 +9,7 @@ struct WorkspaceRow: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     var onRename: ((String) -> Void)?
+    var onPin: (() -> Void)?
 
     @State private var isHovering = false
     @State private var isRenaming = false
@@ -144,7 +145,7 @@ struct WorkspaceRow: View {
                 isRenaming = true
             }
             Button(workspace.isPinned ? "Unpin" : "Pin") {
-                workspace.isPinned.toggle()
+                onPin?()
             }
             if let path = workspace.projectPath {
                 Button("Copy Path") {

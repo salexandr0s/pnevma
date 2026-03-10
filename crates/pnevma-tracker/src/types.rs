@@ -81,6 +81,7 @@ impl ExternalState {
 pub struct StateTransition {
     pub external_id: String,
     pub kind: String,
+    pub team_id: Option<String>,
     pub from_state: ExternalState,
     pub to_state: ExternalState,
     pub comment: Option<String>,
@@ -241,6 +242,7 @@ mod tests {
         let transition = StateTransition {
             external_id: "issue-1".to_string(),
             kind: "linear".to_string(),
+            team_id: None,
             from_state: ExternalState::Todo,
             to_state: ExternalState::InProgress,
             comment: Some("starting work".to_string()),

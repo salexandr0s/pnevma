@@ -126,7 +126,7 @@ struct FormBuilder: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 12) {
-                ForEach(viewModel.builderSteps.indices, id: \.self) { idx in
+                ForEach(Array(viewModel.builderSteps.enumerated()), id: \.element.id) { idx, _ in
                     StepFormCard(
                         step: $viewModel.builderSteps[idx],
                         index: idx,

@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -148,6 +150,13 @@ jobs:
           tar -czf "$ARCHIVE" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            ${{ env.ARCHIVE }}
+            ./**/bom.cdx.json
 
       - name: Create GitHub Release
         env:

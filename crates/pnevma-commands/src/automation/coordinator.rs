@@ -48,6 +48,8 @@ pub struct TrackedRun {
     pub origin: DispatchOrigin,
     pub state: RunState,
     pub event_task: Option<JoinHandle<()>>,
+    /// Primary key of the `automation_runs` DB row, used for status updates.
+    pub db_run_id: Option<String>,
 }
 
 /// Retry queue entry.
@@ -321,6 +323,7 @@ impl AutomationCoordinator {
                     started_at: Utc::now(),
                 },
                 event_task: None,
+                db_run_id: None,
             },
         );
     }
@@ -329,10 +332,12 @@ impl AutomationCoordinator {
     async fn dispatch_claimed(&self, task_id: Uuid, attempt: u32) -> Result<(), String> {
         let run_id = {
             let claims = self.claims.read().await;
-            claims
-                .get(&task_id)
-                .map(|c| c.run_id)
-                .unwrap_or_else(Uuid::new_v4)
+            claims.get(&task_id).map(|c| c.run_id).ok_or_else(|| {
+                format!(
+                    "BUG: dispatch_claimed called for task {} with no active claim",
+                    task_id
+                )
+            })?
         };
 
         // Update to Preparing state
@@ -344,6 +349,7 @@ impl AutomationCoordinator {
                 origin: DispatchOrigin::AutoDispatch,
                 state: RunState::Preparing,
                 event_task: None,
+                db_run_id: None,
             },
         );
 
@@ -384,8 +390,9 @@ impl AutomationCoordinator {
             let current = self.state.current.lock().await;
             current.as_ref().map(|ctx| (ctx.db.clone(), ctx.project_id))
         } {
+            let db_row_id = Uuid::new_v4().to_string();
             let run_row = AutomationRunRow {
-                id: Uuid::new_v4().to_string(),
+                id: db_row_id.clone(),
                 project_id: project_id.to_string(),
                 task_id: task_id.to_string(),
                 run_id: run_id.to_string(),
@@ -405,9 +412,15 @@ impl AutomationCoordinator {
                 created_at: now,
             };
             if db.create_automation_run(&run_row).await.is_ok() {
-                // Write the DB run ID into the holder so the event loop can update usage later.
+                // Write the DB row ID into the holder so the event loop can update usage later.
                 if let Ok(mut guard) = prepared.db_run_id_holder.lock() {
-                    guard.replace(run_row.id.clone());
+                    guard.replace(db_row_id.clone());
+                }
+                // Store the DB row primary key on the TrackedRun so process_completions
+                // can update the correct row (WHERE id = ?1, not WHERE run_id = ?1).
+                let mut running_map = self.running.write().await;
+                if let Some(tracked) = running_map.get_mut(&task_id) {
+                    tracked.db_run_id = Some(db_row_id);
                 }
             }
         }
@@ -455,30 +468,49 @@ impl AutomationCoordinator {
 
         for task_id in completed_ids {
             let finished_at = Utc::now();
-            let run_id_for_db = {
-                let mut running = self.running.write().await;
-                let run_id = running.get(&task_id).map(|t| t.run_id);
-                if let Some(tracked) = running.get_mut(&task_id) {
-                    tracked.state = RunState::Completed {
-                        failed: false,
-                        finished_at,
-                    };
+
+            // Determine whether the task actually failed by querying its DB status.
+            let task_failed = {
+                let db_opt = {
+                    let current = self.state.current.lock().await;
+                    current.as_ref().map(|ctx| ctx.db.clone())
+                };
+                if let Some(db) = db_opt {
+                    match db.get_task(&task_id.to_string()).await {
+                        Ok(Some(row)) => {
+                            matches!(row.status.as_str(), "Failed" | "Error")
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
                 }
-                running.remove(&task_id);
-                run_id
             };
-            self.stats.write().await.total_completed += 1;
+
+            let db_run_id_for_update = {
+                let mut running = self.running.write().await;
+                let db_run_id = running.get(&task_id).and_then(|t| t.db_run_id.clone());
+                running.remove(&task_id);
+                db_run_id
+            };
             self.claims.write().await.remove(&task_id);
 
-            // Update automation run record in DB
-            if let (Some(run_id), Some(db)) = (run_id_for_db, {
+            if task_failed {
+                self.stats.write().await.total_failed += 1;
+            } else {
+                self.stats.write().await.total_completed += 1;
+            }
+
+            // Update automation run record in DB using the row's primary key.
+            if let (Some(db_run_id), Some(db)) = (db_run_id_for_update, {
                 let current = self.state.current.lock().await;
                 current.as_ref().map(|ctx| ctx.db.clone())
             }) {
+                let status_str = if task_failed { "failed" } else { "completed" };
                 let _ = db
                     .update_automation_run_status(
-                        &run_id.to_string(),
-                        "completed",
+                        &db_run_id,
+                        status_str,
                         Some(finished_at),
                         None,
                         None,
@@ -970,13 +1002,16 @@ impl AutomationCoordinator {
             .filter(|r| matches!(r.state, RunState::Preparing | RunState::Running { .. }))
             .count();
 
+        // Tasks that are claimed but not yet in the running map are queued.
+        let queued_tasks = claims.len().saturating_sub(running.len());
+
         AutomationSnapshot {
             enabled: config.enabled || toml_enabled,
             config_source,
             poll_interval_seconds: config.poll_interval_seconds,
             max_concurrent: config.max_concurrent,
             active_runs,
-            queued_tasks: 0,
+            queued_tasks,
             claimed_task_ids: claims.keys().map(|id| id.to_string()).collect(),
             running_task_ids: running
                 .iter()
@@ -1173,6 +1208,7 @@ mod tests {
                     origin: DispatchOrigin::AutoDispatch,
                     state: RunState::Preparing,
                     event_task: None,
+                    db_run_id: None,
                 },
             );
         }

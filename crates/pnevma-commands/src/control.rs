@@ -7,8 +7,10 @@ use pnevma_db::NewEvent;
 use pnevma_session::{SessionBackendKillResult, SessionStatus, SessionSupervisor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MAX_CONTROL_REQUEST_ID_BYTES: usize = 128;
@@ -80,6 +82,40 @@ pub struct ControlPlaneSettings {
     pub enabled: bool,
     pub socket_path: PathBuf,
     pub auth_mode: ControlAuthMode,
+    pub socket_rate_limit_rpm: u32,
+}
+
+#[derive(Clone)]
+struct SocketRateLimiter {
+    requests_per_minute: usize,
+    windows: Arc<std::sync::Mutex<HashMap<u32, VecDeque<Instant>>>>,
+}
+
+impl SocketRateLimiter {
+    fn new(requests_per_minute: u32) -> Self {
+        Self {
+            requests_per_minute: requests_per_minute.max(1) as usize,
+            windows: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn allow(&self, peer_uid: u32) -> bool {
+        let mut guard = self
+            .windows
+            .lock()
+            .expect("socket rate-limit lock poisoned");
+        let now = Instant::now();
+        let cutoff = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        let window = guard.entry(peer_uid).or_default();
+        while window.front().is_some_and(|ts| *ts < cutoff) {
+            window.pop_front();
+        }
+        if window.len() >= self.requests_per_minute {
+            return false;
+        }
+        window.push_back(now);
+        true
+    }
 }
 
 pub fn resolve_control_plane_settings(
@@ -120,6 +156,7 @@ pub fn resolve_control_plane_settings(
         enabled: project.automation.socket_enabled,
         socket_path,
         auth_mode,
+        socket_rate_limit_rpm: project.automation.socket_rate_limit_rpm,
     })
 }
 
@@ -172,6 +209,7 @@ pub async fn start_control_plane(
 
     let socket_path = settings.socket_path.clone();
     let accept_settings = settings.clone();
+    let rate_limiter = SocketRateLimiter::new(settings.socket_rate_limit_rpm);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let join = tokio::spawn(async move {
         loop {
@@ -185,8 +223,9 @@ pub async fn start_control_plane(
                     };
                     let state = Arc::clone(&state);
                     let settings = accept_settings.clone();
+                    let rate_limiter = rate_limiter.clone();
                     tokio::spawn(async move {
-                        let _ = handle_unix_client(state, settings, stream).await;
+                        let _ = handle_unix_client(state, settings, rate_limiter, stream).await;
                     });
                 }
             }
@@ -213,11 +252,13 @@ pub async fn start_control_plane(
 async fn handle_unix_client(
     state: Arc<AppState>,
     settings: ControlPlaneSettings,
+    rate_limiter: SocketRateLimiter,
     stream: tokio::net::UnixStream,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    verify_same_user_peer(&stream, &settings.auth_mode)?;
+    let peer_uid = peer_uid(&stream)?;
+    verify_same_user_peer(peer_uid, &settings.auth_mode)?;
 
     const MAX_LINE_BYTES: usize = 1024 * 1024; // 1 MB
 
@@ -258,7 +299,35 @@ async fn handle_unix_client(
             }
         };
 
+        if !rate_limiter.allow(peer_uid) {
+            tracing::warn!(
+                peer_uid,
+                limit_rpm = settings.socket_rate_limit_rpm,
+                "control plane rate limit exceeded"
+            );
+            let response = ControlResponse::err(
+                request.id.clone(),
+                "rate_limited",
+                "control plane rate limit exceeded",
+            );
+            let wire = serde_json::to_string(&response).map_err(|e| e.to_string())? + "\n";
+            write_half
+                .write_all(wire.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        let request_id = request.id.clone();
+        let method = request.method.clone();
         let response = process_request(&state, &settings, request).await;
+        log_control_plane_request(
+            peer_uid,
+            &settings.auth_mode,
+            &request_id,
+            &method,
+            &response,
+        );
         let wire = serde_json::to_string(&response).map_err(|e| e.to_string())? + "\n";
         write_half
             .write_all(wire.as_bytes())
@@ -269,21 +338,86 @@ async fn handle_unix_client(
 }
 
 #[cfg(unix)]
-fn verify_same_user_peer(
-    stream: &tokio::net::UnixStream,
-    auth_mode: &ControlAuthMode,
-) -> Result<(), String> {
+fn verify_same_user_peer(peer_uid: u32, auth_mode: &ControlAuthMode) -> Result<(), String> {
     if !matches!(auth_mode, ControlAuthMode::SameUser) {
         return Ok(());
     }
-    let creds = stream.peer_cred().map_err(|e| e.to_string())?;
-    let peer_uid = creds.uid();
     // SAFETY: geteuid() is always safe — returns the effective UID of the calling process.
     let self_uid = unsafe { libc::geteuid() } as u32;
     if peer_uid != self_uid {
         return Err("socket peer uid mismatch".to_string());
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn peer_uid(stream: &tokio::net::UnixStream) -> Result<u32, String> {
+    let creds = stream.peer_cred().map_err(|e| e.to_string())?;
+    Ok(creds.uid())
+}
+
+fn auth_mode_name(auth_mode: &ControlAuthMode) -> &'static str {
+    match auth_mode {
+        ControlAuthMode::SameUser => "same-user",
+        ControlAuthMode::Password { .. } => "password",
+    }
+}
+
+fn is_mutating_control_method(method: &str) -> bool {
+    let action = method.rsplit('.').next().unwrap_or(method);
+    !matches!(
+        action,
+        "get"
+            | "list"
+            | "status"
+            | "search"
+            | "read"
+            | "tail"
+            | "scrollback"
+            | "timeline"
+            | "daily-brief"
+            | "defs"
+            | "automation"
+    )
+}
+
+fn log_control_plane_request(
+    peer_uid: u32,
+    auth_mode: &ControlAuthMode,
+    request_id: &str,
+    method: &str,
+    response: &ControlResponse,
+) {
+    let mutating = is_mutating_control_method(method);
+    let error_code = response
+        .error
+        .as_ref()
+        .map(|err| err.code.as_str())
+        .unwrap_or("-");
+
+    if mutating {
+        tracing::info!(
+            peer_uid,
+            auth_mode = auth_mode_name(auth_mode),
+            request_id,
+            method,
+            mutation = true,
+            ok = response.ok,
+            error_code,
+            "control plane request"
+        );
+    } else {
+        tracing::debug!(
+            peer_uid,
+            auth_mode = auth_mode_name(auth_mode),
+            request_id,
+            method,
+            mutation = false,
+            ok = response.ok,
+            error_code,
+            "control plane request"
+        );
+    }
 }
 
 fn parse_string_param(params: &Value, key: &str) -> Result<String, String> {
@@ -2146,6 +2280,7 @@ mod tests {
             auth_mode: ControlAuthMode::Password {
                 password: password.to_string(),
             },
+            socket_rate_limit_rpm: 60,
         }
     }
 
@@ -2178,6 +2313,7 @@ mod tests {
             enabled: true,
             socket_path: PathBuf::from(".pnevma/run/control.sock"),
             auth_mode: ControlAuthMode::SameUser,
+            socket_rate_limit_rpm: 60,
         };
         let request = request_with_password(None);
         authorize_request(&request, &settings).expect("same-user mode should pass");

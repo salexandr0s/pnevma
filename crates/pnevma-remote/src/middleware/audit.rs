@@ -3,11 +3,18 @@ use std::time::Instant;
 use axum::{body::Body, extract::ConnectInfo, http::Request, middleware::Next, response::Response};
 use std::net::SocketAddr;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthTokenSource {
+    AuthorizationHeader,
+    QueryParam,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuditAuthContext {
     pub auth_event: &'static str,
     pub subject: String,
     pub token_id: Option<String>,
+    pub token_source: Option<AuthTokenSource>,
 }
 
 impl AuditAuthContext {
@@ -16,6 +23,7 @@ impl AuditAuthContext {
             auth_event: "token_issued",
             subject,
             token_id: Some(token_id),
+            token_source: None,
         }
     }
 
@@ -24,22 +32,33 @@ impl AuditAuthContext {
             auth_event: "token_revoked",
             subject,
             token_id: Some(token_id),
+            token_source: None,
         }
     }
 
-    pub fn authenticated_request(subject: String, token_id: String) -> Self {
+    pub fn authenticated_request(
+        subject: String,
+        token_id: String,
+        token_source: AuthTokenSource,
+    ) -> Self {
         Self {
             auth_event: "authenticated_request",
             subject,
             token_id: Some(token_id),
+            token_source: Some(token_source),
         }
     }
 
-    pub fn websocket_authenticated(subject: String, token_id: String) -> Self {
+    pub fn websocket_authenticated(
+        subject: String,
+        token_id: String,
+        token_source: AuthTokenSource,
+    ) -> Self {
         Self {
             auth_event: "websocket_authenticated",
             subject,
             token_id: Some(token_id),
+            token_source: Some(token_source),
         }
     }
 }

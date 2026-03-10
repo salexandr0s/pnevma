@@ -166,6 +166,10 @@ async fn handle_tracker_update(
     let transition = StateTransition {
         external_id: external_id.clone(),
         kind: "linear".to_string(),
+        team_id: params
+            .get("team_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         from_state: ExternalState::Custom("unknown".to_string()),
         to_state,
         comment,

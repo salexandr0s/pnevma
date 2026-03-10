@@ -186,6 +186,13 @@ async fn install_project_runtime(
     ));
 }
 
+fn project_runtime_redaction_config(cfg: &ProjectConfig) -> pnevma_redaction::RedactionConfig {
+    pnevma_redaction::RedactionConfig {
+        extra_patterns: cfg.redaction.extra_patterns.clone(),
+        enable_entropy_guard: cfg.redaction.enable_entropy_guard,
+    }
+}
+
 pub async fn open_project(
     path: String,
     emitter: &Arc<dyn EventEmitter>,
@@ -218,6 +225,9 @@ pub async fn open_project(
 
     let cfg = load_project_config(&config_path).map_err(|e| e.to_string())?;
     let global_cfg = load_global_config().map_err(|e| e.to_string())?;
+    let runtime_redaction_config = project_runtime_redaction_config(&cfg);
+    pnevma_redaction::validate_runtime_redaction_config(&runtime_redaction_config)
+        .map_err(|e| format!("invalid redaction config: {e}"))?;
 
     let db = Db::open(&path_buf).await.map_err(|e| e.to_string())?;
     let path_str = path_buf.to_string_lossy().to_string();
@@ -380,6 +390,8 @@ pub async fn open_project(
         let mut current = state.current.lock().await;
         *current = Some(ctx);
     }
+    pnevma_redaction::set_runtime_redaction_config(runtime_redaction_config)
+        .map_err(|e| format!("invalid redaction config: {e}"))?;
     install_project_runtime(
         state,
         db.clone(),
@@ -480,6 +492,7 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
     }
     clear_project_redaction_secrets(project_id);
     abort_project_runtime(state).await;
+    pnevma_redaction::reset_runtime_redaction_config();
     stop_control_plane(state).await;
     Ok(())
 }
@@ -3998,6 +4011,7 @@ pub(crate) async fn try_provider_task_draft(
             working_dir: project_path.to_string_lossy().to_string(),
             timeout_minutes,
             auto_approve: false,
+            allow_npx: false,
             output_format: "stream-json".to_string(),
             context_file: None,
             thread_id: None,
@@ -4520,7 +4534,9 @@ async fn initialize_tracker(
     };
 
     Some(pnevma_tracker::poll::TrackerCoordinator::new(
-        adapter, filter,
+        adapter,
+        filter,
+        config.kind.clone(),
     ))
 }
 
@@ -4531,15 +4547,23 @@ mod tests {
     use pnevma_agents::AdapterRegistry;
     use pnevma_core::config::{
         AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
-        RetentionSection,
+        RedactionSection, RetentionSection,
     };
     use pnevma_core::{RemoteSection, TrackerSection};
+    use pnevma_db::GlobalDb;
     use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::ffi::OsString;
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::time::Duration;
+    use tempfile::tempdir;
 
     fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn redaction_config_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -4580,6 +4604,36 @@ mod tests {
         let db = Db::from_pool_and_path(pool, std::path::PathBuf::from(":memory:"));
         db.migrate().await.expect("migrate");
         db
+    }
+
+    fn write_test_project_config(project_root: &Path, extra_patterns: &[&str]) {
+        let encoded_patterns = extra_patterns
+            .iter()
+            .map(|pattern| format!("{pattern:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let config = format!(
+            r#"[project]
+name = "test-project"
+brief = "test brief"
+
+[agents]
+default_provider = "claude-code"
+max_concurrent = 1
+
+[automation]
+socket_enabled = false
+
+[branches]
+target = "main"
+naming = "task/{{slug}}"
+
+[redaction]
+extra_patterns = [{encoded_patterns}]
+enable_entropy_guard = false
+"#
+        );
+        std::fs::write(project_root.join("pnevma.toml"), config).expect("write project config");
     }
 
     fn make_task(pid: &str, title: &str) -> TaskRow {
@@ -4632,6 +4686,7 @@ mod tests {
             conventions: PathSection::default(),
             remote: RemoteSection::default(),
             tracker: TrackerSection::default(),
+            redaction: RedactionSection::default(),
         }
     }
 
@@ -4697,6 +4752,102 @@ mod tests {
             shutdown_tx,
         });
         state
+    }
+
+    #[tokio::test]
+    async fn open_project_invalid_redaction_does_not_replace_live_runtime_config() {
+        let _guard = redaction_config_lock()
+            .lock()
+            .expect("redaction config lock");
+        let home = tempdir().expect("temp home");
+        let _home = HomeOverride::new(home.path());
+        let project_root = tempdir().expect("temp project");
+        write_test_project_config(project_root.path(), &["("]);
+
+        let global_db = GlobalDb::open().await.expect("open global db");
+        let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+
+        let original = pnevma_redaction::RedactionConfig {
+            extra_patterns: vec![r"existing-secret-[0-9]+".to_string()],
+            enable_entropy_guard: true,
+        };
+        pnevma_redaction::set_runtime_redaction_config(original.clone())
+            .expect("set original runtime redaction config");
+
+        trust_workspace(project_root.path().to_string_lossy().to_string(), &state)
+            .await
+            .expect("trust workspace");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let err = open_project(
+            project_root.path().to_string_lossy().to_string(),
+            &emitter,
+            &state,
+        )
+        .await
+        .expect_err("invalid regex should fail project open");
+        assert!(
+            err.contains("redaction.extra_patterns"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            pnevma_redaction::current_runtime_redaction_settings(),
+            original,
+            "failed open must preserve the live runtime redaction config"
+        );
+
+        pnevma_redaction::reset_runtime_redaction_config();
+    }
+
+    #[tokio::test]
+    async fn close_project_resets_runtime_redaction_config_after_shutdown() {
+        let _guard = redaction_config_lock()
+            .lock()
+            .expect("redaction config lock");
+        let project_root = tempdir().expect("temp project");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "test-project",
+            &project_root.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect("upsert project");
+        let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+        let state = make_state_with_project(project_id, project_root.path(), db, sessions).await;
+        *state.current_runtime.lock().await = Some(crate::state::ProjectRuntime::new(
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }),
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }),
+            None,
+        ));
+        let active = pnevma_redaction::RedactionConfig {
+            extra_patterns: vec![r"close-secret-[A-Z]+".to_string()],
+            enable_entropy_guard: false,
+        };
+        pnevma_redaction::set_runtime_redaction_config(active).expect("set runtime redaction");
+
+        close_project(&state).await.expect("close project");
+
+        assert_eq!(
+            pnevma_redaction::current_runtime_redaction_settings(),
+            pnevma_redaction::RedactionConfig::default(),
+            "close_project should clear the runtime redaction config after shutdown"
+        );
+        assert!(
+            state.current.lock().await.is_none(),
+            "close_project should clear the current project context"
+        );
+        assert!(
+            state.current_runtime.lock().await.is_none(),
+            "close_project should clear the current runtime handle"
+        );
     }
 
     #[tokio::test]

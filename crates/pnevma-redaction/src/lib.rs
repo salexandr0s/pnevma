@@ -1,10 +1,71 @@
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 const REDACTED: &str = "[REDACTED]";
 const STREAM_REDACTION_TAIL_BYTES: usize = 256;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RedactionConfig {
+    pub extra_patterns: Vec<String>,
+    pub enable_entropy_guard: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeRedactionConfig {
+    extra_patterns: Vec<Regex>,
+    enable_entropy_guard: bool,
+}
+
+fn runtime_redaction_config() -> &'static RwLock<RuntimeRedactionConfig> {
+    static CONFIG: OnceLock<RwLock<RuntimeRedactionConfig>> = OnceLock::new();
+    CONFIG.get_or_init(|| RwLock::new(RuntimeRedactionConfig::default()))
+}
+
+fn compile_extra_patterns(patterns: &[String]) -> Result<Vec<Regex>, regex::Error> {
+    patterns
+        .iter()
+        .map(|pattern| Regex::new(pattern))
+        .collect::<Result<Vec<_>, _>>()
+}
+
+pub fn validate_runtime_redaction_config(config: &RedactionConfig) -> Result<(), regex::Error> {
+    let _ = compile_extra_patterns(&config.extra_patterns)?;
+    Ok(())
+}
+
+pub fn set_runtime_redaction_config(config: RedactionConfig) -> Result<(), regex::Error> {
+    let compiled = compile_extra_patterns(&config.extra_patterns)?;
+    *runtime_redaction_config()
+        .write()
+        .expect("redaction config lock poisoned") = RuntimeRedactionConfig {
+        extra_patterns: compiled,
+        enable_entropy_guard: config.enable_entropy_guard,
+    };
+    Ok(())
+}
+
+pub fn reset_runtime_redaction_config() {
+    *runtime_redaction_config()
+        .write()
+        .expect("redaction config lock poisoned") = RuntimeRedactionConfig::default();
+}
+
+pub fn current_runtime_redaction_settings() -> RedactionConfig {
+    let config = runtime_redaction_config()
+        .read()
+        .expect("redaction config lock poisoned")
+        .clone();
+    RedactionConfig {
+        extra_patterns: config
+            .extra_patterns
+            .into_iter()
+            .map(|regex| regex.as_str().to_string())
+            .collect(),
+        enable_entropy_guard: config.enable_entropy_guard,
+    }
+}
 
 fn redaction_authorization_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -80,6 +141,16 @@ fn redaction_connection_string_regex() -> &'static Regex {
     })
 }
 
+fn redaction_entropy_assignment_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b([A-Z0-9_.-]*(?:key|token|secret|password)[A-Z0-9_.-]*)\b\s*[:=]\s*("[A-Za-z0-9+/=_-]{32,}"|'[A-Za-z0-9+/=_-]{32,}'|[A-Za-z0-9+/=_-]{32,})"#,
+        )
+        .expect("entropy-assignment redaction regex must compile")
+    })
+}
+
 fn redaction_partial_authorization_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -147,7 +218,25 @@ fn redaction_partial_connection_string_regex() -> &'static Regex {
     })
 }
 
+fn redaction_partial_entropy_assignment_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b[A-Z0-9_.-]*(?:key|token|secret|password)[A-Z0-9_.-]*\b\s*[:=]\s*("[A-Za-z0-9+/=_-]*|'[A-Za-z0-9+/=_-]*|[A-Za-z0-9+/=_-]*)$"#,
+        )
+        .expect("partial entropy-assignment redaction regex must compile")
+    })
+}
+
+fn current_runtime_redaction_config() -> RuntimeRedactionConfig {
+    runtime_redaction_config()
+        .read()
+        .expect("redaction config lock poisoned")
+        .clone()
+}
+
 fn redact_patterns(input: &str) -> String {
+    let runtime_config = current_runtime_redaction_config();
     let mut result = redaction_authorization_regex()
         .replace_all(input, format!("$1{REDACTED}"))
         .to_string();
@@ -172,9 +261,26 @@ fn redact_patterns(input: &str) -> String {
     result = redaction_pem_regex()
         .replace_all(&result, REDACTED)
         .to_string();
-    redaction_connection_string_regex()
+    result = redaction_connection_string_regex()
         .replace_all(&result, format!("://{REDACTED}@"))
-        .to_string()
+        .to_string();
+    for regex in &runtime_config.extra_patterns {
+        result = regex.replace_all(&result, REDACTED).to_string();
+    }
+    if runtime_config.enable_entropy_guard {
+        result = redaction_entropy_assignment_regex()
+            .replace_all(&result, format!("$1={REDACTED}"))
+            .to_string();
+    }
+    result
+}
+
+fn partial_redaction_regexes(config: &RuntimeRedactionConfig) -> Vec<Regex> {
+    let mut regexes = config.extra_patterns.clone();
+    if config.enable_entropy_guard {
+        regexes.push(redaction_partial_entropy_assignment_regex().clone());
+    }
+    regexes
 }
 
 pub fn redact_text(input: &str, secrets: &[String]) -> String {
@@ -332,6 +438,15 @@ fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
         }
     }
 
+    let runtime_config = current_runtime_redaction_config();
+    for regex in partial_redaction_regexes(&runtime_config) {
+        if let Some(found) = regex.find(input) {
+            retain_start = Some(
+                retain_start.map_or(found.start(), |current: usize| current.min(found.start())),
+            );
+        }
+    }
+
     retain_start
 }
 
@@ -393,6 +508,12 @@ impl StreamRedactionBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn config_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn redacts_provider_token_standalone() {
@@ -480,5 +601,39 @@ mod tests {
         let input = "debug value sk-proj-short";
         let output = redact_text(input, &[]);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn extra_patterns_redact_custom_secret_formats() {
+        let _guard = config_test_lock().lock().unwrap();
+        set_runtime_redaction_config(RedactionConfig {
+            extra_patterns: vec![r"custom-secret-[A-Z0-9]{6}".to_string()],
+            enable_entropy_guard: false,
+        })
+        .expect("config should compile");
+        let output = redact_text("value=custom-secret-ABC123", &[]);
+        assert_eq!(output, "value=[REDACTED]");
+        reset_runtime_redaction_config();
+    }
+
+    #[test]
+    fn entropy_guard_is_disabled_by_default() {
+        let _guard = config_test_lock().lock().unwrap();
+        reset_runtime_redaction_config();
+        let input = "clientToken=ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+        assert_eq!(redact_text(input, &[]), input);
+    }
+
+    #[test]
+    fn entropy_guard_redacts_long_token_assignments_when_enabled() {
+        let _guard = config_test_lock().lock().unwrap();
+        set_runtime_redaction_config(RedactionConfig {
+            extra_patterns: vec![],
+            enable_entropy_guard: true,
+        })
+        .expect("config should compile");
+        let output = redact_text("clientToken=ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", &[]);
+        assert_eq!(output, "clientToken=[REDACTED]");
+        reset_runtime_redaction_config();
     }
 }

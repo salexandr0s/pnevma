@@ -44,12 +44,6 @@ struct WorkflowView: View {
                     .labelsHidden()
                     .frame(width: 150)
                 }
-                .onChange(of: scope) {
-                    viewModel.scope = scope
-                    agentViewModel.scope = scope
-                    viewModel.load()
-                    agentViewModel.load()
-                }
 
                 // Top-level toggle: Agents / Workflows
                 Picker("", selection: $topLevel) {
@@ -110,7 +104,7 @@ struct WorkflowView: View {
                 }
             }
         }
-        .onAppear {
+        .task(id: scope) {
             viewModel.scope = scope
             agentViewModel.scope = scope
             viewModel.load()

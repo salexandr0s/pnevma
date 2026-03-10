@@ -93,6 +93,8 @@ impl TestServer {
             remote_events: events.clone(),
             connection_counts: Arc::new(DashMap::new()),
             max_ws_per_ip: 4,
+            allowed_origins: vec![],
+            allow_session_input: true,
         };
 
         let app = Router::new()
