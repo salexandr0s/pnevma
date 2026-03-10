@@ -93,10 +93,10 @@ xcode-build-release: xcodegen rust-build-release
     @echo "Native app built (release)"
 
 xcode-test: xcodegen rust-build
-    rm -rf {{xcode_derived_data}}/Build/Products
+    rm -rf {{xcode_derived_data}}
     rm -rf native/build/Debug
     mkdir -p {{native_log_dir}}
-    {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test
+    {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test
 
 xcode-ui-test: xcodegen rust-build
     mkdir -p {{native_log_dir}}

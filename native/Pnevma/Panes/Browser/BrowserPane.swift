@@ -11,6 +11,7 @@ final class BrowserPaneView: NSView, PaneContent {
 
     private let viewModel = BrowserViewModel()
     private var initialURL: URL?
+    private var pendingActivation = false
 
     var metadataJSON: String? {
         guard let url = viewModel.navigatedURL ?? viewModel.currentURL else { return nil }
@@ -41,12 +42,12 @@ final class BrowserPaneView: NSView, PaneContent {
             initialURL = nil
             viewModel.navigate(to: url)
         }
+        activateIfReady()
     }
 
     func activate() {
-        if viewModel.shouldRenderWebView {
-            window?.makeFirstResponder(viewModel.webView)
-        }
+        pendingActivation = true
+        activateIfReady()
     }
 
     func deactivate() {
@@ -71,5 +72,12 @@ final class BrowserPaneView: NSView, PaneContent {
             view.initialURL = url
         }
         return view
+    }
+
+    private func activateIfReady() {
+        guard pendingActivation, viewModel.shouldRenderWebView else { return }
+        guard let window, viewModel.webView.window === window else { return }
+        pendingActivation = false
+        window.makeFirstResponder(viewModel.webView)
     }
 }

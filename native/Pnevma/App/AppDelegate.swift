@@ -82,7 +82,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.mainMenu = buildMainMenu()
 
         // Initialize update coordinator
-        if !AppLaunchContext.isUITesting {
+        if !AppLaunchContext.isTesting {
             updateCoordinator = AppUpdateCoordinator()
             if AppLaunchContext.shouldRunAutomaticUpdateChecks {
                 updateCoordinator?.automaticCheck()
@@ -111,14 +111,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return self.buildSessionState()
         }
-        if !AppLaunchContext.isUITesting {
+        if !AppLaunchContext.isTesting {
             persistence?.startAutoSave()
         }
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
         persistence?.stopAutoSave()
-        if !AppLaunchContext.isUITesting {
+        if !AppLaunchContext.isTesting {
             persistence?.save(state: buildSessionState())
         }
         shutdownRuntime()
@@ -183,7 +183,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         persistence = SessionPersistence()
-        persistence?.isPersistenceEnabled = !AppLaunchContext.isUITesting
+        persistence?.isPersistenceEnabled = !AppLaunchContext.isTesting
         runtimeSettingsObserver = NotificationCenter.default.addObserver(
             forName: .appRuntimeSettingsDidChange,
             object: AppRuntimeSettings.shared,
@@ -231,7 +231,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyRuntimeSettings() {
         persistence?.isPersistenceEnabled =
-            !AppLaunchContext.isUITesting && AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
+            !AppLaunchContext.isTesting && AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
         sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
         if AppLaunchContext.shouldRunAutomaticUpdateChecks {
             updateCoordinator?.automaticCheck()

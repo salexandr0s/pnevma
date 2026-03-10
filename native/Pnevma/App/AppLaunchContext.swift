@@ -12,6 +12,11 @@ enum AppSmokeMode: String {
 
 @MainActor
 enum AppLaunchContext {
+    static var isUnitTesting: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     static var smokeMode: AppSmokeMode? {
         AppSmokeMode.current
     }
@@ -20,12 +25,16 @@ enum AppLaunchContext {
         ProcessInfo.processInfo.environment["PNEVMA_UI_TESTING"] == "1"
     }
 
+    static var isTesting: Bool {
+        isUITesting || isUnitTesting
+    }
+
     static var shouldRestoreWindowsOnLaunch: Bool {
-        !isUITesting && AppRuntimeSettings.shared.restoreWindowsOnLaunch
+        !isTesting && AppRuntimeSettings.shared.restoreWindowsOnLaunch
     }
 
     static var shouldRunAutomaticUpdateChecks: Bool {
-        !isUITesting && AppRuntimeSettings.shared.autoUpdate
+        !isTesting && AppRuntimeSettings.shared.autoUpdate
     }
 
     static var initialWorkspaceName: String {
