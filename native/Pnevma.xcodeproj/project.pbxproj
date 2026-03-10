@@ -93,6 +93,7 @@
 		D524BAFC8DD3EB892B84C860 /* WorkspaceRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4C972AFE7A81DC36FE7DBA2 /* WorkspaceRow.swift */; };
 		D5E2354A1C8BA741399DAD00 /* RulesManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FD33CAEC39395235510E3AD /* RulesManagerPane.swift */; };
 		DA677093EA9297986C677D37 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D300A6B296B827DF919689F /* SessionStore.swift */; };
+		DA7BB2FF6FC94B2F0E4AB941 /* TerminalPaneViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E516670493F961904C9ABB6D /* TerminalPaneViewTests.swift */; };
 		DAAD03813AB4CE200C2969E6 /* readability.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 9898DF3A58726617A4A1C216 /* readability.min.js */; };
 		DF1FC44CD8DE86E7C623F142 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE25F54B8A1F8B9127954934 /* Carbon.framework */; };
 		DF5402B68DCC8A9F24A0656D /* CommandBus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67EDEB7FE9D4D7AC1922DEE3 /* CommandBus.swift */; };
@@ -246,6 +247,7 @@
 		DF72258523A9B37DDE84802D /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
 		E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplayPaneTests.swift; sourceTree = "<group>"; };
 		E4C972AFE7A81DC36FE7DBA2 /* WorkspaceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRow.swift; sourceTree = "<group>"; };
+		E516670493F961904C9ABB6D /* TerminalPaneViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPaneViewTests.swift; sourceTree = "<group>"; };
 		E583CFB106DF6039794D692B /* SshManagerPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshManagerPane.swift; sourceTree = "<group>"; };
 		E6AEA854185BDF6DC907697D /* BrowserOmnibar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserOmnibar.swift; sourceTree = "<group>"; };
 		E6D9D8FCAEFD159352C6540E /* PnevmaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PnevmaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -437,6 +439,7 @@
 				EAB471570010013AF3EF6D96 /* SessionPersistenceTests.swift */,
 				2791715C001FB42D77AB1DB8 /* SessionStoreTests.swift */,
 				8113B2AB1F27450612F293E9 /* SettingsViewModelTests.swift */,
+				E516670493F961904C9ABB6D /* TerminalPaneViewTests.swift */,
 				31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */,
 				94DE8468190157901DC6F08A /* WorkspaceManagerTests.swift */,
 				D71B68BEE350AEDC1D733A86 /* WorkspaceRestoreTests.swift */,
@@ -661,6 +664,7 @@
 				AEA93CF0DAA6DB23141C7C4E /* SessionPersistenceTests.swift in Sources */,
 				0FD2FCAE1E7504772A588929 /* SessionStoreTests.swift in Sources */,
 				716015A1807DAC28C1F8B4F0 /* SettingsViewModelTests.swift in Sources */,
+				DA7BB2FF6FC94B2F0E4AB941 /* TerminalPaneViewTests.swift in Sources */,
 				52E723C42B9C37D51D0EDD0F /* TerminalSurfaceTests.swift in Sources */,
 				C87A8F088134A69F820C428A /* WorkspaceManagerTests.swift in Sources */,
 				AE5CA31938B9D16EFE90FEBC /* WorkspaceRestoreTests.swift in Sources */,

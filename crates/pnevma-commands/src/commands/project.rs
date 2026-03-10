@@ -4554,9 +4554,10 @@ mod tests {
     use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::ffi::OsString;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::OnceLock;
     use std::time::Duration;
     use tempfile::tempdir;
+    use tokio::sync::{Mutex, MutexGuard};
 
     fn home_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -4574,8 +4575,8 @@ mod tests {
     }
 
     impl HomeOverride {
-        fn new(path: &Path) -> Self {
-            let guard = home_env_lock().lock().expect("home env lock");
+        async fn new(path: &Path) -> Self {
+            let guard = home_env_lock().lock().await;
             let previous_home = std::env::var_os("HOME");
             std::env::set_var("HOME", path);
             Self {
@@ -4756,11 +4757,9 @@ enable_entropy_guard = false
 
     #[tokio::test]
     async fn open_project_invalid_redaction_does_not_replace_live_runtime_config() {
-        let _guard = redaction_config_lock()
-            .lock()
-            .expect("redaction config lock");
+        let _guard = redaction_config_lock().lock().await;
         let home = tempdir().expect("temp home");
-        let _home = HomeOverride::new(home.path());
+        let _home = HomeOverride::new(home.path()).await;
         let project_root = tempdir().expect("temp project");
         write_test_project_config(project_root.path(), &["("]);
 
@@ -4801,9 +4800,7 @@ enable_entropy_guard = false
 
     #[tokio::test]
     async fn close_project_resets_runtime_redaction_config_after_shutdown() {
-        let _guard = redaction_config_lock()
-            .lock()
-            .expect("redaction config lock");
+        let _guard = redaction_config_lock().lock().await;
         let project_root = tempdir().expect("temp project");
         let db = open_test_db().await;
         let project_id = Uuid::new_v4();
@@ -5310,7 +5307,7 @@ enable_entropy_guard = false
     #[tokio::test]
     async fn set_app_settings_round_trips_and_preserves_other_global_fields() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let _home = HomeOverride::new(temp.path());
+        let _home = HomeOverride::new(temp.path()).await;
 
         let mut initial = GlobalConfig {
             default_provider: Some("claude-code".to_string()),

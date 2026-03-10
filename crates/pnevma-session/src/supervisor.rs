@@ -857,6 +857,9 @@ impl SessionSupervisor {
     fn script_command(&self) -> Command {
         let mut cmd = Command::new(&self.script_bin);
         cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
+        if let Some(term) = fallback_script_term(std::env::var_os("TERM")) {
+            cmd.env("TERM", term);
+        }
         cmd
     }
 
@@ -889,6 +892,13 @@ fn explicit_shell_command(command: &str) -> Option<String> {
         .then(|| trimmed.to_string())
 }
 
+fn fallback_script_term(term: Option<std::ffi::OsString>) -> Option<&'static str> {
+    match term.as_ref().and_then(|term| term.to_str()) {
+        Some(term) if !term.is_empty() && term != "dumb" && term != "unknown" => None,
+        _ => Some("xterm-256color"),
+    }
+}
+
 async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) -> bool {
     let _ = tokio::fs::create_dir_all(tmux_tmpdir).await;
 
@@ -904,6 +914,7 @@ async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) 
 #[cfg(test)]
 mod tests {
     use super::explicit_shell_command;
+    use super::fallback_script_term;
     use super::redact_stream_chunk;
     use super::SessionBackendKillResult;
     use super::SessionSupervisor;
@@ -1613,6 +1624,27 @@ mod tests {
         assert_eq!(explicit_shell_command("cargo test"), None);
         assert_eq!(explicit_shell_command("/bin/bash -l"), None);
         assert_eq!(explicit_shell_command(""), None);
+    }
+
+    #[test]
+    fn fallback_script_term_only_overrides_missing_or_unusable_values() {
+        assert_eq!(fallback_script_term(None), Some("xterm-256color"));
+        assert_eq!(
+            fallback_script_term(Some(std::ffi::OsString::from(""))),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            fallback_script_term(Some(std::ffi::OsString::from("dumb"))),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            fallback_script_term(Some(std::ffi::OsString::from("unknown"))),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            fallback_script_term(Some(std::ffi::OsString::from("xterm-256color"))),
+            None
+        );
     }
 
     // ── list/get ─────────────────────────────────────────────────────────────

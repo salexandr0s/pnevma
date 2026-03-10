@@ -594,16 +594,19 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private var loadTask: Task<Void, Never>?
     private var recoveryOptions: [SessionRecoveryOption] = []
     private var awaitingProjectActivation = false
+    private let activationHub: ActiveWorkspaceActivationHub
     var onPersistedStateChange: ((PersistedPane) -> Void)?
 
     init(
         workingDirectory: String? = nil,
         sessionID: String? = nil,
-        autoStartIfNeeded: Bool = true
+        autoStartIfNeeded: Bool = true,
+        activationHub: ActiveWorkspaceActivationHub = .shared
     ) {
         self.autoStartIfNeeded = autoStartIfNeeded
         self.currentWorkingDirectory = workingDirectory
         self.currentSessionID = sessionID
+        self.activationHub = activationHub
         super.init(frame: .zero)
         showState(
             title: "Terminal",
@@ -691,13 +694,31 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         let payload = event.payloadJSON.data(using: .utf8).flatMap {
             try? decoder.decode(ProjectOpenFailureEventPayload.self, from: $0)
         }
+        showProjectActivationFailureMessage(
+            payload?.message ?? "The workspace project could not be activated."
+        )
+    }
+
+    private func showProjectActivationFailureMessage(_ message: String) {
+        awaitingProjectActivation = true
         showState(
             title: "Project Activation Failed",
-            message: payload?.message ?? "The workspace project could not be activated.",
+            message: message,
             detail: "The terminal will retry automatically after the workspace activates successfully.",
             scrollback: nil,
             actions: [],
             isLoading: false
+        )
+    }
+
+    private func showProjectActivationPending() {
+        awaitingProjectActivation = true
+        showState(
+            title: "Waiting For Project",
+            message: "The workspace project is still activating.",
+            detail: "The terminal will retry automatically once activation completes.",
+            scrollback: nil,
+            actions: []
         )
     }
 
@@ -715,6 +736,19 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             )
             return
         }
+
+        switch activationHub.currentState {
+        case .opening:
+            showProjectActivationPending()
+            return
+        case .failed(_, _, let message):
+            showProjectActivationFailureMessage(message)
+            return
+        default:
+            break
+        }
+
+        awaitingProjectActivation = false
 
         if let sessionID = currentSessionID {
             showState(
@@ -769,7 +803,17 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     private func handleSessionLoadFailure(_ error: Error) async {
         if PnevmaError.isProjectNotReady(error) {
-            showLocalTerminal()
+            switch activationHub.currentState {
+            case .opening:
+                showProjectActivationPending()
+            case .failed(_, _, let message):
+                showProjectActivationFailureMessage(message)
+            case .idle, .closed:
+                awaitingProjectActivation = false
+                showLocalTerminal()
+            case .open:
+                break
+            }
             return
         }
         let message = error.localizedDescription
