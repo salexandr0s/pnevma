@@ -2209,6 +2209,7 @@ pub async fn open_file_target(
         content,
         truncated,
         launched_editor,
+        is_binary: false,
     })
 }
 
@@ -5702,6 +5703,155 @@ enable_entropy_guard = false
         assert_eq!(opened.path, "assets/icon.bin");
         assert_eq!(opened.content, "[Binary file preview unavailable]");
         assert!(!opened.truncated);
+    }
+
+    #[tokio::test]
+    async fn write_file_target_writes_content_and_returns_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "old content\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "write-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let result = write_file_target(
+            WriteFileInput {
+                path: "src/lib.rs".to_string(),
+                content: "new content\n".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("write should succeed");
+
+        assert_eq!(result.path, "src/lib.rs");
+        assert_eq!(result.bytes_written, 12);
+        let on_disk = std::fs::read_to_string(project_root.join("src/lib.rs")).unwrap();
+        assert_eq!(on_disk, "new content\n");
+    }
+
+    #[tokio::test]
+    async fn write_file_target_accepts_empty_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("empty.txt"), "not empty yet").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "write-empty-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let result = write_file_target(
+            WriteFileInput {
+                path: "empty.txt".to_string(),
+                content: String::new(),
+            },
+            &state,
+        )
+        .await
+        .expect("writing empty content should succeed");
+
+        assert_eq!(result.bytes_written, 0);
+        let on_disk = std::fs::read_to_string(project_root.join("empty.txt")).unwrap();
+        assert_eq!(on_disk, "");
+    }
+
+    #[tokio::test]
+    async fn write_file_target_rejects_path_traversal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("safe.txt"), "safe").unwrap();
+        // Create a file outside the project
+        std::fs::write(temp.path().join("secret.txt"), "secret").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "write-traversal-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let err = write_file_target(
+            WriteFileInput {
+                path: "../secret.txt".to_string(),
+                content: "hacked".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect_err("path traversal should be rejected");
+
+        assert!(err.contains("path") || err.contains("unsafe"), "error should mention path: {err}");
+        // Verify the file outside the project wasn't modified
+        let on_disk = std::fs::read_to_string(temp.path().join("secret.txt")).unwrap();
+        assert_eq!(on_disk, "secret");
+    }
+
+    #[tokio::test]
+    async fn write_file_target_rejects_nonexistent_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "write-nonexistent-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let err = write_file_target(
+            WriteFileInput {
+                path: "does_not_exist.txt".to_string(),
+                content: "anything".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect_err("writing to nonexistent file should fail");
+
+        assert!(err.contains("not found"), "error should say not found: {err}");
     }
 
     #[tokio::test]

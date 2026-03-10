@@ -32,7 +32,11 @@ struct FileBrowserView: View {
     }
 
     private var isBinaryPreview: Bool {
-        viewModel.previewContent == "[Binary file preview unavailable]"
+        viewModel.isBinary
+    }
+
+    private var isReadOnly: Bool {
+        isBinaryPreview || viewModel.isTruncated
     }
 
     var body: some View {
@@ -101,6 +105,14 @@ struct FileBrowserView: View {
                             .font(.system(.body, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if viewModel.isTruncated {
+                        ScrollView {
+                            Text(viewModel.previewContent ?? "")
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     } else {
                         TextEditor(text: $viewModel.editableContent)
                             .font(.system(.body, design: .monospaced))
@@ -145,13 +157,10 @@ struct FileBrowserView: View {
                 }
             }
             Button("Save") {
-                viewModel.saveFile()
-                if let node = pendingNode {
-                    pendingNode = nil
-                    // Delay select slightly so save can finish
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        viewModel.select(node)
-                    }
+                let node = pendingNode
+                pendingNode = nil
+                viewModel.saveFile {
+                    if let node { viewModel.select(node) }
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -173,6 +182,13 @@ struct FileBrowserView: View {
                     .fill(Color.orange)
                     .frame(width: 6, height: 6)
                 Text("Modified")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if viewModel.isTruncated {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .font(.caption)
+                Text("Truncated — read only")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -213,7 +229,7 @@ struct FileBrowserView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(!viewModel.isDirty || viewModel.isSaving || isBinaryPreview)
+            .disabled(!viewModel.isDirty || viewModel.isSaving || isReadOnly)
             .keyboardShortcut("s", modifiers: .command)
         }
         .padding(.horizontal, 8)
@@ -372,6 +388,8 @@ final class FileBrowserViewModel {
     /// The original content as loaded — used for dirty tracking.
     private(set) var originalContent: String?
     var editableContent: String = ""
+    private(set) var isBinary = false
+    private(set) var isTruncated = false
     private(set) var isSaving = false
     var actionError: String?
     private(set) var isProjectOpen = false
@@ -470,17 +488,24 @@ final class FileBrowserViewModel {
         loadingDirectories.contains(path)
     }
 
-    func saveFile() {
-        guard let path = selectedFilePath, isDirty else { return }
+    func saveFile(onComplete: (() -> Void)? = nil) {
+        guard let path = selectedFilePath, isDirty else {
+            onComplete?()
+            return
+        }
         guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
+            onComplete?()
             return
         }
         isSaving = true
         Task { [weak self] in
             guard let self else { return }
-            defer { self.isSaving = false }
+            defer {
+                self.isSaving = false
+                onComplete?()
+            }
             do {
                 struct Params: Encodable {
                     let path: String
@@ -622,6 +647,8 @@ final class FileBrowserViewModel {
 
                 struct FilePreview: Decodable {
                     let content: String
+                    let truncated: Bool
+                    let is_binary: Bool  // swiftlint:disable:this identifier_name
                 }
 
                 let preview: FilePreview = try await bus.call(
@@ -636,6 +663,8 @@ final class FileBrowserViewModel {
                 self.previewContent = preview.content
                 self.originalContent = preview.content
                 self.editableContent = preview.content
+                self.isBinary = preview.is_binary
+                self.isTruncated = preview.truncated
                 self.actionError = nil
             } catch {
                 guard self.activationGeneration == generation,
@@ -716,6 +745,8 @@ final class FileBrowserViewModel {
         previewContent = nil
         originalContent = nil
         editableContent = ""
+        isBinary = false
+        isTruncated = false
     }
 
     private func children(for path: String) -> [FileNode]? {
@@ -772,11 +803,12 @@ final class FileBrowserViewModel {
 
 private struct MarkdownReaderView: View {
     let content: String
+    @State private var parsedBlocks: [AnyView] = []
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                ForEach(Array(parsedBlocks.enumerated()), id: \.offset) { _, block in
                     block
                 }
             }
@@ -784,9 +816,12 @@ private struct MarkdownReaderView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .textSelection(.enabled)
+        .task(id: content) {
+            parsedBlocks = buildBlocks()
+        }
     }
 
-    private var blocks: [AnyView] {
+    private func buildBlocks() -> [AnyView] {
         var result: [AnyView] = []
         var codeBlock: [String] = []
         var inCode = false

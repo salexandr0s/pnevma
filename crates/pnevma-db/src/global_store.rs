@@ -446,8 +446,7 @@ impl GlobalDb {
             "INSERT INTO global_ssh_profiles
                 (id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-             ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
+             ON CONFLICT(name) DO UPDATE SET
                 host = excluded.host,
                 port = excluded.port,
                 user = excluded.user,

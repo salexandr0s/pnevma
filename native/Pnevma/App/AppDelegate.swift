@@ -24,7 +24,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var contentTopToTabBar: NSLayoutConstraint?
     private var contentTopToSafeArea: NSLayoutConstraint?
     private var toolbarSeparator: NSView?
-    private var titlebarFillView: ThemedTitlebarFillView?
     private var titlebarFillBottomConstraint: NSLayoutConstraint?
     private var titlebarFillMinHeightConstraint: NSLayoutConstraint?
     private var titlebarOpenBtn: CapsuleButton?
@@ -339,7 +338,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let titlebarFill = ThemedTitlebarFillView()
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
-        self.titlebarFillView = titlebarFill
 
         guard let contentArea = contentAreaView, let statusBarView = statusBar else {
             Log.general.error("contentAreaView or statusBar not initialized")
