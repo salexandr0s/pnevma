@@ -40,6 +40,7 @@
 		5B33B5C0479496B1F5BFE76C /* NotificationsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D37B08BF2B77B07B0CAC8A54 /* NotificationsModels.swift */; };
 		5CD922A4DFF0D6290F9D3101 /* WorkspaceTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B452A6B7E71B07847C6CB3BC /* WorkspaceTabTests.swift */; };
 		5D4E03537DA6F4288E6FF820 /* StatusBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 288B31EA70DBB7C2215B829A /* StatusBar.swift */; };
+		5E858FFA6C5B27FC3183B032 /* TitlebarActionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94FA64B07BFC3DEF5B13EE6D /* TitlebarActionsView.swift */; };
 		63CB5DD8AE02C1F0DD72F252 /* DiffViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71A723330D8BA616AB2DF79 /* DiffViewModel.swift */; };
 		640E0CC350D44AD25C4A5D12 /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7128B807BE64773097BA36E6 /* CommandPalette.swift */; };
 		64A5B1853D5A6CBC37B01E5A /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20D11B7F1496ED9ECFE4003 /* Log.swift */; };
@@ -209,6 +210,7 @@
 		9439B284463792B5897069AB /* PnevmaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaTests.swift; sourceTree = "<group>"; };
 		9487127BAE20CEC7D51CF580 /* PnevmaUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaUITestCase.swift; sourceTree = "<group>"; };
 		94DE8468190157901DC6F08A /* WorkspaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManagerTests.swift; sourceTree = "<group>"; };
+		94FA64B07BFC3DEF5B13EE6D /* TitlebarActionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TitlebarActionsView.swift; sourceTree = "<group>"; };
 		97B09EA1F6E0490ED9FB92B0 /* BrowserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModels.swift; sourceTree = "<group>"; };
 		980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngine.swift; sourceTree = "<group>"; };
 		9898DF3A58726617A4A1C216 /* readability.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = readability.min.js; sourceTree = "<group>"; };
@@ -479,6 +481,7 @@
 				8C87E39B08B92FB4B9C0E7C5 /* SessionManagerView.swift */,
 				288B31EA70DBB7C2215B829A /* StatusBar.swift */,
 				DF72258523A9B37DDE84802D /* TabBarView.swift */,
+				94FA64B07BFC3DEF5B13EE6D /* TitlebarActionsView.swift */,
 			);
 			path = Chrome;
 			sourceTree = "<group>";
@@ -753,6 +756,7 @@
 				32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */,
 				F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */,
 				587B9ADBC09AF402EDB4AA2E /* TerminalSurface.swift in Sources */,
+				5E858FFA6C5B27FC3183B032 /* TitlebarActionsView.swift in Sources */,
 				E4B187C264280A390D3219DD /* ToastOverlay.swift in Sources */,
 				A97FE8193DB7871ABDE7B0D7 /* WorkflowAgentsView.swift in Sources */,
 				2B56E96E019CFE60E762B804 /* WorkflowBuilderView.swift in Sources */,

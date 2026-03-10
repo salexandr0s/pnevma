@@ -24,6 +24,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var contentTopToTabBar: NSLayoutConstraint?
     private var contentTopToSafeArea: NSLayoutConstraint?
     private var toolbarSeparator: NSView?
+    private var titlebarOpenBtn: CapsuleButton?
+    private var titlebarCommitBtn: CapsuleButton?
+    private var titlebarPushBtn: CapsuleButton?
     private var commandPalette: CommandPalette?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
@@ -374,8 +377,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             hoverTintColor: .systemGreen
         )
 
+        // Titlebar action buttons (Open, Commit, Push) — direct subviews like the icon buttons
+        let openBtn = CapsuleButton(icon: "folder", label: "Open")
+        openBtn.target = self
+        openBtn.action = #selector(titlebarOpenAction)
+        self.titlebarOpenBtn = openBtn
+
+        let commitBtn = CapsuleButton(icon: "point.3.connected.trianglepath.dotted", label: "Commit")
+        commitBtn.target = self
+        commitBtn.action = #selector(titlebarCommitAction)
+        self.titlebarCommitBtn = commitBtn
+
+        let pushBtn = CapsuleButton(icon: "arrow.up.circle", label: "Push")
+        pushBtn.target = self
+        pushBtn.action = #selector(titlebarPushAction)
+        self.titlebarPushBtn = pushBtn
+
         for view in [sidebarBacking, tabBar, contentArea, statusBarView, toolbarSep,
-                      sidebarToggleBtn, notificationsBtn, addWorkspaceBtn] as [NSView] {
+                      sidebarToggleBtn, notificationsBtn, addWorkspaceBtn,
+                      openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
@@ -452,6 +472,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             addWorkspaceBtn.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor, constant: -12),
             addWorkspaceBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             addWorkspaceBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+
+            // Titlebar actions (Open, Commit, Push) — direct subviews, right of center
+            pushBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            pushBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -12),
+
+            commitBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            commitBtn.trailingAnchor.constraint(equalTo: pushBtn.leadingAnchor, constant: -6),
+
+            openBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            openBtn.trailingAnchor.constraint(equalTo: commitBtn.leadingAnchor, constant: -6),
         ])
 
         // For terminal transparency (background-opacity < 1.0), the window must
@@ -1352,6 +1382,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.animates = true
         popover.contentViewController = NSHostingController(
             rootView: SessionManagerPopoverView(store: sessionStore)
+                .environment(GhosttyThemeProvider.shared)
         )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
         sessionsPopover = popover
@@ -1411,6 +1442,81 @@ extension AppDelegate {
         button.toolTip = toolTip
         button.setAccessibilityLabel(accessibilityDescription)
         return button
+    }
+
+    // MARK: - Titlebar Action Handlers (Open, Commit, Push)
+
+    @objc func titlebarOpenAction() {
+        guard let path = workspaceManager?.activeWorkspace?.projectPath else { return }
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
+    @objc func titlebarCommitAction() {
+        guard workspaceManager?.activeWorkspace?.projectPath != nil,
+              let commitBtn = titlebarCommitBtn else { return }
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 320, height: 180)
+        popover.behavior = .transient
+        popover.animates = true
+        let view = CommitPopoverView(
+            branch: workspaceManager?.activeWorkspace?.gitBranch,
+            onCommit: { [weak self] message in
+                popover.performClose(nil)
+                self?.runGitCommit(message: message)
+            },
+            onCancel: { popover.performClose(nil) }
+        )
+        popover.contentViewController = NSHostingController(rootView: view)
+        popover.show(relativeTo: commitBtn.bounds, of: commitBtn, preferredEdge: .minY)
+    }
+
+    @objc func titlebarPushAction() {
+        guard let path = workspaceManager?.activeWorkspace?.projectPath else { return }
+        let mgr = workspaceManager
+        Task.detached {
+            let push = Process()
+            push.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            push.arguments = ["push"]
+            push.currentDirectoryURL = URL(fileURLWithPath: path)
+            push.standardOutput = FileHandle.nullDevice
+            push.standardError = FileHandle.nullDevice
+            try? push.run()
+            push.waitUntilExit()
+            await MainActor.run {
+                if let ws = mgr?.activeWorkspace {
+                    mgr?.refreshMetadata(for: ws)
+                }
+            }
+        }
+    }
+
+    private func runGitCommit(message: String) {
+        guard let path = workspaceManager?.activeWorkspace?.projectPath else { return }
+        let mgr = workspaceManager
+        Task.detached {
+            let add = Process()
+            add.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            add.arguments = ["add", "-A"]
+            add.currentDirectoryURL = URL(fileURLWithPath: path)
+            add.standardOutput = FileHandle.nullDevice
+            add.standardError = FileHandle.nullDevice
+            try? add.run()
+            add.waitUntilExit()
+
+            let commit = Process()
+            commit.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            commit.arguments = ["commit", "-m", message]
+            commit.currentDirectoryURL = URL(fileURLWithPath: path)
+            commit.standardOutput = FileHandle.nullDevice
+            commit.standardError = FileHandle.nullDevice
+            try? commit.run()
+            commit.waitUntilExit()
+            await MainActor.run {
+                if let ws = mgr?.activeWorkspace {
+                    mgr?.refreshMetadata(for: ws)
+                }
+            }
+        }
     }
 }
 

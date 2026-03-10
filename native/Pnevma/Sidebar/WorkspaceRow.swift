@@ -113,6 +113,7 @@ struct WorkspaceRow: View {
                                     .foregroundStyle(.orange)
                             }
                         }
+                        .lineLimit(1)
                     }
 
                     if workspace.activeTasks > 0 {
@@ -127,6 +128,7 @@ struct WorkspaceRow: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                        .fixedSize()
 
                     Text(terminalModeLabel)
                         .font(.caption2)
@@ -134,13 +136,17 @@ struct WorkspaceRow: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                        .fixedSize()
 
                     if failureMessage != nil {
                         Label("Activation Failed", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption2)
                             .foregroundStyle(.orange)
+                            .fixedSize()
                     }
                 }
+                .lineLimit(1)
+                .clipped()
 
                 if let shortPath = shortenedPath {
                     Text(shortPath)
