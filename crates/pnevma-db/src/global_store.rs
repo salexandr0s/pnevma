@@ -1,5 +1,5 @@
 use crate::error::DbError;
-use crate::models::{GlobalAgentProfileRow, GlobalWorkflowRow};
+use crate::models::{GlobalAgentProfileRow, GlobalSshProfileRow, GlobalWorkflowRow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,6 +103,24 @@ impl GlobalDb {
                 config_json TEXT NOT NULL DEFAULT '{}',
                 system_prompt TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS global_ssh_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                user TEXT,
+                identity_file TEXT,
+                proxy_jump TEXT,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                source TEXT NOT NULL DEFAULT 'manual',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -388,6 +406,75 @@ impl GlobalDb {
 
     pub async fn delete_global_agent_profile(&self, id: &str) -> Result<(), DbError> {
         sqlx::query("DELETE FROM global_agent_profiles WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ─── Global SSH Profile methods ──────────────────────────────────────────
+
+    pub async fn list_global_ssh_profiles(&self) -> Result<Vec<GlobalSshProfileRow>, DbError> {
+        let rows = sqlx::query_as::<_, GlobalSshProfileRow>(
+            "SELECT id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at
+             FROM global_ssh_profiles ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_global_ssh_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<GlobalSshProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, GlobalSshProfileRow>(
+            "SELECT id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at
+             FROM global_ssh_profiles WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn upsert_global_ssh_profile(
+        &self,
+        row: &GlobalSshProfileRow,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO global_ssh_profiles
+                (id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                host = excluded.host,
+                port = excluded.port,
+                user = excluded.user,
+                identity_file = excluded.identity_file,
+                proxy_jump = excluded.proxy_jump,
+                tags_json = excluded.tags_json,
+                source = excluded.source,
+                updated_at = excluded.updated_at",
+        )
+        .bind(&row.id)
+        .bind(&row.name)
+        .bind(&row.host)
+        .bind(row.port)
+        .bind(&row.user)
+        .bind(&row.identity_file)
+        .bind(&row.proxy_jump)
+        .bind(&row.tags_json)
+        .bind(&row.source)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_global_ssh_profile(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM global_ssh_profiles WHERE id = ?1")
             .bind(id)
             .execute(&self.pool)
             .await?;

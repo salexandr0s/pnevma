@@ -38,7 +38,7 @@ final class WorkspaceTabTests: XCTestCase {
         let pane = rootPaneID.flatMap { workspace.layoutEngine.persistedPane(for: $0) }
         XCTAssertTrue(changed)
         XCTAssertEqual(pane?.type, "terminal")
-        XCTAssertNil(pane?.workingDirectory)
+        XCTAssertEqual(pane?.workingDirectory, NSHomeDirectory())
     }
 
     func testEnsureActiveTabHasDisplayableRootPaneUsesWorkspaceProjectPath() {
@@ -53,7 +53,7 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(pane?.workingDirectory, "/tmp/project")
     }
 
-    func testEnsureActiveTabHasDisplayableRootPaneDoesNotOverwriteExistingPane() {
+    func testEnsureActiveTabHasDisplayableRootPaneUpgradesWelcomePaneForTerminalWorkspace() {
         let workspace = Workspace(name: "Test")
         let rootPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
         workspace.layoutEngine.upsertPersistedPane(PersistedPane(
@@ -67,8 +67,10 @@ final class WorkspaceTabTests: XCTestCase {
 
         let changed = workspace.ensureActiveTabHasDisplayableRootPane()
 
-        XCTAssertFalse(changed)
-        XCTAssertEqual(workspace.layoutEngine.persistedPane(for: rootPaneID)?.type, "welcome")
+        let pane = workspace.layoutEngine.persistedPane(for: rootPaneID)
+        XCTAssertTrue(changed)
+        XCTAssertEqual(pane?.type, "terminal")
+        XCTAssertEqual(pane?.workingDirectory, NSHomeDirectory())
     }
 
     func testEnsureActiveTabHasDisplayableRootPaneUpgradesWelcomePaneForProjectWorkspace() {
@@ -236,6 +238,10 @@ final class WorkspaceTabTests: XCTestCase {
             id: UUID(),
             name: "Legacy",
             projectPath: "/tmp/legacy",
+            kind: nil,
+            location: nil,
+            terminalMode: nil,
+            remoteTarget: nil,
             tabSnapshots: nil,
             activeTabIndex: nil,
             layoutData: layoutData,

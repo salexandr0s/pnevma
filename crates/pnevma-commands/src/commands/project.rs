@@ -195,6 +195,7 @@ fn project_runtime_redaction_config(cfg: &ProjectConfig) -> pnevma_redaction::Re
 
 pub async fn open_project(
     path: String,
+    client_activation_token: Option<String>,
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<String, String> {
@@ -448,6 +449,7 @@ pub async fn open_project(
             "project_id": project_id.to_string(),
             "project_name": cfg.project.name,
             "project_path": path_str,
+            "client_activation_token": client_activation_token,
         }),
     );
 
@@ -4780,6 +4782,7 @@ enable_entropy_guard = false
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
         let err = open_project(
             project_root.path().to_string_lossy().to_string(),
+            None,
             &emitter,
             &state,
         )

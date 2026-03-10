@@ -68,14 +68,19 @@ impl ProjectRuntime {
     }
 }
 
+pub struct ManagedService<T> {
+    pub generation: u64,
+    pub handle: T,
+}
+
 pub struct AppState {
     pub current: Mutex<Option<ProjectContext>>,
     pub current_runtime: Mutex<Option<ProjectRuntime>>,
     pub global_db: Option<GlobalDb>,
     pub recents: Mutex<Vec<RecentProject>>,
-    pub control_plane: Mutex<Option<ControlServerHandle>>,
+    pub control_plane: Mutex<Option<ManagedService<ControlServerHandle>>>,
     pub merge_branch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    pub remote_handle: Mutex<Option<pnevma_remote::RemoteServerHandle>>,
+    pub remote_handle: Mutex<Option<ManagedService<pnevma_remote::RemoteServerHandle>>>,
     pub remote_events: tokio::sync::broadcast::Sender<pnevma_remote::RemoteEventEnvelope>,
     pub emitter: Arc<dyn EventEmitter>,
     /// Set immediately after Arc<AppState> is created so internal code can get a clone.

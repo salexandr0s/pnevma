@@ -5,6 +5,7 @@
 
 use pnevma_commands::event_emitter::EventEmitter;
 use pnevma_commands::state::AppState;
+use pnevma_commands::state::ManagedService;
 use pnevma_commands::{route_method, NullEmitter};
 use pnevma_db::GlobalDb;
 use pnevma_session::SessionEvent;
@@ -51,6 +52,7 @@ pub struct PnevmaHandle {
     state: Arc<AppState>,
     session_output_cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
     session_output_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    project_service_generation: Arc<AtomicU64>,
     pending_async_callbacks: Arc<std::sync::Mutex<HashMap<u64, AsyncCallbackWrapper>>>,
     next_async_callback_id: AtomicU64,
     shutting_down: Arc<AtomicBool>,
@@ -204,7 +206,7 @@ fn validate_method_name(method: &str) -> Result<(), *mut PnevmaResult> {
 async fn stop_control_plane_server(state: &Arc<AppState>) {
     let prior = {
         let mut slot = state.control_plane.lock().await;
-        slot.take()
+        take_managed_service(&mut *slot)
     };
     if let Some(handle) = prior {
         handle.shutdown().await;
@@ -214,14 +216,64 @@ async fn stop_control_plane_server(state: &Arc<AppState>) {
 async fn stop_remote_server(state: &Arc<AppState>) {
     let prior = {
         let mut slot = state.remote_handle.lock().await;
-        slot.take()
+        take_managed_service(&mut *slot)
     };
     if let Some(handle) = prior {
         handle.shutdown();
     }
 }
 
-async fn sync_project_services(state: Arc<AppState>) -> Result<(), String> {
+async fn stop_control_plane_server_if_generation(state: &Arc<AppState>, generation: u64) {
+    let prior = {
+        let mut slot = state.control_plane.lock().await;
+        take_managed_service_if_generation(&mut *slot, generation)
+    };
+    if let Some(handle) = prior {
+        handle.shutdown().await;
+    }
+}
+
+async fn stop_remote_server_if_generation(state: &Arc<AppState>, generation: u64) {
+    let prior = {
+        let mut slot = state.remote_handle.lock().await;
+        take_managed_service_if_generation(&mut *slot, generation)
+    };
+    if let Some(handle) = prior {
+        handle.shutdown();
+    }
+}
+
+fn next_project_service_generation(counter: &Arc<AtomicU64>) -> u64 {
+    counter.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn project_service_generation_is_current(counter: &AtomicU64, generation: u64) -> bool {
+    counter.load(Ordering::SeqCst) == generation
+}
+
+fn take_managed_service<T>(slot: &mut Option<ManagedService<T>>) -> Option<T> {
+    slot.take().map(|service| service.handle)
+}
+
+fn take_managed_service_if_generation<T>(
+    slot: &mut Option<ManagedService<T>>,
+    generation: u64,
+) -> Option<T> {
+    match slot.as_ref() {
+        Some(service) if service.generation == generation => take_managed_service(slot),
+        _ => None,
+    }
+}
+
+async fn sync_project_services(
+    state: Arc<AppState>,
+    generation_counter: Arc<AtomicU64>,
+    generation: u64,
+) -> Result<(), String> {
+    if !project_service_generation_is_current(generation_counter.as_ref(), generation) {
+        return Ok(());
+    }
+
     let (project_path, project_config, global_config) = {
         let current = state.current.lock().await;
         let ctx = current
@@ -237,6 +289,10 @@ async fn sync_project_services(state: Arc<AppState>) -> Result<(), String> {
     stop_control_plane_server(&state).await;
     stop_remote_server(&state).await;
 
+    if !project_service_generation_is_current(generation_counter.as_ref(), generation) {
+        return Ok(());
+    }
+
     let settings = pnevma_commands::control::resolve_control_plane_settings(
         project_path.as_path(),
         &project_config,
@@ -244,9 +300,32 @@ async fn sync_project_services(state: Arc<AppState>) -> Result<(), String> {
     )?;
     let control_handle =
         pnevma_commands::control::start_control_plane(Arc::clone(&state), settings).await?;
-    *state.control_plane.lock().await = control_handle;
+    if !project_service_generation_is_current(generation_counter.as_ref(), generation) {
+        if let Some(handle) = control_handle {
+            handle.shutdown().await;
+        }
+        return Ok(());
+    }
+    *state.control_plane.lock().await =
+        control_handle.map(|handle| ManagedService { generation, handle });
 
-    pnevma_commands::remote_bridge::maybe_start_remote(state).await;
+    if !project_service_generation_is_current(generation_counter.as_ref(), generation) {
+        stop_control_plane_server_if_generation(&state, generation).await;
+        return Ok(());
+    }
+    let remote_handle =
+        pnevma_commands::remote_bridge::maybe_start_remote(Arc::clone(&state)).await;
+    if !project_service_generation_is_current(generation_counter.as_ref(), generation) {
+        if let Some(handle) = remote_handle {
+            handle.shutdown();
+        }
+        return Ok(());
+    }
+    *state.remote_handle.lock().await =
+        remote_handle.map(|handle| ManagedService { generation, handle });
+    if !project_service_generation_is_current(generation_counter.as_ref(), generation) {
+        stop_remote_server_if_generation(&state, generation).await;
+    }
     Ok(())
 }
 
@@ -297,6 +376,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let pending_async_callbacks = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let shutting_down = Arc::new(AtomicBool::new(false));
+        let project_service_generation = Arc::new(AtomicU64::new(0));
 
         // Start background services
         let state_clone = Arc::clone(&state);
@@ -309,6 +389,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             state,
             session_output_cb: Arc::new(std::sync::Mutex::new(None)),
             session_output_task: std::sync::Mutex::new(None),
+            project_service_generation,
             pending_async_callbacks,
             next_async_callback_id: AtomicU64::new(1),
             shutting_down,
@@ -402,24 +483,26 @@ pub extern "C" fn pnevma_call(
             .block_on(route_method(state, method_str, &params))
         {
             Ok(val) => {
-                let service_result = match method_str {
+                match method_str {
                     "project.open" => {
                         let state = Arc::clone(state);
-                        handle.runtime.block_on(sync_project_services(state))
+                        let generation =
+                            next_project_service_generation(&handle.project_service_generation);
+                        let generation_counter = Arc::clone(&handle.project_service_generation);
+                        handle.runtime.spawn(async move {
+                            if let Err(err) =
+                                sync_project_services(state, generation_counter, generation).await
+                            {
+                                tracing::error!(error = %err, "failed to synchronize project services after project.open");
+                            }
+                        });
                     }
                     "project.close" => {
+                        next_project_service_generation(&handle.project_service_generation);
                         let state = Arc::clone(state);
                         handle.runtime.block_on(stop_project_services(state));
-                        Ok(())
                     }
-                    _ => Ok(()),
-                };
-                if let Err(err) = service_result {
-                    let state = Arc::clone(state);
-                    let _ = handle
-                        .runtime
-                        .block_on(pnevma_commands::commands::close_project(state.as_ref()));
-                    return make_error_result(&err);
+                    _ => {}
                 }
                 make_result(true, &val.to_string())
             }
@@ -535,24 +618,33 @@ pub extern "C" fn pnevma_call_async(
         }
         let callbacks = Arc::clone(&handle.pending_async_callbacks);
         let shutting_down = Arc::clone(&handle.shutting_down);
+        let project_service_generation = Arc::clone(&handle.project_service_generation);
         handle.runtime.spawn(async move {
             let result = route_method(&state, &method_str, &params).await;
             let r = match result {
                 Ok(val) => {
-                    let service_result = match method_str.as_str() {
-                        "project.open" => sync_project_services(Arc::clone(&state)).await,
-                        "project.close" => {
-                            stop_project_services(Arc::clone(&state)).await;
-                            Ok(())
+                    match method_str.as_str() {
+                        "project.open" => {
+                            let generation =
+                                next_project_service_generation(&project_service_generation);
+                            let state = Arc::clone(&state);
+                            let generation_counter = Arc::clone(&project_service_generation);
+                            tokio::spawn(async move {
+                                if let Err(err) =
+                                    sync_project_services(state, generation_counter, generation)
+                                        .await
+                                {
+                                    tracing::error!(error = %err, "failed to synchronize project services after project.open");
+                                }
+                            });
                         }
-                        _ => Ok(()),
-                    };
-                    if let Err(err) = service_result {
-                        let _ = pnevma_commands::commands::close_project(state.as_ref()).await;
-                        make_error_result(&err)
-                    } else {
-                        make_result(true, &val.to_string())
+                        "project.close" => {
+                            next_project_service_generation(&project_service_generation);
+                            stop_project_services(Arc::clone(&state)).await;
+                        }
+                        _ => {}
                     }
+                    make_result(true, &val.to_string())
                 }
                 Err((_code, msg)) => make_error_result(&msg),
             };
@@ -953,5 +1045,47 @@ mod tests {
             1,
             "destroy must release pending async callback context exactly once"
         );
+    }
+
+    #[test]
+    fn project_service_generation_helpers_track_latest_generation() {
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = next_project_service_generation(&counter);
+        let second = next_project_service_generation(&counter);
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert!(
+            !project_service_generation_is_current(counter.as_ref(), first),
+            "older generations must be treated as stale"
+        );
+        assert!(
+            project_service_generation_is_current(counter.as_ref(), second),
+            "the latest generation must remain current"
+        );
+    }
+
+    #[test]
+    fn take_managed_service_if_generation_only_removes_matching_entry() {
+        let mut slot = Some(ManagedService {
+            generation: 2,
+            handle: "current",
+        });
+
+        assert!(
+            take_managed_service_if_generation(&mut slot, 1).is_none(),
+            "mismatched generations must leave the slot untouched"
+        );
+        assert!(
+            slot.is_some(),
+            "slot should remain populated after mismatch"
+        );
+        assert_eq!(
+            take_managed_service_if_generation(&mut slot, 2),
+            Some("current"),
+            "matching generations must remove and return the handle"
+        );
+        assert!(slot.is_none(), "slot should be empty after a matching take");
     }
 }

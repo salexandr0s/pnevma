@@ -32,10 +32,28 @@ struct WorkspaceRow: View {
     }
 
     private var shortenedPath: String? {
-        guard let path = workspace.projectPath else { return nil }
+        guard let path = workspace.displayPath else { return nil }
         let components = path.split(separator: "/")
         if components.count <= 2 { return path }
         return "~/" + components.suffix(2).joined(separator: "/")
+    }
+
+    private var modeLabel: String {
+        switch workspace.location {
+        case .local:
+            return workspace.kind == .terminal ? "Terminal" : "Local"
+        case .remote:
+            return "Remote"
+        }
+    }
+
+    private var terminalModeLabel: String {
+        workspace.terminalMode == .persistent ? "Persistent" : "Local Shell"
+    }
+
+    private var failureMessage: String? {
+        guard isActive else { return nil }
+        return workspace.activationFailureMessage
     }
 
     var body: some View {
@@ -77,7 +95,7 @@ struct WorkspaceRow: View {
                 }
 
                 HStack(spacing: 6) {
-                    if workspace.projectPath != nil && workspace.gitBranch == nil && isActive {
+                    if workspace.showsProjectToolsInUI && workspace.gitBranch == nil && isActive {
                         ProgressView()
                             .controlSize(.mini)
                             .scaleEffect(0.7)
@@ -102,6 +120,26 @@ struct WorkspaceRow: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+
+                    Text(modeLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+
+                    Text(terminalModeLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+
+                    if failureMessage != nil {
+                        Label("Activation Failed", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 if let shortPath = shortenedPath {
@@ -109,6 +147,13 @@ struct WorkspaceRow: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
+                }
+
+                if let failureMessage {
+                    Text(failureMessage)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
                 }
             }
 
@@ -120,7 +165,7 @@ struct WorkspaceRow: View {
             }
 
             // Close button on hover
-            if isHovering {
+            if isHovering && !workspace.isPermanent {
                 CloseButton(action: onClose)
             }
         }
@@ -147,18 +192,22 @@ struct WorkspaceRow: View {
             Button(workspace.isPinned ? "Unpin" : "Pin") {
                 onPin?()
             }
-            if let path = workspace.projectPath {
+            if let path = workspace.displayPath {
                 Button("Copy Path") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(path, forType: .string)
                 }
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+                if workspace.location == .local {
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+                    }
                 }
             }
             Divider()
-            Button("Close Workspace", role: .destructive) {
-                onClose()
+            if !workspace.isPermanent {
+                Button("Close Workspace", role: .destructive) {
+                    onClose()
+                }
             }
         }
         .accessibilityLabel("Workspace: \(workspace.name)\(workspace.isPinned ? ", pinned" : "")")

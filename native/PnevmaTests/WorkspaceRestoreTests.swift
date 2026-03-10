@@ -175,11 +175,11 @@ final class WorkspaceRestoreTests: XCTestCase {
         let bridge = PnevmaBridge()
         let manager = WorkspaceManager(bridge: bridge, commandBus: CommandBus(bridge: bridge))
 
-        let first = Workspace(name: "One")
-        let second = Workspace(name: "Two")
+        let terminal = Workspace(name: "Terminal")
+        let second = Workspace(name: "Two", projectPath: "/tmp/two")
 
         manager.restore(
-            snapshots: [first.snapshot(), second.snapshot()],
+            snapshots: [terminal.snapshot(), second.snapshot()],
             activeWorkspaceID: second.id
         )
 
@@ -188,24 +188,25 @@ final class WorkspaceRestoreTests: XCTestCase {
         XCTAssertEqual(manager.activeWorkspace?.name, "Two")
     }
 
-    func testWorkspaceManagerRestoreCollapsesDuplicateProjectWorkspaces() {
+    func testWorkspaceManagerRestorePreservesMultipleProjectWorkspaces() {
         let bridge = PnevmaBridge()
         let manager = WorkspaceManager(bridge: bridge, commandBus: CommandBus(bridge: bridge))
 
-        let scratch = Workspace(name: "Scratch")
+        let terminal = Workspace(name: "Terminal")
         let firstProject = Workspace(name: "One", projectPath: "/tmp/one")
         let secondProject = Workspace(name: "Two", projectPath: "/tmp/two")
 
         manager.restore(
-            snapshots: [scratch.snapshot(), firstProject.snapshot(), secondProject.snapshot()],
+            snapshots: [terminal.snapshot(), firstProject.snapshot(), secondProject.snapshot()],
             activeWorkspaceID: secondProject.id
         )
 
         let projectWorkspaces = manager.workspaces.filter { $0.projectPath != nil }
-        XCTAssertEqual(projectWorkspaces.count, 1)
-        XCTAssertEqual(projectWorkspaces.first?.id, secondProject.id)
+        XCTAssertEqual(projectWorkspaces.count, 2)
+        XCTAssertTrue(projectWorkspaces.contains(where: { $0.id == firstProject.id }))
+        XCTAssertTrue(projectWorkspaces.contains(where: { $0.id == secondProject.id }))
         XCTAssertEqual(manager.activeWorkspaceID, secondProject.id)
-        XCTAssertTrue(manager.workspaces.contains(where: { $0.id == scratch.id }))
+        XCTAssertTrue(manager.workspaces.contains(where: { $0.id == terminal.id }))
     }
 
     func testContentAreaViewShowsRestoreErrorPaneWithoutMutatingStateWhenDescriptorMissing() {
@@ -245,7 +246,7 @@ final class WorkspaceRestoreTests: XCTestCase {
     }
 
     func testSwitchingToNewTabAfterSeedingDescriptorDoesNotShowRestoreError() {
-        let workspace = Workspace(name: "Default")
+        let workspace = Workspace(name: "Terminal")
         let initialRootPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
         workspace.layoutEngine.upsertPersistedPane(
             PersistedPane(

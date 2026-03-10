@@ -131,6 +131,27 @@ private actor FailingProjectOpenCommandBus: CommandCalling {
     }
 }
 
+private final class MockWorkspaceProjectPathResolver: WorkspaceProjectPathResolving {
+    var resolvedPaths: [UUID: String] = [:]
+    var defaultRemotePath: String?
+    private(set) var cleanedWorkspaceIDs: [UUID] = []
+
+    func resolveProjectPath(for workspace: Workspace) async throws -> String? {
+        if workspace.location == .remote {
+            return resolvedPaths[workspace.id] ?? defaultRemotePath
+        }
+        return workspace.projectPath
+    }
+
+    func cleanup(workspace: Workspace) {
+        cleanedWorkspaceIDs.append(workspace.id)
+    }
+
+    func cleanupAll(workspaces: [Workspace]) {
+        cleanedWorkspaceIDs.append(contentsOf: workspaces.map(\.id))
+    }
+}
+
 private struct ProjectOpenFailurePayload: Decodable {
     let workspaceID: UUID?
     let generation: UInt64?
@@ -293,7 +314,7 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(currentProjectID, "project-b")
     }
 
-    func testWorkspaceWithoutProjectClosesBackendAndShowsWelcomePane() async throws {
+    func testTerminalWorkspaceClosesBackendAndShowsTerminalPane() async throws {
         let bus = MockCommandBus(specs: [
             .init(
                 projectID: "project-a",
@@ -314,23 +335,24 @@ final class WorkspaceManagerTests: XCTestCase {
             await bus.currentProjectID() == "project-a"
         }
 
-        let scratch = manager.createWorkspace(name: "Scratch")
+        let terminal = manager.ensureTerminalWorkspace()
+        manager.switchToWorkspace(terminal.id)
         try await waitUntil {
-            let rootPaneID = scratch.layoutEngine.root?.allPaneIDs.first
-            let rootPane = rootPaneID.flatMap { scratch.layoutEngine.persistedPane(for: $0) }
+            let rootPaneID = terminal.layoutEngine.root?.allPaneIDs.first
+            let rootPane = rootPaneID.flatMap { terminal.layoutEngine.persistedPane(for: $0) }
             let closeCount = await bus.closeCount()
-            return manager.activeWorkspaceID == scratch.id
+            return manager.activeWorkspaceID == terminal.id
                 && closeCount == 1
-                && rootPane?.type == "welcome"
+                && rootPane?.type == "terminal"
         }
 
         let closeCount = await bus.closeCount()
-        let rootPaneID = scratch.layoutEngine.root?.allPaneIDs.first
-        let rootPane = rootPaneID.flatMap { scratch.layoutEngine.persistedPane(for: $0) }
+        let rootPaneID = terminal.layoutEngine.root?.allPaneIDs.first
+        let rootPane = rootPaneID.flatMap { terminal.layoutEngine.persistedPane(for: $0) }
 
-        XCTAssertEqual(manager.activeWorkspaceID, scratch.id)
+        XCTAssertEqual(manager.activeWorkspaceID, terminal.id)
         XCTAssertEqual(closeCount, 1)
-        XCTAssertEqual(rootPane?.type, "welcome")
+        XCTAssertEqual(rootPane?.type, "terminal")
     }
 
     func testProjectWorkspaceSeedsTerminalPaneAfterOpen() async throws {
@@ -363,7 +385,7 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(rootPane?.workingDirectory, "/tmp/a")
     }
 
-    func testBindingProjectToActiveWorkspaceReusesWorkspaceAndRemovesOlderProjectWorkspace() async throws {
+    func testCreatingProjectWorkspacePreservesExistingProjectWorkspaces() async throws {
         let bus = MockCommandBus(specs: [
             .init(
                 projectID: "project-a",
@@ -394,32 +416,104 @@ final class WorkspaceManagerTests: XCTestCase {
             await bus.currentProjectID() == "project-a"
         }
 
-        let scratch = manager.createWorkspace(name: "Scratch")
+        let terminal = manager.ensureTerminalWorkspace()
+        manager.switchToWorkspace(terminal.id)
         try await waitUntil {
-            let rootPaneID = scratch.layoutEngine.root?.allPaneIDs.first
-            let rootPane = rootPaneID.flatMap { scratch.layoutEngine.persistedPane(for: $0) }
-            return manager.activeWorkspaceID == scratch.id && rootPane?.type == "welcome"
+            await bus.closeCount() == 1
         }
 
-        let rebound = manager.bindProjectToActiveWorkspace(name: "B", projectPath: "/tmp/b")
+        let secondWorkspace = manager.createLocalProjectWorkspace(
+            name: "B",
+            projectPath: "/tmp/b",
+            terminalMode: .persistent
+        )
 
         try await waitUntil {
             let currentProjectID = await bus.currentProjectID()
-            let rootPaneID = rebound.layoutEngine.root?.allPaneIDs.first
-            let rootPane = rootPaneID.flatMap { rebound.layoutEngine.persistedPane(for: $0) }
+            let rootPaneID = secondWorkspace.layoutEngine.root?.allPaneIDs.first
+            let rootPane = rootPaneID.flatMap { secondWorkspace.layoutEngine.persistedPane(for: $0) }
             let projectWorkspaceCount = manager.workspaces.filter { $0.projectPath != nil }.count
-            return manager.activeWorkspaceID == scratch.id
+            return manager.activeWorkspaceID == secondWorkspace.id
                 && currentProjectID == "project-b"
-                && projectWorkspaceCount == 1
+                && projectWorkspaceCount == 2
                 && rootPane?.type == "terminal"
                 && rootPane?.workingDirectory == "/tmp/b"
         }
 
-        XCTAssertEqual(rebound.id, scratch.id)
-        XCTAssertEqual(rebound.name, "B")
-        XCTAssertEqual(rebound.projectPath, "/tmp/b")
-        XCTAssertFalse(manager.workspaces.contains(where: { $0.id == projectWorkspace.id }))
-        XCTAssertEqual(manager.workspaces.count, 1)
+        XCTAssertNotEqual(secondWorkspace.id, terminal.id)
+        XCTAssertEqual(secondWorkspace.name, "B")
+        XCTAssertEqual(secondWorkspace.projectPath, "/tmp/b")
+        XCTAssertTrue(manager.workspaces.contains(where: { $0.id == projectWorkspace.id }))
+        XCTAssertTrue(manager.workspaces.contains(where: { $0.id == secondWorkspace.id }))
+    }
+
+    func testRemoteWorkspaceResolvesProjectPathAndOpensBackendProject() async throws {
+        let mountPath = "/tmp/remote-mounted-project"
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-remote",
+                projectPath: mountPath,
+                gitBranch: "main",
+                activeTasks: 3,
+                activeAgents: 2,
+                costToday: 4.0,
+                unreadNotifications: 1,
+                openDelayNanos: 50_000_000
+            )
+        ])
+        let activationHub = ActiveWorkspaceActivationHub()
+        let resolver = MockWorkspaceProjectPathResolver()
+        resolver.defaultRemotePath = mountPath
+        let manager = WorkspaceManager(
+            bridge: PnevmaBridge(),
+            commandBus: bus,
+            activationHub: activationHub,
+            projectPathResolver: resolver
+        )
+
+        let workspace = manager.createRemoteWorkspace(
+            name: "Remote",
+            remoteTarget: WorkspaceRemoteTarget(
+                sshProfileID: "profile-1",
+                sshProfileName: "Remote",
+                host: "example.internal",
+                port: 22,
+                user: "builder",
+                identityFile: nil,
+                proxyJump: "jump.internal",
+                remotePath: "/srv/project"
+            ),
+            terminalMode: .persistent
+        )
+
+        try await waitUntil {
+            let currentProjectID = await bus.currentProjectID()
+            return activationHub.currentState == .open(
+                workspaceID: workspace.id,
+                projectID: "project-remote"
+            ) && currentProjectID == "project-remote"
+        }
+
+        XCTAssertEqual(workspace.projectPath, mountPath)
+        XCTAssertTrue(workspace.supportsProjectTools)
+    }
+
+    func testRemoteWorkspaceShellCommandExpandsHomeRelativePaths() {
+        let target = WorkspaceRemoteTarget(
+            sshProfileID: "profile-1",
+            sshProfileName: "Remote",
+            host: "example.internal",
+            port: 22,
+            user: "builder",
+            identityFile: nil,
+            proxyJump: nil,
+            remotePath: "~/repo with spaces"
+        )
+
+        XCTAssertEqual(target.shellDirectoryExpression, "${HOME}/'repo with spaces'")
+        XCTAssertTrue(target.remoteShellCommand.contains("${HOME}/"))
+        XCTAssertTrue(target.remoteShellCommand.contains("repo with spaces"))
+        XCTAssertFalse(target.remoteShellCommand.contains("cd -- '~"))
     }
 
     func testActivationHubTracksWorkspaceOpenAndScratchClose() async throws {
@@ -454,8 +548,107 @@ final class WorkspaceManagerTests: XCTestCase {
             activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
         }
 
-        let scratch = manager.createWorkspace(name: "Scratch")
-        XCTAssertEqual(activationHub.currentState, .closed(workspaceID: scratch.id))
+        let terminal = manager.ensureTerminalWorkspace()
+        manager.switchToWorkspace(terminal.id)
+        XCTAssertEqual(activationHub.currentState, .closed(workspaceID: terminal.id))
+    }
+
+    func testProjectOpenedEventPromotesActivationBeforeOpenCallReturns() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 300_000_000
+            )
+        ])
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub
+        )
+
+        let workspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        BridgeEventHub.shared.post(
+            BridgeEvent(
+                name: "project_opened",
+                payloadJSON: #"""
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a"}
+                """#
+            )
+        )
+
+        try await waitUntil(timeoutNanos: 100_000_000) {
+            activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
+        }
+
+        let currentProjectID = await bus.currentProjectID()
+        XCTAssertNil(currentProjectID)
+    }
+
+    func testStaleProjectOpenedEventIsIgnoredAfterWorkspaceSwitch() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 300_000_000
+            ),
+            .init(
+                projectID: "project-b",
+                projectPath: "/tmp/b",
+                gitBranch: "branch-b",
+                activeTasks: 2,
+                activeAgents: 1,
+                costToday: 2.0,
+                unreadNotifications: 0,
+                openDelayNanos: 300_000_000
+            )
+        ])
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub
+        )
+
+        _ = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        let workspaceB = manager.createWorkspace(name: "B", projectPath: "/tmp/b")
+
+        BridgeEventHub.shared.post(
+            BridgeEvent(
+                name: "project_opened",
+                payloadJSON: #"""
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a"}
+                """#
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 75_000_000)
+        if case .opening(let workspaceID, _) = activationHub.currentState {
+            XCTAssertEqual(workspaceID, workspaceB.id)
+        } else {
+            XCTFail("Stale project_opened event should not promote the active workspace")
+        }
+
+        try await waitUntil {
+            let currentProjectID = await bus.currentProjectID()
+            return activationHub.currentState == .open(
+                workspaceID: workspaceB.id,
+                projectID: "project-b"
+            ) && currentProjectID == "project-b"
+        }
     }
 
     func testProjectOpenFailurePostsActionableEvent() async throws {
@@ -495,6 +688,14 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(manager.activeWorkspaceID, workspace.id)
         XCTAssertNil(workspace.gitBranch)
         XCTAssertEqual(workspace.activeTasks, 0)
+        XCTAssertEqual(
+            workspace.activationFailureMessage,
+            "Workspace trust is required before this project can open."
+        )
+        XCTAssertEqual(
+            PaneFactory.availablePaneTypes(for: workspace),
+            Set(["terminal", "ssh", "workflow", "notifications", "browser", "analytics"])
+        )
         XCTAssertEqual(
             activationHub.currentState,
             .failed(

@@ -13,6 +13,13 @@ struct PersistedPane: Codable {
     let metadataJSON: String?
 }
 
+extension PersistedPane {
+    var terminalLaunchMetadata: TerminalLaunchMetadata? {
+        guard type == "terminal" else { return nil }
+        return TerminalLaunchMetadata.from(json: metadataJSON)
+    }
+}
+
 /// All pane types must conform to this protocol.
 /// Conforming types must be NSView subclasses (enforced by AnyObject + usage as `NSView & PaneContent`).
 @MainActor
@@ -147,8 +154,29 @@ extension RestoredPaneContainer: PanePersistenceObservable {
 @MainActor
 enum PaneFactory {
     static var sessionBridge: SessionBridge?
+    static var activeWorkspaceProvider: (() -> Workspace?)?
+
     private static func paneTuple(_ view: NSView & PaneContent) -> (PaneID, NSView & PaneContent) {
         (view.paneID, view)
+    }
+
+    static func workspaceAwareTerminal(
+        startBehavior: TerminalStartBehavior = .immediate
+    ) -> (PaneID, NSView & PaneContent) {
+        let workspace = activeWorkspaceProvider?()
+        let metadata = workspace?.defaultTerminalMetadata(startBehavior: startBehavior)
+            ?? TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: startBehavior,
+                remoteTarget: nil
+            )
+        let workingDirectory = workspace?.defaultWorkingDirectory
+        return makeTerminal(
+            workingDirectory: workingDirectory,
+            sessionID: nil,
+            autoStartIfNeeded: metadata.shouldAutoStart,
+            launchMetadata: metadata
+        )
     }
 
     static func makeWelcome() -> (PaneID, NSView & PaneContent) {
@@ -171,12 +199,14 @@ enum PaneFactory {
     static func makeTerminal(
         workingDirectory: String? = nil,
         sessionID: String? = nil,
-        autoStartIfNeeded: Bool = true
+        autoStartIfNeeded: Bool = true,
+        launchMetadata: TerminalLaunchMetadata? = nil
     ) -> (PaneID, NSView & PaneContent) {
         paneTuple(TerminalPaneView(
             workingDirectory: workingDirectory,
             sessionID: sessionID,
-            autoStartIfNeeded: autoStartIfNeeded
+            autoStartIfNeeded: autoStartIfNeeded,
+            launchMetadata: launchMetadata
         ))
     }
 
@@ -244,10 +274,17 @@ enum PaneFactory {
         let inner: (NSView & PaneContent)
         switch persistedPane.type {
         case "terminal":
+            let metadata = persistedPane.terminalLaunchMetadata
+                ?? TerminalLaunchMetadata(
+                    launchMode: persistedPane.sessionID == nil ? .localShell : .managedSession,
+                    startBehavior: .immediate,
+                    remoteTarget: nil
+                )
             inner = TerminalPaneView(
                 workingDirectory: persistedPane.workingDirectory,
                 sessionID: persistedPane.sessionID,
-                autoStartIfNeeded: true
+                autoStartIfNeeded: metadata.shouldAutoStart,
+                launchMetadata: metadata
             )
         case "welcome":
             inner = WelcomePaneView(frame: .zero)
@@ -295,9 +332,12 @@ enum PaneFactory {
 
     /// Create a pane by type string.
     static func make(type paneType: String) -> (PaneID, NSView & PaneContent)? {
+        guard isPaneTypeAvailable(paneType, in: activeWorkspaceProvider?()) else {
+            return nil
+        }
         switch paneType {
         case "welcome":       return makeWelcome()
-        case "terminal":      return makeTerminal()
+        case "terminal":      return workspaceAwareTerminal()
         case "taskboard":     return makeTaskBoard()
         case "replay":        return makeReplay()
         case "file_browser":  return makeFileBrowser()
@@ -315,6 +355,36 @@ enum PaneFactory {
         case "browser":       return makeBrowser()
         default:              return nil
         }
+    }
+
+    static func isPaneTypeAvailable(_ paneType: String, in workspace: Workspace?) -> Bool {
+        availablePaneTypes(for: workspace).contains(paneType)
+    }
+
+    static func availablePaneTypes(for workspace: Workspace?) -> Set<String> {
+        guard let workspace else {
+            return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics"]
+        }
+        if workspace.showsProjectToolsInUI {
+            return [
+                "terminal",
+                "taskboard",
+                "workflow",
+                "notifications",
+                "file_browser",
+                "ssh",
+                "replay",
+                "browser",
+                "search",
+                "review",
+                "merge_queue",
+                "diff",
+                "analytics",
+                "daily_brief",
+                "rules",
+            ]
+        }
+        return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics"]
     }
 }
 
@@ -365,11 +435,11 @@ private struct WelcomeContentView: View {
                     WelcomeCard(
                         accessibilityID: "welcome.openProject",
                         icon: "folder.badge.plus",
-                        title: "Open Project",
-                        subtitle: "Resume or start a workspace",
+                        title: "Open Workspace",
+                        subtitle: "Create a local or remote workspace",
                         accentColor: .blue
                     ) {
-                        NSApp.sendAction(#selector(AppDelegate.openProjectAction), to: nil, from: nil)
+                        NSApp.sendAction(#selector(AppDelegate.openWorkspaceAction), to: nil, from: nil)
                     }
 
                     WelcomeCard(
@@ -588,6 +658,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private var hostView: TerminalHostView?
     private var stateHostView: NSHostingView<TerminalStateView>?
     private let autoStartIfNeeded: Bool
+    private var launchMetadata: TerminalLaunchMetadata
     private var currentWorkingDirectory: String?
     private var currentSessionID: String?
     private var bridgeObserverID: UUID?
@@ -602,18 +673,23 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         workingDirectory: String? = nil,
         sessionID: String? = nil,
         autoStartIfNeeded: Bool = true,
+        launchMetadata: TerminalLaunchMetadata? = nil,
         activationHub: ActiveWorkspaceActivationHub = .shared
     ) {
         self.autoStartIfNeeded = autoStartIfNeeded
+        self.launchMetadata = launchMetadata
+            ?? TerminalLaunchMetadata(
+                launchMode: autoStartIfNeeded ? .managedSession : .localShell,
+                startBehavior: autoStartIfNeeded ? .immediate : .deferUntilActivate,
+                remoteTarget: nil
+            )
         self.currentWorkingDirectory = workingDirectory
         self.currentSessionID = sessionID
         self.activationHub = activationHub
         super.init(frame: .zero)
         showState(
-            title: "Terminal",
-            message: sessionID == nil && !autoStartIfNeeded
-                ? "Open a project to create a backend terminal session."
-                : "Connecting to the backend terminal session...",
+            title: initialStateTitle,
+            message: initialStateMessage,
             detail: nil,
             scrollback: nil,
             actions: []
@@ -660,6 +736,16 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     func activate() {
+        if hostView == nil, currentSessionID == nil, !launchMetadata.shouldAutoStart {
+            launchMetadata = TerminalLaunchMetadata(
+                launchMode: launchMetadata.launchMode,
+                startBehavior: .immediate,
+                remoteTarget: launchMetadata.remoteTarget
+            )
+            notifyPersistedStateChanged()
+            loadOrRestoreSession()
+            return
+        }
         if let hostView {
             window?.makeFirstResponder(hostView)
             hostView.setPaneFocused(true)
@@ -693,10 +779,67 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     var workingDirectory: String? { currentWorkingDirectory }
     var sessionID: String? { currentSessionID }
+    var metadataJSON: String? { launchMetadata.encodedJSON() }
 
     var onTerminalClose: (() -> Void)? {
         get { hostView?.onTerminalClose }
         set { hostView?.onTerminalClose = newValue }
+    }
+
+    private var initialStateTitle: String {
+        launchMetadata.remoteTarget == nil ? "Terminal" : "Remote Terminal"
+    }
+
+    private var initialStateMessage: String {
+        if currentSessionID != nil {
+            return "Connecting to the backend terminal session..."
+        }
+        if !launchMetadata.shouldAutoStart {
+            return deferredLaunchMessage
+        }
+        switch launchMetadata.launchMode {
+        case .managedSession:
+            return launchMetadata.remoteTarget == nil
+                ? "Connecting to the backend terminal session..."
+                : "Preparing a managed remote terminal session..."
+        case .localShell:
+            return "Starting a local terminal..."
+        case .remoteShell:
+            return "Starting a remote shell..."
+        }
+    }
+
+    private var deferredLaunchMessage: String {
+        switch launchMetadata.launchMode {
+        case .managedSession:
+            return "Activate this pane to start a backend-managed terminal session."
+        case .localShell:
+            return "Local terminal will start when this pane becomes active."
+        case .remoteShell:
+            return "Remote shell will start when this pane becomes active."
+        }
+    }
+
+    private var usesManagedSessions: Bool {
+        launchMetadata.launchMode == .managedSession
+    }
+
+    private var managedSessionCommand: String? {
+        launchMetadata.remoteTarget?.remoteShellCommand
+    }
+
+    private var shellWorkingDirectory: String? {
+        if launchMetadata.remoteTarget != nil {
+            return NSHomeDirectory()
+        }
+        return currentWorkingDirectory ?? NSHomeDirectory()
+    }
+
+    private var shellCommand: String? {
+        if let remoteTarget = launchMetadata.remoteTarget {
+            return remoteTarget.remoteShellCommand
+        }
+        return AppRuntimeSettings.shared.normalizedDefaultShell
     }
 
     private func retryAfterProjectActivation() {
@@ -711,9 +854,24 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         let payload = event.payloadJSON.data(using: .utf8).flatMap {
             try? decoder.decode(ProjectOpenFailureEventPayload.self, from: $0)
         }
+        guard projectOpenFailureMatchesCurrentActivation(payload) else { return }
         showProjectActivationFailureMessage(
             payload?.message ?? "The workspace project could not be activated."
         )
+    }
+
+    private func projectOpenFailureMatchesCurrentActivation(
+        _ payload: ProjectOpenFailureEventPayload?
+    ) -> Bool {
+        guard let payload else { return true }
+
+        switch activationHub.currentState {
+        case .opening(let workspaceID, let generation),
+             .failed(let workspaceID, let generation, _):
+            return payload.workspaceID == workspaceID && payload.generation == generation
+        default:
+            return false
+        }
     }
 
     private func showProjectActivationFailureMessage(_ message: String) {
@@ -754,15 +912,17 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             return
         }
 
-        switch activationHub.currentState {
-        case .opening:
-            showProjectActivationPending()
-            return
-        case .failed(_, _, let message):
-            showProjectActivationFailureMessage(message)
-            return
-        default:
-            break
+        if usesManagedSessions, launchMetadata.remoteTarget == nil {
+            switch activationHub.currentState {
+            case .opening:
+                showProjectActivationPending()
+                return
+            case .failed(_, _, let message):
+                showProjectActivationFailureMessage(message)
+                return
+            default:
+                break
+            }
         }
 
         awaitingProjectActivation = false
@@ -787,39 +947,42 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             return
         }
 
-        guard autoStartIfNeeded else {
+        guard autoStartIfNeeded, launchMetadata.shouldAutoStart else {
+            showDeferredLaunchState()
+            return
+        }
+
+        switch launchMetadata.launchMode {
+        case .managedSession:
             showState(
-                title: "Terminal",
-                message: "Open a project to create a backend terminal session.",
+                title: launchMetadata.remoteTarget == nil ? "Starting Session" : "Starting Remote Session",
+                message: launchMetadata.remoteTarget == nil
+                    ? "Creating a backend-managed terminal session..."
+                    : "Creating a backend-managed remote terminal session...",
                 detail: nil,
                 scrollback: nil,
                 actions: []
             )
-            return
-        }
-
-        showState(
-            title: "Starting Session",
-            message: "Creating a backend-managed terminal session...",
-            detail: nil,
-            scrollback: nil,
-            actions: []
-        )
-        loadTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let binding = try await sessionBridge.createSession(
-                    workingDirectory: self.currentWorkingDirectory
-                )
-                await self.apply(binding: binding)
-            } catch {
-                await self.handleSessionLoadFailure(error)
+            loadTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let binding = try await sessionBridge.createSession(
+                        name: self.launchMetadata.remoteTarget == nil ? "Terminal" : "Remote Terminal",
+                        workingDirectory: self.shellWorkingDirectory,
+                        command: self.managedSessionCommand
+                    )
+                    await self.apply(binding: binding)
+                } catch {
+                    await self.handleSessionLoadFailure(error)
+                }
             }
+        case .localShell, .remoteShell:
+            showEphemeralTerminal()
         }
     }
 
     private func handleSessionLoadFailure(_ error: Error) async {
-        if PnevmaError.isProjectNotReady(error) {
+        if launchMetadata.remoteTarget == nil, PnevmaError.isProjectNotReady(error) {
             switch activationHub.currentState {
             case .opening:
                 showProjectActivationPending()
@@ -827,7 +990,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 showProjectActivationFailureMessage(message)
             case .idle, .closed:
                 awaitingProjectActivation = false
-                showLocalTerminal()
+                showEphemeralTerminal()
             case .open:
                 break
             }
@@ -845,22 +1008,41 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         )
     }
 
-    /// Launch a plain local terminal (no backend session) when no project is open.
-    private func showLocalTerminal() {
-        let cwd = currentWorkingDirectory ?? NSHomeDirectory()
+    private func showDeferredLaunchState() {
+        showState(
+            title: launchMetadata.remoteTarget == nil ? "Terminal" : "Remote Terminal",
+            message: deferredLaunchMessage,
+            detail: "Nothing is running in this pane until it becomes active.",
+            scrollback: nil,
+            actions: [],
+            isLoading: false
+        )
+    }
+
+    private func showEphemeralTerminal() {
         let hostView = TerminalHostView()
         hostView.launchConfiguration = .shell(
-            workingDirectory: cwd,
-            command: AppRuntimeSettings.shared.normalizedDefaultShell
+            workingDirectory: shellWorkingDirectory,
+            command: shellCommand
         )
         hostView.onTerminalClose = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.loadOrRestoreSession()
+                self?.handleEphemeralTerminalExit()
             }
         }
         replaceContent(with: hostView)
         self.hostView = hostView
         hostView.ensureSurfaceCreated()
+    }
+
+    private func handleEphemeralTerminalExit() {
+        launchMetadata = TerminalLaunchMetadata(
+            launchMode: launchMetadata.launchMode,
+            startBehavior: .deferUntilActivate,
+            remoteTarget: launchMetadata.remoteTarget
+        )
+        notifyPersistedStateChanged()
+        showDeferredLaunchState()
     }
 
     private func apply(binding: SessionBindingDescriptor) async {
@@ -938,7 +1120,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func recoveryActionButtons() -> [TerminalStateAction] {
-        recoveryOptions.map { option in
+        guard usesManagedSessions else { return [] }
+        return recoveryOptions.map { option in
             TerminalStateAction(
                 id: option.id,
                 label: option.label,
@@ -952,7 +1135,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     private func makeFallbackActions() -> [TerminalStateAction] {
-        guard autoStartIfNeeded else { return [] }
+        guard autoStartIfNeeded, usesManagedSessions else { return [] }
         return [
             TerminalStateAction(id: "new-session", label: "Start New Session", enabled: true) { [weak self] in
                 Task { @MainActor [weak self] in

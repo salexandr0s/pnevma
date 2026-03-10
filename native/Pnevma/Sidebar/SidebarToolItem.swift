@@ -16,7 +16,7 @@ struct SidebarToolItem: Identifiable {
 }
 
 /// Tools with working backends are listed first; stubs are marked as "Coming Soon".
-let sidebarTools: [SidebarToolItem] = [
+private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "terminal", title: "Terminal", icon: "terminal"),
     SidebarToolItem(id: "tasks", title: "Task Board", icon: "checklist"),
     SidebarToolItem(id: "workflow", title: "Agents", icon: "arrow.triangle.branch"),
@@ -33,3 +33,30 @@ let sidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "brief", title: "Daily Brief", icon: "newspaper"),
     SidebarToolItem(id: "rules", title: "Rules Manager", icon: "list.bullet.rectangle"),
 ]
+
+func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
+    let allowedIDs: Set<String>
+    if let workspace, workspace.showsProjectToolsInUI {
+        allowedIDs = [
+            "terminal",
+            "tasks",
+            "workflow",
+            "notifications",
+            "files",
+            "ssh",
+            "replay",
+            "browser",
+            "search",
+            "review",
+            "merge",
+            "diff",
+            "analytics",
+            "brief",
+            "rules",
+        ]
+    } else {
+        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "browser", "analytics"]
+    }
+
+    return allSidebarTools.filter { allowedIDs.contains($0.id) }
+}

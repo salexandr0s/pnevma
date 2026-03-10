@@ -38,6 +38,6 @@ enum AppLaunchContext {
     }
 
     static var initialWorkspaceName: String {
-        isUITesting ? "UI Test Workspace" : "Default"
+        isUITesting ? "UI Test Workspace" : "Terminal"
     }
 }

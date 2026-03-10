@@ -3119,7 +3119,7 @@ async fn find_latest_done_task_for_step(
 async fn stop_control_plane(state: &AppState) {
     let prior: Option<crate::control::ControlServerHandle> = {
         let mut slot = state.control_plane.lock().await;
-        slot.take()
+        slot.take().map(|service| service.handle)
     };
     if let Some(handle) = prior {
         handle.shutdown().await;

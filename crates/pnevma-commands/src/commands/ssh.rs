@@ -1,4 +1,5 @@
 use super::*;
+use pnevma_db::GlobalSshProfileRow;
 
 // ─── SSH ─────────────────────────────────────────────────────────────────────
 
@@ -68,10 +69,26 @@ fn ssh_profile_row_to_view(row: SshProfileRow) -> SshProfileView {
     }
 }
 
-fn ssh_profile_to_row(profile: &pnevma_ssh::SshProfile, project_id: &str) -> SshProfileRow {
-    SshProfileRow {
+fn global_ssh_profile_row_to_view(row: GlobalSshProfileRow) -> SshProfileView {
+    let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
+    SshProfileView {
+        id: row.id,
+        name: row.name,
+        host: row.host,
+        port: row.port as u16,
+        user: row.user,
+        identity_file: row.identity_file,
+        proxy_jump: row.proxy_jump,
+        tags,
+        source: row.source,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
+fn ssh_profile_to_global_row(profile: &pnevma_ssh::SshProfile) -> GlobalSshProfileRow {
+    GlobalSshProfileRow {
         id: profile.id.clone(),
-        project_id: project_id.to_string(),
         name: profile.name.clone(),
         host: profile.host.clone(),
         port: profile.port as i64,
@@ -85,101 +102,107 @@ fn ssh_profile_to_row(profile: &pnevma_ssh::SshProfile, project_id: &str) -> Ssh
     }
 }
 
-pub async fn list_ssh_profiles(state: &AppState) -> Result<Vec<SshProfileView>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let rows = ctx
-        .db
-        .list_ssh_profiles(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().map(ssh_profile_row_to_view).collect())
-}
-
-pub async fn upsert_ssh_profile(
-    input: SshProfileInput,
-    state: &AppState,
-) -> Result<String, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
+fn ssh_profile_input_to_global_row(input: SshProfileInput) -> GlobalSshProfileRow {
     let now = Utc::now();
-    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let tags_json = serde_json::to_string(&input.tags).unwrap_or_else(|_| "[]".to_string());
-    let row = SshProfileRow {
-        id: id.clone(),
-        project_id: ctx.project_id.to_string(),
+    GlobalSshProfileRow {
+        id: input.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         name: input.name,
         host: input.host,
         port: input.port as i64,
         user: input.user,
         identity_file: input.identity_file,
         proxy_jump: input.proxy_jump,
-        tags_json,
+        tags_json: serde_json::to_string(&input.tags).unwrap_or_else(|_| "[]".to_string()),
         source: input.source.unwrap_or_else(|| "manual".to_string()),
         created_at: now,
         updated_at: now,
+    }
+}
+
+async fn list_project_ssh_profile_rows(state: &AppState) -> Result<Vec<SshProfileRow>, String> {
+    let current = state.current.lock().await;
+    let Some(ctx) = current.as_ref() else {
+        return Ok(Vec::new());
     };
     ctx.db
-        .upsert_ssh_profile(&row)
+        .list_ssh_profiles(&ctx.project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub async fn list_ssh_profiles(state: &AppState) -> Result<Vec<SshProfileView>, String> {
+    let mut views: Vec<SshProfileView> = state
+        .global_db()?
+        .list_global_ssh_profiles()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(global_ssh_profile_row_to_view)
+        .collect();
+
+    for row in list_project_ssh_profile_rows(state).await? {
+        if views.iter().any(|view| view.id == row.id) {
+            continue;
+        }
+        views.push(ssh_profile_row_to_view(row));
+    }
+
+    views.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(views)
+}
+
+pub async fn upsert_ssh_profile(
+    input: SshProfileInput,
+    state: &AppState,
+) -> Result<String, String> {
+    let row = ssh_profile_input_to_global_row(input);
+    state
+        .global_db()?
+        .upsert_global_ssh_profile(&row)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(id)
+    Ok(row.id)
 }
 
 pub async fn delete_ssh_profile(id: String, state: &AppState) -> Result<(), String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    ctx.db
-        .delete_ssh_profile(&id)
+    state
+        .global_db()?
+        .delete_global_ssh_profile(&id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub async fn import_ssh_config(state: &AppState) -> Result<Vec<SshProfileView>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let ssh_config_path = PathBuf::from(&home).join(".ssh/config");
     let profiles = pnevma_ssh::parse_ssh_config(&ssh_config_path).map_err(|e| e.to_string())?;
-    let project_id = ctx.project_id.to_string();
     let mut views = Vec::new();
     for profile in &profiles {
-        let row = ssh_profile_to_row(profile, &project_id);
-        ctx.db
-            .upsert_ssh_profile(&row)
+        let row = ssh_profile_to_global_row(profile);
+        state
+            .global_db()?
+            .upsert_global_ssh_profile(&row)
             .await
             .map_err(|e| e.to_string())?;
-        views.push(ssh_profile_row_to_view(row));
+        views.push(global_ssh_profile_row_to_view(row));
     }
     Ok(views)
 }
 
 pub async fn discover_tailscale(state: &AppState) -> Result<Vec<SshProfileView>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
     let profiles = pnevma_ssh::discover_tailscale_devices()
         .await
         .map_err(|e| e.to_string())?;
-    let project_id = ctx.project_id.to_string();
     let mut views = Vec::new();
     for profile in &profiles {
-        let row = ssh_profile_to_row(profile, &project_id);
-        ctx.db
-            .upsert_ssh_profile(&row)
+        let row = ssh_profile_to_global_row(profile);
+        state
+            .global_db()?
+            .upsert_global_ssh_profile(&row)
             .await
             .map_err(|e| e.to_string())?;
-        views.push(ssh_profile_row_to_view(row));
+        views.push(global_ssh_profile_row_to_view(row));
     }
     Ok(views)
 }
@@ -189,11 +212,34 @@ pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String,
     let ctx = current
         .as_ref()
         .ok_or_else(|| "no open project".to_string())?;
-    let row = ctx
-        .db
-        .get_ssh_profile(&profile_id)
+    let row = match state
+        .global_db()?
+        .get_global_ssh_profile(&profile_id)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+    {
+        Some(row) => row,
+        None => {
+            let project_row = ctx
+                .db
+                .get_ssh_profile(&profile_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            GlobalSshProfileRow {
+                id: project_row.id,
+                name: project_row.name,
+                host: project_row.host,
+                port: project_row.port,
+                user: project_row.user,
+                identity_file: project_row.identity_file,
+                proxy_jump: project_row.proxy_jump,
+                tags_json: project_row.tags_json,
+                source: project_row.source,
+                created_at: project_row.created_at,
+                updated_at: project_row.updated_at,
+            }
+        }
+    };
 
     let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
     let ssh_profile = pnevma_ssh::SshProfile {
@@ -250,6 +296,10 @@ pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String,
         .map_err(|e| e.to_string())?;
 
     Ok(session.id.to_string())
+}
+
+pub async fn disconnect_ssh(_profile_id: String, _state: &AppState) -> Result<(), String> {
+    Ok(())
 }
 
 pub async fn list_ssh_keys(state: &AppState) -> Result<Vec<SshKeyInfoView>, String> {

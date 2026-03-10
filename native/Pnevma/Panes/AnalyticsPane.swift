@@ -202,7 +202,7 @@ final class AnalyticsViewModel {
     var dailyTrend: [UsageDailyTrend] = []
     var errors: [ErrorSignatureItem] = []
 
-    private var viewState: ViewState = .waiting("Open a project to load analytics.")
+    private var viewState: ViewState = .waiting("Loading analytics...")
 
     @ObservationIgnored
     private let commandBus: (any CommandCalling)?
@@ -300,7 +300,7 @@ final class AnalyticsViewModel {
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
         switch state {
         case .idle:
-            viewState = .waiting("Waiting for project activation...")
+            load(showLoadingState: breakdown.isEmpty)
         case .opening:
             viewState = .waiting("Waiting for project activation...")
         case .open:
@@ -313,7 +313,7 @@ final class AnalyticsViewModel {
             byModel = []
             dailyTrend = []
             errors = []
-            viewState = .waiting("Open a project to load analytics.")
+            load(showLoadingState: true)
         }
     }
 

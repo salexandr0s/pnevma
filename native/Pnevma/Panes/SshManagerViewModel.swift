@@ -49,11 +49,13 @@ final class SshManagerViewModel {
                     let name: String; let host: String; let port: Int
                     let user: String; let identityFile: String?
                 }
-                let _: SshProfile = try await bus.call(
+                struct Response: Decodable { let id: String }
+                let _: Response = try await bus.call(
                     method: "ssh.create_profile",
                     params: Params(name: profile.name, host: profile.host, port: profile.port,
                                    user: profile.user, identityFile: profile.identityFile)
                 )
+                self.load()
             } catch {
                 self.actionError = error.localizedDescription
                 self.scheduleDismissActionError()
@@ -70,12 +72,19 @@ final class SshManagerViewModel {
         Task { [weak self] in
             do {
                 struct Params: Encodable { let profileId: String }
-                let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(profileId: profile.id))
+                let _: [String: String] = try await bus.call(
+                    method: "ssh.connect",
+                    params: Params(profileId: profile.id)
+                )
                 if let idx = self?.profiles.firstIndex(where: { $0.id == profile.id }) {
                     self?.profiles[idx].isConnected = true
                 }
             } catch {
-                self?.actionError = error.localizedDescription
+                if PnevmaError.isProjectNotReady(error) {
+                    self?.actionError = "Use Open Workspace to start a remote SSH workspace for \(profile.name)."
+                } else {
+                    self?.actionError = error.localizedDescription
+                }
                 self?.scheduleDismissActionError()
             }
         }
@@ -90,7 +99,10 @@ final class SshManagerViewModel {
         Task { [weak self] in
             do {
                 struct Params: Encodable { let profileId: String }
-                let _: [String: Bool] = try await bus.call(method: "ssh.disconnect", params: Params(profileId: profile.id))
+                let _: OkResponse = try await bus.call(
+                    method: "ssh.disconnect",
+                    params: Params(profileId: profile.id)
+                )
                 if let idx = self?.profiles.firstIndex(where: { $0.id == profile.id }) {
                     self?.profiles[idx].isConnected = false
                 }
@@ -102,20 +114,8 @@ final class SshManagerViewModel {
     }
 
     func connectTailscale(_ device: TailscaleDevice) {
-        guard let bus = CommandBus.shared else {
-            actionError = "Backend connection unavailable"
-            scheduleDismissActionError()
-            return
-        }
-        Task { [weak self] in
-            do {
-                struct Params: Encodable { let host: String }
-                let _: [String: Bool] = try await bus.call(method: "ssh.connect", params: Params(host: device.ipAddress))
-            } catch {
-                self?.actionError = error.localizedDescription
-                self?.scheduleDismissActionError()
-            }
-        }
+        actionError = "Use Open Workspace to start a remote Tailscale session for \(device.hostname)."
+        scheduleDismissActionError()
     }
 
     private func scheduleDismissActionError() {

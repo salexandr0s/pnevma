@@ -1,6 +1,109 @@
 import Foundation
 import Observation
 
+enum WorkspaceKind: String, Codable {
+    case terminal
+    case project
+}
+
+enum WorkspaceLocation: String, Codable {
+    case local
+    case remote
+}
+
+enum WorkspaceTerminalMode: String, Codable {
+    case persistent
+    case nonPersistent
+}
+
+struct WorkspaceRemoteTarget: Codable, Equatable {
+    let sshProfileID: String
+    let sshProfileName: String
+    let host: String
+    let port: Int
+    let user: String
+    let identityFile: String?
+    let proxyJump: String?
+    let remotePath: String
+
+    var remoteShellCommand: String {
+        let destination = "\(user)@\(host)"
+        var args = ["ssh", "-p", String(port)]
+        if let identityFile, !identityFile.isEmpty {
+            args.append(contentsOf: ["-i", identityFile])
+        }
+        if let proxyJump, !proxyJump.isEmpty {
+            args.append(contentsOf: ["-J", proxyJump])
+        }
+        args.append(destination)
+        args.append("cd -- \(shellDirectoryExpression) && exec ${SHELL:-/bin/zsh} -l")
+        return args.map(Self.shellEscapeArg).joined(separator: " ")
+    }
+
+    var shellDirectoryExpression: String {
+        Self.shellDirectoryExpression(for: remotePath)
+    }
+
+    private static func shellDirectoryExpression(for value: String) -> String {
+        if value == "~" {
+            return "${HOME}"
+        }
+        if value.hasPrefix("~/") {
+            let suffix = String(value.dropFirst(2))
+            return suffix.isEmpty ? "${HOME}" : "${HOME}/\(shellEscapeArg(suffix))"
+        }
+        return shellEscapeArg(value)
+    }
+
+    private static func shellEscapeArg(_ value: String) -> String {
+        guard !value.isEmpty else { return "''" }
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
+    }
+}
+
+enum TerminalLaunchMode: String, Codable {
+    case managedSession
+    case localShell
+    case remoteShell
+}
+
+enum TerminalStartBehavior: String, Codable {
+    case immediate
+    case deferUntilActivate
+}
+
+struct TerminalLaunchMetadata: Codable, Equatable {
+    let launchMode: TerminalLaunchMode
+    let startBehavior: TerminalStartBehavior
+    let remoteTarget: WorkspaceRemoteTarget?
+
+    var shouldAutoStart: Bool {
+        startBehavior == .immediate
+    }
+
+    func encodedJSON() -> String? {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        guard let data = try? encoder.encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func from(json: String?) -> TerminalLaunchMetadata? {
+        guard let json, let data = json.data(using: .utf8) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(Self.self, from: data)
+    }
+}
+
+struct TerminalPaneSeed {
+    let workingDirectory: String?
+    let sessionID: String?
+    let taskID: String?
+    let metadataJSON: String?
+}
+
 /// A single tab within a workspace. Each tab has its own pane layout.
 final class WorkspaceTab: Identifiable {
     let id: UUID
@@ -15,7 +118,7 @@ final class WorkspaceTab: Identifiable {
 
     /// Ensure a brand-new single-pane tab can always be reconstructed.
     @discardableResult
-    func ensureDisplayableRootPane(workingDirectory: String?) -> Bool {
+    func ensureDisplayableRootPane(seed: TerminalPaneSeed) -> Bool {
         let rootPaneID: PaneID
         if let existingRootPaneID = layoutEngine.root?.allPaneIDs.first {
             rootPaneID = existingRootPaneID
@@ -33,7 +136,7 @@ final class WorkspaceTab: Identifiable {
         guard paneIDs.count == 1 else { return false }
 
         if let existingPane = layoutEngine.persistedPane(for: rootPaneID) {
-            guard existingPane.type == "welcome", let workingDirectory else {
+            guard existingPane.type == "welcome" else {
                 return false
             }
 
@@ -41,24 +144,24 @@ final class WorkspaceTab: Identifiable {
                 PersistedPane(
                     paneID: rootPaneID,
                     type: "terminal",
-                    workingDirectory: workingDirectory,
-                    sessionID: existingPane.sessionID,
-                    taskID: existingPane.taskID,
-                    metadataJSON: existingPane.metadataJSON
+                    workingDirectory: seed.workingDirectory,
+                    sessionID: existingPane.sessionID ?? seed.sessionID,
+                    taskID: existingPane.taskID ?? seed.taskID,
+                    metadataJSON: seed.metadataJSON ?? existingPane.metadataJSON
                 )
             )
             return true
         }
 
         layoutEngine.upsertPersistedPane(
-            PersistedPane(
-                paneID: rootPaneID,
-                type: "terminal",
-                workingDirectory: workingDirectory,
-                sessionID: nil,
-                taskID: nil,
-                metadataJSON: nil
-            )
+                PersistedPane(
+                    paneID: rootPaneID,
+                    type: "terminal",
+                    workingDirectory: seed.workingDirectory,
+                    sessionID: seed.sessionID,
+                    taskID: seed.taskID,
+                    metadataJSON: seed.metadataJSON
+                )
         )
         return true
     }
@@ -72,6 +175,10 @@ final class Workspace: Identifiable {
     let id: UUID
     var name: String
     var projectPath: String?
+    let kind: WorkspaceKind
+    let location: WorkspaceLocation
+    let terminalMode: WorkspaceTerminalMode
+    let remoteTarget: WorkspaceRemoteTarget?
     var gitBranch: String?
     var activeTasks: Int = 0
     var activeAgents: Int = 0
@@ -81,6 +188,7 @@ final class Workspace: Identifiable {
     var customColor: String?
     var isPinned: Bool = false
     var gitDirty: Bool = false
+    var activationFailureMessage: String?
 
     /// Tabs within this workspace.
     var tabs: [WorkspaceTab]
@@ -100,12 +208,32 @@ final class Workspace: Identifiable {
         id: UUID = UUID(),
         name: String,
         projectPath: String? = nil,
+        kind: WorkspaceKind = .terminal,
+        location: WorkspaceLocation = .local,
+        terminalMode: WorkspaceTerminalMode = .persistent,
+        remoteTarget: WorkspaceRemoteTarget? = nil,
         layoutEngine: PaneLayoutEngine? = nil,
         rootPaneID: PaneID = PaneID()
     ) {
+        let resolvedKind: WorkspaceKind = {
+            if projectPath != nil || remoteTarget != nil {
+                return .project
+            }
+            return kind
+        }()
+        let resolvedLocation: WorkspaceLocation = remoteTarget == nil ? location : .remote
+
         self.id = id
         self.name = name
         self.projectPath = projectPath
+        self.kind = resolvedKind
+        self.location = resolvedLocation
+        if resolvedKind == .terminal && projectPath == nil && remoteTarget == nil && terminalMode == .persistent {
+            self.terminalMode = .nonPersistent
+        } else {
+            self.terminalMode = terminalMode
+        }
+        self.remoteTarget = remoteTarget
         let initialTab = WorkspaceTab(
             title: "Terminal",
             layoutEngine: layoutEngine,
@@ -121,16 +249,95 @@ final class Workspace: Identifiable {
         id: UUID,
         name: String,
         projectPath: String?,
+        kind: WorkspaceKind,
+        location: WorkspaceLocation,
+        terminalMode: WorkspaceTerminalMode,
+        remoteTarget: WorkspaceRemoteTarget?,
         tabs: [WorkspaceTab],
         activeTabIndex: Int
     ) {
         self.id = id
         self.name = name
         self.projectPath = projectPath
+        self.kind = kind
+        self.location = location
+        if kind == .terminal && projectPath == nil && remoteTarget == nil && terminalMode == .persistent {
+            self.terminalMode = .nonPersistent
+        } else {
+            self.terminalMode = terminalMode
+        }
+        self.remoteTarget = remoteTarget
         let resolvedTabs = tabs.isEmpty ? [WorkspaceTab(title: "Terminal")] : tabs
         self.tabs = resolvedTabs
         self.activeTabIndex = min(activeTabIndex, resolvedTabs.count - 1)
         self.createdAt = Date.now
+    }
+
+    var isPermanent: Bool {
+        kind == .terminal
+    }
+
+    var displayPath: String? {
+        switch location {
+        case .local:
+            return projectPath
+        case .remote:
+            return remoteTarget?.remotePath
+        }
+    }
+
+    var supportsBackendProject: Bool {
+        kind == .project && projectPath != nil
+    }
+
+    var supportsProjectTools: Bool {
+        kind == .project
+    }
+
+    var showsProjectToolsInUI: Bool {
+        kind == .project && activationFailureMessage == nil
+    }
+
+    var defaultWorkingDirectory: String? {
+        switch location {
+        case .local:
+            return projectPath ?? NSHomeDirectory()
+        case .remote:
+            return nil
+        }
+    }
+
+    func defaultTerminalMetadata(
+        startBehavior: TerminalStartBehavior = .immediate
+    ) -> TerminalLaunchMetadata {
+        let launchMode: TerminalLaunchMode
+        switch (location, terminalMode) {
+        case (.remote, .nonPersistent):
+            launchMode = .remoteShell
+        case (.remote, .persistent):
+            launchMode = .managedSession
+        case (.local, .nonPersistent):
+            launchMode = .localShell
+        case (.local, .persistent):
+            launchMode = .managedSession
+        }
+
+        return TerminalLaunchMetadata(
+            launchMode: launchMode,
+            startBehavior: startBehavior,
+            remoteTarget: remoteTarget
+        )
+    }
+
+    func defaultTerminalSeed(
+        startBehavior: TerminalStartBehavior = .immediate
+    ) -> TerminalPaneSeed {
+        TerminalPaneSeed(
+            workingDirectory: defaultWorkingDirectory,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: defaultTerminalMetadata(startBehavior: startBehavior).encodedJSON()
+        )
     }
 
     // MARK: - Tab Operations
@@ -178,7 +385,7 @@ final class Workspace: Identifiable {
     @discardableResult
     func ensureTabHasDisplayableRootPane(at index: Int) -> Bool {
         guard index >= 0, index < tabs.count else { return false }
-        return tabs[index].ensureDisplayableRootPane(workingDirectory: projectPath)
+        return tabs[index].ensureDisplayableRootPane(seed: defaultTerminalSeed())
     }
 }
 
@@ -206,6 +413,10 @@ extension Workspace {
         let id: UUID
         let name: String
         let projectPath: String?
+        let kind: WorkspaceKind?
+        let location: WorkspaceLocation?
+        let terminalMode: WorkspaceTerminalMode?
+        let remoteTarget: WorkspaceRemoteTarget?
         // New: per-tab serialization
         var tabSnapshots: [WorkspaceTab.Snapshot]?
         var activeTabIndex: Int?
@@ -220,6 +431,10 @@ extension Workspace {
             id: id,
             name: name,
             projectPath: projectPath,
+            kind: kind,
+            location: location,
+            terminalMode: terminalMode,
+            remoteTarget: remoteTarget,
             tabSnapshots: tabs.map { $0.snapshot() },
             activeTabIndex: activeTabIndex,
             layoutData: nil,
@@ -229,6 +444,19 @@ extension Workspace {
     }
 
     convenience init(snapshot: Snapshot) {
+        let hasProjectBinding = snapshot.projectPath != nil || snapshot.remoteTarget != nil
+        let resolvedKind: WorkspaceKind = {
+            if hasProjectBinding {
+                return .project
+            }
+            return snapshot.kind ?? .terminal
+        }()
+        let resolvedLocation: WorkspaceLocation = snapshot.remoteTarget == nil
+            ? (snapshot.location ?? .local)
+            : .remote
+        let resolvedTerminalMode = snapshot.terminalMode
+            ?? (resolvedKind == .terminal ? .nonPersistent : .persistent)
+
         if let tabSnapshots = snapshot.tabSnapshots, !tabSnapshots.isEmpty {
             // New format: restore tabs
             let restoredTabs = tabSnapshots.map(WorkspaceTab.init(snapshot:))
@@ -236,6 +464,10 @@ extension Workspace {
                 id: snapshot.id,
                 name: snapshot.name,
                 projectPath: snapshot.projectPath,
+                kind: resolvedKind,
+                location: resolvedLocation,
+                terminalMode: resolvedTerminalMode,
+                remoteTarget: snapshot.remoteTarget,
                 tabs: restoredTabs,
                 activeTabIndex: snapshot.activeTabIndex ?? 0
             )
@@ -246,6 +478,10 @@ extension Workspace {
                 id: snapshot.id,
                 name: snapshot.name,
                 projectPath: snapshot.projectPath,
+                kind: resolvedKind,
+                location: resolvedLocation,
+                terminalMode: resolvedTerminalMode,
+                remoteTarget: snapshot.remoteTarget,
                 layoutEngine: restoredLayout
             )
         }

@@ -488,3 +488,18 @@ pub struct GlobalAgentProfileRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GlobalSshProfileRow {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: i64,
+    pub user: Option<String>,
+    pub identity_file: Option<String>,
+    pub proxy_jump: Option<String>,
+    pub tags_json: String,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

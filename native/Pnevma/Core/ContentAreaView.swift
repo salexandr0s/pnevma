@@ -666,6 +666,9 @@ final class ContentAreaView: NSView {
             ("Browser",       "browser"),
         ]
         for entry in paneTypes {
+            guard PaneFactory.isPaneTypeAvailable(entry.type, in: PaneFactory.activeWorkspaceProvider?()) else {
+                continue
+            }
             let item = NSMenuItem(title: entry.label, action: #selector(contextMenuReplacePane(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ["paneID": paneID, "type": entry.type] as [String: Any]
@@ -688,14 +691,14 @@ final class ContentAreaView: NSView {
     @objc private func contextMenuSplitRight(_ sender: NSMenuItem) {
         guard let paneID = sender.representedObject as? PaneID else { return }
         focusPane(paneID)
-        let (_, newPane) = PaneFactory.makeTerminal()
+        let (_, newPane) = PaneFactory.workspaceAwareTerminal()
         splitActivePane(direction: .horizontal, newPaneView: newPane)
     }
 
     @objc private func contextMenuSplitDown(_ sender: NSMenuItem) {
         guard let paneID = sender.representedObject as? PaneID else { return }
         focusPane(paneID)
-        let (_, newPane) = PaneFactory.makeTerminal()
+        let (_, newPane) = PaneFactory.workspaceAwareTerminal()
         splitActivePane(direction: .vertical, newPaneView: newPane)
     }
 

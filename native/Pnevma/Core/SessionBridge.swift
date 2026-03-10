@@ -117,7 +117,11 @@ final class SessionBridge {
         self.activeWorkspacePath = activeWorkspacePath
     }
 
-    func createSession(workingDirectory requestedWorkingDirectory: String?) async throws -> SessionBindingDescriptor {
+    func createSession(
+        name: String = "Terminal",
+        workingDirectory requestedWorkingDirectory: String?,
+        command requestedCommand: String? = nil
+    ) async throws -> SessionBindingDescriptor {
         let cwd = requestedWorkingDirectory ?? activeWorkspacePath()
         guard let cwd else {
             throw SessionBridgeError.missingProjectPath
@@ -126,9 +130,9 @@ final class SessionBridge {
         let response: SessionCreateResponse = try await commandBus.call(
             method: "session.new",
             params: SessionCreateParams(
-                name: "Terminal",
+                name: name,
                 cwd: cwd,
-                command: defaultShell ?? ""
+                command: requestedCommand ?? defaultShell ?? ""
             )
         )
         return response.binding

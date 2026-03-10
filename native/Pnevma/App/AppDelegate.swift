@@ -75,7 +75,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let restoredState {
             applyRestoredState(restoredState)
         } else {
-            workspaceManager?.createWorkspace(name: AppLaunchContext.initialWorkspaceName)
+            workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
         }
 
         // Build menu bar
@@ -160,11 +160,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let bridge = bridge, let bus = commandBus {
             workspaceManager = WorkspaceManager(bridge: bridge, commandBus: bus)
             let sessionBridge = SessionBridge(commandBus: bus) { [weak self] in
-                self?.workspaceManager?.activeWorkspace?.projectPath
+                self?.workspaceManager?.activeWorkspace?.defaultWorkingDirectory
             }
             self.sessionBridge = sessionBridge
             SessionBridge.shared = sessionBridge
             PaneFactory.sessionBridge = sessionBridge
+            PaneFactory.activeWorkspaceProvider = { [weak self] in
+                self?.workspaceManager?.activeWorkspace
+            }
             let sessionStore = SessionStore(commandBus: bus)
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
@@ -210,6 +213,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         GhosttyRuntime.reset()
         #endif
 
+        workspaceManager?.shutdown()
         bridge?.destroy()
         bridge = nil
     }
@@ -314,7 +318,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let mgr = workspaceManager ?? WorkspaceManager(bridge: bridge, commandBus: commandBus)
         let sidebarView = SidebarView(
             workspaceManager: mgr,
-            onAddWorkspace: { [weak self] in self?.openProject() },
+            onAddWorkspace: { [weak self] in self?.openWorkspace() },
             onOpenSettings: { [weak self] in self?.openSettingsPane() },
             onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) }
         )
@@ -432,7 +436,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if let restoredState {
                 applyRestoredState(restoredState)
             } else {
-                workspaceManager?.createWorkspace(name: AppLaunchContext.initialWorkspaceName)
+                workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
             }
             Task { @MainActor [weak self] in
                 self?.finishSmoke(success: true, message: "launch smoke ready")
@@ -537,7 +541,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t"))
         fileMenu.addItem(NSMenuItem(title: "New Terminal", action: #selector(newTerminal), keyEquivalent: "n"))
-        fileMenu.addItem(NSMenuItem(title: "Open Project...", action: #selector(openProjectAction), keyEquivalent: "o"))
+        fileMenu.addItem(NSMenuItem(title: "Open Workspace...", action: #selector(openWorkspaceAction), keyEquivalent: "o"))
         fileMenu.addItem(.separator())
         fileMenu.addItem(NSMenuItem(title: "Close Pane", action: #selector(closePaneAction), keyEquivalent: "w"))
         let closeWindow = NSMenuItem(title: "Close Window", action: #selector(closeWindowAction), keyEquivalent: "W")
@@ -733,8 +737,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func newTerminal() {
-        let projectPath = workspaceManager?.activeWorkspace?.projectPath
-        let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
+        let (_, pane) = PaneFactory.workspaceAwareTerminal()
         if contentAreaView?.activePaneView?.paneType == "welcome" {
             contentAreaView?.replaceActivePane(with: pane)
         } else {
@@ -753,7 +756,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func openProjectAction() { openProject() }
+    @objc func openWorkspaceAction() { openWorkspace() }
     @objc private func openSettingsAction() { openSettingsPane() }
 
     @objc private func checkForUpdatesAction() {
@@ -801,8 +804,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func splitRightAction() { newTerminal() }
 
     @objc private func splitDownAction() {
-        let projectPath = workspaceManager?.activeWorkspace?.projectPath
-        let (_, pane) = PaneFactory.makeTerminal(workingDirectory: projectPath)
+        let (_, pane) = PaneFactory.workspaceAwareTerminal()
         contentAreaView?.splitActivePane(direction: .vertical, newPaneView: pane)
     }
 
@@ -888,21 +890,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Command Palette Registration
 
     private func registerPaletteCommands() {
-        let paneCommands: [(String, String, String?, String?, () -> NSView & PaneContent)] = [
-            ("Open Task Board", "pane", nil, "Kanban board for task management", { TaskBoardPaneView() }),
-            ("Open Analytics", "pane", nil, "Cost and usage analytics dashboard", { AnalyticsPaneView() }),
-            ("Open Daily Brief", "pane", nil, "Daily summary of tasks, costs, and events", { DailyBriefPaneView() }),
-            ("Open Notifications", "pane", nil, "View project notifications and alerts", { NotificationsPaneView() }),
-            ("Open Review", "pane", nil, "Review task diffs and acceptance criteria", { ReviewPaneView() }),
-            ("Open Merge Queue", "pane", nil, "Manage branch merge order and conflicts", { MergeQueuePaneView() }),
-            ("Open Diff Viewer", "pane", nil, "View file-level diffs for tasks", { DiffPaneView() }),
-            ("Open Search", "pane", nil, "Search across project files", { SearchPaneView() }),
-            ("Open File Browser", "pane", nil, "Browse and preview project files", { FileBrowserPaneView() }),
-            ("Open Rules Manager", "pane", nil, "Manage project rules and conventions", { RulesManagerPaneView() }),
-            ("Open Workflow", "pane", nil, "Visual workflow state machine", { WorkflowPaneView() }),
-            ("Open SSH Manager", "pane", nil, "Manage SSH keys and remote profiles", { SshManagerPaneView() }),
-            ("Open Session Replay", "pane", nil, "Replay past terminal sessions", { ReplayPaneView(frame: .zero) }),
-            ("Open Browser", "pane", nil, "Built-in web browser", { BrowserPaneView(frame: .zero, url: nil) }),
+        let paneCommands: [(title: String, category: String, shortcut: String?, description: String?, paneType: String)] = [
+            ("Open Task Board", "pane", nil, "Kanban board for task management", "taskboard"),
+            ("Open Analytics", "pane", nil, "Cost and usage analytics dashboard", "analytics"),
+            ("Open Daily Brief", "pane", nil, "Daily summary of tasks, costs, and events", "daily_brief"),
+            ("Open Notifications", "pane", nil, "View project notifications and alerts", "notifications"),
+            ("Open Review", "pane", nil, "Review task diffs and acceptance criteria", "review"),
+            ("Open Merge Queue", "pane", nil, "Manage branch merge order and conflicts", "merge_queue"),
+            ("Open Diff Viewer", "pane", nil, "View file-level diffs for tasks", "diff"),
+            ("Open Search", "pane", nil, "Search across project files", "search"),
+            ("Open File Browser", "pane", nil, "Browse and preview project files", "file_browser"),
+            ("Open Rules Manager", "pane", nil, "Manage project rules and conventions", "rules"),
+            ("Open Workflow", "pane", nil, "Visual workflow state machine", "workflow"),
+            ("Open SSH Manager", "pane", nil, "Manage SSH keys and remote profiles", "ssh"),
+            ("Open Session Replay", "pane", nil, "Replay past terminal sessions", "replay"),
+            ("Open Browser", "pane", nil, "Built-in web browser", "browser"),
         ]
 
         var commands: [CommandItem] = [
@@ -950,15 +952,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
         ]
 
-        for (idx, (title, cat, shortcut, desc, factory)) in paneCommands.enumerated() {
+        for (idx, paneCommand) in paneCommands.enumerated() {
             commands.append(CommandItem(
                 id: "pane.open_\(idx)",
-                title: title,
-                category: cat,
-                shortcut: shortcut,
-                description: desc
+                title: paneCommand.title,
+                category: paneCommand.category,
+                shortcut: paneCommand.shortcut,
+                description: paneCommand.description
             ) { [weak self] in
-                let pane = factory()
+                guard let pane = PaneFactory.make(type: paneCommand.paneType)?.1 else { return }
                 if self?.contentAreaView?.replaceActivePane(with: pane) == nil {
                     self?.contentAreaView?.setRootPane(pane)
                 }
@@ -990,18 +992,182 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Helpers
 
-    private func openProject() {
+    private func openWorkspace() {
+        presentOpenWorkspacePanel()
+    }
+
+    private func presentOpenWorkspacePanel() {
+        let alert = NSAlert()
+        alert.messageText = "Open Workspace"
+        alert.informativeText = "Choose whether to create a local project workspace or a remote SSH workspace."
+        alert.addButton(withTitle: "Local")
+        alert.addButton(withTitle: "Remote")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            presentOpenLocalWorkspacePanel()
+        case .alertSecondButtonReturn:
+            Task { @MainActor [weak self] in
+                await self?.presentOpenRemoteWorkspacePanel()
+            }
+        default:
+            break
+        }
+    }
+
+    private func presentOpenLocalWorkspacePanel() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "Select a project directory"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        workspaceManager?.bindProjectToActiveWorkspace(
-            name: url.lastPathComponent,
-            projectPath: url.path
+        panel.prompt = "Open Workspace"
+        panel.message = "Select a local project directory"
+
+        let persistenceToggle = NSButton(
+            checkboxWithTitle: "Enable session persistence",
+            target: nil,
+            action: nil
         )
-        ToastManager.shared.show("Project opened: \(url.lastPathComponent)", icon: "folder.badge.checkmark", style: .success)
+        persistenceToggle.state = .on
+        let helper = NSTextField(labelWithString: "Persistent workspaces use tmux-backed managed sessions. Unchecked starts a plain Ghostty shell.")
+        helper.textColor = .secondaryLabelColor
+        helper.lineBreakMode = .byWordWrapping
+        helper.maximumNumberOfLines = 0
+
+        let accessory = NSStackView(views: [persistenceToggle, helper])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 8
+        accessory.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 0, right: 0)
+        helper.preferredMaxLayoutWidth = 320
+        panel.accessoryView = accessory
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        openLocalWorkspace(
+            path: url.path,
+            terminalMode: persistenceToggle.state == .on ? .persistent : .nonPersistent
+        )
+    }
+
+    private func presentOpenRemoteWorkspacePanel() async {
+        guard let bus = commandBus else { return }
+        guard WorkspaceProjectTransportSupport.hasRemoteNativeToolingSupport() else {
+            let alert = NSAlert()
+            alert.messageText = "sshfs Required"
+            alert.informativeText = "Remote native tools require sshfs/macFUSE on this Mac. Install sshfs before creating a remote workspace."
+            alert.runModal()
+            return
+        }
+
+        do {
+            let profiles: [SshProfile] = try await bus.call(method: "ssh.list_profiles", params: nil)
+            guard !profiles.isEmpty else {
+                let alert = NSAlert()
+                alert.messageText = "No SSH Presets"
+                alert.informativeText = "Create an SSH preset in SSH Manager before opening a remote workspace."
+                alert.runModal()
+                return
+            }
+
+            let alert = NSAlert()
+            alert.messageText = "Open Remote Workspace"
+            alert.informativeText = "Select an SSH preset, enter the remote project path, and choose whether the terminal session should persist. Native project tools use an sshfs mount of the remote workspace."
+
+            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+            profiles.forEach { profile in
+                popup.addItem(withTitle: "\(profile.name) (\(profile.user)@\(profile.host):\(profile.port))")
+            }
+
+            let pathField = NSTextField(string: "~")
+            pathField.placeholderString = "/path/to/project"
+            let persistenceToggle = NSButton(
+                checkboxWithTitle: "Enable session persistence",
+                target: nil,
+                action: nil
+            )
+            persistenceToggle.state = .on
+
+            let profileLabel = NSTextField(labelWithString: "SSH Preset")
+            let pathLabel = NSTextField(labelWithString: "Remote Project Path")
+            let accessory = NSStackView(views: [
+                profileLabel,
+                popup,
+                pathLabel,
+                pathField,
+                persistenceToggle,
+            ])
+            accessory.orientation = .vertical
+            accessory.alignment = .leading
+            accessory.spacing = 8
+            accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+            accessory.translatesAutoresizingMaskIntoConstraints = false
+            popup.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            alert.accessoryView = accessory
+            alert.addButton(withTitle: "Open Workspace")
+            alert.addButton(withTitle: "Cancel")
+
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let selectedProfile = profiles[max(0, popup.indexOfSelectedItem)]
+            let remotePath = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !remotePath.isEmpty else {
+                ToastManager.shared.show(
+                    "Remote path is required",
+                    icon: "exclamationmark.triangle",
+                    style: .error
+                )
+                return
+            }
+
+            let target = WorkspaceRemoteTarget(
+                sshProfileID: selectedProfile.id,
+                sshProfileName: selectedProfile.name,
+                host: selectedProfile.host,
+                port: selectedProfile.port,
+                user: selectedProfile.user,
+                identityFile: selectedProfile.identityFile,
+                proxyJump: selectedProfile.proxyJump,
+                remotePath: remotePath
+            )
+            openRemoteWorkspace(
+                target: target,
+                terminalMode: persistenceToggle.state == .on ? .persistent : .nonPersistent
+            )
+        } catch {
+            ToastManager.shared.show(
+                error.localizedDescription,
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+        }
+    }
+
+    private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        workspaceManager?.createLocalProjectWorkspace(
+            name: name,
+            projectPath: path,
+            terminalMode: terminalMode
+        )
+        ToastManager.shared.show(
+            "Workspace opened: \(name)",
+            icon: "folder.badge.checkmark",
+            style: .success
+        )
+    }
+
+    private func openRemoteWorkspace(target: WorkspaceRemoteTarget, terminalMode: WorkspaceTerminalMode) {
+        workspaceManager?.createRemoteWorkspace(
+            name: target.sshProfileName,
+            remoteTarget: target,
+            terminalMode: terminalMode
+        )
+        ToastManager.shared.show(
+            "Remote workspace opened: \(target.sshProfileName)",
+            icon: "network",
+            style: .success
+        )
     }
 
     private func openSettingsPane() {
@@ -1026,11 +1192,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openToolPane(_ toolID: String) {
+        guard sidebarTools(for: workspaceManager?.activeWorkspace).contains(where: { $0.id == toolID }) else {
+            return
+        }
         let pane: (NSView & PaneContent)?
         switch toolID {
         case "terminal":
-            let projectPath = workspaceManager?.activeWorkspace?.projectPath
-            pane = PaneFactory.makeTerminal(workingDirectory: projectPath).1
+            pane = PaneFactory.workspaceAwareTerminal().1
         case "tasks":
             pane = TaskBoardPaneView()
         case "workflow":
@@ -1104,16 +1272,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             activeWorkspace.ensureActiveTabHasDisplayableRootPane()
             contentAreaView?.setLayoutEngine(activeWorkspace.layoutEngine)
         } else {
-            workspaceManager?.createWorkspace(name: "Default")
+            workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
         }
         updateTabBar()
     }
 
     private func makeRootPaneForActiveWorkspace() -> (NSView & PaneContent) {
-        if let projectPath = workspaceManager?.activeWorkspace?.projectPath {
-            return PaneFactory.makeTerminal(workingDirectory: projectPath).1
-        }
-        return PaneFactory.makeWelcome().1
+        PaneFactory.workspaceAwareTerminal().1
     }
 
     private var notificationsPopover: NSPopover?
@@ -1193,9 +1358,9 @@ extension AppDelegate: NSToolbarDelegate {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = makeToolbarButton(
                 symbolName: "plus",
-                accessibilityDescription: "Open Project",
-                toolTip: "Open Project",
-                action: #selector(openProjectAction)
+                accessibilityDescription: "Open Workspace",
+                toolTip: "Open Workspace",
+                action: #selector(openWorkspaceAction)
             )
             item.label = "New"
             return item

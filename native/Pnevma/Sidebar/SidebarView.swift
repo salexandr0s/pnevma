@@ -29,9 +29,11 @@ struct SidebarView: View {
 
     /// Workspaces sorted with pinned items first, preserving relative order.
     private var sortedWorkspaces: [Workspace] {
-        let pinned = workspaceManager.workspaces.filter(\.isPinned)
-        let unpinned = workspaceManager.workspaces.filter { !$0.isPinned }
-        return pinned + unpinned
+        let terminal = workspaceManager.workspaces.filter(\.isPermanent)
+        let projectWorkspaces = workspaceManager.workspaces.filter { !$0.isPermanent }
+        let pinned = projectWorkspaces.filter(\.isPinned)
+        let unpinned = projectWorkspaces.filter { !$0.isPinned }
+        return terminal + pinned + unpinned
     }
 
     var body: some View {
@@ -78,7 +80,7 @@ struct SidebarView: View {
 
                 if isToolsExpanded {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(sidebarTools) { tool in
+                        ForEach(sidebarTools(for: workspaceManager.activeWorkspace)) { tool in
                             SidebarToolButton(tool: tool, isActive: activeToolID == tool.id) {
                                 activeToolID = tool.id
                                 onOpenTool?(tool.id)

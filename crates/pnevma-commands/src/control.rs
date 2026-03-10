@@ -747,9 +747,12 @@ pub async fn route_method(
         "project.open" => {
             let path = parse_string_param(params, "path")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
-            let project_id = commands::open_project(path, &state.emitter, state)
-                .await
-                .map_err(|e| ("internal_error".to_string(), e))?;
+            let client_activation_token =
+                parse_optional_string_param(params, "client_activation_token");
+            let project_id =
+                commands::open_project(path, client_activation_token, &state.emitter, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?;
             let status = commands::project_status(state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
@@ -2106,6 +2109,36 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "ssh.create_profile" | "ssh.upsert_profile" => {
+            let name = parse_string_param(params, "name")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let host = parse_string_param(params, "host")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let port = parse_optional_i64_param(params, "port").unwrap_or(22);
+            let input = commands::SshProfileInput {
+                id: parse_optional_string_param(params, "id"),
+                name,
+                host,
+                port: port as u16,
+                user: parse_optional_string_param(params, "user"),
+                identity_file: parse_optional_string_param(params, "identity_file"),
+                proxy_jump: parse_optional_string_param(params, "proxy_jump"),
+                tags: Vec::new(),
+                source: Some("manual".to_string()),
+            };
+            let id = commands::upsert_ssh_profile(input, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "id": id })
+        }
+        "ssh.delete_profile" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_ssh_profile(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "ok": true })
+        }
         "ssh.connect" => {
             let profile_id = parse_string_param(params, "profile_id")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
@@ -2113,6 +2146,14 @@ pub async fn route_method(
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
             json!({"session_id": session_id})
+        }
+        "ssh.disconnect" => {
+            let profile_id = parse_string_param(params, "profile_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::disconnect_ssh(profile_id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "ok": true })
         }
         "ssh.import_config" => serde_json::to_value(
             commands::import_ssh_config(state)

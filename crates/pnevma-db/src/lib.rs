@@ -9,9 +9,10 @@ pub use models::{
     AgentProfileRow, ArtifactRow, AutomationRetryRow, AutomationRunRow, CheckResultRow,
     CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostDailyAggregateRow, CostHourlyAggregateRow,
     CostRow, ErrorSignatureDailyRow, ErrorSignatureRow, EventRow, FeedbackRow,
-    GlobalAgentProfileRow, GlobalWorkflowRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
-    PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow, SecretRefRow, SessionRow,
-    SshProfileRow, StoryProgressRow, TaskExternalSourceRow, TaskRow, TaskStoryRow,
-    TelemetryEventRow, WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow, WorktreeRow,
+    GlobalAgentProfileRow, GlobalSshProfileRow, GlobalWorkflowRow, MergeQueueRow, NotificationRow,
+    OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow,
+    SecretRefRow, SessionRow, SshProfileRow, StoryProgressRow, TaskExternalSourceRow, TaskRow,
+    TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow,
+    WorktreeRow,
 };
 pub use store::{Db, EventQueryFilter, NewEvent};
