@@ -252,7 +252,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
-        win.toolbarStyle = .unified
+        win.toolbarStyle = .unifiedCompact
 
         // Tab bar — added as a content-level view below the toolbar, not a toolbar item
         let tabBar = TabBarView()
@@ -265,6 +265,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let toolbar = NSToolbar(identifier: "MainToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
+        toolbar.sizeMode = .small
         toolbar.showsBaselineSeparator = false
         win.toolbar = toolbar
         win.center()
@@ -1158,39 +1159,42 @@ extension AppDelegate: NSToolbarDelegate {
     static let sidebarToggleIdentifier = NSToolbarItem.Identifier("sidebarToggle")
     static let notificationsIdentifier = NSToolbarItem.Identifier("notifications")
     static let addWorkspaceIdentifier = NSToolbarItem.Identifier("addWorkspace")
+    private static let toolbarButtonSize = NSSize(width: 22, height: 18)
+    private static let toolbarSymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
 
     public func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
         case Self.sidebarToggleIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
+            item.view = makeToolbarButton(
+                symbolName: "sidebar.left",
+                accessibilityDescription: "Toggle Sidebar",
+                toolTip: "Toggle Sidebar",
+                action: #selector(toggleSidebar)
+            )
             item.label = "Sidebar"
-            item.toolTip = "Toggle Sidebar"
-            item.target = self
-            item.action = #selector(toggleSidebar)
-            item.isBordered = true
             return item
         case Self.notificationsIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            let button = NSButton(frame: NSRect(x: 0, y: 0, width: 28, height: 22))
-            button.bezelStyle = .texturedRounded
-            button.image = NSImage(systemSymbolName: "bell", accessibilityDescription: "Notifications")
-            button.imagePosition = .imageOnly
-            button.target = self
-            button.action = #selector(showNotifications)
-            button.toolTip = "Notifications"
+            let button = makeToolbarButton(
+                symbolName: "bell",
+                accessibilityDescription: "Notifications",
+                toolTip: "Notifications",
+                action: #selector(showNotifications)
+            )
             item.view = button
             item.label = "Notifications"
             notificationToolbarButton = button
             return item
         case Self.addWorkspaceIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Workspace")
+            item.view = makeToolbarButton(
+                symbolName: "plus",
+                accessibilityDescription: "Open Project",
+                toolTip: "Open Project",
+                action: #selector(openProjectAction)
+            )
             item.label = "New"
-            item.toolTip = "Open Project"
-            item.target = self
-            item.action = #selector(openProjectAction)
-            item.isBordered = true
             return item
         default:
             return nil
@@ -1203,6 +1207,30 @@ extension AppDelegate: NSToolbarDelegate {
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.sidebarToggleIdentifier, Self.notificationsIdentifier, Self.addWorkspaceIdentifier, .flexibleSpace]
+    }
+
+    private func makeToolbarButton(
+        symbolName: String,
+        accessibilityDescription: String,
+        toolTip: String,
+        action: Selector
+    ) -> NSButton {
+        let button = NSButton(frame: NSRect(origin: .zero, size: Self.toolbarButtonSize))
+        button.isBordered = false
+        button.focusRingType = .none
+        button.bezelStyle = .inline
+        button.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: accessibilityDescription
+        )?.withSymbolConfiguration(Self.toolbarSymbolConfiguration)
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = .secondaryLabelColor
+        button.target = self
+        button.action = action
+        button.toolTip = toolTip
+        button.setAccessibilityLabel(accessibilityDescription)
+        return button
     }
 }
 

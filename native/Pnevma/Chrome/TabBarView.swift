@@ -23,11 +23,11 @@ final class TabBarView: NSView {
     private var addButton: NSButton?
     private var themeObserver: NSObjectProtocol?
 
-    private static let addButtonWidth: CGFloat = 24
-    private static let addButtonGap: CGFloat = 6
-    private static let maxTabWidth: CGFloat = 180
-    private static let minTabWidth: CGFloat = 80
-    private static let tabPadding: CGFloat = 8
+    private static let addButtonWidth: CGFloat = 20
+    private static let addButtonGap: CGFloat = 4
+    private static let maxTabWidth: CGFloat = 168
+    private static let minTabWidth: CGFloat = 76
+    private static let tabPadding: CGFloat = 6
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -53,13 +53,17 @@ final class TabBarView: NSView {
             queue: .main
         ) { [weak self] _ in
             self?.applyTheme()
-            for btn in self?.tabButtons ?? [] { btn.needsDisplay = true }
         }
         applyTheme()
     }
 
     private func applyTheme() {
-        layer?.backgroundColor = GhosttyThemeProvider.shared.backgroundColor.cgColor
+        let theme = GhosttyThemeProvider.shared
+        layer?.backgroundColor = theme.backgroundColor.cgColor
+        addButton?.contentTintColor = theme.foregroundColor.withAlphaComponent(0.64)
+        for button in tabButtons {
+            button.applyTheme(theme)
+        }
         needsDisplay = true
     }
 
@@ -93,9 +97,12 @@ final class TabBarView: NSView {
         let plusBtn = NSButton(frame: .zero)
         plusBtn.bezelStyle = .inline
         plusBtn.isBordered = false
-        plusBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")
+        plusBtn.image = NSImage(
+            systemSymbolName: "plus",
+            accessibilityDescription: "New tab"
+        )?.withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
         plusBtn.imageScaling = .scaleProportionallyDown
-        plusBtn.contentTintColor = theme.foregroundColor.withAlphaComponent(0.5)
+        plusBtn.contentTintColor = theme.foregroundColor.withAlphaComponent(0.64)
         plusBtn.target = self
         plusBtn.action = #selector(addButtonClicked)
         plusBtn.setAccessibilityLabel("New tab")
@@ -139,7 +146,7 @@ final class TabBarView: NSView {
 
         // Bottom separator line
         let sep = theme.splitDividerColor ?? NSColor.separatorColor
-        sep.withAlphaComponent(0.3).setFill()
+        sep.withAlphaComponent(0.2).setFill()
         NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
     }
 
@@ -151,6 +158,15 @@ final class TabBarView: NSView {
 // MARK: - TabButton
 
 private final class TabButton: NSView {
+    private enum Metrics {
+        static let horizontalInset: CGFloat = 2
+        static let verticalInset: CGFloat = 3
+        static let cornerRadius: CGFloat = 4
+        static let closeSize: CGFloat = 12
+        static let horizontalPadding: CGFloat = 7
+        static let closeGap: CGFloat = 4
+        static let titleHeight: CGFloat = 14
+    }
 
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
@@ -165,17 +181,19 @@ private final class TabButton: NSView {
         self.isActive = isActive
 
         titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 11, weight: isActive ? .medium : .regular)
-        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? 0.9 : 0.5)
+        titleLabel.font = .systemFont(ofSize: 10.5, weight: isActive ? .semibold : .regular)
+        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? 0.92 : 0.56)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
 
         closeButton = NSButton(frame: .zero)
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
+        closeButton.image = NSImage(
+            systemSymbolName: "xmark",
+            accessibilityDescription: "Close tab"
+        )?.withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
         closeButton.imageScaling = .scaleProportionallyDown
-        closeButton.contentTintColor = theme.foregroundColor.withAlphaComponent(0.4)
         closeButton.setAccessibilityLabel("Close tab")
         closeButton.isHidden = !showClose
 
@@ -185,6 +203,7 @@ private final class TabButton: NSView {
         addSubview(closeButton)
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
+        updateCloseButtonTint()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -193,8 +212,8 @@ private final class TabButton: NSView {
 
     override func layout() {
         super.layout()
-        let closeSize: CGFloat = 16
-        let padding: CGFloat = 8
+        let closeSize = Metrics.closeSize
+        let padding = Metrics.horizontalPadding
         closeButton.frame = NSRect(
             x: bounds.width - closeSize - padding,
             y: (bounds.height - closeSize) / 2,
@@ -203,24 +222,32 @@ private final class TabButton: NSView {
         )
         titleLabel.frame = NSRect(
             x: padding,
-            y: (bounds.height - 16) / 2,
-            width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : closeSize + 4),
-            height: 16
+            y: (bounds.height - Metrics.titleHeight) / 2,
+            width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : closeSize + Metrics.closeGap),
+            height: Metrics.titleHeight
         )
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let theme = GhosttyThemeProvider.shared
+        let tabBounds = bounds.insetBy(dx: Metrics.horizontalInset, dy: Metrics.verticalInset)
+        let tabPath = NSBezierPath(
+            roundedRect: tabBounds,
+            xRadius: Metrics.cornerRadius,
+            yRadius: Metrics.cornerRadius
+        )
+
         if isActive {
-            // Subtle background highlight
-            theme.foregroundColor.withAlphaComponent(0.06).setFill()
-            bounds.fill()
-            // Full-width bottom accent bar
-            NSColor.controlAccentColor.withAlphaComponent(0.7).setFill()
-            NSRect(x: 0, y: bounds.height - 2, width: bounds.width, height: 2).fill()
+            theme.foregroundColor.withAlphaComponent(0.08).setFill()
+            tabPath.fill()
+
+            let strokeColor = theme.splitDividerColor ?? theme.foregroundColor.withAlphaComponent(0.16)
+            strokeColor.withAlphaComponent(0.55).setStroke()
+            tabPath.lineWidth = 1
+            tabPath.stroke()
         } else if isHovering {
-            theme.foregroundColor.withAlphaComponent(0.03).setFill()
-            bounds.fill()
+            theme.foregroundColor.withAlphaComponent(0.04).setFill()
+            tabPath.fill()
         }
     }
 
@@ -249,13 +276,32 @@ private final class TabButton: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isHovering = true
-        closeButton.contentTintColor = GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(0.6)
+        updateCloseButtonTint()
         needsDisplay = true
     }
 
     override func mouseExited(with event: NSEvent) {
         isHovering = false
-        closeButton.contentTintColor = GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(0.4)
+        updateCloseButtonTint()
         needsDisplay = true
+    }
+
+    func applyTheme(_ theme: GhosttyThemeProvider) {
+        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? 0.92 : 0.56)
+        updateCloseButtonTint()
+        needsDisplay = true
+    }
+
+    private func updateCloseButtonTint() {
+        let baseAlpha: CGFloat
+        if isHovering {
+            baseAlpha = 0.74
+        } else if isActive {
+            baseAlpha = 0.58
+        } else {
+            baseAlpha = 0.36
+        }
+
+        closeButton.contentTintColor = GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(baseAlpha)
     }
 }

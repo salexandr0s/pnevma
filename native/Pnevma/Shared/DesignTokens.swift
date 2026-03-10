@@ -26,7 +26,7 @@ enum DesignTokens {
         static let dividerHoverWidth: CGFloat = 5
         static let focusBorderWidth: CGFloat = 2
         static let focusBorderOpacity: CGFloat = 0.4
-        static let tabBarHeight: CGFloat = 30
+        static let tabBarHeight: CGFloat = 24
         static let paneMinWidth: CGFloat = 200
         static let paneMinHeight: CGFloat = 100
     }
