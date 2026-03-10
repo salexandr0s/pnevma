@@ -591,6 +591,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private var currentWorkingDirectory: String?
     private var currentSessionID: String?
     private var bridgeObserverID: UUID?
+    private var activationObserverID: UUID?
     private var loadTask: Task<Void, Never>?
     private var recoveryOptions: [SessionRecoveryOption] = []
     private var awaitingProjectActivation = false
@@ -629,6 +630,19 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
                 }
             default:
                 break
+            }
+        }
+        activationObserverID = activationHub.addObserver { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self, self.awaitingProjectActivation else { return }
+                switch state {
+                case .open:
+                    self.retryAfterProjectActivation()
+                case .failed(_, _, let message):
+                    self.showProjectActivationFailureMessage(message)
+                default:
+                    break
+                }
             }
         }
         loadOrRestoreSession()
@@ -670,6 +684,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         loadTask?.cancel()
         if let bridgeObserverID {
             BridgeEventHub.shared.removeObserver(bridgeObserverID)
+        }
+        if let activationObserverID {
+            activationHub.removeObserver(activationObserverID)
         }
         hostView?.terminalSurface?.requestClose()
     }
@@ -1053,58 +1070,92 @@ private struct TerminalStateView: View {
                lower.contains("running") || lower.contains("waiting")
     }
 
+    private var hasScrollback: Bool {
+        if let scrollback, !scrollback.isEmpty { return true }
+        return false
+    }
+
     var body: some View {
+        let theme = GhosttyThemeProvider.shared
         ZStack {
-            Color.clear.ignoresSafeArea()
+            Color(nsColor: theme.backgroundColor).ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(title)
-                            .font(.title.weight(.semibold))
-                        HStack(spacing: 8) {
-                            if isLoading {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Text(message)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.secondary)
-                        }
-                        if let detail, !detail.isEmpty {
-                            Text(detail)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
+            if hasScrollback {
+                // Left-aligned scrollable layout for error states with logs
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        stateContent(centered: false)
+                        stateActions
+                        stateScrollback
                     }
-
-                    if !actions.isEmpty {
-                        HStack(spacing: 10) {
-                            ForEach(actions) { action in
-                                Button(action.label, action: action.perform)
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(!action.enabled)
-                            }
-                        }
-                    }
-
-                    if let scrollback, !scrollback.isEmpty {
-                        ScrollView(.horizontal) {
-                            Text(scrollback)
-                                .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(14)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.black.opacity(0.82))
-                                )
-                                .foregroundStyle(Color.white.opacity(0.9))
-                        }
-                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                // Centered layout for loading/waiting states
+                VStack(spacing: 0) {
+                    Spacer()
+                    VStack(spacing: 18) {
+                        stateContent(centered: true)
+                        stateActions
+                    }
+                    .frame(maxWidth: 520)
+                    Spacer()
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func stateContent(centered: Bool) -> some View {
+        VStack(alignment: centered ? .center : .leading, spacing: 8) {
+            Text(title)
+                .font(.title.weight(.semibold))
+            HStack(spacing: 8) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(message)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            if let detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var stateActions: some View {
+        if !actions.isEmpty {
+            HStack(spacing: 10) {
+                ForEach(actions) { action in
+                    Button(action.label, action: action.perform)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!action.enabled)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var stateScrollback: some View {
+        if let scrollback, !scrollback.isEmpty {
+            ScrollView(.horizontal) {
+                Text(scrollback)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.black.opacity(0.82))
+                    )
+                    .foregroundStyle(Color.white.opacity(0.9))
             }
         }
     }
