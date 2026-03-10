@@ -38,6 +38,45 @@ private actor TerminalPaneCommandBus: CommandCalling {
     }
 }
 
+private actor RetryingTerminalPaneCommandBus: CommandCalling {
+    private var createSessionCallCountValue = 0
+
+    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+        switch method {
+        case "session.new":
+            createSessionCallCountValue += 1
+            if createSessionCallCountValue == 1 {
+                throw PnevmaError.backendError(method: method, message: "no open project")
+            }
+            return try decode(
+                #"""
+                {
+                  "session_id": "session-1",
+                  "binding": {
+                    "session_id": "session-1",
+                    "mode": "live_attach",
+                    "cwd": "/tmp/project",
+                    "env": [],
+                    "wait_after_command": false,
+                    "recovery_options": []
+                  }
+                }
+                """#
+            )
+        default:
+            throw NSError(domain: "RetryingTerminalPaneCommandBus", code: 1)
+        }
+    }
+
+    func createSessionCallCount() -> Int {
+        createSessionCallCountValue
+    }
+
+    private func decode<T: Decodable>(_ json: String) throws -> T {
+        try PnevmaJSON.decoder().decode(T.self, from: Data(json.utf8))
+    }
+}
+
 @MainActor
 final class TerminalPaneViewTests: XCTestCase {
     override func setUp() {
@@ -92,6 +131,27 @@ final class TerminalPaneViewTests: XCTestCase {
 
         try await waitUntil {
             await bus.createSessionCallCount() == 1 && pane.sessionID == "session-1"
+        }
+    }
+
+    func testTerminalPaneRetriesWhenProjectIsStillNotReadyAfterActivationOpens() async throws {
+        let bus = RetryingTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        try await waitUntil(timeoutNanos: 2_000_000_000) {
+            await bus.createSessionCallCount() == 2 && pane.sessionID == "session-1"
         }
     }
 }

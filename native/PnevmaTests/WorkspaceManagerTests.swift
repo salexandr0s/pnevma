@@ -177,6 +177,18 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTFail("Timed out waiting for async workspace condition", file: file, line: line)
     }
 
+    private func openingState(
+        _ activationHub: ActiveWorkspaceActivationHub,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> (workspaceID: UUID, generation: UInt64) {
+        guard case .opening(let workspaceID, let generation) = activationHub.currentState else {
+            XCTFail("Expected activation hub to be opening", file: file, line: line)
+            return (UUID(), 0)
+        }
+        return (workspaceID, generation)
+    }
+
     func testLatestWorkspaceOpenWinsAfterRapidSwitch() async throws {
         let bus = MockCommandBus(specs: [
             .init(
@@ -445,6 +457,8 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspace.projectPath, "/tmp/b")
         XCTAssertTrue(manager.workspaces.contains(where: { $0.id == projectWorkspace.id }))
         XCTAssertTrue(manager.workspaces.contains(where: { $0.id == secondWorkspace.id }))
+        let secondWorkspaceOpenCount = await bus.openCount(for: "/tmp/b")
+        XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
     func testRemoteWorkspaceResolvesProjectPathAndOpensBackendProject() async throws {
@@ -575,12 +589,13 @@ final class WorkspaceManagerTests: XCTestCase {
         )
 
         let workspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        let opening = openingState(activationHub)
         BridgeEventHub.shared.post(
             BridgeEvent(
                 name: "project_opened",
-                payloadJSON: #"""
-                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a"}
-                """#
+                payloadJSON: """
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspace.id, generation: opening.generation))"}
+                """
             )
         )
 
@@ -625,13 +640,14 @@ final class WorkspaceManagerTests: XCTestCase {
 
         _ = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
         let workspaceB = manager.createWorkspace(name: "B", projectPath: "/tmp/b")
+        let opening = openingState(activationHub)
 
         BridgeEventHub.shared.post(
             BridgeEvent(
                 name: "project_opened",
-                payloadJSON: #"""
-                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a"}
-                """#
+                payloadJSON: """
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspaceB.id, generation: opening.generation))"}
+                """
             )
         )
 
@@ -648,6 +664,63 @@ final class WorkspaceManagerTests: XCTestCase {
                 workspaceID: workspaceB.id,
                 projectID: "project-b"
             ) && currentProjectID == "project-b"
+        }
+    }
+
+    func testStaleProjectOpenedEventWithOldGenerationIsIgnoredForSameWorkspacePath() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 300_000_000
+            )
+        ])
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub
+        )
+
+        let workspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        let staleOpening = openingState(activationHub)
+        let terminal = manager.ensureTerminalWorkspace()
+        manager.switchToWorkspace(terminal.id)
+        try await waitUntil {
+            await bus.closeCount() == 1
+        }
+
+        manager.switchToWorkspace(workspace.id)
+        let currentOpening = openingState(activationHub)
+        XCTAssertNotEqual(staleOpening.generation, currentOpening.generation)
+
+        BridgeEventHub.shared.post(
+            BridgeEvent(
+                name: "project_opened",
+                payloadJSON: """
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspace.id, generation: staleOpening.generation))"}
+                """
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 75_000_000)
+        XCTAssertEqual(
+            activationHub.currentState,
+            .opening(workspaceID: workspace.id, generation: currentOpening.generation)
+        )
+
+        try await waitUntil {
+            let currentProjectID = await bus.currentProjectID()
+            return activationHub.currentState == .open(
+                workspaceID: workspace.id,
+                projectID: "project-a"
+            ) && currentProjectID == "project-a"
         }
     }
 
