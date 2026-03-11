@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENTITLEMENTS_PATH="${ENTITLEMENTS_PATH:-$ROOT_DIR/native/Pnevma/Pnevma.entitlements}"
+SIGNING_KEYCHAIN_PATH="${SIGNING_KEYCHAIN_PATH:-}"
 
 # Default: detect the xcodebuild release output location.
 # Override APP_PATH to use a custom location.
-APP_PATH="${APP_PATH:-}"
+SIGN_TARGET_PATH="${TARGET_PATH:-${APP_PATH:-}}"
 
 default_app_path() {
   local candidates=(
@@ -27,31 +29,60 @@ if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "$APP_PATH" ]]; then
-  APP_PATH="$(default_app_path)"
+if [[ -z "$SIGN_TARGET_PATH" ]]; then
+  SIGN_TARGET_PATH="$(default_app_path)"
 fi
 
-if [[ ! -d "$APP_PATH" ]]; then
-  echo "App bundle not found at $APP_PATH"
-  echo "Set APP_PATH or build with:"
-  echo "  just xcode-build-release"
+if [[ ! -e "$SIGN_TARGET_PATH" ]]; then
+  echo "Sign target not found at $SIGN_TARGET_PATH"
   exit 1
 fi
 
-echo "Signing $APP_PATH"
-
-# Sign embedded frameworks/dylibs first (inside-out signing), then the outer app
-if [[ -d "$APP_PATH/Contents/Frameworks" ]]; then
-  find "$APP_PATH/Contents/Frameworks" \( -name "*.framework" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' fw; do
-    echo "Signing embedded: $fw"
-    codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$fw"
-  done
+CODESIGN_ARGS=(--force --timestamp --sign "$APPLE_SIGNING_IDENTITY")
+if [[ -n "$SIGNING_KEYCHAIN_PATH" ]]; then
+  CODESIGN_ARGS+=(--keychain "$SIGNING_KEYCHAIN_PATH")
 fi
 
-codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
+if [[ -d "$SIGN_TARGET_PATH" && "$SIGN_TARGET_PATH" == *.app ]]; then
+  echo "Signing app bundle $SIGN_TARGET_PATH"
 
-echo "Verifying signature"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-spctl --assess --type execute --verbose=4 "$APP_PATH"
+  if [[ ! -f "$ENTITLEMENTS_PATH" ]]; then
+    echo "Entitlements file not found at $ENTITLEMENTS_PATH"
+    exit 1
+  fi
 
-echo "Signed app ready: $APP_PATH"
+  # Retry safety: interrupted codesign runs can leave .cstemp files behind.
+  find "$SIGN_TARGET_PATH" -name "*.cstemp" -delete
+
+  # Sign embedded frameworks/dylibs first (inside-out signing), then the outer app.
+  if [[ -d "$SIGN_TARGET_PATH/Contents/Frameworks" ]]; then
+    find "$SIGN_TARGET_PATH/Contents/Frameworks" \( -name "*.framework" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' fw; do
+      echo "Signing embedded: $fw"
+      codesign "${CODESIGN_ARGS[@]}" --options runtime "$fw"
+    done
+  fi
+
+  codesign \
+    "${CODESIGN_ARGS[@]}" \
+    --options runtime \
+    --entitlements "$ENTITLEMENTS_PATH" \
+    "$SIGN_TARGET_PATH"
+
+  echo "Verifying app signature"
+  codesign --verify --deep --strict --verbose=2 "$SIGN_TARGET_PATH"
+  echo "Signed app ready for notarization: $SIGN_TARGET_PATH"
+  exit 0
+fi
+
+if [[ -f "$SIGN_TARGET_PATH" && "$SIGN_TARGET_PATH" == *.dmg ]]; then
+  echo "Signing disk image $SIGN_TARGET_PATH"
+  codesign "${CODESIGN_ARGS[@]}" "$SIGN_TARGET_PATH"
+  echo "Verifying disk image signature"
+  codesign --verify --verbose=2 "$SIGN_TARGET_PATH"
+  echo "Signed disk image ready for notarization: $SIGN_TARGET_PATH"
+  exit 0
+fi
+
+echo "Unsupported sign target: $SIGN_TARGET_PATH"
+echo "Expected a .app bundle or .dmg file."
+exit 1

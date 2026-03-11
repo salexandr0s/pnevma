@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Install actionlint
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
 
       - name: Run shellcheck
         run: shellcheck scripts/*.sh
@@ -110,7 +110,7 @@ jobs:
 
   native-build:
     name: Native app build
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: rust
     env:
       GHOSTTY_XCFRAMEWORK_TARGET: native
@@ -136,7 +136,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install native build tools
-        run: brew install just xcodegen
+        run: brew install just
+
+      - name: Install pinned XcodeGen
+        run: ./scripts/install-xcodegen-ci.sh
 
       - name: Install pinned Zig
         run: ./scripts/install-zig-ci.sh
@@ -148,6 +151,9 @@ jobs:
           if [[ "$ACTUAL_XCODEGEN" != *"$EXPECTED_XCODEGEN"* ]]; then
             echo "WARNING: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
           fi
+
+      - name: Check generated Xcode project parity
+        run: just xcodegen-check
 
       - name: Build Ghostty xcframework
         run: just ghostty-build

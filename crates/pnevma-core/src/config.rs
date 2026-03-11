@@ -287,6 +287,8 @@ pub struct GlobalConfig {
     pub focus_border_width: f64,
     #[serde(default)]
     pub focus_border_color: Option<String>,
+    #[serde(default)]
+    pub usage_providers: UsageProvidersConfig,
 }
 
 impl Default for GlobalConfig {
@@ -311,6 +313,47 @@ impl Default for GlobalConfig {
             focus_border_opacity: default_global_focus_border_opacity(),
             focus_border_width: default_global_focus_border_width(),
             focus_border_color: None,
+            usage_providers: UsageProvidersConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageProvidersConfig {
+    #[serde(default = "default_usage_refresh_interval_seconds")]
+    pub refresh_interval_seconds: u64,
+    #[serde(default)]
+    pub codex: UsageProviderConfig,
+    #[serde(default)]
+    pub claude: UsageProviderConfig,
+}
+
+impl Default for UsageProvidersConfig {
+    fn default() -> Self {
+        Self {
+            refresh_interval_seconds: default_usage_refresh_interval_seconds(),
+            codex: UsageProviderConfig::default(),
+            claude: UsageProviderConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageProviderConfig {
+    #[serde(default = "default_usage_provider_source")]
+    pub source: String,
+    #[serde(default)]
+    pub web_extras_enabled: bool,
+    #[serde(default = "default_usage_keychain_prompt_policy")]
+    pub keychain_prompt_policy: String,
+}
+
+impl Default for UsageProviderConfig {
+    fn default() -> Self {
+        Self {
+            source: default_usage_provider_source(),
+            web_extras_enabled: false,
+            keychain_prompt_policy: default_usage_keychain_prompt_policy(),
         }
     }
 }
@@ -393,6 +436,18 @@ fn default_global_focus_border_opacity() -> f64 {
 
 fn default_global_focus_border_width() -> f64 {
     2.0
+}
+
+fn default_usage_refresh_interval_seconds() -> u64 {
+    120
+}
+
+fn default_usage_provider_source() -> String {
+    "auto".to_string()
+}
+
+fn default_usage_keychain_prompt_policy() -> String {
+    "user_action".to_string()
 }
 
 fn looks_like_valid_origin(origin: &str) -> bool {
@@ -603,6 +658,35 @@ fn validate_global_config(cfg: &GlobalConfig) -> Result<(), CoreError> {
                 "focus_border_color must be 'accent' or a #RRGGBB hex value".to_string(),
             ));
         }
+    }
+
+    if !(30..=900).contains(&cfg.usage_providers.refresh_interval_seconds) {
+        return Err(CoreError::InvalidConfig(
+            "usage_providers.refresh_interval_seconds must be between 30 and 900".to_string(),
+        ));
+    }
+
+    validate_usage_provider_config(&cfg.usage_providers.codex, "usage_providers.codex")?;
+    validate_usage_provider_config(&cfg.usage_providers.claude, "usage_providers.claude")?;
+
+    Ok(())
+}
+
+fn validate_usage_provider_config(cfg: &UsageProviderConfig, label: &str) -> Result<(), CoreError> {
+    if cfg.source != "auto" && cfg.source != "cli" && cfg.source != "oauth" && cfg.source != "local"
+    {
+        return Err(CoreError::InvalidConfig(format!(
+            "{label}.source must be one of auto, cli, oauth, or local"
+        )));
+    }
+
+    if cfg.keychain_prompt_policy != "never"
+        && cfg.keychain_prompt_policy != "user_action"
+        && cfg.keychain_prompt_policy != "always"
+    {
+        return Err(CoreError::InvalidConfig(format!(
+            "{label}.keychain_prompt_policy must be one of never, user_action, or always"
+        )));
     }
 
     Ok(())

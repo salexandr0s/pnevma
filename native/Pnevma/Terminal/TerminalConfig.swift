@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(GhosttyKit)
+import GhosttyKit
+#endif
 
 enum GhosttyRuntime {
     private(set) static var isInitialized = false

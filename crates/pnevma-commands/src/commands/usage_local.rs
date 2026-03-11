@@ -306,13 +306,12 @@ fn error_snapshot(provider: &str, msg: impl Into<String>) -> ProviderUsageSnapsh
 // ─── Claude Code scanner ──────────────────────────────────────────────────────
 
 fn scan_claude_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
-    let home = match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h),
-        None => return error_snapshot("claude", "HOME env var not set"),
+    let project_roots = match claude_project_roots() {
+        Ok(roots) => roots,
+        Err(message) => return error_snapshot("claude", message),
     };
 
-    let projects_dir = home.join(".claude").join("projects");
-    if !projects_dir.exists() {
+    if project_roots.is_empty() {
         return ProviderUsageSnapshot {
             provider: "claude".to_string(),
             status: "no_data".to_string(),
@@ -335,44 +334,44 @@ fn scan_claude_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
     let mut day_map: HashMap<String, DayAccum> = HashMap::new();
     let mut model_tokens: HashMap<String, i64> = HashMap::new();
 
-    // Enumerate all <slug>/<session-id>.jsonl files
-    let slug_iter = match fs::read_dir(&projects_dir) {
-        Ok(it) => it,
-        Err(e) => return error_snapshot("claude", e.to_string()),
-    };
-
-    for slug_entry in slug_iter.flatten() {
-        let slug_path = slug_entry.path();
-        if !slug_path.is_dir() {
-            continue;
-        }
-
-        let file_iter = match fs::read_dir(&slug_path) {
+    for projects_dir in project_roots {
+        let slug_iter = match fs::read_dir(&projects_dir) {
             Ok(it) => it,
             Err(_) => continue,
         };
 
-        for file_entry in file_iter.flatten() {
-            let file_path = file_entry.path();
-            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "jsonl" {
+        for slug_entry in slug_iter.flatten() {
+            let slug_path = slug_entry.path();
+            if !slug_path.is_dir() {
                 continue;
             }
 
-            // Skip files older than cutoff via mtime
-            if let Ok(meta) = file_entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    let mtime_secs = mtime
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    if mtime_secs < window.start_secs {
-                        continue;
+            let file_iter = match fs::read_dir(&slug_path) {
+                Ok(it) => it,
+                Err(_) => continue,
+            };
+
+            for file_entry in file_iter.flatten() {
+                let file_path = file_entry.path();
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext != "jsonl" {
+                    continue;
+                }
+
+                if let Ok(meta) = file_entry.metadata() {
+                    if let Ok(mtime) = meta.modified() {
+                        let mtime_secs = mtime
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        if mtime_secs < window.start_secs {
+                            continue;
+                        }
                     }
                 }
-            }
 
-            parse_claude_file(&file_path, window, &mut day_map, &mut model_tokens);
+                parse_claude_file(&file_path, window, &mut day_map, &mut model_tokens);
+            }
         }
     }
 
@@ -391,6 +390,7 @@ fn parse_claude_file(
     };
     let reader = BufReader::new(file);
     let day_set: HashSet<&str> = window.day_keys.iter().map(|s| s.as_str()).collect();
+    let mut dedupe_state: HashMap<String, (i64, i64, i64, i64)> = HashMap::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -463,6 +463,37 @@ fn parse_claude_file(
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
 
+        let request_id = obj
+            .get("requestId")
+            .or_else(|| obj.get("request_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let message_id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let dedupe_key = if !message_id.is_empty() || !request_id.is_empty() {
+            format!("{message_id}:{request_id}")
+        } else {
+            format!("timestamp:{ts_ms}")
+        };
+        let previous = dedupe_state
+            .get(&dedupe_key)
+            .copied()
+            .unwrap_or((0, 0, 0, 0));
+        dedupe_state.insert(
+            dedupe_key,
+            (input_tokens, output_tokens, cache_read, cache_creation),
+        );
+        let delta_input_tokens = (input_tokens - previous.0).max(0);
+        let delta_output_tokens = (output_tokens - previous.1).max(0);
+        let delta_cache_read = (cache_read - previous.2).max(0);
+        let delta_cache_creation = (cache_creation - previous.3).max(0);
+        if delta_input_tokens == 0
+            && delta_output_tokens == 0
+            && delta_cache_read == 0
+            && delta_cache_creation == 0
+        {
+            continue;
+        }
+
         // Extract model
         let model = message
             .get("model")
@@ -472,28 +503,29 @@ fn parse_claude_file(
 
         // Accumulate into day bucket
         let entry = day_map.entry(day_key).or_default();
-        entry.input_tokens += input_tokens;
-        entry.output_tokens += output_tokens;
-        entry.cache_read_tokens += cache_read;
-        entry.cache_write_tokens += cache_creation;
+        entry.input_tokens += delta_input_tokens;
+        entry.output_tokens += delta_output_tokens;
+        entry.cache_read_tokens += delta_cache_read;
+        entry.cache_write_tokens += delta_cache_creation;
         entry.requests += 1;
 
         // Accumulate model tokens (input + output)
         let model_entry = model_tokens.entry(model).or_insert(0);
-        *model_entry += input_tokens + output_tokens;
+        *model_entry += delta_input_tokens + delta_output_tokens;
     }
 }
 
 // ─── Codex CLI scanner ────────────────────────────────────────────────────────
 
 fn scan_codex_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
-    let home = match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h),
+    let codex_home = match codex_home_dir() {
+        Some(path) => path,
         None => return error_snapshot("codex", "HOME env var not set"),
     };
 
-    let sessions_dir = home.join(".codex").join("sessions");
-    if !sessions_dir.exists() {
+    let sessions_dir = codex_home.join("sessions");
+    let archived_dir = codex_home.join("archived_sessions");
+    if !sessions_dir.exists() && !archived_dir.exists() {
         return ProviderUsageSnapshot {
             provider: "codex".to_string(),
             status: "no_data".to_string(),
@@ -539,6 +571,19 @@ fn scan_codex_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
             }
 
             parse_codex_file(&file_path, window, key, &mut day_map, &mut model_tokens);
+        }
+    }
+
+    if archived_dir.is_dir() {
+        if let Ok(file_iter) = fs::read_dir(&archived_dir) {
+            for file_entry in file_iter.flatten() {
+                let file_path = file_entry.path();
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext != "jsonl" {
+                    continue;
+                }
+                parse_codex_file(&file_path, window, "", &mut day_map, &mut model_tokens);
+            }
         }
     }
 
@@ -600,6 +645,11 @@ fn parse_codex_file(
         if !window.contains(ts_ms / 1_000) {
             continue;
         }
+        let resolved_day_key = if day_key.is_empty() {
+            day_key_for_timestamp(ts_ms)
+        } else {
+            day_key.to_string()
+        };
 
         let event_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let payload = obj.get("payload");
@@ -659,7 +709,7 @@ fn parse_codex_file(
                     }
 
                     // Accumulate into day bucket
-                    let entry = day_map.entry(day_key.to_string()).or_default();
+                    let entry = day_map.entry(resolved_day_key.clone()).or_default();
                     // Non-cached input = total input minus cached input
                     let non_cached_input = delta_input.saturating_sub(delta_cached_input);
                     entry.input_tokens += non_cached_input;
@@ -680,13 +730,47 @@ fn parse_codex_file(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if role == "assistant" {
-                    let entry = day_map.entry(day_key.to_string()).or_default();
+                    let entry = day_map.entry(resolved_day_key).or_default();
                     entry.requests += 1;
                 }
             }
             _ => {}
         }
     }
+}
+
+fn claude_project_roots() -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    if let Some(raw) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        for part in raw.to_string_lossy().split(',') {
+            let trimmed = part.trim();
+            if !trimmed.is_empty() {
+                roots.push(PathBuf::from(trimmed).join("projects"));
+            }
+        }
+    }
+
+    let home = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h),
+        None => return Err("HOME env var not set".to_string()),
+    };
+    roots.push(home.join(".config").join("claude").join("projects"));
+    roots.push(home.join(".claude").join("projects"));
+    roots.retain(|path| path.is_dir());
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn codex_home_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CODEX_HOME") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex"))
 }
 
 #[cfg(test)]

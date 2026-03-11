@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var appViewModel = SettingsViewModel()
     @State private var ghosttyViewModel = GhosttySettingsViewModel()
+    @State private var providerUsageViewModel = ProviderUsageSettingsViewModel()
 
     var body: some View {
         TabView {
@@ -20,6 +21,9 @@ struct SettingsView: View {
             GhosttySettingsTab(viewModel: ghosttyViewModel)
                 .tabItem { Label("Ghostty", systemImage: "slider.horizontal.3") }
 
+            ProviderUsageSettingsTab(viewModel: providerUsageViewModel)
+                .tabItem { Label("Usage", systemImage: "chart.line.uptrend.xyaxis") }
+
             TelemetrySettingsTab(viewModel: appViewModel)
                 .tabItem { Label("Telemetry", systemImage: "chart.bar") }
         }
@@ -27,6 +31,7 @@ struct SettingsView: View {
         .task {
             appViewModel.load()
             ghosttyViewModel.load()
+            providerUsageViewModel.load()
         }
         .accessibilityIdentifier("settings.root")
     }

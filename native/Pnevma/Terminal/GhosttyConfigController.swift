@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+#if canImport(GhosttyKit)
+import GhosttyKit
+#endif
 
 enum GhosttyConfigKeyNormalizer {
     private static let aliases: [String: String] = [

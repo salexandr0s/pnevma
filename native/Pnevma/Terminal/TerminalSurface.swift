@@ -1,4 +1,7 @@
 import Cocoa
+#if canImport(GhosttyKit)
+import GhosttyKit
+#endif
 import os
 
 struct TerminalSurfaceEnvironmentVariable: Equatable {

@@ -12,7 +12,8 @@ pub mod workflow_contract;
 
 pub use config::{
     global_config_path, load_global_config, load_project_config, save_global_config, GlobalConfig,
-    ProjectConfig, RemoteSection, RetentionSection, TrackerSection,
+    ProjectConfig, RemoteSection, RetentionSection, TrackerSection, UsageProviderConfig,
+    UsageProvidersConfig,
 };
 pub use error::CoreError;
 pub use events::{

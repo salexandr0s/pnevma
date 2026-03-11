@@ -9,54 +9,6 @@
 //                            #   and vendor/ghostty/include/ghostty.h
 
 import PackageDescription
-import Foundation
-
-let fileManager = FileManager.default
-let ghosttyXCFrameworkPath = "../vendor/ghostty/macos/GhosttyKit.xcframework"
-
-struct GhosttyLibraryLayout {
-    let directory: String
-    let binaryName: String
-}
-
-func libraryLayout(at directory: String) -> GhosttyLibraryLayout? {
-    for binaryName in ["libghostty.a", "libghostty-fat.a"] {
-        if fileManager.fileExists(atPath: "\(directory)/\(binaryName)") {
-            return GhosttyLibraryLayout(directory: directory, binaryName: binaryName)
-        }
-    }
-
-    return nil
-}
-
-func resolveGhosttyLibrary() -> GhosttyLibraryLayout? {
-    let preferredPaths = [
-        "\(ghosttyXCFrameworkPath)/macos-arm64_x86_64",
-        "\(ghosttyXCFrameworkPath)/macos-arm64",
-        "\(ghosttyXCFrameworkPath)/macos-x86_64",
-    ]
-
-    for path in preferredPaths {
-        if let layout = libraryLayout(at: path) {
-            return layout
-        }
-    }
-
-    guard let entries = try? fileManager.contentsOfDirectory(atPath: ghosttyXCFrameworkPath) else {
-        return nil
-    }
-
-    for entry in entries.sorted() where entry.hasPrefix("macos-") {
-        let candidate = "\(ghosttyXCFrameworkPath)/\(entry)"
-        if let layout = libraryLayout(at: candidate) {
-            return layout
-        }
-    }
-
-    return nil
-}
-
-let ghosttyLibrary = resolveGhosttyLibrary()
 
 var pnevmaLinkerSettings: [LinkerSetting] = [
     .unsafeFlags([
@@ -80,17 +32,6 @@ var pnevmaLinkerSettings: [LinkerSetting] = [
     .linkedLibrary("sqlite3"),
 ]
 
-if let ghosttyLibrary {
-    pnevmaLinkerSettings.append(
-        contentsOf: [
-            .unsafeFlags([
-                "-L", ghosttyLibrary.directory,
-                "\(ghosttyLibrary.directory)/\(ghosttyLibrary.binaryName)",
-            ]),
-        ]
-    )
-}
-
 let package = Package(
     name: "Pnevma",
     platforms: [
@@ -102,6 +43,7 @@ let package = Package(
     targets: [
         .target(
             name: "Pnevma",
+            dependencies: ["GhosttyKit"],
             path: "Pnevma",
             exclude: [
                 "Pnevma.entitlements",
@@ -126,6 +68,10 @@ let package = Package(
             name: "PnevmaTests",
             dependencies: ["Pnevma"],
             path: "PnevmaTests"
+        ),
+        .binaryTarget(
+            name: "GhosttyKit",
+            path: "../vendor/ghostty/macos/GhosttyKit.xcframework"
         ),
     ]
 )

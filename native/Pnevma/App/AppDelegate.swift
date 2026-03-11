@@ -1,4 +1,7 @@
 import Cocoa
+#if canImport(GhosttyKit)
+import GhosttyKit
+#endif
 import SwiftUI
 import os
 
@@ -44,6 +47,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smokeHostView: TerminalHostView?
     private var smokeTimeoutWorkItem: DispatchWorkItem?
     private var runtimeSettingsObserver: NSObjectProtocol?
+    private var providerUsageStoreObserver: NSObjectProtocol?
     var updateCoordinator: AppUpdateCoordinator?
 
     // MARK: - App Lifecycle
@@ -183,6 +187,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
             _ = NotificationsViewModel.shared // Initialize the singleton early
+            _ = ProviderUsageStore.shared
+            Task { await ProviderUsageStore.shared.activate() }
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
             _ = engine
@@ -216,6 +222,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.applyRuntimeSettings()
             }
         }
+        providerUsageStoreObserver = NotificationCenter.default.addObserver(
+            forName: .providerUsageStoreDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateUsageToolbarStatus()
+            }
+        }
         applyRuntimeSettings()
     }
 
@@ -225,6 +240,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let runtimeSettingsObserver {
             NotificationCenter.default.removeObserver(runtimeSettingsObserver)
             self.runtimeSettingsObserver = nil
+        }
+        if let providerUsageStoreObserver {
+            NotificationCenter.default.removeObserver(providerUsageStoreObserver)
+            self.providerUsageStoreObserver = nil
         }
 
         // Free ghostty app singleton before process exit.
@@ -407,6 +426,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let badge = BadgeOverlayView(frame: NSRect(x: 12, y: 0, width: 18, height: 12))
         notificationsBtn.addSubview(badge)
         notificationBadge = badge
+        let usageBtn = makeTitlebarButton(
+            symbolName: "chart.line.uptrend.xyaxis",
+            accessibilityDescription: "Usage",
+            toolTip: "Usage",
+            action: #selector(showUsagePopover),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig,
+            hoverTintColor: .systemBlue
+        )
+        usageToolbarButton = usageBtn
+        let statusDot = StatusDotOverlayView(frame: NSRect(x: 16, y: 3, width: 8, height: 8))
+        usageBtn.addSubview(statusDot)
+        usageStatusDot = statusDot
         let addWorkspaceBtn = makeTitlebarButton(
             symbolName: "plus",
             accessibilityDescription: "Open Workspace",
@@ -445,7 +477,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.titlebarPushBtn = pushBtn
 
         for view in [sidebarBacking, tabBar, contentArea, statusBarView, toolbarSep,
-                      sidebarToggleBtn, notificationsBtn, addWorkspaceBtn,
+                      sidebarToggleBtn, notificationsBtn, usageBtn, addWorkspaceBtn,
                       templateBtn,
                       openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -540,6 +572,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             notificationsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             notificationsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
+            usageBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            usageBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -4),
+            usageBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            usageBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+
             addWorkspaceBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             addWorkspaceBtn.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor, constant: -12),
             addWorkspaceBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
@@ -547,7 +584,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Titlebar actions (Open, Commit, Push) — direct subviews, right of center
             pushBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            pushBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -12),
+            pushBtn.trailingAnchor.constraint(equalTo: usageBtn.leadingAnchor, constant: -12),
 
             commitBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             commitBtn.trailingAnchor.constraint(equalTo: pushBtn.leadingAnchor, constant: -6),
@@ -561,6 +598,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             templateBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             templateBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
         ])
+        updateUsageToolbarStatus()
 
         // For terminal transparency (background-opacity < 1.0), the window must
         // be non-opaque so ghostty's Metal layer alpha reaches the desktop.
@@ -1174,14 +1212,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "Open Workspace"
         alert.informativeText = "Choose whether to create a local project workspace or a remote SSH workspace."
         let persistenceToggle = makePersistenceToggle()
-        let persistenceHelper = makePersistenceHelperLabel()
-        let accessory = NSStackView(views: [persistenceToggle, persistenceHelper])
-        accessory.orientation = .vertical
-        accessory.alignment = .leading
-        accessory.spacing = 6
-        accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
-        persistenceHelper.preferredMaxLayoutWidth = 320
-        alert.accessoryView = accessory
+        alert.accessoryView = makePersistenceAccessory(
+            toggle: persistenceToggle,
+            helperLabel: makePersistenceHelperLabel(),
+            width: 320
+        )
         alert.addButton(withTitle: "Local")
         alert.addButton(withTitle: "Remote")
         alert.addButton(withTitle: "Cancel")
@@ -1328,7 +1363,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         pathField.placeholderString = "/path/to/project"
 
         let persistenceToggle = makePersistenceToggle()
-        let persistenceHelper = makePersistenceHelperLabel()
 
         let accessory = NSStackView(views: [
             hostLabel,
@@ -1339,8 +1373,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             portField,
             pathLabel,
             pathField,
-            persistenceToggle,
-            persistenceHelper,
+            makePersistenceAccessory(
+                toggle: persistenceToggle,
+                helperLabel: makePersistenceHelperLabel(),
+                width: 360
+            ),
         ])
         accessory.orientation = .vertical
         accessory.alignment = .leading
@@ -1351,7 +1388,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         userField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         portField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        persistenceHelper.preferredMaxLayoutWidth = 360
         alert.accessoryView = accessory
         alert.addButton(withTitle: "Open Workspace")
         alert.addButton(withTitle: "Cancel")
@@ -1416,6 +1452,37 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 0
         return label
+    }
+
+    private func makePersistenceAccessory(
+        toggle: NSButton,
+        helperLabel: NSTextField,
+        width: CGFloat
+    ) -> NSView {
+        helperLabel.preferredMaxLayoutWidth = width
+
+        let stack = NSStackView(views: [toggle, helperLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 1))
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: width),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+
+        container.layoutSubtreeIfNeeded()
+        container.frame.size = container.fittingSize
+        return container
     }
 
     private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) {
@@ -1627,9 +1694,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var notificationsPopover: NSPopover?
+    private var usagePopover: NSPopover?
     private var sessionsPopover: NSPopover?
     private weak var notificationToolbarButton: NSButton?
     private weak var notificationBadge: BadgeOverlayView?
+    private weak var usageToolbarButton: NSButton?
+    private weak var usageStatusDot: StatusDotOverlayView?
 
     private func startSessionFromSessionManager() {
         sessionsPopover?.performClose(nil)
@@ -1667,6 +1737,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         notificationBadge?.count = workspace.unreadNotifications + workspace.terminalNotificationCount
     }
 
+    private func updateUsageToolbarStatus() {
+        guard let usageStatusDot else { return }
+        switch ProviderUsageStore.shared.indicatorState {
+        case .hidden:
+            usageStatusDot.status = .hidden
+        case .ok:
+            usageStatusDot.status = .ok
+        case .warning:
+            usageStatusDot.status = .warning
+        case .error:
+            usageStatusDot.status = .error
+        }
+    }
+
     @objc private func showNotifications() {
         if let popover = notificationsPopover, popover.isShown {
             popover.performClose(nil)
@@ -1694,6 +1778,35 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openNotificationsPane() {
         openToolWithDefaultPresentation("notifications")
+    }
+
+    @objc private func showUsagePopover() {
+        if let popover = usagePopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let button = usageToolbarButton else { return }
+
+        Task { await ProviderUsageStore.shared.activate() }
+
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 420, height: 420)
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: ProviderUsagePopoverView(onOpenDashboard: { [weak self, weak popover] in
+                popover?.performClose(nil)
+                self?.openUsageDashboard()
+            })
+            .environment(GhosttyThemeProvider.shared)
+        )
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        usagePopover = popover
+    }
+
+    private func openUsageDashboard() {
+        AnalyticsNavigationHub.shared.request(segmentRawValue: "providers")
+        openToolWithDefaultPresentation("analytics")
     }
 }
 
@@ -2246,6 +2359,52 @@ private final class BadgeOverlayView: NSView {
             height: textSize.height
         )
         (text as NSString).draw(in: textRect, withAttributes: attributes)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private final class StatusDotOverlayView: NSView {
+    enum Status {
+        case hidden
+        case ok
+        case warning
+        case error
+    }
+
+    var status: Status = .hidden {
+        didSet {
+            isHidden = status == .hidden
+            needsDisplay = true
+        }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard status != .hidden else { return }
+        let color: NSColor = switch status {
+        case .hidden:
+            .clear
+        case .ok:
+            .systemGreen
+        case .warning:
+            .systemOrange
+        case .error:
+            .systemRed
+        }
+        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
+        color.setFill()
+        circle.fill()
+        NSColor.black.withAlphaComponent(0.35).setStroke()
+        circle.lineWidth = 0.5
+        circle.stroke()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
