@@ -8,9 +8,14 @@ LOG_PATH="${LOG_PATH:-$ROOT_DIR/native/build/logs/packaged-launch-smoke.log}"
 TIMEOUT_SECS="${SMOKE_TIMEOUT_SECS:-20}"
 
 if [[ -n "$APP_PATH" && -n "$DMG_PATH" ]]; then
-  # GitHub Actions persists APP_PATH across steps; DMG_PATH is the explicit
-  # packaged-artifact target when both are present.
-  APP_PATH=""
+  # GitHub Actions persists both variables across steps. Prefer the explicit
+  # packaged-artifact path only when the DMG already exists; otherwise fall
+  # back to the app bundle for pre-signing smoke tests.
+  if [[ -f "$DMG_PATH" ]]; then
+    APP_PATH=""
+  else
+    DMG_PATH=""
+  fi
 fi
 
 if [[ -z "$APP_PATH" && -z "$DMG_PATH" ]]; then
