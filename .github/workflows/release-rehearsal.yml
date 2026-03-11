@@ -51,6 +51,9 @@ jobs:
             echo "WARNING: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
           fi
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Rust quality gates
         run: just check
 
