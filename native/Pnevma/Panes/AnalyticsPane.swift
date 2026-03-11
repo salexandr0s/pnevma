@@ -2,17 +2,280 @@ import SwiftUI
 import Observation
 import Cocoa
 import Charts
+import UniformTypeIdentifiers
+
+// MARK: - Shared Formatters
+
+private let usageDayParser: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withFullDate]
+    return formatter
+}()
+
+private let usageTimestampParser: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+private let usageTimestampParserNoFraction: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+}()
+
+private let usageRelativeFormatter = RelativeDateTimeFormatter()
+
+private let usageRequestDayFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+}()
+
+private func formatTokens(_ value: Int) -> String {
+    value.formatted(.number.grouping(.automatic))
+}
+
+private func formatCompactTokens(_ value: Int) -> String {
+    if abs(value) >= 10_000 {
+        return value.formatted(.number.notation(.compactName))
+    }
+    return formatTokens(value)
+}
+
+private func formatCost(_ value: Double) -> String {
+    value.formatted(.currency(code: "USD"))
+}
+
+private func formatDateLabel(_ raw: String) -> String {
+    guard let date = usageDayParser.date(from: raw) else { return raw }
+    return date.formatted(.dateTime.month(.abbreviated).day())
+}
+
+private func formatRelativeTimestamp(_ raw: String?) -> String {
+    guard let raw else { return "—" }
+    let date = usageTimestampParser.date(from: raw)
+        ?? usageTimestampParserNoFraction.date(from: raw)
+    guard let date else { return raw }
+    return usageRelativeFormatter.localizedString(for: date, relativeTo: .now)
+}
+
+private func sanitizeFilename(_ name: String) -> String {
+    let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
+    return name
+        .components(separatedBy: invalid)
+        .joined(separator: "-")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .prefix(100)
+        .description
+}
 
 // MARK: - Data Models
+
+enum UsageScope: String, CaseIterable, Identifiable {
+    case project
+    case global
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .project: return "Project"
+        case .global: return "Global"
+        }
+    }
+}
+
+enum UsageSegment: String, CaseIterable, Identifiable {
+    case overview
+    case explorer
+    case diagnostics
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .overview: return "Overview"
+        case .explorer: return "Explorer"
+        case .diagnostics: return "Diagnostics"
+        }
+    }
+}
+
+enum UsageExplorerMode: String, CaseIterable, Identifiable {
+    case sessions
+    case tasks
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sessions: return "Sessions"
+        case .tasks: return "Tasks"
+        }
+    }
+}
+
+enum UsageExplorerSort: String, CaseIterable, Identifiable {
+    case costDesc
+    case tokensDesc
+    case recentDesc
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .costDesc: return "Cost"
+        case .tokensDesc: return "Tokens"
+        case .recentDesc: return "Recent"
+        }
+    }
+}
+
+enum UsageTrendMetric: String, CaseIterable, Identifiable {
+    case cost
+    case tokens
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .cost: return "Cost"
+        case .tokens: return "Tokens"
+        }
+    }
+}
+
+struct UsageAnalyticsSummary: Decodable {
+    let scope: String
+    let from: String
+    let to: String
+    let totals: UsageTotals
+    let dailyTrend: [UsageTrendPoint]
+    let topProviders: [UsageBreakdownItem]
+    let topModels: [UsageBreakdownItem]
+    let topTasks: [UsageTaskAnalyticsRow]
+    let activity: UsageActivity
+    let errorHotspots: [UsageErrorHotspot]
+}
+
+struct UsageTotals: Decodable {
+    let totalInputTokens: Int
+    let totalOutputTokens: Int
+    let totalTokens: Int
+    let totalCostUsd: Double
+    let avgDailyCostUsd: Double
+    let avgDailyTokens: Int
+    let activeSessions: Int
+    let tasksWithSpend: Int
+    let errorHotspotCount: Int
+}
+
+struct UsageTrendPoint: Decodable, Identifiable {
+    var id: String { date }
+    let date: String
+    let tokensIn: Int
+    let tokensOut: Int
+    let estimatedUsd: Double
+
+    var parsedDate: Date {
+        usageDayParser.date(from: date) ?? .distantPast
+    }
+}
+
+struct UsageBreakdownItem: Decodable, Identifiable {
+    var id: String { "\(secondaryLabel ?? "root")::\(key)" }
+    let key: String
+    let label: String
+    let secondaryLabel: String?
+    let totalTokens: Int
+    let estimatedUsd: Double
+    let recordCount: Int
+}
+
+struct UsageActivity: Decodable {
+    let weekdays: [UsageActivityBucket]
+    let hours: [UsageActivityBucket]
+}
+
+struct UsageActivityBucket: Decodable, Identifiable {
+    var id: String { "\(index)-\(label)" }
+    let index: Int
+    let label: String
+    let totalTokens: Int
+    let estimatedUsd: Double
+}
+
+struct UsageErrorHotspot: Decodable, Identifiable {
+    let id: String
+    let signatureHash: String
+    let canonicalMessage: String
+    let category: String
+    let firstSeen: String
+    let lastSeen: String
+    let totalCount: Int
+    let sampleOutput: String?
+    let remediationHint: String?
+}
+
+struct UsageSessionAnalyticsRow: Codable, Identifiable {
+    var id: String { "\(projectName)::\(sessionID)" }
+    let projectName: String
+    let sessionID: String
+    let sessionName: String
+    let sessionStatus: String
+    let branch: String?
+    let taskID: String?
+    let taskTitle: String?
+    let taskStatus: String?
+    let providers: [String]
+    let models: [String]
+    let totalInputTokens: Int
+    let totalOutputTokens: Int
+    let totalTokens: Int
+    let totalCostUsd: Double
+    let startedAt: String
+    let lastHeartbeat: String
+}
+
+struct UsageTaskAnalyticsRow: Codable, Identifiable {
+    var id: String { "\(projectName)::\(taskID)" }
+    let projectName: String
+    let taskID: String
+    let title: String
+    let status: String
+    let providers: [String]
+    let models: [String]
+    let sessionCount: Int
+    let totalInputTokens: Int
+    let totalOutputTokens: Int
+    let totalTokens: Int
+    let totalCostUsd: Double
+    let lastActivityAt: String?
+}
+
+struct UsageDiagnostics: Decodable {
+    let scope: String
+    let from: String
+    let to: String
+    let projectNames: [String]
+    let trackedCostRows: Int
+    let untrackedCostRows: Int
+    let lastTrackedCostAt: String?
+    let localProviderSnapshots: [ProviderUsageSnapshot]
+}
 
 struct ProviderUsageSnapshot: Decodable, Identifiable {
     var id: String { provider }
     let provider: String
     let status: String
     let errorMessage: String?
-    let days: [DailyTokenUsage]
-    let totals: UsageSummary
-    let topModels: [ModelShare]
+    let days: [ProviderUsageDay]
+    let totals: ProviderUsageSummary
+    let topModels: [ProviderUsageModelShare]
 
     var displayName: String {
         switch provider {
@@ -22,14 +285,10 @@ struct ProviderUsageSnapshot: Decodable, Identifiable {
         }
     }
 
-    var logoAsset: String {
-        provider == "claude" ? "anthropic-logo" : "openai-logo"
-    }
-
     var hasData: Bool { totals.totalRequests > 0 }
 }
 
-struct DailyTokenUsage: Decodable, Identifiable {
+struct ProviderUsageDay: Decodable, Identifiable {
     var id: String { date }
     let date: String
     let inputTokens: Int
@@ -37,19 +296,9 @@ struct DailyTokenUsage: Decodable, Identifiable {
     let cacheReadTokens: Int
     let cacheWriteTokens: Int
     let requests: Int
-
-    private static let dateParser: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withFullDate]
-        return f
-    }()
-
-    var parsedDate: Date {
-        Self.dateParser.date(from: date) ?? .distantPast
-    }
 }
 
-struct UsageSummary: Decodable {
+struct ProviderUsageSummary: Decodable {
     let totalInputTokens: Int
     let totalOutputTokens: Int
     let totalCacheReadTokens: Int
@@ -60,280 +309,14 @@ struct UsageSummary: Decodable {
     let peakDayTokens: Int
 }
 
-struct ModelShare: Decodable, Identifiable {
+struct ProviderUsageModelShare: Decodable, Identifiable {
     var id: String { model }
     let model: String
     let tokens: Int
     let sharePercent: Double
 }
 
-// MARK: - Helpers
-
-private func formatTokens(_ value: Int) -> String {
-    value.formatted(.number.grouping(.automatic))
-}
-
-// MARK: - UsageView
-
-struct UsageView: View {
-    @State private var viewModel = UsageViewModel()
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Analytics")
-                    .font(.headline)
-                Spacer()
-                Button { viewModel.load() } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("r", modifiers: .command)
-                .accessibilityLabel("Refresh analytics")
-            }
-            .padding(12)
-
-            Divider()
-
-            Group {
-                if let statusMessage = viewModel.statusMessage {
-                    VStack(spacing: 8) {
-                        if viewModel.isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        EmptyStateView(
-                            icon: "chart.bar.xaxis",
-                            title: statusMessage
-                        )
-                    }
-                } else {
-                    usageContent
-                }
-            }
-        }
-        .task { await viewModel.activate() }
-        .accessibilityIdentifier("pane.analytics")
-    }
-
-    @ViewBuilder
-    private var usageContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                ForEach(viewModel.providers) { snapshot in
-                    ProviderCard(snapshot: snapshot)
-                }
-            }
-            .padding(16)
-        }
-    }
-}
-
-// MARK: - ProviderCard
-
-private struct ProviderCard: View {
-    let snapshot: ProviderUsageSnapshot
-
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                cardBody
-            }
-        } label: {
-            providerHeader
-        }
-    }
-
-    @ViewBuilder
-    private var providerHeader: some View {
-        HStack(spacing: 6) {
-            Image(snapshot.logoAsset)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 14, height: 14)
-            Text(snapshot.displayName)
-                .font(.headline)
-            Spacer()
-            statusBadge
-        }
-    }
-
-    @ViewBuilder
-    private var statusBadge: some View {
-        let (color, label) = badgeInfo
-        HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var badgeInfo: (Color, String) {
-        switch snapshot.status {
-        case "ok":      return (.green, "OK")
-        case "no_data": return (.yellow, "No Data")
-        case "error":   return (.red, "Error")
-        default:        return (.secondary, snapshot.status)
-        }
-    }
-
-    @ViewBuilder
-    private var cardBody: some View {
-        switch snapshot.status {
-        case "ok" where snapshot.hasData:
-            statsGrid
-            if !snapshot.topModels.isEmpty {
-                topModelsSection
-            }
-            if !snapshot.days.isEmpty {
-                dailyChart
-            }
-        case "ok":
-            Text("No usage data for this period")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 8)
-        case "no_data":
-            Text("No session files found — use \(snapshot.displayName) to generate usage data")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 8)
-        case "error":
-            Text(snapshot.errorMessage ?? "An unknown error occurred")
-                .foregroundStyle(.red)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-        default:
-            EmptyView()
-        }
-    }
-
-    // MARK: Stats Grid
-
-    private var statsGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            StatCell(label: "Input Tokens",       value: formatTokens(snapshot.totals.totalInputTokens))
-            StatCell(label: "Output Tokens",      value: formatTokens(snapshot.totals.totalOutputTokens))
-            StatCell(label: "Cache Read",         value: formatTokens(snapshot.totals.totalCacheReadTokens))
-            StatCell(label: "Cache Write",        value: formatTokens(snapshot.totals.totalCacheWriteTokens))
-            StatCell(label: "Total Requests",     value: formatTokens(snapshot.totals.totalRequests))
-            StatCell(label: "Avg Daily Tokens",   value: formatTokens(snapshot.totals.avgDailyTokens))
-        }
-    }
-
-    // MARK: Top Models
-
-    private var topModelsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Top Models")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            ForEach(snapshot.topModels) { model in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(model.model)
-                            .font(.caption.monospacedDigit())
-                            .lineLimit(1)
-                        Spacer()
-                        Text(formatTokens(model.tokens))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "%.1f%%", model.sharePercent))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 44, alignment: .trailing)
-                    }
-                    GeometryReader { geo in
-                        Capsule()
-                            .fill(Color.accentColor.opacity(DesignTokens.Opacity.strong))
-                            .frame(width: geo.size.width * model.sharePercent / 100, height: 4)
-                    }
-                    .frame(height: 4)
-                }
-            }
-        }
-    }
-
-    // MARK: Daily Chart
-
-    @ViewBuilder
-    private var dailyChart: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Daily Token Usage (last 30 days)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            let inputColor: Color = snapshot.provider == "claude" ? .blue : .indigo
-            let outputColor: Color = .green
-
-            Chart {
-                ForEach(snapshot.days) { day in
-                    BarMark(
-                        x: .value("Date", day.parsedDate),
-                        y: .value("Tokens", day.inputTokens)
-                    )
-                    .foregroundStyle(by: .value("Type", "Input"))
-
-                    BarMark(
-                        x: .value("Date", day.parsedDate),
-                        y: .value("Tokens", day.outputTokens)
-                    )
-                    .foregroundStyle(by: .value("Type", "Output"))
-                }
-            }
-            .chartForegroundStyleScale(["Input": inputColor, "Output": outputColor])
-            .chartXAxis {
-                AxisMarks(values: .stride(by: .day, count: 7)) { _ in
-                    AxisGridLine()
-                    AxisTick()
-                    AxisValueLabel(format: .dateTime.month().day(), centered: true)
-                }
-            }
-            .chartYAxis {
-                AxisMarks { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let intVal = value.as(Int.self) {
-                            Text(formatTokens(intVal))
-                                .font(.caption.monospacedDigit())
-                        }
-                    }
-                }
-            }
-            .frame(height: 180)
-        }
-    }
-}
-
-// MARK: - StatCell
-
-private struct StatCell: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.monospacedDigit())
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.08))
-        )
-        .accessibilityElement(children: .combine)
-    }
-}
-
-// MARK: - ViewModel
+// MARK: - View Model
 
 @Observable @MainActor
 final class UsageViewModel {
@@ -344,8 +327,28 @@ final class UsageViewModel {
         case failed(String)
     }
 
-    var providers: [ProviderUsageSnapshot] = []
-    private var viewState: ViewState = .waiting("Loading usage data...")
+    var segment: UsageSegment = .overview
+    var scope: UsageScope = .project
+    var trendMetric: UsageTrendMetric = .cost
+    var explorerMode: UsageExplorerMode = .sessions
+    var explorerSort: UsageExplorerSort = .costDesc
+    var providerFilter = "All"
+    var modelFilter = "All"
+    var statusFilter = "All"
+    var searchQuery = ""
+    var pageSize = 25
+    var currentPage = 1
+
+    var rangeStart: Date
+    var rangeEnd: Date
+
+    var summary: UsageAnalyticsSummary?
+    var sessions: [UsageSessionAnalyticsRow] = []
+    var tasks: [UsageTaskAnalyticsRow] = []
+    var diagnostics: UsageDiagnostics?
+
+    private var coreState: ViewState = .waiting("Waiting for project activation...")
+    private var diagnosticsState: ViewState = .waiting("Open Diagnostics to load provider parity and tracking health.")
 
     @ObservationIgnored
     private let commandBus: (any CommandCalling)?
@@ -353,6 +356,10 @@ final class UsageViewModel {
     private let activationHub: ActiveWorkspaceActivationHub
     @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
+    private var coreTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var diagnosticsTask: Task<Void, Never>?
 
     init(
         commandBus: (any CommandCalling)? = CommandBus.shared,
@@ -360,6 +367,10 @@ final class UsageViewModel {
     ) {
         self.commandBus = commandBus
         self.activationHub = activationHub
+
+        let end = Date()
+        self.rangeEnd = end
+        self.rangeStart = Calendar.current.date(byAdding: .day, value: -29, to: end) ?? end
 
         activationObserverID = activationHub.addObserver { [weak self] state in
             Task { @MainActor [weak self] in
@@ -375,7 +386,7 @@ final class UsageViewModel {
     }
 
     var statusMessage: String? {
-        switch viewState {
+        switch coreState {
         case .waiting(let message), .loading(let message), .failed(let message):
             return message
         case .ready:
@@ -384,67 +395,1404 @@ final class UsageViewModel {
     }
 
     var isLoading: Bool {
-        if case .loading = viewState { return true }
+        if case .loading = coreState { return true }
         return false
+    }
+
+    var diagnosticsMessage: String? {
+        switch diagnosticsState {
+        case .waiting(let message), .loading(let message), .failed(let message):
+            return message
+        case .ready:
+            return nil
+        }
+    }
+
+    var isDiagnosticsLoading: Bool {
+        if case .loading = diagnosticsState { return true }
+        return false
+    }
+
+    var availableProviders: [String] {
+        let values = Set((sessions.flatMap(\.providers)) + (tasks.flatMap(\.providers)))
+        return ["All"] + values.sorted()
+    }
+
+    var availableModels: [String] {
+        let values = Set((sessions.flatMap(\.models)) + (tasks.flatMap(\.models)))
+        return ["All"] + values.sorted()
+    }
+
+    var availableStatuses: [String] {
+        let sessionStatuses = sessions.compactMap(\.taskStatus)
+        let taskStatuses = tasks.map(\.status)
+        return ["All"] + Set(sessionStatuses + taskStatuses).sorted()
+    }
+
+    var filteredSessions: [UsageSessionAnalyticsRow] {
+        let providerFilter = providerFilter
+        let modelFilter = modelFilter
+        let statusFilter = statusFilter
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let rows = sessions.filter { row in
+            if providerFilter != "All", !row.providers.contains(providerFilter) { return false }
+            if modelFilter != "All", !row.models.contains(modelFilter) { return false }
+            if statusFilter != "All", row.taskStatus != statusFilter { return false }
+            if !query.isEmpty {
+                let haystack = [
+                    row.projectName,
+                    row.sessionName,
+                    row.sessionID,
+                    row.taskTitle ?? "",
+                    row.taskStatus ?? "",
+                    row.providers.joined(separator: " "),
+                    row.models.joined(separator: " "),
+                    row.branch ?? "",
+                ]
+                    .joined(separator: " ")
+                    .lowercased()
+                return haystack.contains(query)
+            }
+            return true
+        }
+
+        return sortSessions(rows)
+    }
+
+    var filteredTasks: [UsageTaskAnalyticsRow] {
+        let providerFilter = providerFilter
+        let modelFilter = modelFilter
+        let statusFilter = statusFilter
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let rows = tasks.filter { row in
+            if providerFilter != "All", !row.providers.contains(providerFilter) { return false }
+            if modelFilter != "All", !row.models.contains(modelFilter) { return false }
+            if statusFilter != "All", row.status != statusFilter { return false }
+            if !query.isEmpty {
+                let haystack = [
+                    row.projectName,
+                    row.title,
+                    row.taskID,
+                    row.status,
+                    row.providers.joined(separator: " "),
+                    row.models.joined(separator: " "),
+                ]
+                    .joined(separator: " ")
+                    .lowercased()
+                return haystack.contains(query)
+            }
+            return true
+        }
+
+        return sortTasks(rows)
+    }
+
+    var visibleSessions: [UsageSessionAnalyticsRow] {
+        paginate(filteredSessions)
+    }
+
+    var visibleTasks: [UsageTaskAnalyticsRow] {
+        paginate(filteredTasks)
+    }
+
+    var totalPages: Int {
+        let count = explorerMode == .sessions ? filteredSessions.count : filteredTasks.count
+        return max(1, Int(ceil(Double(count) / Double(pageSize))))
+    }
+
+    var pageDescription: String {
+        let count = explorerMode == .sessions ? filteredSessions.count : filteredTasks.count
+        return "\(count) row\(count == 1 ? "" : "s") • page \(currentPage)/\(totalPages)"
     }
 
     func activate() async {
         handleActivationState(activationHub.currentState)
     }
 
-    @ObservationIgnored
-    private var loadTask: Task<Void, Never>?
+    func refresh() {
+        loadCore(showLoadingState: summary == nil)
+        if segment == .diagnostics {
+            loadDiagnostics(showLoadingState: diagnostics == nil)
+        }
+    }
 
-    func load(showLoadingState: Bool = true) {
+    func setSegment(_ segment: UsageSegment) {
+        self.segment = segment
+        if segment == .diagnostics, diagnostics == nil {
+            loadDiagnostics(showLoadingState: true)
+        }
+    }
+
+    func setScope(_ scope: UsageScope) {
+        self.scope = scope
+        currentPage = 1
+        providerFilter = "All"
+        modelFilter = "All"
+        statusFilter = "All"
+        loadCore(showLoadingState: summary == nil)
+        if segment == .diagnostics {
+            loadDiagnostics(showLoadingState: diagnostics == nil)
+        } else {
+            diagnostics = nil
+            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
+        }
+    }
+
+    func applyQuickRange(days: Int) {
+        let end = Date()
+        rangeEnd = end
+        rangeStart = Calendar.current.date(byAdding: .day, value: -(days - 1), to: end) ?? end
+        loadCore(showLoadingState: summary == nil)
+        if segment == .diagnostics {
+            loadDiagnostics(showLoadingState: diagnostics == nil)
+        } else {
+            diagnostics = nil
+            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
+        }
+    }
+
+    func updateDates(start: Date? = nil, end: Date? = nil) {
+        if let start {
+            rangeStart = start
+        }
+        if let end {
+            rangeEnd = end
+        }
+        if rangeStart > rangeEnd {
+            swap(&rangeStart, &rangeEnd)
+        }
+        loadCore(showLoadingState: summary == nil)
+        if segment == .diagnostics {
+            loadDiagnostics(showLoadingState: diagnostics == nil)
+        } else {
+            diagnostics = nil
+            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
+        }
+    }
+
+    func setExplorerMode(_ mode: UsageExplorerMode) {
+        explorerMode = mode
+        currentPage = 1
+    }
+
+    func setProviderFilter(_ value: String) {
+        providerFilter = value
+        currentPage = 1
+    }
+
+    func setModelFilter(_ value: String) {
+        modelFilter = value
+        currentPage = 1
+    }
+
+    func setStatusFilter(_ value: String) {
+        statusFilter = value
+        currentPage = 1
+    }
+
+    func setSearchQuery(_ value: String) {
+        searchQuery = value
+        currentPage = 1
+    }
+
+    func setSort(_ value: UsageExplorerSort) {
+        explorerSort = value
+    }
+
+    func setPageSize(_ value: Int) {
+        pageSize = value
+        currentPage = 1
+    }
+
+    func goToPreviousPage() {
+        currentPage = max(1, currentPage - 1)
+    }
+
+    func goToNextPage() {
+        currentPage = min(totalPages, currentPage + 1)
+    }
+
+    func exportExplorer(asJSON: Bool) {
+        let savePanel = NSSavePanel()
+        savePanel.canCreateDirectories = true
+        savePanel.nameFieldStringValue = suggestedExportFilename(asJSON: asJSON)
+        savePanel.allowedContentTypes = [asJSON ? .json : .commaSeparatedText]
+
+        guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+
+        do {
+            let content = try exportPayload(asJSON: asJSON)
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            coreState = .failed(error.localizedDescription)
+        }
+    }
+
+    private func sortSessions(_ rows: [UsageSessionAnalyticsRow]) -> [UsageSessionAnalyticsRow] {
+        rows.sorted { left, right in
+            switch explorerSort {
+            case .costDesc:
+                return compare(left.totalCostUsd, right.totalCostUsd, fallback: left.sessionName < right.sessionName)
+            case .tokensDesc:
+                return compare(left.totalTokens, right.totalTokens, fallback: left.sessionName < right.sessionName)
+            case .recentDesc:
+                return (left.lastHeartbeat > right.lastHeartbeat) || (left.lastHeartbeat == right.lastHeartbeat && left.sessionName < right.sessionName)
+            }
+        }
+    }
+
+    private func sortTasks(_ rows: [UsageTaskAnalyticsRow]) -> [UsageTaskAnalyticsRow] {
+        rows.sorted { left, right in
+            switch explorerSort {
+            case .costDesc:
+                return compare(left.totalCostUsd, right.totalCostUsd, fallback: left.title < right.title)
+            case .tokensDesc:
+                return compare(left.totalTokens, right.totalTokens, fallback: left.title < right.title)
+            case .recentDesc:
+                return (left.lastActivityAt ?? "") > (right.lastActivityAt ?? "")
+            }
+        }
+    }
+
+    private func compare<T: Comparable>(_ left: T, _ right: T, fallback: Bool) -> Bool {
+        if left == right { return fallback }
+        return left > right
+    }
+
+    private func paginate<T>(_ rows: [T]) -> [T] {
+        let startIndex = max(0, (currentPage - 1) * pageSize)
+        guard startIndex < rows.count else { return [] }
+        let endIndex = min(rows.count, startIndex + pageSize)
+        return Array(rows[startIndex..<endIndex])
+    }
+
+    private func suggestedExportFilename(asJSON: Bool) -> String {
+        let base = explorerMode == .sessions ? "usage-sessions" : "usage-tasks"
+        let scopeLabel = scope == .project ? "project" : "global"
+        let dateLabel = "\(formatDate(rangeStart))_to_\(formatDate(rangeEnd))"
+        return sanitizeFilename("\(base)-\(scopeLabel)-\(dateLabel)").appending(asJSON ? ".json" : ".csv")
+    }
+
+    private func exportPayload(asJSON: Bool) throws -> String {
+        if asJSON {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+
+            if explorerMode == .sessions {
+                let data = try encoder.encode(filteredSessions)
+                return String(decoding: data, as: UTF8.self)
+            } else {
+                let data = try encoder.encode(filteredTasks)
+                return String(decoding: data, as: UTF8.self)
+            }
+        }
+
+        if explorerMode == .sessions {
+            return sessionCSV(filteredSessions)
+        } else {
+            return taskCSV(filteredTasks)
+        }
+    }
+
+    private func sessionCSV(_ rows: [UsageSessionAnalyticsRow]) -> String {
+        let header = [
+            "project_name", "session_id", "session_name", "session_status", "branch",
+            "task_id", "task_title", "task_status", "providers", "models",
+            "total_input_tokens", "total_output_tokens", "total_tokens", "total_cost_usd",
+            "started_at", "last_heartbeat",
+        ]
+        let body = rows.map { row in
+            csv([
+                row.projectName, row.sessionID, row.sessionName, row.sessionStatus, row.branch ?? "",
+                row.taskID ?? "", row.taskTitle ?? "", row.taskStatus ?? "",
+                row.providers.joined(separator: " | "), row.models.joined(separator: " | "),
+                "\(row.totalInputTokens)", "\(row.totalOutputTokens)", "\(row.totalTokens)",
+                String(format: "%.4f", row.totalCostUsd),
+                row.startedAt, row.lastHeartbeat,
+            ])
+        }
+        return ([csv(header)] + body).joined(separator: "\n")
+    }
+
+    private func taskCSV(_ rows: [UsageTaskAnalyticsRow]) -> String {
+        let header = [
+            "project_name", "task_id", "title", "status", "providers", "models",
+            "session_count", "total_input_tokens", "total_output_tokens", "total_tokens",
+            "total_cost_usd", "last_activity_at",
+        ]
+        let body = rows.map { row in
+            csv([
+                row.projectName, row.taskID, row.title, row.status,
+                row.providers.joined(separator: " | "), row.models.joined(separator: " | "),
+                "\(row.sessionCount)", "\(row.totalInputTokens)", "\(row.totalOutputTokens)",
+                "\(row.totalTokens)", String(format: "%.4f", row.totalCostUsd),
+                row.lastActivityAt ?? "",
+            ])
+        }
+        return ([csv(header)] + body).joined(separator: "\n")
+    }
+
+    private func csv(_ values: [String]) -> String {
+        values
+            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+            .joined(separator: ",")
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        usageRequestDayFormatter.string(from: date)
+    }
+
+    private func requestParams() -> UsageRequestParams {
+        UsageRequestParams(
+            scope: scope.rawValue,
+            from: formatRequestDay(rangeStart),
+            to: formatRequestDay(rangeEnd)
+        )
+    }
+
+    private func formatRequestDay(_ date: Date) -> String {
+        usageRequestDayFormatter.string(from: date)
+    }
+
+    private func loadCore(showLoadingState: Bool) {
         guard let bus = commandBus else {
-            viewState = .failed("Usage is unavailable because the command bus is not configured.")
+            coreState = .failed("Usage is unavailable because the command bus is not configured.")
             return
         }
-        if showLoadingState, providers.isEmpty {
-            viewState = .loading("Loading usage data...")
+
+        if showLoadingState {
+            coreState = .loading("Loading usage intelligence...")
         }
-        loadTask?.cancel()
-        loadTask = Task { [weak self] in
+
+        let params = requestParams()
+        coreTask?.cancel()
+        coreTask = Task { [weak self] in
             guard let self else { return }
             do {
-                struct DaysParams: Encodable { let days: Int }
-                let result: [ProviderUsageSnapshot] = try await bus.call(
-                    method: "usage.local_snapshot",
-                    params: DaysParams(days: 30)
+                async let summary: UsageAnalyticsSummary = bus.call(
+                    method: "analytics.usage_summary",
+                    params: params
                 )
+                async let sessions: [UsageSessionAnalyticsRow] = bus.call(
+                    method: "analytics.usage_sessions",
+                    params: params
+                )
+                async let tasks: [UsageTaskAnalyticsRow] = bus.call(
+                    method: "analytics.usage_tasks",
+                    params: params
+                )
+
+                let resultSummary = try await summary
+                let resultSessions = try await sessions
+                let resultTasks = try await tasks
+
                 guard !Task.isCancelled else { return }
-                self.providers = result
-                self.viewState = .ready
+                self.summary = resultSummary
+                self.sessions = resultSessions
+                self.tasks = resultTasks
+                self.currentPage = min(self.currentPage, self.totalPages)
+                self.coreState = .ready
             } catch {
                 guard !Task.isCancelled else { return }
-                self.handleLoadFailure(error)
+                self.handleCoreFailure(error)
+            }
+        }
+    }
+
+    private func loadDiagnostics(showLoadingState: Bool) {
+        guard let bus = commandBus else {
+            diagnosticsState = .failed("Diagnostics are unavailable because the command bus is not configured.")
+            return
+        }
+
+        if showLoadingState {
+            diagnosticsState = .loading("Loading usage diagnostics...")
+        }
+
+        let params = requestParams()
+        diagnosticsTask?.cancel()
+        diagnosticsTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result: UsageDiagnostics = try await bus.call(
+                    method: "analytics.usage_diagnostics",
+                    params: params
+                )
+                guard !Task.isCancelled else { return }
+                self.diagnostics = result
+                self.diagnosticsState = .ready
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.diagnosticsState = .failed(error.localizedDescription)
             }
         }
     }
 
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
         switch state {
-        case .idle:
-            load(showLoadingState: providers.isEmpty)
-        case .opening:
-            viewState = .waiting("Waiting for project activation...")
+        case .idle, .opening:
+            coreState = .waiting("Waiting for project activation...")
         case .open:
-            load(showLoadingState: providers.isEmpty)
+            loadCore(showLoadingState: summary == nil)
+            if segment == .diagnostics, diagnostics == nil {
+                loadDiagnostics(showLoadingState: true)
+            }
         case .failed(_, _, let message):
-            viewState = .failed(message)
+            coreState = .failed(message)
         case .closed:
-            loadTask?.cancel()
-            providers = []
-            load(showLoadingState: true)
+            coreTask?.cancel()
+            diagnosticsTask?.cancel()
+            summary = nil
+            sessions = []
+            tasks = []
+            diagnostics = nil
+            coreState = .waiting("Open a project to load usage intelligence.")
+            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
         }
     }
 
-    private func handleLoadFailure(_ error: Error) {
+    private func handleCoreFailure(_ error: Error) {
         if PnevmaError.isProjectNotReady(error) {
-            viewState = .waiting("Waiting for project activation...")
+            coreState = .waiting("Waiting for project activation...")
             return
         }
-        viewState = .failed(error.localizedDescription)
+        coreState = .failed(error.localizedDescription)
+    }
+}
+
+private struct UsageRequestParams: Encodable {
+    let scope: String
+    let from: String
+    let to: String
+}
+
+// MARK: - Root View
+
+struct UsageView: View {
+    @State private var viewModel = UsageViewModel()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+
+            if let statusMessage = viewModel.statusMessage {
+                VStack(spacing: 8) {
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    EmptyStateView(
+                        icon: "chart.bar.doc.horizontal",
+                        title: statusMessage,
+                        message: "Open a project or switch to global scope to inspect tracked usage."
+                    )
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 0) {
+                    segmentPicker
+                    Divider()
+                    segmentContent
+                }
+            }
+        }
+        .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.analytics")
+    }
+
+    private var toolbar: some View {
+        VStack(spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Usage Intelligence")
+                        .font(.headline)
+                    Text("Track spend, token flow, activity timing, and provider parity")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    viewModel.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("r", modifiers: .command)
+                .accessibilityLabel("Refresh usage intelligence")
+            }
+
+            HStack(spacing: 10) {
+                Picker("Scope", selection: Binding(
+                    get: { viewModel.scope },
+                    set: { viewModel.setScope($0) }
+                )) {
+                    ForEach(UsageScope.allCases) { scope in
+                        Text(scope.label).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+
+                QuickRangeButton(title: "1D") {
+                    viewModel.applyQuickRange(days: 1)
+                }
+                QuickRangeButton(title: "7D") {
+                    viewModel.applyQuickRange(days: 7)
+                }
+                QuickRangeButton(title: "30D") {
+                    viewModel.applyQuickRange(days: 30)
+                }
+                QuickRangeButton(title: "90D") {
+                    viewModel.applyQuickRange(days: 90)
+                }
+
+                Divider()
+                    .frame(height: 18)
+
+                DatePicker(
+                    "From",
+                    selection: Binding(
+                        get: { viewModel.rangeStart },
+                        set: { viewModel.updateDates(start: $0) }
+                    ),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+
+                DatePicker(
+                    "To",
+                    selection: Binding(
+                        get: { viewModel.rangeEnd },
+                        set: { viewModel.updateDates(end: $0) }
+                    ),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+
+                Spacer()
+            }
+        }
+        .padding(12)
+    }
+
+    private var segmentPicker: some View {
+        HStack {
+            Picker("Segment", selection: Binding(
+                get: { viewModel.segment },
+                set: { viewModel.setSegment($0) }
+            )) {
+                ForEach(UsageSegment.allCases) { segment in
+                    Text(segment.label).tag(segment)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 300)
+
+            Spacer()
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private var segmentContent: some View {
+        switch viewModel.segment {
+        case .overview:
+            OverviewSegment(viewModel: viewModel)
+        case .explorer:
+            ExplorerSegment(viewModel: viewModel)
+        case .diagnostics:
+            DiagnosticsSegment(viewModel: viewModel)
+        }
+    }
+}
+
+// MARK: - Overview
+
+private struct OverviewSegment: View {
+    let viewModel: UsageViewModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let summary = viewModel.summary {
+                    metricsGrid(summary: summary)
+                    trendCard(summary: summary)
+
+                    HStack(alignment: .top, spacing: 14) {
+                        BreakdownCard(
+                            title: "Top Providers",
+                            caption: "Spend by provider in the selected window",
+                            items: summary.topProviders
+                        )
+                        BreakdownCard(
+                            title: "Top Models",
+                            caption: "Spend grouped by model and provider",
+                            items: summary.topModels
+                        )
+                    }
+
+                    HStack(alignment: .top, spacing: 14) {
+                        ActivityCard(activity: summary.activity)
+                        TopTasksCard(tasks: summary.topTasks)
+                    }
+
+                    ErrorHotspotsCard(hotspots: summary.errorHotspots)
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private func metricsGrid(summary: UsageAnalyticsSummary) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+            MetricCard(label: "Total Cost", value: formatCost(summary.totals.totalCostUsd))
+            MetricCard(label: "Total Tokens", value: formatCompactTokens(summary.totals.totalTokens))
+            MetricCard(label: "Avg Daily Cost", value: formatCost(summary.totals.avgDailyCostUsd))
+            MetricCard(label: "Avg Daily Tokens", value: formatCompactTokens(summary.totals.avgDailyTokens))
+            MetricCard(label: "Active Sessions", value: "\(summary.totals.activeSessions)")
+            MetricCard(label: "Tasks With Spend", value: "\(summary.totals.tasksWithSpend)")
+            MetricCard(label: "Input Tokens", value: formatCompactTokens(summary.totals.totalInputTokens))
+            MetricCard(label: "Output Tokens", value: formatCompactTokens(summary.totals.totalOutputTokens))
+            MetricCard(label: "Error Hotspots", value: "\(summary.totals.errorHotspotCount)")
+        }
+    }
+
+    private func trendCard(summary: UsageAnalyticsSummary) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Daily Trend")
+                            .font(.headline)
+                        Text("\(summary.from) to \(summary.to)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Picker("Metric", selection: Binding(
+                        get: { viewModel.trendMetric },
+                        set: { viewModel.trendMetric = $0 }
+                    )) {
+                        ForEach(UsageTrendMetric.allCases) { metric in
+                            Text(metric.label).tag(metric)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 170)
+                }
+
+                if summary.dailyTrend.isEmpty {
+                    EmptyStateView(
+                        icon: "waveform.path.ecg",
+                        title: "No usage in this range",
+                        message: "Adjust the range or switch scope to inspect a broader window."
+                    )
+                    .frame(height: 220)
+                } else {
+                    Chart {
+                        ForEach(summary.dailyTrend) { point in
+                            if viewModel.trendMetric == .cost {
+                                LineMark(
+                                    x: .value("Date", point.parsedDate),
+                                    y: .value("Cost", point.estimatedUsd)
+                                )
+                                .interpolationMethod(.catmullRom)
+                                .foregroundStyle(Color.accentColor)
+
+                                AreaMark(
+                                    x: .value("Date", point.parsedDate),
+                                    y: .value("Cost", point.estimatedUsd)
+                                )
+                                .foregroundStyle(Color.accentColor.opacity(0.18))
+                            } else {
+                                BarMark(
+                                    x: .value("Date", point.parsedDate),
+                                    y: .value("Input", point.tokensIn)
+                                )
+                                .foregroundStyle(.blue.opacity(0.7))
+
+                                BarMark(
+                                    x: .value("Date", point.parsedDate),
+                                    y: .value("Output", point.tokensOut)
+                                )
+                                .foregroundStyle(.green.opacity(0.7))
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .day, count: max(1, summary.dailyTrend.count / 6))) { _ in
+                            AxisGridLine()
+                            AxisTick()
+                            AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                        }
+                    }
+                    .frame(height: 220)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Explorer
+
+private struct ExplorerSegment: View {
+    let viewModel: UsageViewModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterBar
+            Divider()
+
+            HStack {
+                Picker("Rows", selection: Binding(
+                    get: { viewModel.explorerMode },
+                    set: { viewModel.setExplorerMode($0) }
+                )) {
+                    ForEach(UsageExplorerMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+
+                Spacer()
+
+                Picker("Sort", selection: Binding(
+                    get: { viewModel.explorerSort },
+                    set: { viewModel.setSort($0) }
+                )) {
+                    ForEach(UsageExplorerSort.allCases) { sort in
+                        Text(sort.label).tag(sort)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 110)
+
+                Picker("Page Size", selection: Binding(
+                    get: { viewModel.pageSize },
+                    set: { viewModel.setPageSize($0) }
+                )) {
+                    Text("25").tag(25)
+                    Text("50").tag(50)
+                    Text("100").tag(100)
+                }
+                .pickerStyle(.menu)
+                .frame(width: 90)
+
+                Button("Export CSV") {
+                    viewModel.exportExplorer(asJSON: false)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Export JSON") {
+                    viewModel.exportExplorer(asJSON: true)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(12)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    if viewModel.explorerMode == .sessions {
+                        SessionExplorerTable(rows: viewModel.visibleSessions)
+                    } else {
+                        TaskExplorerTable(rows: viewModel.visibleTasks)
+                    }
+                }
+                .padding(16)
+            }
+
+            Divider()
+
+            HStack {
+                Text(viewModel.pageDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button("Prev") {
+                    viewModel.goToPreviousPage()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.currentPage <= 1)
+
+                Button("Next") {
+                    viewModel.goToNextPage()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.currentPage >= viewModel.totalPages)
+            }
+            .padding(12)
+        }
+    }
+
+    private var filterBar: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                MenuPicker(
+                    title: "Provider",
+                    selection: viewModel.providerFilter,
+                    options: viewModel.availableProviders,
+                    action: viewModel.setProviderFilter(_:))
+
+                MenuPicker(
+                    title: "Model",
+                    selection: viewModel.modelFilter,
+                    options: viewModel.availableModels,
+                    action: viewModel.setModelFilter(_:))
+
+                MenuPicker(
+                    title: "Status",
+                    selection: viewModel.statusFilter,
+                    options: viewModel.availableStatuses,
+                    action: viewModel.setStatusFilter(_:))
+
+                TextField(
+                    "Search session, task, branch, provider, model...",
+                    text: Binding(
+                        get: { viewModel.searchQuery },
+                        set: { viewModel.setSearchQuery($0) }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+            }
+        }
+        .padding(12)
+    }
+}
+
+// MARK: - Diagnostics
+
+private struct DiagnosticsSegment: View {
+    let viewModel: UsageViewModel
+
+    var body: some View {
+        Group {
+            if let message = viewModel.diagnosticsMessage, viewModel.diagnostics == nil {
+                VStack(spacing: 8) {
+                    if viewModel.isDiagnosticsLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    EmptyStateView(
+                        icon: "stethoscope",
+                        title: message,
+                        message: "Diagnostics exposes tracked/untracked usage rows plus local provider snapshot health."
+                    )
+                }
+            } else if let diagnostics = viewModel.diagnostics {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                            MetricCard(label: "Tracked Cost Rows", value: formatTokens(diagnostics.trackedCostRows))
+                            MetricCard(label: "Untracked Cost Rows", value: formatTokens(diagnostics.untrackedCostRows))
+                            MetricCard(label: "Projects", value: "\(diagnostics.projectNames.count)")
+                        }
+
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Tracking Health")
+                                    .font(.headline)
+                                Text("Overview and Explorer use tracked Pnevma cost analytics. Local provider snapshots below are diagnostic-only.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                DetailRow(label: "Scope", value: diagnostics.scope.capitalized)
+                                DetailRow(label: "Window", value: "\(diagnostics.from) to \(diagnostics.to)")
+                                DetailRow(label: "Projects", value: diagnostics.projectNames.joined(separator: ", "))
+                                DetailRow(label: "Last Tracked Cost", value: formatRelativeTimestamp(diagnostics.lastTrackedCostAt))
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Local Provider Parity")
+                                .font(.headline)
+                            Text("These values come from local Claude/Codex session files and are shown for operator diagnostics, not primary cost rollups.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            ForEach(diagnostics.localProviderSnapshots) { snapshot in
+                                ProviderDiagnosticsCard(snapshot: snapshot)
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Cards
+
+private struct BreakdownCard: View {
+    let title: String
+    let caption: String
+    let items: [UsageBreakdownItem]
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if items.isEmpty {
+                    Text("No breakdown data in this window.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(items) { item in
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.label)
+                                    .font(.subheadline)
+                                if let secondary = item.secondaryLabel {
+                                    Text(secondary)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(formatCost(item.estimatedUsd))
+                                    .font(.subheadline.monospacedDigit())
+                                Text("\(formatCompactTokens(item.totalTokens)) tok • \(item.recordCount) rec")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Divider()
+                    }
+                }
+            }
+        } label: {
+            Text(title)
+                .font(.headline)
+        }
+    }
+}
+
+private struct ActivityCard: View {
+    let activity: UsageActivity
+
+    private var weekdayMax: Int {
+        max(activity.weekdays.map(\.totalTokens).max() ?? 0, 1)
+    }
+
+    private var hourMax: Int {
+        max(activity.hours.map(\.totalTokens).max() ?? 0, 1)
+    }
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("When usage happens")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Day of Week")
+                        .font(.subheadline)
+                    HStack(spacing: 6) {
+                        ForEach(activity.weekdays) { bucket in
+                            VStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.accentColor.opacity(opacity(bucket.totalTokens, maxValue: weekdayMax)))
+                                    .frame(width: 34, height: 26)
+                                Text(bucket.label)
+                                    .font(.caption2)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hour of Day")
+                        .font(.subheadline)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 6), spacing: 4) {
+                        ForEach(activity.hours) { bucket in
+                            VStack(spacing: 3) {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.blue.opacity(opacity(bucket.totalTokens, maxValue: hourMax)))
+                                    .frame(height: 18)
+                                Text("\(bucket.index)")
+                                    .font(.caption2)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Text("Activity")
+                .font(.headline)
+        }
+    }
+
+    private func opacity(_ value: Int, maxValue: Int) -> Double {
+        guard maxValue > 0, value > 0 else { return 0.08 }
+        return min(0.9, max(0.12, Double(value) / Double(maxValue)))
+    }
+}
+
+private struct TopTasksCard: View {
+    let tasks: [UsageTaskAnalyticsRow]
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Most expensive tasks in the selected window")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if tasks.isEmpty {
+                    Text("No task-level usage data in this range.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(tasks) { task in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.title)
+                                    .font(.subheadline)
+                                Text("\(task.projectName) • \(task.status)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(formatCost(task.totalCostUsd))
+                                    .font(.subheadline.monospacedDigit())
+                                Text("\(formatCompactTokens(task.totalTokens)) tok")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Divider()
+                    }
+                }
+            }
+        } label: {
+            Text("Top Tasks")
+                .font(.headline)
+        }
+    }
+}
+
+private struct ErrorHotspotsCard: View {
+    let hotspots: [UsageErrorHotspot]
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                if hotspots.isEmpty {
+                    Text("No error hotspots recorded yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(hotspots) { hotspot in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(hotspot.category.capitalized)
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.orange.opacity(0.2)))
+                                Spacer()
+                                Text("\(hotspot.totalCount)x")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(hotspot.canonicalMessage)
+                                .font(.subheadline)
+                            if let hint = hotspot.remediationHint {
+                                Text(hint)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text("Last seen \(formatRelativeTimestamp(hotspot.lastSeen))")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Divider()
+                    }
+                }
+            }
+        } label: {
+            Text("Error Hotspots")
+                .font(.headline)
+        }
+    }
+}
+
+private struct ProviderDiagnosticsCard: View {
+    let snapshot: ProviderUsageSnapshot
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(snapshot.displayName)
+                        .font(.headline)
+                    Spacer()
+                    StatusPill(status: snapshot.status)
+                }
+
+                if let errorMessage = snapshot.errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if snapshot.hasData {
+                    HStack(spacing: 14) {
+                        DetailRow(label: "Requests", value: formatTokens(snapshot.totals.totalRequests))
+                        DetailRow(label: "Input", value: formatCompactTokens(snapshot.totals.totalInputTokens))
+                        DetailRow(label: "Output", value: formatCompactTokens(snapshot.totals.totalOutputTokens))
+                    }
+
+                    if let topModel = snapshot.topModels.first {
+                        DetailRow(
+                            label: "Top Model",
+                            value: "\(topModel.model) • \(String(format: "%.1f", topModel.sharePercent))%"
+                        )
+                    }
+
+                    if let peakDay = snapshot.totals.peakDay {
+                        DetailRow(
+                            label: "Peak Day",
+                            value: "\(formatDateLabel(peakDay)) • \(formatCompactTokens(snapshot.totals.peakDayTokens)) tok"
+                        )
+                    }
+                } else {
+                    Text(snapshot.status == "no_data"
+                         ? "No local session files detected for this provider in the selected window."
+                         : "No usage data available for this provider.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+private struct StatusPill: View {
+    let status: String
+
+    private var color: Color {
+        switch status {
+        case "ok": return .green
+        case "no_data": return .orange
+        case "error": return .red
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        Text(status.replacingOccurrences(of: "_", with: " ").capitalized)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.18)))
+            .foregroundStyle(color)
+    }
+}
+
+private struct DetailRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption.monospacedDigit())
+        }
+    }
+}
+
+private struct QuickRangeButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(title, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+    }
+}
+
+private struct MenuPicker: View {
+    let title: String
+    let selection: String
+    let options: [String]
+    let action: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button(option) {
+                    action(option)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                    .foregroundStyle(.secondary)
+                Text(selection)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.secondary.opacity(0.08))
+            )
+        }
+        .menuStyle(.borderlessButton)
+    }
+}
+
+// MARK: - Explorer Tables
+
+private struct SessionExplorerTable: View {
+    let rows: [UsageSessionAnalyticsRow]
+
+    var body: some View {
+        GroupBox {
+            VStack(spacing: 0) {
+                ExplorerHeader(columns: ["Project", "Session", "Task", "Providers", "Models", "Status", "Tokens", "Cost", "Last"])
+
+                if rows.isEmpty {
+                    EmptyStateView(
+                        icon: "rectangle.stack.badge.person.crop",
+                        title: "No sessions match the current filters",
+                        message: "Adjust the filters or widen the date range."
+                    )
+                    .frame(height: 220)
+                } else {
+                    ForEach(rows) { row in
+                        VStack(spacing: 0) {
+                            HStack(alignment: .top, spacing: 10) {
+                                ExplorerCell(row.projectName, width: 120)
+                                ExplorerCell("\(row.sessionName)\n\(row.sessionID)", width: 220)
+                                ExplorerCell(row.taskTitle ?? "—", width: 180, secondary: row.taskStatus)
+                                ExplorerCell(row.providers.joined(separator: ", "), width: 110)
+                                ExplorerCell(row.models.joined(separator: ", "), width: 170)
+                                ExplorerCell(row.sessionStatus, width: 90, secondary: row.branch)
+                                ExplorerCell(formatCompactTokens(row.totalTokens), width: 90, alignment: .trailing)
+                                ExplorerCell(formatCost(row.totalCostUsd), width: 90, alignment: .trailing)
+                                ExplorerCell(formatRelativeTimestamp(row.lastHeartbeat), width: 90, alignment: .trailing)
+                            }
+                            .padding(.vertical, 8)
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct TaskExplorerTable: View {
+    let rows: [UsageTaskAnalyticsRow]
+
+    var body: some View {
+        GroupBox {
+            VStack(spacing: 0) {
+                ExplorerHeader(columns: ["Project", "Task", "Status", "Providers", "Models", "Sessions", "Tokens", "Cost", "Last"])
+
+                if rows.isEmpty {
+                    EmptyStateView(
+                        icon: "list.bullet.rectangle",
+                        title: "No tasks match the current filters",
+                        message: "Adjust the filters or widen the date range."
+                    )
+                    .frame(height: 220)
+                } else {
+                    ForEach(rows) { row in
+                        VStack(spacing: 0) {
+                            HStack(alignment: .top, spacing: 10) {
+                                ExplorerCell(row.projectName, width: 120)
+                                ExplorerCell("\(row.title)\n\(row.taskID)", width: 240)
+                                ExplorerCell(row.status, width: 90)
+                                ExplorerCell(row.providers.joined(separator: ", "), width: 110)
+                                ExplorerCell(row.models.joined(separator: ", "), width: 170)
+                                ExplorerCell("\(row.sessionCount)", width: 70, alignment: .trailing)
+                                ExplorerCell(formatCompactTokens(row.totalTokens), width: 90, alignment: .trailing)
+                                ExplorerCell(formatCost(row.totalCostUsd), width: 90, alignment: .trailing)
+                                ExplorerCell(formatRelativeTimestamp(row.lastActivityAt), width: 90, alignment: .trailing)
+                            }
+                            .padding(.vertical, 8)
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ExplorerHeader: View {
+    let columns: [String]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(columns, id: \.self) { title in
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.bottom, 8)
+    }
+}
+
+private struct ExplorerCell: View {
+    let text: String
+    let width: CGFloat
+    var secondary: String? = nil
+    var alignment: Alignment = .leading
+
+    init(_ text: String, width: CGFloat, secondary: String? = nil, alignment: Alignment = .leading) {
+        self.text = text
+        self.width = width
+        self.secondary = secondary
+        self.alignment = alignment
+    }
+
+    var body: some View {
+        VStack(alignment: alignment == .trailing ? .trailing : .leading, spacing: 2) {
+            Text(text)
+                .font(.caption)
+                .lineLimit(2)
+            if let secondary, !secondary.isEmpty {
+                Text(secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: width, alignment: alignment)
     }
 }
 
@@ -452,7 +1800,7 @@ final class UsageViewModel {
 
 final class UsagePaneView: NSView, PaneContent {
     let paneID = PaneID()
-    let paneType = "analytics"  // Keep internal type for backwards compatibility
+    let paneType = "analytics"
     let shouldPersist = true
     var title: String { "Usage" }
 

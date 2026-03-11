@@ -39,7 +39,7 @@ final class NativeContractDecodingTests: XCTestCase {
         XCTAssertEqual(workflowDetail.steps.first?.taskId, "task-1")
     }
 
-    func testUsageSnapshotAndDailyBriefContractsDecodeRepresentativePayloads() throws {
+    func testUsageAnalyticsAndDailyBriefContractsDecodeRepresentativePayloads() throws {
         let usageSnapshots = try decoder.decode(
             [ProviderUsageSnapshot].self,
             from: Data(
@@ -50,6 +50,35 @@ final class NativeContractDecodingTests: XCTestCase {
         XCTAssertEqual(usageSnapshots.first?.totals.totalRequests, 3)
         XCTAssertEqual(usageSnapshots.first?.days.first?.inputTokens, 1200)
         XCTAssertEqual(usageSnapshots.first?.topModels.first?.model, "claude-sonnet")
+
+        let usageSummary = try decoder.decode(
+            UsageAnalyticsSummary.self,
+            from: Data(
+                #"{"scope":"project","from":"2026-03-01","to":"2026-03-08","totals":{"total_input_tokens":1200,"total_output_tokens":2400,"total_tokens":3600,"total_cost_usd":2.75,"avg_daily_cost_usd":0.34,"avg_daily_tokens":450,"active_sessions":2,"tasks_with_spend":3,"error_hotspot_count":1},"daily_trend":[{"date":"2026-03-08","tokens_in":1200,"tokens_out":2400,"estimated_usd":2.75}],"top_providers":[{"key":"claude","label":"claude","secondary_label":null,"total_tokens":3600,"estimated_usd":2.75,"record_count":3}],"top_models":[{"key":"claude-sonnet","label":"claude-sonnet","secondary_label":"claude","total_tokens":3600,"estimated_usd":2.75,"record_count":3}],"top_tasks":[{"project_name":"Pnevma","task_id":"task-1","title":"Ship usage pane","status":"Review","providers":["claude"],"models":["claude-sonnet"],"session_count":1,"total_input_tokens":1200,"total_output_tokens":2400,"total_tokens":3600,"total_cost_usd":2.75,"last_activity_at":"2026-03-08T00:05:00Z"}],"activity":{"weekdays":[{"index":0,"label":"Mon","total_tokens":1200,"estimated_usd":0.75}],"hours":[{"index":12,"label":"12:00","total_tokens":2400,"estimated_usd":2.0}]},"error_hotspots":[{"id":"err-1","signature_hash":"sig-1","canonical_message":"Build failed","category":"compiler","first_seen":"2026-03-08T00:00:00Z","last_seen":"2026-03-08T00:05:00Z","total_count":4,"sample_output":"error: bad","remediation_hint":"Run cargo check"}]}"#.utf8
+            )
+        )
+        XCTAssertEqual(usageSummary.scope, "project")
+        XCTAssertEqual(usageSummary.totals.totalTokens, 3600)
+        XCTAssertEqual(usageSummary.topTasks.first?.title, "Ship usage pane")
+        XCTAssertEqual(usageSummary.activity.hours.first?.index, 12)
+
+        let sessionRows = try decoder.decode(
+            [UsageSessionAnalyticsRow].self,
+            from: Data(
+                #"[{"project_name":"Pnevma","session_id":"session-1","session_name":"Codex Run","session_status":"running","branch":"task/usage","task_id":"task-1","task_title":"Ship usage pane","task_status":"Review","providers":["claude"],"models":["claude-sonnet"],"total_input_tokens":1200,"total_output_tokens":2400,"total_tokens":3600,"total_cost_usd":2.75,"started_at":"2026-03-08T00:00:00Z","last_heartbeat":"2026-03-08T00:05:00Z"}]"#.utf8
+            )
+        )
+        XCTAssertEqual(sessionRows.first?.sessionID, "session-1")
+        XCTAssertEqual(sessionRows.first?.providers, ["claude"])
+
+        let diagnostics = try decoder.decode(
+            UsageDiagnostics.self,
+            from: Data(
+                #"{"scope":"global","from":"2026-03-01","to":"2026-03-08","project_names":["Pnevma","ClawControl"],"tracked_cost_rows":8,"untracked_cost_rows":2,"last_tracked_cost_at":"2026-03-08T00:05:00Z","local_provider_snapshots":[{"provider":"codex","status":"no_data","error_message":null,"days":[],"totals":{"total_input_tokens":0,"total_output_tokens":0,"total_cache_read_tokens":0,"total_cache_write_tokens":0,"total_requests":0,"avg_daily_tokens":0,"peak_day":null,"peak_day_tokens":0},"top_models":[]}]}"#.utf8
+            )
+        )
+        XCTAssertEqual(diagnostics.projectNames.count, 2)
+        XCTAssertEqual(diagnostics.localProviderSnapshots.first?.status, "no_data")
 
         let brief = try decoder.decode(
             DailyBrief.self,

@@ -1,16 +1,16 @@
 // usage_local.rs — Scans local JSONL session files from Claude Code and Codex CLI.
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeDelta, TimeZone};
-use serde::Serialize;
+use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, TimeDelta, TimeZone};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderUsageSnapshot {
     pub provider: String,
     pub status: String,
@@ -20,7 +20,7 @@ pub struct ProviderUsageSnapshot {
     pub top_models: Vec<ModelShare>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DailyTokenUsage {
     pub date: String,
     pub input_tokens: i64,
@@ -30,7 +30,7 @@ pub struct DailyTokenUsage {
     pub requests: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageSummary {
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
@@ -42,7 +42,7 @@ pub struct UsageSummary {
     pub peak_day_tokens: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelShare {
     pub model: String,
     pub tokens: i64,
@@ -53,13 +53,77 @@ pub struct ModelShare {
 
 /// Scans both Claude Code and Codex CLI local JSONL data and returns usage snapshots.
 pub async fn get_local_usage(days: Option<i64>) -> Vec<ProviderUsageSnapshot> {
-    let days = days.unwrap_or(30).clamp(1, 90) as u32;
-    tokio::task::spawn_blocking(move || vec![scan_claude_usage(days), scan_codex_usage(days)])
+    let window = LocalUsageWindow::rolling(days.unwrap_or(30).clamp(1, 90) as u32);
+    get_local_usage_window(window).await
+}
+
+/// Scans local usage for an explicit inclusive date range.
+pub async fn get_local_usage_for_dates(
+    from: Option<String>,
+    to: Option<String>,
+) -> Vec<ProviderUsageSnapshot> {
+    let window = LocalUsageWindow::from_params(from, to);
+    get_local_usage_window(window).await
+}
+
+async fn get_local_usage_window(window: LocalUsageWindow) -> Vec<ProviderUsageSnapshot> {
+    tokio::task::spawn_blocking(move || vec![scan_claude_usage(&window), scan_codex_usage(&window)])
         .await
         .unwrap_or_else(|_| vec![])
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct LocalUsageWindow {
+    day_keys: Vec<String>,
+    start_secs: i64,
+    end_secs: i64,
+}
+
+impl LocalUsageWindow {
+    fn rolling(days: u32) -> Self {
+        let end = Local::now().date_naive();
+        let start = end - TimeDelta::days(days as i64 - 1);
+        Self::from_dates(start, end)
+    }
+
+    fn from_params(from: Option<String>, to: Option<String>) -> Self {
+        let default = Self::rolling(30);
+        let mut start = from
+            .as_deref()
+            .and_then(parse_local_usage_date)
+            .unwrap_or_else(|| {
+                parse_local_usage_date(&default.day_keys[0]).unwrap_or(Local::now().date_naive())
+            });
+        let mut end = to
+            .as_deref()
+            .and_then(parse_local_usage_date)
+            .unwrap_or_else(|| {
+                default
+                    .day_keys
+                    .last()
+                    .and_then(|value| parse_local_usage_date(value))
+                    .unwrap_or_else(|| Local::now().date_naive())
+            });
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        Self::from_dates(start, end)
+    }
+
+    fn from_dates(start: NaiveDate, end: NaiveDate) -> Self {
+        Self {
+            day_keys: make_day_keys_between(start, end),
+            start_secs: local_day_boundary_secs(start, false),
+            end_secs: local_day_boundary_secs(end, true),
+        }
+    }
+
+    fn contains(&self, ts_secs: i64) -> bool {
+        ts_secs >= self.start_secs && ts_secs <= self.end_secs
+    }
+}
 
 /// Parse an ISO 8601 / RFC 3339 timestamp string into milliseconds since epoch.
 fn read_timestamp_ms(ts: &str) -> Option<i64> {
@@ -77,13 +141,16 @@ fn day_key_for_timestamp(ts_ms: i64) -> String {
     local.format("%Y-%m-%d").to_string()
 }
 
-/// Build an ordered list of YYYY-MM-DD date keys for the last `days` days (inclusive of today).
-fn make_day_keys(days: u32) -> Vec<String> {
-    let today = Local::now().date_naive();
-    (0..days as i64)
-        .rev()
+fn parse_local_usage_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
+}
+
+/// Build an ordered list of YYYY-MM-DD date keys for an inclusive local date range.
+fn make_day_keys_between(start: NaiveDate, end: NaiveDate) -> Vec<String> {
+    let span = (end - start).num_days().max(0);
+    (0..=span)
         .map(|offset| {
-            let date = today - TimeDelta::days(offset);
+            let date = start + TimeDelta::days(offset);
             date.format("%Y-%m-%d").to_string()
         })
         .collect()
@@ -96,16 +163,23 @@ fn day_dir_for_key(key: &str) -> Option<String> {
         .map(|d| format!("{}/{:02}/{:02}", d.year(), d.month(), d.day()))
 }
 
-/// Compute the Unix timestamp in seconds for the start-of-day cutoff (`days` ago).
-fn cutoff_secs(days: u32) -> i64 {
-    let today = Local::now().date_naive();
-    let cutoff_date = today - TimeDelta::days(days as i64 - 1);
-    // Start of that day in local time
-    Local
-        .from_local_datetime(&cutoff_date.and_hms_opt(0, 0, 0).unwrap())
-        .single()
-        .map(|dt| dt.timestamp())
-        .unwrap_or(0)
+fn local_day_boundary_secs(date: NaiveDate, end_of_day: bool) -> i64 {
+    let time = if end_of_day {
+        date.and_hms_milli_opt(23, 59, 59, 999).unwrap()
+    } else {
+        date.and_hms_opt(0, 0, 0).unwrap()
+    };
+    match Local.from_local_datetime(&time) {
+        LocalResult::Single(dt) => dt.timestamp(),
+        LocalResult::Ambiguous(first, second) => {
+            if end_of_day {
+                second.timestamp()
+            } else {
+                first.timestamp()
+            }
+        }
+        LocalResult::None => 0,
+    }
 }
 
 // ─── Shared accumulator types ─────────────────────────────────────────────────
@@ -231,7 +305,7 @@ fn error_snapshot(provider: &str, msg: impl Into<String>) -> ProviderUsageSnapsh
 
 // ─── Claude Code scanner ──────────────────────────────────────────────────────
 
-pub fn scan_claude_usage(days: u32) -> ProviderUsageSnapshot {
+fn scan_claude_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
     let home = match std::env::var_os("HOME") {
         Some(h) => PathBuf::from(h),
         None => return error_snapshot("claude", "HOME env var not set"),
@@ -258,8 +332,6 @@ pub fn scan_claude_usage(days: u32) -> ProviderUsageSnapshot {
         };
     }
 
-    let cutoff = cutoff_secs(days);
-    let day_keys = make_day_keys(days);
     let mut day_map: HashMap<String, DayAccum> = HashMap::new();
     let mut model_tokens: HashMap<String, i64> = HashMap::new();
 
@@ -294,29 +366,22 @@ pub fn scan_claude_usage(days: u32) -> ProviderUsageSnapshot {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0);
-                    if mtime_secs < cutoff {
+                    if mtime_secs < window.start_secs {
                         continue;
                     }
                 }
             }
 
-            parse_claude_file(
-                &file_path,
-                cutoff,
-                &day_keys,
-                &mut day_map,
-                &mut model_tokens,
-            );
+            parse_claude_file(&file_path, window, &mut day_map, &mut model_tokens);
         }
     }
 
-    build_snapshot("claude", &day_keys, day_map, model_tokens)
+    build_snapshot("claude", &window.day_keys, day_map, model_tokens)
 }
 
 fn parse_claude_file(
     path: &std::path::Path,
-    cutoff_secs: i64,
-    day_keys: &[String],
+    window: &LocalUsageWindow,
     day_map: &mut HashMap<String, DayAccum>,
     model_tokens: &mut HashMap<String, i64>,
 ) {
@@ -325,7 +390,7 @@ fn parse_claude_file(
         Err(_) => return,
     };
     let reader = BufReader::new(file);
-    let day_set: std::collections::HashSet<&str> = day_keys.iter().map(|s| s.as_str()).collect();
+    let day_set: HashSet<&str> = window.day_keys.iter().map(|s| s.as_str()).collect();
 
     for line in reader.lines() {
         let line = match line {
@@ -360,7 +425,7 @@ fn parse_claude_file(
             None => continue,
         };
         let ts_secs = ts_ms / 1_000;
-        if ts_secs < cutoff_secs {
+        if !window.contains(ts_secs) {
             continue;
         }
 
@@ -421,7 +486,7 @@ fn parse_claude_file(
 
 // ─── Codex CLI scanner ────────────────────────────────────────────────────────
 
-pub fn scan_codex_usage(days: u32) -> ProviderUsageSnapshot {
+fn scan_codex_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
     let home = match std::env::var_os("HOME") {
         Some(h) => PathBuf::from(h),
         None => return error_snapshot("codex", "HOME env var not set"),
@@ -448,12 +513,10 @@ pub fn scan_codex_usage(days: u32) -> ProviderUsageSnapshot {
         };
     }
 
-    let cutoff = cutoff_secs(days);
-    let day_keys = make_day_keys(days);
     let mut day_map: HashMap<String, DayAccum> = HashMap::new();
     let mut model_tokens: HashMap<String, i64> = HashMap::new();
 
-    for key in &day_keys {
+    for key in &window.day_keys {
         let dir_suffix = match day_dir_for_key(key) {
             Some(s) => s,
             None => continue,
@@ -475,11 +538,11 @@ pub fn scan_codex_usage(days: u32) -> ProviderUsageSnapshot {
                 continue;
             }
 
-            parse_codex_file(&file_path, cutoff, key, &mut day_map, &mut model_tokens);
+            parse_codex_file(&file_path, window, key, &mut day_map, &mut model_tokens);
         }
     }
 
-    build_snapshot("codex", &day_keys, day_map, model_tokens)
+    build_snapshot("codex", &window.day_keys, day_map, model_tokens)
 }
 
 /// Per-session delta tracking state for Codex cumulative totals.
@@ -492,7 +555,7 @@ struct CodexSessionState {
 
 fn parse_codex_file(
     path: &std::path::Path,
-    cutoff_secs: i64,
+    window: &LocalUsageWindow,
     day_key: &str,
     day_map: &mut HashMap<String, DayAccum>,
     model_tokens: &mut HashMap<String, i64>,
@@ -534,7 +597,7 @@ fn parse_codex_file(
             Some(ms) => ms,
             None => continue,
         };
-        if ts_ms / 1_000 < cutoff_secs {
+        if !window.contains(ts_ms / 1_000) {
             continue;
         }
 
@@ -623,5 +686,34 @@ fn parse_codex_file(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_window_swaps_dates_and_preserves_all_days() {
+        let window = LocalUsageWindow::from_params(
+            Some("2026-03-08".to_string()),
+            Some("2026-03-01".to_string()),
+        );
+
+        assert_eq!(
+            window.day_keys.first().map(String::as_str),
+            Some("2026-03-01")
+        );
+        assert_eq!(
+            window.day_keys.last().map(String::as_str),
+            Some("2026-03-08")
+        );
+        assert_eq!(window.day_keys.len(), 8);
+    }
+
+    #[test]
+    fn rolling_window_uses_requested_day_count() {
+        let window = LocalUsageWindow::rolling(7);
+        assert_eq!(window.day_keys.len(), 7);
     }
 }

@@ -2202,7 +2202,14 @@ pub async fn route_method(
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "usage.local_snapshot" => {
             let days = parse_optional_i64_param(params, "days");
-            serde_json::to_value(commands::get_local_usage(days).await)
+            let from = parse_optional_string_param(params, "from");
+            let to = parse_optional_string_param(params, "to");
+            let snapshots = if from.is_some() || to.is_some() {
+                commands::get_local_usage_for_dates(from, to).await
+            } else {
+                commands::get_local_usage(days).await
+            };
+            serde_json::to_value(snapshots)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "analytics.usage_breakdown" => {
@@ -2224,6 +2231,50 @@ pub async fn route_method(
             let days = parse_optional_i64_param(params, "days");
             serde_json::to_value(
                 commands::get_usage_daily_trend(days, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "analytics.usage_summary" => {
+            let scope = parse_optional_string_param(params, "scope");
+            let from = parse_optional_string_param(params, "from");
+            let to = parse_optional_string_param(params, "to");
+            serde_json::to_value(
+                commands::get_usage_summary(scope, from, to, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "analytics.usage_sessions" => {
+            let scope = parse_optional_string_param(params, "scope");
+            let from = parse_optional_string_param(params, "from");
+            let to = parse_optional_string_param(params, "to");
+            serde_json::to_value(
+                commands::get_usage_sessions(scope, from, to, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "analytics.usage_tasks" => {
+            let scope = parse_optional_string_param(params, "scope");
+            let from = parse_optional_string_param(params, "from");
+            let to = parse_optional_string_param(params, "to");
+            serde_json::to_value(
+                commands::get_usage_tasks(scope, from, to, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "analytics.usage_diagnostics" => {
+            let scope = parse_optional_string_param(params, "scope");
+            let from = parse_optional_string_param(params, "from");
+            let to = parse_optional_string_param(params, "to");
+            serde_json::to_value(
+                commands::get_usage_diagnostics(scope, from, to, state)
                     .await
                     .map_err(|e| ("internal_error".to_string(), e))?,
             )
