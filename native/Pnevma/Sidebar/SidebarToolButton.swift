@@ -50,12 +50,12 @@ struct SidebarToolButton: View {
                 Button {
                     onOpenAsTab?()
                 } label: {
-                    Label("Open as Tab", systemImage: "plus.square")
+                    Label("Show in Tab", systemImage: "plus.square")
                 }
                 Button {
                     onOpenAsPane?()
                 } label: {
-                    Label("Open as Pane", systemImage: "rectangle.split.2x1")
+                    Label("Show in Split Pane", systemImage: "rectangle.split.2x1")
                 }
             }
         }

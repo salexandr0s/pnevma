@@ -192,6 +192,105 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertFalse(engine1 === engine2)
     }
 
+    func testActiveTabPaneIDOfTypeReturnsPaneInCurrentTabOnly() {
+        let workspace = Workspace(name: "Test")
+        let browserPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
+        workspace.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: browserPaneID,
+            type: "browser",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        let analyticsTab = workspace.addTab(title: "Analytics")
+        let analyticsPaneID = analyticsTab.layoutEngine.root!.allPaneIDs.first!
+        analyticsTab.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: analyticsPaneID,
+            type: "analytics",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        XCTAssertEqual(workspace.activeTabPaneID(ofType: "analytics"), analyticsPaneID)
+        XCTAssertNil(workspace.activeTabPaneID(ofType: "browser"))
+
+        workspace.switchToTab(0)
+
+        XCTAssertEqual(workspace.activeTabPaneID(ofType: "browser"), browserPaneID)
+        XCTAssertNil(workspace.activeTabPaneID(ofType: "analytics"))
+    }
+
+    func testFirstPaneLocationOfTypeSearchesAcrossTabs() {
+        let workspace = Workspace(name: "Test")
+        let browserPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
+        workspace.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: browserPaneID,
+            type: "browser",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        let reviewTab = workspace.addTab(title: "Review")
+        let reviewPaneID = reviewTab.layoutEngine.root!.allPaneIDs.first!
+        reviewTab.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: reviewPaneID,
+            type: "review",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        XCTAssertEqual(
+            workspace.firstPaneLocation(ofType: "browser"),
+            WorkspacePaneLocation(tabIndex: 0, paneID: browserPaneID)
+        )
+        XCTAssertEqual(
+            workspace.firstPaneLocation(ofType: "review"),
+            WorkspacePaneLocation(tabIndex: 1, paneID: reviewPaneID)
+        )
+        XCTAssertNil(workspace.firstPaneLocation(ofType: "search"))
+    }
+
+    func testPreferredPaneLocationPrefersActiveTabOverEarlierTab() {
+        let workspace = Workspace(name: "Test")
+        let firstBrowserPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
+        workspace.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: firstBrowserPaneID,
+            type: "browser",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        let browserTab = workspace.addTab(title: "Browser")
+        let secondBrowserPaneID = browserTab.layoutEngine.root!.allPaneIDs.first!
+        browserTab.layoutEngine.upsertPersistedPane(PersistedPane(
+            paneID: secondBrowserPaneID,
+            type: "browser",
+            workingDirectory: nil,
+            sessionID: nil,
+            taskID: nil,
+            metadataJSON: nil
+        ))
+
+        XCTAssertEqual(
+            workspace.preferredPaneLocation(ofType: "browser"),
+            WorkspacePaneLocation(tabIndex: 1, paneID: secondBrowserPaneID)
+        )
+        XCTAssertEqual(
+            workspace.firstPaneLocation(ofType: "browser"),
+            WorkspacePaneLocation(tabIndex: 0, paneID: firstBrowserPaneID)
+        )
+    }
+
     // MARK: - Snapshot Round-Trip
 
     func testSnapshotRoundTripPreservesTabsAndActiveIndex() {

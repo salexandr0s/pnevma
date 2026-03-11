@@ -104,6 +104,11 @@ struct TerminalPaneSeed {
     let metadataJSON: String?
 }
 
+struct WorkspacePaneLocation: Equatable {
+    let tabIndex: Int
+    let paneID: PaneID
+}
+
 /// A single tab within a workspace. Each tab has its own pane layout.
 final class WorkspaceTab: Identifiable {
     let id: UUID
@@ -164,6 +169,14 @@ final class WorkspaceTab: Identifiable {
                 )
         )
         return true
+    }
+}
+
+extension WorkspaceTab {
+    func firstPaneID(ofType paneType: String) -> PaneID? {
+        layoutEngine.root?.allPaneIDs.first { paneID in
+            layoutEngine.persistedPane(for: paneID)?.type == paneType
+        }
     }
 }
 
@@ -386,6 +399,27 @@ final class Workspace: Identifiable {
     func ensureTabHasDisplayableRootPane(at index: Int) -> Bool {
         guard index >= 0, index < tabs.count else { return false }
         return tabs[index].ensureDisplayableRootPane(seed: defaultTerminalSeed())
+    }
+
+    func activeTabPaneID(ofType paneType: String) -> PaneID? {
+        guard activeTabIndex >= 0, activeTabIndex < tabs.count else { return nil }
+        return tabs[activeTabIndex].firstPaneID(ofType: paneType)
+    }
+
+    func preferredPaneLocation(ofType paneType: String) -> WorkspacePaneLocation? {
+        if let paneID = activeTabPaneID(ofType: paneType) {
+            return WorkspacePaneLocation(tabIndex: activeTabIndex, paneID: paneID)
+        }
+        return firstPaneLocation(ofType: paneType)
+    }
+
+    func firstPaneLocation(ofType paneType: String) -> WorkspacePaneLocation? {
+        for (tabIndex, tab) in tabs.enumerated() {
+            if let paneID = tab.firstPaneID(ofType: paneType) {
+                return WorkspacePaneLocation(tabIndex: tabIndex, paneID: paneID)
+            }
+        }
+        return nil
     }
 }
 

@@ -1,131 +1,151 @@
 # Pnevma — Definition of Done
 
-## Global Checklist (applies to ALL work)
+Pnevma is currently in release hardening. While that remains true, scope is further limited by
+[`hardening-exit-criteria.md`](./hardening-exit-criteria.md): only bug fixes, tests, CI/build
+hardening, release-pipeline hardening, and Ghostty/runtime verification changes may merge.
 
-Every change merged to `main` must satisfy:
+## Global Checklist
 
-- [ ] **Compiles cleanly** — `cargo build --workspace` with no errors
-- [ ] **Formatted** — `cargo fmt --check` passes
-- [ ] **Lint-clean** — `cargo clippy --workspace --all-targets -- -D warnings` passes (zero warnings)
-- [ ] **Tests pass** — `cargo test --workspace` green, no new flaky tests
-- [ ] **No secrets committed** — no `.env`, API keys, credentials, or signing keys in the diff
-- [ ] **No `unsafe` without justification** — any new `unsafe` block has a `// SAFETY:` comment explaining the invariant
-- [ ] **Commit messages follow convention** — `type(scope): description` format
-- [ ] **PR scope is reviewable** — one logical change per PR; split if touching 5+ unrelated files
+Every change merged to `main` must satisfy all of the following:
 
----
+- [ ] **Scope is allowed** — the change fits the active hardening merge policy, and it is one
+      logical task on one branch/worktree.
+- [ ] **Boundaries are respected** — workflow logic stays in Rust, Swift remains a thin view
+      layer, and any new `unsafe` block includes a `// SAFETY:` explanation.
+- [ ] **Required local gates pass for the touched surface**:
+  - Rust/backend work: `just check`
+  - workflow or shell changes: `just workflow-check`
+  - FFI, native, or Ghostty-adjacent work: `just spm-test-clean` and `just xcode-build`
+- [ ] **Required CI jobs are green** for the change:
+  - `CI / Secret scanning`
+  - `CI / Workflow and shell hygiene` when scripts or workflows change
+  - `CI / Rust checks`
+  - `CI / Native app build` when native, FFI, or runtime surfaces change
+  - `Release Rehearsal / Release package preflight` when release packaging is affected
+- [ ] **No secrets or signing material are introduced** — gitleaks stays clean, and new output
+      paths preserve redaction requirements.
+- [ ] **Tests are stable** — no knowingly flaky gating test is added, and any touched behavior has
+      proportionate automated coverage.
+- [ ] **Observability is sufficient** — new async, failure-prone, or operator-relevant paths emit
+      structured `tracing` events with actionable context and no secret leakage.
+- [ ] **Docs stay accurate** — update the relevant README, runbook, config reference, or release
+      documentation when commands, config, workflows, architecture, or operator guidance change.
+- [ ] **Release impact is addressed** — schema, config, packaging, auth, or deployment changes
+      include forward-compatibility notes plus rollback or containment guidance.
 
 ## Tier 1: MVP
 
-Use for: spikes, prototypes, internal-only features, early-phase work.
+Use for docs-only work, low-risk tooling changes, internal prototypes, and small bug fixes that do
+not change release or security posture.
 
-Everything in the Global Checklist, plus:
-
-- [ ] **Happy path tested** — at least one unit test covering the primary success path
-- [ ] **Error paths return typed errors** — `thiserror` in library crates, `anyhow` in `pnevma-bridge`/app glue; no `unwrap()` on fallible operations in non-test code
-- [ ] **Tracing instrumented** — key entry points use `tracing::{info,warn,error}` (no `println!` or `eprintln!`)
-- [ ] **Diff reviewed by author** — `git diff main...HEAD` checked before opening PR
-- [ ] **CI green** — the `rust` job passes (fmt + clippy + test + audit)
-
-### Not required at MVP tier
-
-- Property-based tests
-- Swift/Xcode test coverage
-- Architecture docs update
-- Migration rollback plan
-- Performance benchmarks
-
----
+- [ ] Global checklist passes.
+- [ ] Happy-path behavior is covered by at least one unit or targeted integration test, unless the
+      change is documentation-only.
+- [ ] Non-test code does not add unexplained `unwrap()`/`expect()` on fallible paths.
+- [ ] If CI, scripts, or workflows changed, `just workflow-check` passes locally before review.
+- [ ] The author has reviewed the final diff and removed dead code, debug prints, and temporary
+      instrumentation.
 
 ## Tier 2: Standard
 
-Use for: features shipping to design partners, anything touching core data paths (task engine, session supervisor, merge queue, agent dispatch).
+Use for the default merge bar on backend, native, and FFI changes intended to ship to design
+partners.
 
-Everything in Tier 1, plus:
-
-- [ ] **Edge-case tests** — error paths, boundary conditions, and state transitions covered (not just happy path)
-- [ ] **Property-based tests for state machines** — any new/modified state machine in `pnevma-core` (task, workflow, orchestration) has `proptest` coverage
-- [ ] **FFI boundary verified** — if touching `pnevma-bridge`, run `just ffi-coverage` and verify the cbindgen header is current
-- [ ] **Swift side compiles** — `just xcode-build` or `just spm-build` succeeds if Rust API surface changed
-- [ ] **Secret redaction verified** — any new output path (events, scrollback, context packs, logs) passes through redaction middleware
-- [ ] **DB migrations are additive** — no destructive schema changes (column drops, table renames) without a migration plan
-- [ ] **README/docs updated** — if the change adds a new crate, command, config key, or user-facing concept, update the relevant doc
-- [ ] **`cargo audit` clean** — no new advisories introduced
-- [ ] **Concurrency safe** — shared state uses `parking_lot` or `tokio::sync` primitives; no bare `RefCell` across await points
-- [ ] **Peer-reviewed** — at least one review pass (human or agent reviewer)
-
----
+- [ ] MVP tier passes.
+- [ ] Added or changed behavior has unit and/or integration coverage for happy path, edge cases,
+      and regression scenarios.
+- [ ] Changes to dispatch, workflow, event, restore, merge-queue, DB, or remote flows preserve or
+      expand integration coverage for those paths.
+- [ ] If `pnevma-bridge` or the Rust-to-Swift surface changed, `just ffi-coverage` passes and
+      `just xcode-build` remains green.
+- [ ] If config parsing or DB migrations changed, migration checksum validation stays green and the
+      downgrade/rollback impact is documented.
+- [ ] If redaction, persisted output, auth tokens, or remote-visible data changed, the existing
+      security regression coverage called out in
+      [`security-release-gate.md`](./security-release-gate.md) is preserved or expanded.
+- [ ] New operator-visible flows include enough tracing fields and error messages to diagnose
+      failures from CI logs and packaged app logs.
+- [ ] Relevant user-facing and operator-facing documentation is updated in the same change.
+- [ ] The change has at least one review pass before merge.
 
 ## Tier 3: High-Assurance
 
-Use for: release candidates, security-sensitive changes (auth, SSH, secret handling, signing), data integrity paths (DB, merge queue, event store).
+Use for release candidates and for changes touching remote access, auth, SSH, redaction,
+signing/notarization, persistence integrity, restore/recovery, Ghostty runtime, or packaged app
+behavior.
 
-Everything in Tier 2, plus:
-
-- [ ] **Swift tests pass** — `just xcode-test` or `just spm-test` green
-- [ ] **E2E smoke test** — `scripts/ipc-e2e-smoke.sh` passes (control plane round-trip)
-- [ ] **Recovery test** — `scripts/ipc-e2e-recovery.sh` passes (crash recovery, session restore)
-- [ ] **Dependency audit clean** — `cargo audit` with no ignored advisories
-- [ ] **No new `allow(...)` lint suppressions** — each suppression needs a comment justifying why the fix is infeasible
-- [ ] **Threat model reviewed** — for security-sensitive changes, review against existing threat model or document new attack surface
-- [ ] **Input validation at boundaries** — all external input (IPC commands, config parsing, SSH config, user-provided paths) validated with appropriate bounds
-- [ ] **Path traversal checked** — any file path from user input uses containment checks (no `../` escapes)
-- [ ] **Rate limiting verified** — new network-facing endpoints (remote access, WebSocket) have `governor` rate limits applied
-- [ ] **Migration rollback plan documented** — destructive DB changes include a rollback SQL script or strategy
-- [ ] **Release preflight passes** — `scripts/release-preflight.sh` exits 0
-- [ ] **Signing and notarization tested** — for release builds, full `sign -> notarize -> staple -> verify` pipeline completes
-
----
+- [ ] Standard tier passes.
+- [ ] `just test` passes.
+- [ ] `just ghostty-smoke` passes for terminal/runtime-affecting changes.
+- [ ] `./scripts/release-preflight.sh` passes for release-affecting work and for any candidate
+      build.
+- [ ] Packaged launch smoke passes with
+      `APP_PATH=/path/to/Pnevma.app ./scripts/run-packaged-launch-smoke.sh`.
+- [ ] Entitlement checks pass for both the checked-in allowlist and the packaged bundle when a
+      candidate app is produced.
+- [ ] Release evidence is captured when producing a candidate build: SBOM, entitlement output,
+      effective entitlements, `codesign` verification, `spctl` assessment, and notarization or
+      stapling logs when applicable.
+- [ ] Security-sensitive changes are reviewed against
+      [`security-release-gate.md`](./security-release-gate.md) and the threat model; no open
+      Critical or High finding remains on a shipped remote-enabled release.
+- [ ] Recovery, rollback, or containment steps are documented and tested where practical.
+- [ ] The sign/notarize dry run is green anywhere Apple signing secrets are available.
 
 ## Flaky Test Policy
 
-- A test that fails intermittently must be fixed or quarantined within 48 hours of first flake
-- Quarantined tests are marked with `#[ignore]` and a `// FLAKY:` comment linking to the tracking issue
-- Quarantined tests still run in CI on a nightly schedule (not gating PRs)
-- No more than 3 quarantined tests at any time — if the cap is hit, fixing flakes takes priority
-
----
-
-## Observability Expectations
-
-| Tier           | Logging                                                         | Metrics                                                 | Tracing                                               |
-| -------------- | --------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------- |
-| MVP            | `tracing` macros at key entry points                            | Not required                                            | Not required                                          |
-| Standard       | Structured JSON logs via `tracing-subscriber` with `env-filter` | Not required                                            | Span context on async operations                      |
-| High-Assurance | All of Standard + log rotation via `tracing-appender`           | Latency histograms for IPC commands (when infra exists) | Full span tree for agent dispatch + merge queue flows |
-
----
+- A gating test that flakes must be fixed before merge or explicitly quarantined with an owner,
+  tracking issue, and expiry date.
+- Quarantine is temporary and must include the compensating control used while the test is out of
+  the gate.
+- A release candidate cannot rely on an unresolved flake in dispatch, restore, remote auth,
+  redaction, Ghostty smoke, or packaged-launch validation.
 
 ## Waiver Policy
 
-Any checklist item can be waived if:
+Waivers are allowed only for tier-specific items that are not on the non-waivable list below.
 
-1. **The waiver is documented in the PR description** — state what is waived and why
-2. **A follow-up issue is filed** — with a concrete plan to close the gap
-3. **Approval**: The project owner (or lead agent in team mode) approves the waiver
+Every waiver must include all of the following in the PR or release record:
 
-Items that **cannot be waived** at any tier:
+- the exact checklist item being waived
+- the reason it is being waived now
+- the risk and compensating control
+- an owner
+- an expiry date or explicit retest trigger
+- a follow-up issue or task to close the gap
 
-- `cargo fmt --check` passing
-- `cargo clippy -- -D warnings` passing
-- No secrets in the diff
-- CI green on the `rust` job
-- Commit message convention
+Approval required:
 
----
+- MVP or Standard waiver: one project maintainer
+- High-Assurance waiver: the project owner plus the maintainer responsible for the affected release
+  or security area
 
-## Quick Reference
+The following are **not waivable**:
 
-```
-# Run the full Standard-tier check locally:
-just check                    # fmt + clippy + test
-cargo audit                   # dependency audit
-just ffi-coverage             # FFI surface check (if bridge changed)
-just xcode-build              # Swift compilation (if API surface changed)
+- the active hardening merge policy
+- no secrets or signing credentials in the diff
+- `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`
+- the required CI jobs for the touched surface
+- redaction on new output paths that can expose secrets
+- no open Critical or High security finding on a shipped remote-enabled release
 
-# Run High-Assurance checks:
-just test                     # Rust + Xcode tests
-./scripts/ipc-e2e-smoke.sh    # E2E smoke
-./scripts/ipc-e2e-recovery.sh # Recovery test
-./scripts/release-preflight.sh # Full preflight
+## Quick Command Map
+
+```bash
+# Rust/backend baseline
+just check
+
+# CI parity when scripts or workflows change
+just workflow-check
+
+# Native and FFI validation
+just spm-test-clean
+just xcode-build
+just xcode-test
+just ffi-coverage
+
+# Runtime and release validation
+just ghostty-smoke
+./scripts/release-preflight.sh
+APP_PATH=/path/to/Pnevma.app ./scripts/run-packaged-launch-smoke.sh
 ```

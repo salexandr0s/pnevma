@@ -5,7 +5,7 @@ import Cocoa
 struct CommandItem {
     let id: String
     let title: String
-    let category: String  // "command", "pane", "task", "file"
+    let category: String  // e.g. "command", "pane", "tool", "file"
     let shortcut: String?
     let description: String?
     let action: () -> Void

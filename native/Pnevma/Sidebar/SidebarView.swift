@@ -10,7 +10,7 @@ struct SidebarView: View {
     var onAddWorkspace: (() -> Void)?
     /// Called when the user wants to open settings.
     var onOpenSettings: (() -> Void)?
-    /// Called when the user wants to open a tool pane.
+    /// Called when the user wants to open a tool using its default presentation.
     var onOpenTool: ((String) -> Void)?
     /// Called when the user wants to open a tool as a new tab.
     var onOpenToolAsTab: ((String) -> Void)?
@@ -108,7 +108,13 @@ struct SidebarView: View {
             VStack(spacing: 0) {
                 Divider()
                 SidebarToolButton(
-                    tool: SidebarToolItem(id: "settings", title: "Settings", icon: "gear"),
+                    tool: SidebarToolItem(
+                        id: "settings",
+                        title: "Settings",
+                        icon: "gear",
+                        paneType: "settings",
+                        defaultPresentation: .tab
+                    ),
                     isActive: activeToolID == "settings"
                 ) {
                     activeToolID = "settings"

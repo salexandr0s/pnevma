@@ -347,7 +347,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceManager: mgr,
             onAddWorkspace: { [weak self] in self?.openWorkspace() },
             onOpenSettings: { [weak self] in self?.openSettingsPane() },
-            onOpenTool: { [weak self] (toolID: String) in self?.openToolPane(toolID) },
+            onOpenTool: { [weak self] (toolID: String) in self?.openToolWithDefaultPresentation(toolID) },
             onOpenToolAsTab: { [weak self] (toolID: String) in self?.openToolAsTab(toolID) },
             onOpenToolAsPane: { [weak self] (toolID: String) in self?.openToolAsPane(toolID) }
         )
@@ -1060,21 +1060,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Command Palette Registration
 
     private func registerPaletteCommands() {
-        let paneCommands: [(title: String, category: String, shortcut: String?, description: String?, paneType: String)] = [
-            ("Open Task Board", "pane", nil, "Kanban board for task management", "taskboard"),
-            ("Open Analytics", "pane", nil, "Cost and usage analytics dashboard", "analytics"),
-            ("Open Daily Brief", "pane", nil, "Daily summary of tasks, costs, and events", "daily_brief"),
-            ("Open Notifications", "pane", nil, "View project notifications and alerts", "notifications"),
-            ("Open Review", "pane", nil, "Review task diffs and acceptance criteria", "review"),
-            ("Open Merge Queue", "pane", nil, "Manage branch merge order and conflicts", "merge_queue"),
-            ("Open Diff Viewer", "pane", nil, "View file-level diffs for tasks", "diff"),
-            ("Open Search", "pane", nil, "Search across project files", "search"),
-            ("Open File Browser", "pane", nil, "Browse and preview project files", "file_browser"),
-            ("Open Rules Manager", "pane", nil, "Manage project rules and conventions", "rules"),
-            ("Open Workflow", "pane", nil, "Visual workflow state machine", "workflow"),
-            ("Open SSH Manager", "pane", nil, "Manage SSH keys and remote profiles", "ssh"),
-            ("Open Session Replay", "pane", nil, "Replay past terminal sessions", "replay"),
-            ("Open Browser", "pane", nil, "Built-in web browser", "browser"),
+        let toolCommands: [(title: String, category: String, shortcut: String?, description: String?, paneType: String)] = [
+            ("Show Task Board", "tool", nil, "Show the kanban task board", "taskboard"),
+            ("Show Analytics", "tool", nil, "Show the usage analytics dashboard", "analytics"),
+            ("Show Daily Brief", "tool", nil, "Show the daily summary dashboard", "daily_brief"),
+            ("Show Notifications", "tool", nil, "Show project notifications and alerts", "notifications"),
+            ("Show Review", "tool", nil, "Show review diffs and acceptance criteria", "review"),
+            ("Show Merge Queue", "tool", nil, "Show branch merge order and conflicts", "merge_queue"),
+            ("Show Diff Viewer", "tool", nil, "Show file-level diffs for tasks", "diff"),
+            ("Show Search", "tool", nil, "Show project-wide search", "search"),
+            ("Show File Browser", "tool", nil, "Show the project file browser", "file_browser"),
+            ("Show Rules Manager", "tool", nil, "Show project rules and conventions", "rules"),
+            ("Show Workflow", "tool", nil, "Show the workflow state machine", "workflow"),
+            ("Show SSH Manager", "tool", nil, "Show SSH keys and remote profiles", "ssh"),
+            ("Show Session Replay", "tool", nil, "Show past terminal session replays", "replay"),
+            ("Show Browser", "tool", nil, "Show the built-in web browser", "browser"),
         ]
 
         var commands: [CommandItem] = [
@@ -1125,18 +1125,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
         ]
 
-        for (idx, paneCommand) in paneCommands.enumerated() {
+        for (idx, toolCommand) in toolCommands.enumerated() {
             commands.append(CommandItem(
-                id: "pane.open_\(idx)",
-                title: paneCommand.title,
-                category: paneCommand.category,
-                shortcut: paneCommand.shortcut,
-                description: paneCommand.description
+                id: "tool.show_\(idx)",
+                title: toolCommand.title,
+                category: toolCommand.category,
+                shortcut: toolCommand.shortcut,
+                description: toolCommand.description
             ) { [weak self] in
-                guard let pane = PaneFactory.make(type: paneCommand.paneType)?.1 else { return }
-                if self?.contentAreaView?.replaceActivePane(with: pane) == nil {
-                    self?.contentAreaView?.setRootPane(pane)
-                }
+                self?.openPaneTypeWithDefaultPresentation(toolCommand.paneType)
             })
         }
 
@@ -1472,29 +1469,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeToolPane(_ toolID: String) -> (NSView & PaneContent)? {
-        switch toolID {
-        case "terminal":    return PaneFactory.workspaceAwareTerminal().1
-        case "tasks":       return TaskBoardPaneView()
-        case "workflow":    return WorkflowPaneView()
-        case "review":      return ReviewPaneView()
-        case "merge":       return MergeQueuePaneView()
-        case "diff":        return DiffPaneView()
-        case "search":      return SearchPaneView()
-        case "files":       return FileBrowserPaneView()
-        case "analytics":   return UsagePaneView()
-        case "brief":       return DailyBriefPaneView()
-        case "notifications": return NotificationsPaneView()
-        case "rules":       return RulesManagerPaneView()
-        case "ssh":         return SshManagerPaneView()
-        case "harness":     return HarnessConfigPaneView()
-        case "replay":      return ReplayPaneView(frame: .zero)
-        case "browser":     return BrowserPaneView(frame: .zero, url: nil)
-        default:            return nil
+        guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else {
+            return nil
         }
+        return PaneFactory.make(type: tool.paneType)?.1
     }
 
-    private func openToolPane(_ toolID: String) {
-        guard sidebarTools(for: workspaceManager?.activeWorkspace).contains(where: { $0.id == toolID }) else {
+    private func replaceActivePaneWithTool(_ toolID: String) {
+        guard sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) != nil else {
             return
         }
         guard let pane = makeToolPane(toolID) else { return }
@@ -1503,22 +1485,94 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private enum ToolReuseScope {
+        case activeTab
+        case anyTab
+    }
+
+    @discardableResult
+    private func focusExistingTool(_ tool: SidebarToolItem, scope: ToolReuseScope) -> Bool {
+        guard let workspace = workspaceManager?.activeWorkspace else { return false }
+
+        let location: WorkspacePaneLocation?
+        switch scope {
+        case .activeTab:
+            if let paneID = workspace.activeTabPaneID(ofType: tool.paneType) {
+                location = WorkspacePaneLocation(tabIndex: workspace.activeTabIndex, paneID: paneID)
+            } else {
+                location = nil
+            }
+        case .anyTab:
+            location = workspace.preferredPaneLocation(ofType: tool.paneType)
+        }
+
+        guard let location else { return false }
+
+        if location.tabIndex != workspace.activeTabIndex {
+            workspace.tabs[location.tabIndex].layoutEngine.setActivePane(location.paneID)
+            switchToTab(location.tabIndex)
+            contentAreaView?.focusPane(location.paneID)
+            return true
+        }
+
+        contentAreaView?.focusPane(location.paneID)
+        persistence?.markDirty()
+        return true
+    }
+
+    private func openToolWithDefaultPresentation(_ toolID: String) {
+        guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else {
+            return
+        }
+        switch tool.defaultPresentation {
+        case .pane:
+            openToolAsPane(toolID)
+        case .tab:
+            openToolAsTab(toolID)
+        }
+    }
+
+    private func openPaneTypeWithDefaultPresentation(_ paneType: String) {
+        if let tool = sidebarToolDefinition(paneType: paneType) {
+            openToolWithDefaultPresentation(tool.id)
+            return
+        }
+
+        guard let pane = PaneFactory.make(type: paneType)?.1 else { return }
+        if contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane) == nil,
+           contentAreaView?.activePaneView == nil {
+            contentAreaView?.setRootPane(pane)
+        }
+        persistence?.markDirty()
+    }
+
     private func openToolAsTab(_ toolID: String) {
         guard let workspace = workspaceManager?.activeWorkspace,
-              makeToolPane(toolID) != nil else { return }
-        let title = sidebarTools(for: workspace).first(where: { $0.id == toolID })?.title ?? toolID.capitalized
+              let tool = sidebarTool(id: toolID, in: workspace),
+              PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace) else { return }
+        if focusExistingTool(tool, scope: .anyTab) {
+            return
+        }
+        let title = tool.title
         contentAreaView?.syncPersistedPanes()
         _ = workspace.addTab(title: title)
         workspace.ensureActiveTabHasDisplayableRootPane()
         contentAreaView?.setLayoutEngine(workspace.layoutEngine)
         updateTabBar()
-        openToolPane(toolID)
+        replaceActivePaneWithTool(toolID)
         persistence?.markDirty()
     }
 
     private func openToolAsPane(_ toolID: String) {
+        guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else { return }
+        if focusExistingTool(tool, scope: .activeTab) {
+            return
+        }
         guard let pane = makeToolPane(toolID) else { return }
-        contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        if contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane) == nil,
+           contentAreaView?.activePaneView == nil {
+            contentAreaView?.setRootPane(pane)
+        }
         persistence?.markDirty()
     }
 
@@ -1625,9 +1679,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openNotificationsPane() {
-        guard let (_, pane) = PaneFactory.make(type: "notifications") else { return }
-        if contentAreaView?.activePaneView?.paneType == "notifications" { return }
-        contentAreaView?.replaceActivePane(with: pane)
+        openToolWithDefaultPresentation("notifications")
     }
 }
 

@@ -4,11 +4,15 @@
 **/.pnevma/pnevma.db
 **/.pnevma/pnevma.db-shm
 **/.pnevma/pnevma.db-wal
-/.DS_Store
+.DS_Store
 *.log
 .env
 .env.*
 !.env.example
+
+# Local assistant/workspace metadata
+.agents/
+.claude/
 
 # Internal planning & session docs (keep local, not in public repo)
 buildplan-v1.md
