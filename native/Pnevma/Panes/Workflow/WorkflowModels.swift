@@ -124,18 +124,6 @@ struct AgentProfileItem: Identifiable, Codable {
     var displayName: String {
         "\(name) (\(provider) / \(model))"
     }
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, role, provider, model
-        case tokenBudget = "token_budget"
-        case timeoutMinutes = "timeout_minutes"
-        case maxConcurrent = "max_concurrent"
-        case stations
-        case systemPrompt = "system_prompt"
-        case active, scope, source
-        case sourcePath = "source_path"
-        case userModified = "user_modified"
-    }
 }
 
 struct AgentProfileFullItem: Identifiable, Codable {
@@ -157,22 +145,6 @@ struct AgentProfileFullItem: Identifiable, Codable {
     let source: String?
     let sourcePath: String?
     let userModified: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, role, provider, model
-        case tokenBudget = "token_budget"
-        case timeoutMinutes = "timeout_minutes"
-        case maxConcurrent = "max_concurrent"
-        case stations
-        case configJson = "config_json"
-        case systemPrompt = "system_prompt"
-        case active, scope
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-        case source
-        case sourcePath = "source_path"
-        case userModified = "user_modified"
-    }
 }
 
 enum OrchestrationScope: String, CaseIterable {

@@ -804,7 +804,7 @@ final class FileBrowserViewModel {
 
 // MARK: - Markdown Reader
 
-private struct MarkdownReaderView: View {
+struct MarkdownReaderView: View {
     let content: String
     @State private var parsedBlocks: [AnyView] = []
 

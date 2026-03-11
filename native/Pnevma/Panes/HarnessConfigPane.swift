@@ -7,7 +7,7 @@ import Cocoa
 struct HarnessConfigEntry: Identifiable, Decodable {
     var id: String { key }
     let key: String
-    let display_name: String
+    let displayName: String
     let path: String
     let format: String
     let exists: Bool
@@ -73,29 +73,89 @@ enum ConfigCategory: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Brand
+
+enum HarnessBrand {
+    case anthropic, codex, generic
+
+    var label: String {
+        switch self {
+        case .anthropic: return "Claude"
+        case .codex: return "Codex"
+        case .generic: return ""
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .anthropic: return Color(red: 0.85, green: 0.55, blue: 0.35)
+        case .codex: return Color(red: 0.3, green: 0.75, blue: 0.45)
+        case .generic: return .secondary
+        }
+    }
+
+    static func from(key: String) -> HarnessBrand {
+        if key.hasPrefix("claude.") { return .anthropic }
+        if key.hasPrefix("codex.") { return .codex }
+        return .generic
+    }
+}
+
+// MARK: - Brand Pill
+
+struct HarnessBrandPill: View {
+    let brand: HarnessBrand
+    var large: Bool = false
+
+    var body: some View {
+        if brand != .generic {
+            Text(brand.label)
+                .font(large ? .caption : .system(size: 9, weight: .semibold))
+                .foregroundStyle(brand.color)
+                .padding(.horizontal, large ? 7 : 5)
+                .padding(.vertical, large ? 3 : 2)
+                .background(brand.color.opacity(0.12))
+                .clipShape(Capsule())
+        }
+    }
+}
+
 // MARK: - HarnessConfigView
 
 struct HarnessConfigView: View {
     @State private var viewModel = HarnessConfigViewModel()
+    @State private var isReaderMode = false
 
     var body: some View {
         HSplitView {
-            // Sidebar: categories and entries
+            // Sidebar
             VStack(spacing: 0) {
-                Text("Harness Config")
-                    .font(.headline)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agent Harness")
+                        .font(.headline)
+                    Text("Configuration files for AI agents and tools")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Divider()
 
                 List(selection: $viewModel.selectedKey) {
                     ForEach(viewModel.activeCategories, id: \.self) { category in
-                        Section(header: Label(category.displayName, systemImage: category.icon)) {
-                            ForEach(viewModel.entries(for: category)) { entry in
+                        let categoryEntries = viewModel.entries(for: category)
+                        Section {
+                            ForEach(categoryEntries) { entry in
                                 HarnessConfigRow(entry: entry)
                                     .tag(entry.key)
                             }
+                        } header: {
+                            HarnessCategoryHeader(
+                                category: category,
+                                count: categoryEntries.count
+                            )
                         }
                     }
                 }
@@ -111,6 +171,7 @@ struct HarnessConfigView: View {
                         entry: entry,
                         isSaving: viewModel.isSaving,
                         hasChanges: viewModel.hasUnsavedChanges,
+                        isReaderMode: $isReaderMode,
                         onSave: { viewModel.save() }
                     )
 
@@ -125,6 +186,8 @@ struct HarnessConfigView: View {
                             title: "File does not exist",
                             message: entry.path
                         )
+                    } else if isReaderMode && entry.format == "markdown" {
+                        MarkdownReaderView(content: viewModel.editorContent)
                     } else {
                         HarnessConfigEditor(
                             content: $viewModel.editorContent,
@@ -147,11 +210,41 @@ struct HarnessConfigView: View {
         .accessibilityIdentifier("pane.harnessConfig")
         .task { await viewModel.activate() }
         .onChange(of: viewModel.selectedKey) { _, newKey in
+            isReaderMode = false
             viewModel.didSelectKey(newKey)
         }
         .onChange(of: viewModel.editorContent) { _, newContent in
             viewModel.hasUnsavedChanges = newContent != viewModel.originalContent
         }
+    }
+}
+
+// MARK: - Category Section Header
+
+struct HarnessCategoryHeader: View {
+    let category: ConfigCategory
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: category.icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(category.displayName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+            Spacer()
+            Text("\(count)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(Capsule())
+        }
+        .padding(.top, 6)
+        .padding(.bottom, 2)
     }
 }
 
@@ -161,21 +254,26 @@ struct HarnessConfigRow: View {
     let entry: HarnessConfigEntry
 
     var body: some View {
+        let brand = HarnessBrand.from(key: entry.key)
         HStack(spacing: 6) {
-            Circle()
-                .fill(entry.exists ? Color.green : Color.gray)
-                .frame(width: 6, height: 6)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(entry.display_name)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.displayName)
                     .font(.body)
                     .lineLimit(1)
-                Text(entry.format)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(entry.format)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    HarnessBrandPill(brand: brand)
+                }
             }
         }
         .padding(.vertical, 2)
+        .opacity(entry.exists ? 1.0 : 0.45)
         .accessibilityAddTraits(.isButton)
     }
 }
@@ -186,13 +284,28 @@ struct HarnessConfigEditorHeader: View {
     let entry: HarnessConfigEntry
     let isSaving: Bool
     let hasChanges: Bool
+    @Binding var isReaderMode: Bool
     let onSave: () -> Void
 
+    private var brand: HarnessBrand {
+        HarnessBrand.from(key: entry.key)
+    }
+
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.display_name)
-                    .font(.headline)
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(entry.displayName)
+                        .font(.headline)
+                    HarnessBrandPill(brand: brand, large: true)
+                    Text(entry.format)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
                 Text(entry.path)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -201,6 +314,22 @@ struct HarnessConfigEditorHeader: View {
             }
 
             Spacer()
+
+            if entry.format == "markdown" {
+                Button {
+                    isReaderMode.toggle()
+                } label: {
+                    Label(
+                        isReaderMode ? "Source" : "Reader",
+                        systemImage: isReaderMode
+                            ? "chevron.left.forwardslash.chevron.right"
+                            : "doc.richtext"
+                    )
+                    .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
 
             if isSaving {
                 ProgressView()

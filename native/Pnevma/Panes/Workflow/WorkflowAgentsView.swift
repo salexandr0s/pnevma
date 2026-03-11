@@ -71,9 +71,16 @@ struct AgentRow: View {
                         SourceBadge(source: source)
                     }
                 }
-                Text("\(agent.provider) / \(agent.model)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: agent.provider == "anthropic" ? "brain.head.profile" : "sparkle")
+                        .font(.caption2)
+                        .foregroundStyle(agent.provider == "anthropic"
+                            ? Color(red: 0.85, green: 0.55, blue: 0.35)
+                            : Color(red: 0.3, green: 0.75, blue: 0.45))
+                    Text("\(agent.provider) / \(agent.model)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let prompt = agent.systemPrompt, !prompt.isEmpty {
                     Text(String(prompt.prefix(80)) + (prompt.count > 80 ? "\u{2026}" : ""))
                         .font(.caption2)
@@ -145,11 +152,23 @@ struct AgentFormCard: View {
                 // Provider + Model
                 HStack(spacing: 8) {
                     Picker("", selection: $agent.provider) {
-                        Text("Anthropic").tag("anthropic")
-                        Text("OpenAI").tag("openai")
+                        Label {
+                            Text("Anthropic")
+                        } icon: {
+                            Image(systemName: "brain.head.profile")
+                                .foregroundStyle(Color(red: 0.85, green: 0.55, blue: 0.35))
+                        }
+                        .tag("anthropic")
+                        Label {
+                            Text("OpenAI")
+                        } icon: {
+                            Image(systemName: "sparkle")
+                                .foregroundStyle(Color(red: 0.3, green: 0.75, blue: 0.45))
+                        }
+                        .tag("openai")
                     }
                     .labelsHidden()
-                    .frame(width: 120)
+                    .frame(width: 140)
                     TextField("Model ID", text: $agent.model)
                         .textFieldStyle(.roundedBorder)
                 }
