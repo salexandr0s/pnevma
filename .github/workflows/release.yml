@@ -55,8 +55,9 @@ jobs:
 
       - name: Quality gates
         run: |
-          just check
+          cargo install cargo-audit --locked
           cargo install cargo-deny --locked
+          just check
           cargo deny check
 
       - name: Build Ghostty xcframework
