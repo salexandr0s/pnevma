@@ -93,11 +93,32 @@ jobs:
             native/build/logs/**
           retention-days: ${{ env.RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS }}
 
+  check-signing-secrets:
+    name: Check signing secrets
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" && -n "$APPLE_NOTARY_PROFILE" && -n "$KEYCHAIN_PASSWORD" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Signing secrets not configured — skipping sign/notarize dry run"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release-sign-notarize-dry-run:
     name: Release sign/notarize dry run
     runs-on: macos-latest
-    needs: release-package-preflight
-    if: ${{ github.event_name != 'pull_request' && secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_NOTARY_PROFILE != '' && secrets.KEYCHAIN_PASSWORD != '' }}
+    needs: [release-package-preflight, check-signing-secrets]
+    if: github.event_name != 'pull_request' && needs.check-signing-secrets.outputs.available == 'true'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
