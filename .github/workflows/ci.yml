@@ -136,7 +136,16 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install native build tools
-        run: brew install just xcodegen zig
+        run: brew install just xcodegen
+
+      - name: Install pinned Zig
+        run: |
+          ZIG_VERSION="$(cat .zig-version)"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-macos-aarch64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          tar -xf /tmp/zig.tar.xz -C /tmp
+          sudo mv "/tmp/zig-macos-aarch64-${ZIG_VERSION}" /opt/zig
+          echo "/opt/zig" >> "$GITHUB_PATH"
+          /opt/zig/zig version
 
       - name: Verify xcodegen version
         run: |
