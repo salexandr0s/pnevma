@@ -37,6 +37,9 @@ protocol PaneContent: AnyObject {
     var sessionID: String? { get }
     var taskID: String? { get }
     var metadataJSON: String? { get }
+    /// Whether this pane writes a restore descriptor into the layout engine.
+    /// Panes that return `false` cannot survive workspace switches or session restore.
+    /// Only placeholders/error shells should opt out.
     var shouldPersist: Bool { get }
 
     /// Called when this pane becomes the active (focused) pane.
@@ -1304,7 +1307,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     func launchAgent(_ agent: AgentKind) {
         removeAgentLauncher()
-        hostView?.terminalSurface?.sendText("\(agent.command)\r")
+        let surface = hostView?.terminalSurface
+        surface?.sendText(agent.command)
+        surface?.sendReturn()
     }
 
     private func replaceContent(with view: NSView) {

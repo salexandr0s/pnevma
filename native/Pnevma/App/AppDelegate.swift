@@ -29,6 +29,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var titlebarOpenBtn: CapsuleButton?
     private var titlebarCommitBtn: CapsuleButton?
     private var titlebarPushBtn: CapsuleButton?
+    private var titlebarTemplateBtn: NSButton?
+    private var sidebarToggleLeadingConstraint: NSLayoutConstraint?
+    private var sidebarToggleBtn: NSView?
+    private var sidebarToggleWidthConstraint: NSLayoutConstraint?
+    private var sidebarToggleHeightConstraint: NSLayoutConstraint?
     private var commandPalette: CommandPalette?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
@@ -385,6 +390,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             size: titlebarButtonSize,
             symbolConfig: titlebarSymbolConfig
         )
+        self.sidebarToggleBtn = sidebarToggleBtn
         let notificationsBtn = makeTitlebarButton(
             symbolName: "bell",
             accessibilityDescription: "Notifications",
@@ -408,6 +414,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             hoverTintColor: .systemGreen
         )
 
+        // Layout template button — positioned at the content area leading edge
+        let templateBtn = makeTitlebarButton(
+            symbolName: "rectangle.split.2x1",
+            accessibilityDescription: "Layout Templates",
+            toolTip: "Layout Templates",
+            action: #selector(titlebarTemplateAction),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig
+        )
+        self.titlebarTemplateBtn = templateBtn
+
         // Titlebar action buttons (Open, Commit, Push) — direct subviews like the icon buttons
         let openBtn = CapsuleButton(icon: "folder", label: "Open")
         openBtn.target = self
@@ -426,6 +443,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         for view in [sidebarBacking, tabBar, contentArea, statusBarView, toolbarSep,
                       sidebarToggleBtn, notificationsBtn, addWorkspaceBtn,
+                      templateBtn,
                       openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
@@ -464,8 +482,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarMinHeight.isActive = false
         self.titlebarFillMinHeightConstraint = titlebarMinHeight
 
+        let sidebarToggleLeading = sidebarToggleBtn.leadingAnchor.constraint(
+            equalTo: windowContent.leadingAnchor, constant: 76
+        )
+        self.sidebarToggleLeadingConstraint = sidebarToggleLeading
+
+        let sidebarToggleWidth = sidebarToggleBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width)
+        let sidebarToggleHeight = sidebarToggleBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height)
+        self.sidebarToggleWidthConstraint = sidebarToggleWidth
+        self.sidebarToggleHeightConstraint = sidebarToggleHeight
+
         let minContentWidth = win.minSize.width - sidebarWidth
         NSLayoutConstraint.activate([
+            sidebarToggleLeading,
             titlebarFill.topAnchor.constraint(equalTo: windowContent.topAnchor),
             titlebarBottom,
             titlebarFill.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
@@ -500,9 +529,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Titlebar buttons — vertically centered in titlebar area
             sidebarToggleBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            sidebarToggleBtn.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor, constant: 76),
-            sidebarToggleBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
-            sidebarToggleBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+            sidebarToggleWidth,
+            sidebarToggleHeight,
 
             notificationsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             notificationsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
@@ -523,6 +551,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             openBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             openBtn.trailingAnchor.constraint(equalTo: commitBtn.leadingAnchor, constant: -6),
+
+            // Layout template button — right of sidebar toggle (tracks its position)
+            templateBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            templateBtn.leadingAnchor.constraint(equalTo: sidebarToggleBtn.trailingAnchor, constant: 4),
+            templateBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            templateBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
         ])
 
         // For terminal transparency (background-opacity < 1.0), the window must
@@ -689,6 +723,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // View menu
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
+        viewMenu.addItem(NSMenuItem.separator())
+        viewMenu.addItem(withTitle: "Layout Templates\u{2026}", action: #selector(titlebarTemplateAction), keyEquivalent: "")
+        viewMenu.addItem(NSMenuItem.separator())
         let cmdPalette = NSMenuItem(title: "Command Palette", action: #selector(showCommandPalette), keyEquivalent: "P")
         cmdPalette.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(cmdPalette)
@@ -1077,6 +1114,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandItem(id: "view.sidebar", title: "Toggle Sidebar", category: "view", shortcut: "Cmd+B", description: "Show or hide the sidebar") { [weak self] in
                 self?.toggleSidebar()
             },
+            CommandItem(id: "view.layout_templates", title: "Layout Templates", category: "view", shortcut: "", description: "Save or load pane layout templates") { [weak self] in
+                self?.titlebarTemplateAction()
+            },
             CommandItem(id: "workspace.next", title: "Next Workspace", category: "view", shortcut: "Shift+Cmd+]", description: "Switch to the next workspace") { [weak self] in
                 self?.nextWorkspace()
             },
@@ -1183,15 +1223,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func presentOpenRemoteWorkspacePanel() async {
-        guard let bus = commandBus else { return }
+    private func ensureRemoteNativeToolingSupport() -> Bool {
         guard WorkspaceProjectTransportSupport.hasRemoteNativeToolingSupport() else {
             let alert = NSAlert()
             alert.messageText = "sshfs Required"
             alert.informativeText = "Remote native tools require sshfs/macFUSE on this Mac. Install sshfs before creating a remote workspace."
             alert.runModal()
-            return
+            return false
         }
+        return true
+    }
+
+    private func presentOpenRemoteWorkspacePanel() async {
+        guard let bus = commandBus else { return }
+        guard ensureRemoteNativeToolingSupport() else { return }
 
         do {
             let profiles: [SshProfile] = try await bus.call(method: "ssh.list_profiles", params: nil)
@@ -1276,6 +1321,100 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func presentOpenRemoteWorkspacePanel(forTailscaleDevice device: TailscaleDevice) {
+        guard ensureRemoteNativeToolingSupport() else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Open Remote Workspace"
+        alert.informativeText = "Open a remote workspace for this Tailscale device. Native project tools use an sshfs mount of the remote workspace."
+
+        let hostLabel = NSTextField(labelWithString: "Tailscale Device")
+        let hostValue = NSTextField(labelWithString: "\(device.hostname) (\(device.ipAddress))")
+        hostValue.lineBreakMode = .byTruncatingMiddle
+
+        let userLabel = NSTextField(labelWithString: "SSH User")
+        let userField = NSTextField(string: NSUserName())
+
+        let portLabel = NSTextField(labelWithString: "SSH Port")
+        let portField = NSTextField(string: "22")
+
+        let pathLabel = NSTextField(labelWithString: "Remote Project Path")
+        let pathField = NSTextField(string: "~")
+        pathField.placeholderString = "/path/to/project"
+
+        let persistenceToggle = NSButton(
+            checkboxWithTitle: "Enable session persistence",
+            target: nil,
+            action: nil
+        )
+        persistenceToggle.state = .on
+
+        let accessory = NSStackView(views: [
+            hostLabel,
+            hostValue,
+            userLabel,
+            userField,
+            portLabel,
+            portField,
+            pathLabel,
+            pathField,
+            persistenceToggle,
+        ])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 8
+        accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+        accessory.translatesAutoresizingMaskIntoConstraints = false
+        hostValue.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        userField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        portField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        alert.accessoryView = accessory
+        alert.addButton(withTitle: "Open Workspace")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !user.isEmpty else {
+            ToastManager.shared.show(
+                "SSH user is required",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return
+        }
+
+        guard let port = Int(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...65535).contains(port) else {
+            ToastManager.shared.show(
+                "SSH port must be between 1 and 65535",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return
+        }
+
+        let remotePath = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remotePath.isEmpty else {
+            ToastManager.shared.show(
+                "Remote path is required",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return
+        }
+
+        openRemoteWorkspace(
+            target: device.remoteWorkspaceTarget(
+                user: user,
+                port: port,
+                remotePath: remotePath
+            ),
+            terminalMode: persistenceToggle.state == .on ? .persistent : .nonPersistent
+        )
+    }
+
     private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) {
         let name = URL(fileURLWithPath: path).lastPathComponent
         workspaceManager?.createLocalProjectWorkspace(
@@ -1291,7 +1430,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openRemoteWorkspace(target: WorkspaceRemoteTarget, terminalMode: WorkspaceTerminalMode) {
-        workspaceManager?.createRemoteWorkspace(
+        guard let workspaceManager else {
+            ToastManager.shared.show(
+                "Workspace manager unavailable",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return
+        }
+        workspaceManager.createRemoteWorkspace(
             name: target.sshProfileName,
             remoteTarget: target,
             terminalMode: terminalMode
@@ -1339,6 +1486,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         case "notifications": return NotificationsPaneView()
         case "rules":       return RulesManagerPaneView()
         case "ssh":         return SshManagerPaneView()
+        case "harness":     return HarnessConfigPaneView()
         case "replay":      return ReplayPaneView(frame: .zero)
         case "browser":     return BrowserPaneView(frame: .zero, url: nil)
         default:            return nil
@@ -1522,6 +1670,58 @@ extension AppDelegate {
         return button
     }
 
+    // MARK: - Layout Template Actions
+
+    @objc func titlebarTemplateAction() {
+        guard let btn = titlebarTemplateBtn else { return }
+        let templates = LayoutTemplateStore.list()
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 300, height: min(CGFloat(templates.count) * 48 + 120, 360))
+        popover.behavior = .transient
+        popover.animates = true
+        let view = LayoutTemplatePopoverView(
+            templates: templates,
+            onSave: { [weak self] name in
+                popover.performClose(nil)
+                self?.saveCurrentLayoutAsTemplate(name: name)
+            },
+            onSelect: { [weak self] template in
+                popover.performClose(nil)
+                self?.applyLayoutTemplate(template)
+            },
+            onDelete: { [weak self] template in
+                LayoutTemplateStore.delete(template)
+                popover.performClose(nil)
+                DispatchQueue.main.async {
+                    self?.titlebarTemplateAction()
+                }
+            },
+            onDismiss: { popover.performClose(nil) }
+        )
+        popover.contentViewController = NSHostingController(rootView: view)
+        popover.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
+    }
+
+    private func saveCurrentLayoutAsTemplate(name: String) {
+        guard let contentArea = contentAreaView else { return }
+        contentArea.syncPersistedPanes()
+        guard let template = LayoutTemplateStore.capture(
+            name: name,
+            engine: contentArea.layoutEngine
+        ) else { return }
+        do {
+            try LayoutTemplateStore.save(template)
+        } catch {
+            Log.general.error("Failed to save layout template: \(error)")
+        }
+    }
+
+    private func applyLayoutTemplate(_ template: LayoutTemplate) {
+        guard let contentArea = contentAreaView else { return }
+        LayoutTemplateStore.apply(template, to: contentArea)
+        persistence?.markDirty()
+    }
+
     // MARK: - Titlebar Action Handlers (Open, Commit, Push)
 
     @objc func titlebarOpenAction() {
@@ -1645,10 +1845,26 @@ final class HoverTintButton: NSButton {
 extension AppDelegate: NSWindowDelegate {
     public func windowDidEnterFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = true
+        // Traffic lights are hidden in fullscreen — pull sidebar toggle to the left edge and shrink 10%
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = DesignTokens.Motion.normal
+            ctx.allowsImplicitAnimation = true
+            sidebarToggleLeadingConstraint?.animator().constant = 12
+            sidebarToggleWidthConstraint?.animator().constant = 23
+            sidebarToggleHeightConstraint?.animator().constant = 20
+        }
     }
 
     public func windowDidExitFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = false
+        // Traffic lights reappear — restore gap and size
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = DesignTokens.Motion.normal
+            ctx.allowsImplicitAnimation = true
+            sidebarToggleLeadingConstraint?.animator().constant = 76
+            sidebarToggleWidthConstraint?.animator().constant = 26
+            sidebarToggleHeightConstraint?.animator().constant = 22
+        }
     }
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {

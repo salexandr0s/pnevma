@@ -496,6 +496,50 @@ final class ContentAreaView: NSView {
         disposePaneViews(outgoingPaneViews)
     }
 
+    /// Exit zoom state if currently zoomed, restoring all pane visibility.
+    func unzoomIfNeeded() {
+        guard zoomedPaneID != nil else { return }
+        zoomedPaneID = nil
+        for (_, view) in paneViews { view.isHidden = false }
+        dividerViews.forEach { $0.isHidden = false }
+    }
+
+    /// Tear down all pane views and dividers, disposing them.
+    /// The layout engine is left untouched — caller is expected to
+    /// mutate it in-place before calling `installPanesFromEngine()`.
+    func teardownAllPaneViews() {
+        syncPersistedPanes()
+        let outgoingPaneViews = beginViewSwap()
+        disposePaneViews(outgoingPaneViews)
+    }
+
+    /// Rebuild pane views from the current layout engine's descriptors.
+    /// Counterpart to `teardownAllPaneViews()` — call after mutating
+    /// the engine's root/descriptors in-place.
+    func installPanesFromEngine() {
+        if let root = layoutEngine.root {
+            for paneID in root.allPaneIDs {
+                let pane: NSView & PaneContent
+                if let persistedPane = layoutEngine.persistedPane(for: paneID) {
+                    (_, pane) = PaneFactory.make(from: persistedPane)
+                } else {
+                    (_, pane) = PaneFactory.makeRestoreError(
+                        paneID: paneID,
+                        message: "Restore metadata for this pane is missing.",
+                        detail: "The pane could not be reconstructed and will not be saved back into session state."
+                    )
+                }
+                registerPaneView(pane)
+            }
+        }
+
+        if let activeID = layoutEngine.activePaneID, let view = paneViews[activeID] {
+            view.activate()
+            onActivePaneChanged?(activeID)
+        }
+        relayout()
+    }
+
     /// The currently active pane view.
     var activePaneView: (NSView & PaneContent)? {
         guard let id = layoutEngine.activePaneID else { return nil }
@@ -701,6 +745,7 @@ final class ContentAreaView: NSView {
             ("Replay",        "replay",        "play.rectangle"),
             ("File Browser",  "file_browser",  "folder"),
             ("SSH Manager",   "ssh",           "network"),
+            ("Harness Config","harness_config","slider.horizontal.3"),
             ("Workflow",      "workflow",      "arrow.triangle.branch"),
             ("Review",        "review",        "eye"),
             ("Merge Queue",   "merge_queue",   "arrow.triangle.merge"),

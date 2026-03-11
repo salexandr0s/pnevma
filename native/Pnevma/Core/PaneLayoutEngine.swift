@@ -162,6 +162,13 @@ class PaneLayoutEngine {
         paneDescriptors.removeAll()
     }
 
+    /// Clear all pane descriptors and cached frames.
+    /// Used when replacing the tree contents in-place (e.g. template apply).
+    func clearDescriptors() {
+        paneDescriptors.removeAll()
+        paneFrames.removeAll()
+    }
+
     // MARK: - Layout Computation
 
     /// Compute frames for all panes within the given bounding rectangle.

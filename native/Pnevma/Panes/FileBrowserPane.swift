@@ -22,6 +22,7 @@ private struct FileTreeParams: Encodable {
 struct FileBrowserView: View {
     @State private var viewModel = FileBrowserViewModel()
     @State private var isReaderMode = false
+    @State private var isViewerVisible = true
     @State private var showDiscardAlert = false
     @State private var pendingNode: FileNode?
 
@@ -49,6 +50,12 @@ struct FileBrowserView: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.plain)
+                    Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isViewerVisible.toggle() } }) {
+                        Image(systemName: "sidebar.right")
+                            .foregroundStyle(isViewerVisible ? .primary : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isViewerVisible ? "Hide file viewer" : "Show file viewer")
                 }
                 .padding(12)
 
@@ -88,52 +95,54 @@ struct FileBrowserView: View {
                     })
                 }
             }
-            .frame(minWidth: 200, maxWidth: 300)
+            .frame(minWidth: 200, maxWidth: isViewerVisible ? 300 : .infinity)
 
-            VStack(spacing: 0) {
-                if viewModel.previewContent != nil {
-                    // Editor toolbar
-                    editorToolbar
+            if isViewerVisible {
+                VStack(spacing: 0) {
+                    if viewModel.previewContent != nil {
+                        // Editor toolbar
+                        editorToolbar
 
-                    Divider()
+                        Divider()
 
-                    if isReaderMode && isMarkdownFile {
-                        MarkdownReaderView(content: viewModel.editableContent)
-                    } else if isBinaryPreview {
-                        Text(viewModel.previewContent ?? "")
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if viewModel.isTruncated {
-                        ScrollView {
+                        if isReaderMode && isMarkdownFile {
+                            MarkdownReaderView(content: viewModel.editableContent)
+                        } else if isBinaryPreview {
                             Text(viewModel.previewContent ?? "")
                                 .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if viewModel.isTruncated {
+                            ScrollView {
+                                Text(viewModel.previewContent ?? "")
+                                    .font(.system(.body, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        } else {
+                            TextEditor(text: $viewModel.editableContent)
+                                .font(.system(.body, design: .monospaced))
+                                .scrollContentBackground(.hidden)
                         }
+                    } else if viewModel.isLoadingPreview {
+                        Text("Loading...")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if viewModel.selectedFilePath != nil {
+                        Text("Preview unavailable")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        TextEditor(text: $viewModel.editableContent)
-                            .font(.system(.body, design: .monospaced))
-                            .scrollContentBackground(.hidden)
+                        Text("Select a file to preview")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                } else if viewModel.isLoadingPreview {
-                    Text("Loading...")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if viewModel.selectedFilePath != nil {
-                    Text("Preview unavailable")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    Text("Select a file to preview")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onChange(of: viewModel.selectedFilePath) {
-                isReaderMode = false
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: viewModel.selectedFilePath) {
+                    isReaderMode = false
+                }
             }
         }
         .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
@@ -966,7 +975,7 @@ private struct MarkdownReaderView: View {
 final class FileBrowserPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "file_browser"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Files" }
 
     override init(frame: NSRect) {

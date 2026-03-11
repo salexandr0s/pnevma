@@ -337,6 +337,25 @@ class TerminalSurface {
         }
     }
 
+    /// Sends a synthetic Return key press + release to the terminal surface.
+    func sendReturn() {
+        guard let surface else { return }
+        var key = ghostty_input_key_s()
+        key.mods = GHOSTTY_MODS_NONE
+        key.consumed_mods = GHOSTTY_MODS_NONE
+        key.keycode = 36 // kVK_Return
+        key.composing = false
+        key.unshifted_codepoint = 13
+        "\r".withCString { ptr in
+            key.text = ptr
+            key.action = GHOSTTY_ACTION_PRESS
+            ghostty_surface_key(surface, key)
+        }
+        key.text = nil
+        key.action = GHOSTTY_ACTION_RELEASE
+        ghostty_surface_key(surface, key)
+    }
+
     func sendPreedit(_ text: String) {
         guard let surface else { return }
         text.withCString { ptr in
@@ -603,6 +622,7 @@ class TerminalSurface {
     func setDisplayID(_ displayID: UInt32) {}
     @discardableResult func sendKey(_ event: Any) -> Bool { false }
     func sendText(_ text: String) {}
+    func sendReturn() {}
     func sendPreedit(_ text: String) {}
     func imePoint() -> (x: Double, y: Double, width: Double, height: Double) { (0, 0, 0, 0) }
     @discardableResult func sendMouseButton(state: Any, button: Any, mods: Any) -> Bool { false }
