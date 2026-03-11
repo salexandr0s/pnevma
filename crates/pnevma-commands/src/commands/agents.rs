@@ -55,6 +55,15 @@ fn profile_row_to_view(row: pnevma_db::AgentProfileRow) -> AgentProfileView {
 
 // ─── Discovery sync ─────────────────────────────────────────────────────────
 
+/// Sync project agents if a project is open; silently succeeds if not.
+pub async fn sync_discovered_project_agents_if_open(state: &AppState) -> Result<(), String> {
+    let has_project = state.current.lock().await.is_some();
+    if !has_project {
+        return Ok(());
+    }
+    sync_discovered_project_agents(state).await
+}
+
 async fn sync_discovered_project_agents(state: &AppState) -> Result<(), String> {
     let (project_id, project_path, db) = {
         let current = state.current.lock().await;

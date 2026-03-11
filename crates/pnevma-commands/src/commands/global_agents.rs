@@ -349,7 +349,10 @@ pub async fn copy_global_agent_to_project(id: String, state: &AppState) -> Resul
 pub async fn list_all_agents(state: &AppState) -> Result<Vec<serde_json::Value>, String> {
     // Sync discovered agents (errors are non-fatal)
     if let Err(e) = sync_discovered_global_agents(state).await {
-        tracing::warn!(error = %e, "agent discovery sync failed");
+        tracing::warn!(error = %e, "global agent discovery sync failed");
+    }
+    if let Err(e) = super::agents::sync_discovered_project_agents_if_open(state).await {
+        tracing::warn!(error = %e, "project agent discovery sync failed");
     }
 
     let global_db = state.global_db()?;
