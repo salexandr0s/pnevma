@@ -87,7 +87,7 @@ jobs:
           ./scripts/run-packaged-launch-smoke.sh
 
       - name: Upload package rehearsal artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: release-package-preflight
           path: |
@@ -184,7 +184,7 @@ jobs:
           spctl --assess --type exec --verbose=4 "$APP_PATH" > release-evidence/spctl.txt 2>&1
 
       - name: Upload release dry-run evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: release-sign-notarize-dry-run
           path: |
