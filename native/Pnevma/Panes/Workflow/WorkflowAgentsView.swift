@@ -89,29 +89,39 @@ struct AgentRow: View {
                 }
             }
             Spacer()
-            HStack(spacing: 4) {
+            HStack(spacing: 8) {
                 if viewModel.scope == .global {
                     Button(action: { viewModel.copyToProject(agent.id) }) {
                         Image(systemName: "arrow.down.doc")
+                            .frame(width: 14, height: 14)
+                            .padding(4)
                     }
                     .buttonStyle(.borderless)
                     .help("Copy to Project")
                 } else {
                     Button(action: { viewModel.copyToGlobal(agent.id) }) {
                         Image(systemName: "arrow.up.doc")
+                            .frame(width: 14, height: 14)
+                            .padding(4)
                     }
                     .buttonStyle(.borderless)
                     .help("Copy to Global")
                 }
                 Button(action: { viewModel.startEditing(agent) }) {
                     Image(systemName: "pencil")
+                        .frame(width: 14, height: 14)
+                        .padding(4)
                 }
                 .buttonStyle(.borderless)
+                .help("Edit Agent")
                 Button(action: { onRequestDelete(agent.id) }) {
                     Image(systemName: "trash")
+                        .frame(width: 14, height: 14)
+                        .padding(4)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
+                .help("Delete Agent")
             }
         }
         .padding(10)
