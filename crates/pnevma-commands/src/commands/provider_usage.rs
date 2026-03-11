@@ -1,6 +1,7 @@
 use super::*;
 use chrono::{DateTime, TimeZone, Utc};
 use pnevma_core::config::UsageProviderConfig;
+use pnevma_session::resolve_binary;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -338,17 +339,27 @@ async fn probe_codex(config: &UsageProviderConfig) -> Result<ProviderProbeOutput
         &output.account,
         &[
             &["plan"],
+            &["planType"],
             &["plan", "name"],
             &["billing", "plan"],
             &["subscription", "plan"],
+            &["account", "planType"],
+            &["account", "plan"],
         ],
     );
-    let mut windows = collect_windows(&output.rate_limits);
+    let mut windows = output
+        .rate_limits
+        .as_ref()
+        .map(collect_windows)
+        .unwrap_or_default();
     let session_window =
         take_matching_window(&mut windows, &["5h", "five_hour", "session", "primary"]);
     let weekly_window =
         take_matching_window(&mut windows, &["weekly", "seven_day", "week", "secondary"]);
-    let credit = extract_credit_view(&output.rate_limits, "Credits");
+    let credit = output
+        .rate_limits
+        .as_ref()
+        .and_then(|value| extract_credit_view(value, "Credits"));
     Ok(ProviderProbeOutput {
         source: "cli-rpc".to_string(),
         account_email,
@@ -366,8 +377,13 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
     }
 
     if config.source == "oauth" || config.source == "auto" {
-        if let Ok(output) = probe_claude_oauth().await {
-            return Ok(output);
+        match probe_claude_oauth().await {
+            Ok(output) => return Ok(output),
+            Err(error) => {
+                if let Some(message) = refine_claude_auth_message(&error).await {
+                    return Err(message);
+                }
+            }
         }
     }
 
@@ -379,11 +395,11 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
 
 struct CodexCliRpcOutput {
     account: Value,
-    rate_limits: Value,
+    rate_limits: Option<Value>,
 }
 
 async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
-    let mut child = TokioCommand::new("codex")
+    let mut child = TokioCommand::new(resolve_binary("codex"))
         .args(["-s", "read-only", "-a", "untrusted", "app-server"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -429,7 +445,15 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
     let mut responses: HashMap<i64, Value> = HashMap::new();
     let read_result = timeout(Duration::from_secs(8), async {
         loop {
-            let Some(line) = reader.next_line().await.map_err(|e| e.to_string())? else {
+            let next_line = if responses.contains_key(&2) && !responses.contains_key(&3) {
+                match timeout(Duration::from_millis(750), reader.next_line()).await {
+                    Ok(result) => result.map_err(|e| e.to_string())?,
+                    Err(_) => break Ok::<(), String>(()),
+                }
+            } else {
+                reader.next_line().await.map_err(|e| e.to_string())?
+            };
+            let Some(line) = next_line else {
                 break Ok::<(), String>(());
             };
             let value: Value = match serde_json::from_str(&line) {
@@ -457,16 +481,7 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
         Err(_) => return Err("codex CLI RPC probe timed out".to_string()),
     }
 
-    let account = responses
-        .remove(&2)
-        .ok_or_else(|| "codex account/read returned no result".to_string())?;
-    let rate_limits = responses
-        .remove(&3)
-        .ok_or_else(|| "codex account/rateLimits/read returned no result".to_string())?;
-    Ok(CodexCliRpcOutput {
-        account,
-        rate_limits,
-    })
+    codex_cli_output_from_responses(responses)
 }
 
 async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
@@ -531,6 +546,43 @@ async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
     })
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ClaudeAuthStatusResponse {
+    #[serde(rename = "loggedIn")]
+    logged_in: bool,
+    #[serde(rename = "authMethod")]
+    auth_method: Option<String>,
+}
+
+async fn refine_claude_auth_message(error: &str) -> Option<String> {
+    if !error.to_lowercase().contains("credentials not found") {
+        return None;
+    }
+
+    match probe_claude_auth_status().await {
+        Ok(status) if !status.logged_in => {
+            Some("Claude CLI is not signed in. Run `claude auth login` and retry.".to_string())
+        }
+        _ => None,
+    }
+}
+
+async fn probe_claude_auth_status() -> Result<ClaudeAuthStatusResponse, String> {
+    let output = TokioCommand::new(resolve_binary("claude"))
+        .args(["auth", "status"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("failed to launch claude CLI: {e}"))?;
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|e| format!("failed to decode claude auth status output: {e}"))?;
+
+    serde_json::from_str::<ClaudeAuthStatusResponse>(&stdout)
+        .map_err(|e| format!("failed to parse claude auth status output: {e}"))
+}
+
 async fn build_local_usage_summary(provider: &str, days: u32) -> ProviderLocalUsageSummaryView {
     let snapshots = get_local_usage(Some(days as i64)).await;
     if let Some(snapshot) = snapshots
@@ -562,6 +614,19 @@ async fn build_local_usage_summary(provider: &str, days: u32) -> ProviderLocalUs
 fn extract_named_window(root: &Value, key: &str, label: &str) -> Option<ProviderQuotaWindowView> {
     let value = root.get(key)?;
     Some(window_from_value(label, value))
+}
+
+fn codex_cli_output_from_responses(
+    mut responses: HashMap<i64, Value>,
+) -> Result<CodexCliRpcOutput, String> {
+    let account = responses
+        .remove(&2)
+        .ok_or_else(|| "codex account/read returned no result".to_string())?;
+    let rate_limits = responses.remove(&3);
+    Ok(CodexCliRpcOutput {
+        account,
+        rate_limits,
+    })
 }
 
 fn window_from_value(label: &str, value: &Value) -> ProviderQuotaWindowView {
@@ -1062,5 +1127,37 @@ mod tests {
         let window = window_from_value("Test", &value);
         assert_eq!(window.percent_remaining, Some(50.0));
         assert!(window.reset_at.is_some());
+    }
+
+    #[test]
+    fn codex_cli_output_requires_account_but_not_rate_limits() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            2,
+            json!({
+                "account": {
+                    "email": "user@example.com",
+                    "planType": "pro"
+                }
+            }),
+        );
+
+        let output = codex_cli_output_from_responses(responses).expect("codex output");
+        assert!(output.rate_limits.is_none());
+        assert_eq!(
+            extract_string_at_paths(&output.account, &[&["account", "planType"]]),
+            Some("pro".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_claude_auth_status_response_reads_logged_in_flag() {
+        let status: ClaudeAuthStatusResponse = serde_json::from_str(
+            r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#,
+        )
+        .expect("claude auth status");
+
+        assert!(!status.logged_in);
+        assert_eq!(status.auth_method.as_deref(), Some("none"));
     }
 }

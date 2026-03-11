@@ -65,10 +65,15 @@ protocol TerminalPaneControlling: PaneContent {
     var canLoadExistingSessions: Bool { get }
     func loadSession(sessionID: String, workingDirectory: String?)
     func launchAgent(_ agent: AgentKind)
+    func requestCloseDecision(_ completion: @escaping (Bool) -> Void)
 }
 
 extension TerminalPaneControlling {
     var canLoadExistingSessions: Bool { !hasActiveProcess }
+
+    func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
+        completion(hasActiveProcess)
+    }
 }
 
 /// Default implementations for PaneContent.
@@ -176,6 +181,12 @@ extension RestoredPaneContainer: TerminalPaneControlling {
 
     func launchAgent(_ agent: AgentKind) {
         (wrapped as? any TerminalPaneControlling)?.launchAgent(agent)
+    }
+
+    func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
+        (wrapped as? any TerminalPaneControlling)?
+            .requestCloseDecision(completion)
+            ?? completion(hasActiveProcess)
     }
 }
 
@@ -808,9 +819,10 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         }
     }
 
-    /// A terminal pane has an active process if it has a live surface.
+    /// A terminal pane has an active process while Ghostty reports that the
+    /// foreground process has not exited yet.
     var hasActiveProcess: Bool {
-        hostView?.terminalSurface?.isAlive ?? false
+        hostView?.terminalSurface.map { !$0.processExited } ?? false
     }
 
     func dispose() {
@@ -830,8 +842,21 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     var metadataJSON: String? { launchMetadata.encodedJSON() }
 
     var onTerminalClose: (() -> Void)? {
-        get { hostView?.onTerminalClose }
-        set { hostView?.onTerminalClose = newValue }
+        get {
+            guard let hostView else { return nil }
+            return {
+                hostView.onTerminalClose?(false)
+            }
+        }
+        set {
+            hostView?.onTerminalClose = { _ in
+                newValue?()
+            }
+        }
+    }
+
+    func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
+        hostView?.requestCloseDecision(completion) ?? completion(false)
     }
 
     private var initialStateTitle: String {
@@ -1115,7 +1140,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             workingDirectory: shellWorkingDirectory,
             command: shellCommand
         )
-        hostView.onTerminalClose = { [weak self] in
+        hostView.onTerminalClose = { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.handleEphemeralTerminalExit()
             }
@@ -1173,7 +1198,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         let hostView = TerminalHostView()
         hostView.launchConfiguration = binding.makeLaunchConfiguration()
         hostView.attachedSessionID = binding.sessionID
-        hostView.onTerminalClose = { [weak self] in
+        hostView.onTerminalClose = { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.loadOrRestoreSession()
             }

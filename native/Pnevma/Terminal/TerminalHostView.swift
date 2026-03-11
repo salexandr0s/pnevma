@@ -24,7 +24,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     var attachedSessionID: String?
 
     /// Called when the terminal process exits and ghostty requests the view close.
-    var onTerminalClose: (() -> Void)?
+    var onTerminalClose: ((Bool) -> Void)?
 
     /// Called once a real terminal surface is attached to the host view.
     var onSurfaceReady: (() -> Void)?
@@ -51,6 +51,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private var actionObservers: [NSObjectProtocol] = []
     private var lastReportedGridSize: (columns: UInt16, rows: UInt16)?
     private var currentCursor: NSCursor = .iBeam
+    private let closeCoordinator = TerminalCloseCoordinator()
 
     // MARK: - Init
 
@@ -115,6 +116,17 @@ final class TerminalHostView: NSView, NSTextInputClient {
         terminalSurface = nil
         lastReportedGridSize = nil
         removeWindowObservers()
+    }
+
+    func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
+        guard terminalSurface != nil else {
+            completion(false)
+            return
+        }
+        closeCoordinator.requestClose(
+            using: { [weak self] in self?.terminalSurface?.requestClose() },
+            completion: completion
+        )
     }
 
     // MARK: - NSView Lifecycle
@@ -406,7 +418,13 @@ final class TerminalHostView: NSView, NSTextInputClient {
         window.displayIfNeeded()
 
         let surface = TerminalSurface(hostView: self, launchConfiguration: launchConfiguration)
-        surface.onClose = { [weak self] in self?.onTerminalClose?() }
+        surface.onClose = { [weak self] processAlive in
+            guard let self else { return }
+            self.closeCoordinator.handleSurfaceClose(
+                processAlive: processAlive,
+                onTerminalClose: self.onTerminalClose
+            )
+        }
         terminalSurface = surface
         updateSurfaceLayout()
 
@@ -643,6 +661,28 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private func claimFirstResponderIfNeeded() -> Bool {
         guard window?.firstResponder !== self else { return true }
         return window?.makeFirstResponder(self) ?? false
+    }
+}
+
+@MainActor
+final class TerminalCloseCoordinator {
+    private var pendingCloseDecision: ((Bool) -> Void)?
+
+    func requestClose(using closeRequest: () -> Void, completion: @escaping (Bool) -> Void) {
+        pendingCloseDecision = completion
+        closeRequest()
+    }
+
+    func handleSurfaceClose(
+        processAlive: Bool,
+        onTerminalClose: ((Bool) -> Void)?
+    ) {
+        if let pendingCloseDecision {
+            self.pendingCloseDecision = nil
+            pendingCloseDecision(processAlive)
+            return
+        }
+        onTerminalClose?(processAlive)
     }
 }
 
