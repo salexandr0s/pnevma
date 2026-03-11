@@ -28,7 +28,7 @@ use pnevma_context::{
 use pnevma_core::{ProjectConfig, TaskContract, TaskStatus};
 use pnevma_db::{ContextRuleUsageRow, CostRow, Db, PaneRow, SessionRow, TaskRow, WorktreeRow};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -96,6 +96,8 @@ pub struct PreparedRun {
     pub db_run_id_holder: Arc<std::sync::Mutex<Option<String>>>,
     /// Cached WORKFLOW.md hooks (avoids redundant disk reads).
     pub hooks: pnevma_core::WorkflowHooks,
+    /// Shared pending browser tool calls (passed from AppState).
+    pub browser_tool_pending: crate::commands::browser_tools::BrowserToolPending,
 }
 
 /// A running agent handle plus its background event-loop task.
@@ -519,6 +521,7 @@ pub async fn prepare(
         tracker,
         db_run_id_holder: Arc::new(std::sync::Mutex::new(None)),
         hooks: cached_hooks,
+        browser_tool_pending: state.browser_tool_pending.clone(),
     })
 }
 
@@ -572,10 +575,14 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
             output_format: "stream-json".to_string(),
             context_file: Some(prepared.context_path.to_string_lossy().to_string()),
             thread_id: None,
-            dynamic_tools: if prepared.tracker.is_some() {
-                crate::commands::tracker_tools::tracker_tool_defs()
-            } else {
-                vec![]
+            dynamic_tools: {
+                let mut tools = vec![];
+                if prepared.tracker.is_some() {
+                    tools.extend(crate::commands::tracker_tools::tracker_tool_defs());
+                }
+                tools.extend(crate::commands::browser_tools::browser_tool_defs());
+                tools.extend(crate::commands::plan_tools::plan_tool_defs());
+                tools
             },
         })
         .await
@@ -670,6 +677,7 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         tracker: tracker_for_task,
         db_run_id_holder: db_run_id_holder_for_task,
         hooks: hooks_for_task,
+        browser_tool_pending: prepared.browser_tool_pending.clone(),
     }));
 
     Ok(RunningAgent {
@@ -828,6 +836,7 @@ struct RunEventLoopContext {
     tracker: Option<Arc<dyn pnevma_tracker::TrackerAdapter>>,
     db_run_id_holder: Arc<std::sync::Mutex<Option<String>>>,
     hooks: pnevma_core::WorkflowHooks,
+    browser_tool_pending: crate::commands::browser_tools::BrowserToolPending,
 }
 
 async fn run_event_loop(ctx: RunEventLoopContext) {
@@ -852,6 +861,7 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         tracker,
         db_run_id_holder,
         hooks,
+        browser_tool_pending,
     } = ctx;
     let session_id_str = session_id.to_string();
     let mut last_summary: Option<String> = None;
@@ -1018,9 +1028,26 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                         break 'event_loop;
                     }
                     AgentEvent::DynamicToolCall { call_id, tool_name, params } => {
-                        if let Some(ref tracker_adapter) = tracker {
+                        let result = if tool_name.starts_with("browser.") {
+                            crate::commands::browser_tools::handle_browser_tool_call(
+                                &call_id,
+                                &tool_name,
+                                &params,
+                                &*emitter,
+                                &browser_tool_pending,
+                            )
+                            .await
+                        } else if tool_name.starts_with("plan.") {
+                            crate::commands::plan_tools::handle_plan_tool_call(
+                                &call_id,
+                                &tool_name,
+                                &params,
+                                &project_path,
+                            )
+                            .await
+                        } else if let Some(ref tracker_adapter) = tracker {
                             let secrets = current_redaction_secrets(&redaction_secrets).await;
-                            let result = crate::commands::tracker_tools::handle_dynamic_tool_call(
+                            crate::commands::tracker_tools::handle_dynamic_tool_call(
                                 &call_id,
                                 &tool_name,
                                 &params,
@@ -1029,12 +1056,13 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                                 &project_id.to_string(),
                                 &secrets,
                             )
-                            .await;
-                            if let Err(e) = adapter.send_tool_result(&handle, &call_id, result).await {
-                                tracing::warn!(call_id = %call_id, error = %e, "failed to send tool result back to agent");
-                            }
+                            .await
                         } else {
-                            tracing::debug!(call_id = %call_id, tool_name = %tool_name, "DynamicToolCall received but no tracker configured");
+                            tracing::debug!(call_id = %call_id, tool_name = %tool_name, "DynamicToolCall received but no handler matched");
+                            serde_json::json!({"error": format!("unknown tool: {}", tool_name), "success": false})
+                        };
+                        if let Err(e) = adapter.send_tool_result(&handle, &call_id, result).await {
+                            tracing::warn!(call_id = %call_id, error = %e, "failed to send tool result back to agent");
                         }
                     }
                     AgentEvent::StatusChange(_)
@@ -1195,6 +1223,38 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                         )
                         .await;
                     }
+                }
+            }
+        }
+
+        // Run verification hooks after acceptance checks, before final status
+        if !failed {
+            if let Some(ref verify_hooks) = hooks.verify {
+                let verify_results =
+                    run_verification_hooks(verify_hooks, &worktree_path, &branch).await;
+                if let Some(failure) = verify_results.first_failure() {
+                    let verify_feedback = format!(
+                        "Verification failed — {}:\n```\n{}\n```\nFix the issues and ensure verification passes.",
+                        failure.description, failure.output
+                    );
+                    row.handoff_summary = Some(verify_feedback);
+                    next_status = TaskStatus::Failed;
+                    failed = true;
+
+                    append_event(
+                        &db,
+                        project_id,
+                        Some(task_id),
+                        None,
+                        "core",
+                        "VerificationFailed",
+                        json!({
+                            "task_id": task_id,
+                            "hook_description": failure.description,
+                            "exit_code": failure.exit_code,
+                        }),
+                    )
+                    .await;
                 }
             }
         }
@@ -1363,4 +1423,97 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         }),
     )
     .await;
+}
+
+// ── Verification Hooks ──────────────────────────────────────────────────────
+
+struct VerifyResult {
+    description: String,
+    output: String,
+    exit_code: i32,
+}
+
+struct VerifyResults(Vec<VerifyResult>);
+
+impl VerifyResults {
+    fn first_failure(&self) -> Option<&VerifyResult> {
+        self.0.iter().find(|r| r.exit_code != 0)
+    }
+}
+
+async fn run_verification_hooks(
+    hooks: &[pnevma_core::VerificationHook],
+    working_dir: &Path,
+    branch: &str,
+) -> VerifyResults {
+    let mut results = Vec::new();
+    for hook in hooks {
+        let timeout = std::time::Duration::from_secs(hook.timeout_seconds);
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(&hook.command)
+                .current_dir(working_dir)
+                .env("PNEVMA_BRANCH", branch)
+                .output(),
+        )
+        .await;
+
+        match output {
+            Ok(Ok(out)) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let combined = format!("{stdout}{stderr}");
+                // Truncate output to avoid blowing up context
+                let truncated = if combined.len() > 4000 {
+                    // Find a valid UTF-8 char boundary at or before 4000
+                    let end = combined
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 4000)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...[truncated]", &combined[..end])
+                } else {
+                    combined
+                };
+                let exit_code = out.status.code().unwrap_or(-1);
+                if exit_code != 0 {
+                    tracing::warn!(
+                        hook = %hook.description,
+                        exit_code = exit_code,
+                        "verification hook failed"
+                    );
+                }
+                results.push(VerifyResult {
+                    description: hook.description.clone(),
+                    output: truncated,
+                    exit_code,
+                });
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(hook = %hook.description, error = %e, "verification hook execution error");
+                results.push(VerifyResult {
+                    description: hook.description.clone(),
+                    output: format!("execution error: {e}"),
+                    exit_code: -1,
+                });
+            }
+            Err(_) => {
+                tracing::warn!(hook = %hook.description, "verification hook timed out");
+                results.push(VerifyResult {
+                    description: hook.description.clone(),
+                    output: format!("timed out after {}s", hook.timeout_seconds),
+                    exit_code: -1,
+                });
+            }
+        }
+
+        // Stop on first failure — no need to run remaining hooks
+        if results.last().is_some_and(|r| r.exit_code != 0) {
+            break;
+        }
+    }
+    VerifyResults(results)
 }

@@ -31,8 +31,8 @@ pub use workflow::{
 };
 
 pub use workflow_contract::{
-    AgentDefaults, RetryDefaults, TrackerSettings, WorkflowDocument, WorkflowHooks,
-    WorkflowMdConfig, WorkflowParseError,
+    AgentDefaults, RetryDefaults, TrackerSettings, VerificationHook, WorkflowDocument,
+    WorkflowHooks, WorkflowMdConfig, WorkflowParseError,
 };
 
 pub type ProjectId = uuid::Uuid;

@@ -85,6 +85,8 @@ pub struct AppState {
     pub emitter: Arc<dyn EventEmitter>,
     /// Set immediately after Arc<AppState> is created so internal code can get a clone.
     pub self_arc: std::sync::OnceLock<Arc<AppState>>,
+    /// Pending browser tool calls awaiting Swift-side completion.
+    pub browser_tool_pending: crate::commands::browser_tools::BrowserToolPending,
 }
 
 impl Default for AppState {
@@ -101,6 +103,7 @@ impl Default for AppState {
             remote_events,
             emitter: Arc::new(NullEmitter),
             self_arc: std::sync::OnceLock::new(),
+            browser_tool_pending: crate::commands::browser_tools::new_browser_tool_pending(),
         }
     }
 }

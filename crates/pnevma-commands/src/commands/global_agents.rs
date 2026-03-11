@@ -213,7 +213,7 @@ pub async fn create_global_agent(
         max_concurrent: input.max_concurrent.unwrap_or(2),
         stations_json,
         config_json: input.config_json.unwrap_or_else(|| "{}".to_string()),
-        system_prompt: input.system_prompt,
+        system_prompt: input.system_prompt.filter(|s| !s.is_empty()),
         active: true,
         created_at: now,
         updated_at: now,

@@ -52,6 +52,7 @@ fn default_strategies() -> Vec<String> {
     vec![
         "scope".to_string(),
         "claude_md".to_string(),
+        "harness_config".to_string(),
         "git_diff".to_string(),
     ]
 }
@@ -115,6 +116,7 @@ impl FileDiscovery {
             let paths = match strategy.as_str() {
                 "scope" => self.discover_scope(task, project_root).await,
                 "claude_md" => self.discover_config_files(project_root).await,
+                "harness_config" => self.discover_harness_files(project_root).await,
                 "git_diff" => self.discover_git_diff(project_root).await,
                 "grep" => self.discover_grep(task, project_root).await,
                 other => {
@@ -145,8 +147,10 @@ impl FileDiscovery {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
-                if !canonical.starts_with(&canonical_root) {
-                    warn!(path = %path.display(), "path escapes project root, skipping");
+                let in_project = canonical.starts_with(&canonical_root);
+                let in_harness = is_allowed_harness_path(&canonical);
+                if !in_project && !in_harness {
+                    warn!(path = %path.display(), "path escapes project root and is not a harness config, skipping");
                     continue;
                 }
 
@@ -154,11 +158,19 @@ impl FileDiscovery {
                     continue;
                 }
 
-                let rel = canonical
-                    .strip_prefix(&canonical_root)
-                    .unwrap_or(&canonical)
-                    .to_string_lossy()
-                    .to_string();
+                let rel = if canonical.starts_with(&canonical_root) {
+                    canonical
+                        .strip_prefix(&canonical_root)
+                        .unwrap_or(&canonical)
+                        .to_string_lossy()
+                        .to_string()
+                } else {
+                    // Harness file — use [harness] prefix for clarity
+                    format!(
+                        "[harness] {}",
+                        canonical.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                };
 
                 if seen_paths.contains(&rel) {
                     continue;
@@ -256,6 +268,37 @@ impl FileDiscovery {
             .map(|name| project_root.join(name))
             .filter(|p| p.is_file())
             .collect())
+    }
+
+    /// Strategy: discover harness config files (~/.claude/ and ~/.codex/)
+    async fn discover_harness_files(
+        &self,
+        project_root: &Path,
+    ) -> Result<Vec<PathBuf>, ContextError> {
+        let home = match std::env::var("HOME") {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => {
+                warn!("HOME not set, skipping harness_config discovery");
+                return Ok(vec![]);
+            }
+        };
+
+        let mut paths = Vec::new();
+
+        // MCP config — agents should know what tools are available
+        let mcp = home.join(".claude/.mcp.json");
+        if mcp.is_file() {
+            paths.push(mcp);
+        }
+
+        // Memory for current project
+        let project_key = project_root.to_string_lossy().replace('/', "-");
+        let memory = home.join(format!(".claude/projects/{project_key}/memory/MEMORY.md"));
+        if memory.is_file() {
+            paths.push(memory);
+        }
+
+        Ok(paths)
     }
 
     /// Strategy: git diff to find recently changed files
@@ -367,6 +410,21 @@ impl FileDiscovery {
             .iter()
             .any(|p| matches_glob_simple(p, rel_path))
     }
+}
+
+/// Check whether a canonical path is under ~/.claude/ or ~/.codex/ (harness config directories).
+fn is_allowed_harness_path(path: &Path) -> bool {
+    let home = match std::env::var("HOME") {
+        Ok(h) => PathBuf::from(h),
+        Err(_) => return false,
+    };
+    let canonical_home = match home.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let claude_dir = canonical_home.join(".claude");
+    let codex_dir = canonical_home.join(".codex");
+    path.starts_with(&claude_dir) || path.starts_with(&codex_dir)
 }
 
 /// Simple glob matching (supports * and ** patterns).

@@ -865,6 +865,7 @@ mod tests {
             remote_events,
             emitter: Arc::new(NullEmitter),
             self_arc: std::sync::OnceLock::new(),
+            browser_tool_pending: crate::commands::browser_tools::new_browser_tool_pending(),
         };
 
         (state, project_id, db)

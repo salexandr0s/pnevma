@@ -15,6 +15,40 @@ actor CommandBus: CommandCalling {
         self.bridge = bridge
     }
 
+    /// Call a Rust command with pre-serialized JSON params and decode the result.
+    func callRaw<T: Decodable>(method: String, paramsJSON: String) async throws -> T {
+        return try await withCheckedThrowingContinuation { continuation in
+            bridge.callAsync(method: method, params: paramsJSON) { resultJSON in
+                guard let result = resultJSON else {
+                    continuation.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
+                    return
+                }
+
+                guard result.ok else {
+                    continuation.resume(
+                        throwing: PnevmaError.backendError(method: method, message: result.payload)
+                    )
+                    return
+                }
+
+                guard let data = result.payload.data(using: .utf8) else {
+                    continuation.resume(throwing: PnevmaError.invalidResponse)
+                    return
+                }
+
+                do {
+                    let decoder = PnevmaJSON.decoder()
+                    let decoded = try decoder.decode(T.self, from: data)
+                    continuation.resume(returning: decoded)
+                } catch {
+                    continuation.resume(
+                        throwing: PnevmaError.decodingFailed(method: method, error: error)
+                    )
+                }
+            }
+        }
+    }
+
     /// Call a Rust command and decode the JSON result.
     func call<T: Decodable>(method: String, params: Encodable? = nil) async throws -> T {
         let paramsJSON: String

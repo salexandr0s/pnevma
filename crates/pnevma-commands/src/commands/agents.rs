@@ -359,7 +359,7 @@ pub async fn create_agent_profile(
         created_at: now,
         updated_at: now,
         role: input.role.unwrap_or_else(|| "build".to_string()),
-        system_prompt: input.system_prompt,
+        system_prompt: input.system_prompt.filter(|s| !s.is_empty()),
         source: "user".to_string(),
         source_path: None,
         user_modified: false,

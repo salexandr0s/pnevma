@@ -497,8 +497,17 @@ final class AgentViewModel {
             let maxConcurrent: Int
             let stations: [String]
             let configJson: String
-            let systemPrompt: String?
+            let systemPrompt: String
             let active: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case name, role, provider, model, stations, active
+                case tokenBudget = "token_budget"
+                case timeoutMinutes = "timeout_minutes"
+                case maxConcurrent = "max_concurrent"
+                case configJson = "config_json"
+                case systemPrompt = "system_prompt"
+            }
         }
         struct UpdateParams: Encodable {
             let id: String
@@ -511,8 +520,17 @@ final class AgentViewModel {
             let maxConcurrent: Int
             let stations: [String]
             let configJson: String
-            let systemPrompt: String?
+            let systemPrompt: String
             let active: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case id, name, role, provider, model, stations, active
+                case tokenBudget = "token_budget"
+                case timeoutMinutes = "timeout_minutes"
+                case maxConcurrent = "max_concurrent"
+                case configJson = "config_json"
+                case systemPrompt = "system_prompt"
+            }
         }
 
         let createMethod = scope == .global ? "global_agent.create" : "agent_profile.create"
@@ -533,7 +551,7 @@ final class AgentViewModel {
                             maxConcurrent: agent.maxConcurrent,
                             stations: agent.stations,
                             configJson: agent.configJson,
-                            systemPrompt: agent.systemPrompt,
+                            systemPrompt: agent.systemPrompt ?? "",
                             active: agent.active
                         )
                     )
@@ -551,7 +569,7 @@ final class AgentViewModel {
                             maxConcurrent: agent.maxConcurrent,
                             stations: agent.stations,
                             configJson: agent.configJson,
-                            systemPrompt: agent.systemPrompt,
+                            systemPrompt: agent.systemPrompt ?? "",
                             active: agent.active
                         )
                     )

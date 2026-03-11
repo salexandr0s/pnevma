@@ -2254,6 +2254,93 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+
+        // ── Harness Config ──────────────────────────────────────────────
+        "harness.config.list" => serde_json::to_value(
+            commands::list_harness_configs(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "harness.config.read" => {
+            let key =
+                parse_string_param(params, "key").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::read_harness_config(commands::ReadHarnessConfigInput { key }, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.config.write" => {
+            let key =
+                parse_string_param(params, "key").map_err(|e| ("invalid_params".to_string(), e))?;
+            let content = parse_string_param(params, "content")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::write_harness_config(
+                    commands::WriteHarnessConfigInput { key, content },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+
+        // ── Browser Tool Result ─────────────────────────────────────────
+        "browser.tool_result" => {
+            let call_id = parse_string_param(params, "call_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let result = params
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::json!({"error": "missing result"}));
+            commands::browser_tools::complete_browser_tool_call(
+                &call_id,
+                result,
+                &state.browser_tool_pending,
+            );
+            serde_json::json!({"ok": true})
+        }
+
+        // ── Plan Management ─────────────────────────────────────────────
+        "plan.list" => commands::list_plans(state)
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?,
+        "plan.read" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::read_plan(commands::PlanReadInput { id }, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?
+        }
+        "plan.write" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            let title = parse_optional_string_param(params, "title");
+            let status = parse_optional_string_param(params, "status");
+            let content = parse_optional_string_param(params, "content");
+            commands::write_plan(
+                commands::PlanWriteInput {
+                    id,
+                    title,
+                    status,
+                    content,
+                },
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?
+        }
+        "plan.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_plan(commands::PlanDeleteInput { id }, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?
+        }
+
         _ => {
             return Err((
                 "method_not_found".to_string(),

@@ -399,6 +399,101 @@ pub fn default_registry() -> &'static CommandRegistry {
         let registry = register_session_commands(registry);
         let registry = register_pane_commands(registry);
         let registry = register_task_commands(registry);
-        register_tracker_commands(registry)
+        let registry = register_tracker_commands(registry);
+        let registry = register_harness_config_commands(registry);
+        register_plan_commands(registry)
     })
+}
+
+fn register_harness_config_commands(registry: CommandRegistry) -> CommandRegistry {
+    registry
+        .register(RegisteredCommand {
+            id: "harness.config.list".to_string(),
+            label: "List Harness Configs".to_string(),
+            description: "List all available harness configuration files (MCP, settings, hooks, agents, skills, memory)".to_string(),
+            args: vec![],
+        })
+        .register(RegisteredCommand {
+            id: "harness.config.read".to_string(),
+            label: "Read Harness Config".to_string(),
+            description: "Read the content of a harness configuration file".to_string(),
+            args: vec![arg("key", "Config Key", true, None, None, Some("The config entry key (e.g. claude.mcp)"))],
+        })
+        .register(RegisteredCommand {
+            id: "harness.config.write".to_string(),
+            label: "Write Harness Config".to_string(),
+            description: "Write content to a harness configuration file".to_string(),
+            args: vec![
+                arg("key", "Config Key", true, None, None, Some("The config entry key")),
+                arg("content", "Content", true, None, None, Some("File content to write")),
+            ],
+        })
+}
+
+fn register_plan_commands(registry: CommandRegistry) -> CommandRegistry {
+    registry
+        .register(RegisteredCommand {
+            id: "plan.list".to_string(),
+            label: "List Plans".to_string(),
+            description: "List all plan files for the current project".to_string(),
+            args: vec![],
+        })
+        .register(RegisteredCommand {
+            id: "plan.read".to_string(),
+            label: "Read Plan".to_string(),
+            description: "Read a specific plan file".to_string(),
+            args: vec![arg(
+                "id",
+                "Plan ID",
+                true,
+                None,
+                None,
+                Some("The plan identifier"),
+            )],
+        })
+        .register(RegisteredCommand {
+            id: "plan.write".to_string(),
+            label: "Write Plan".to_string(),
+            description: "Create or update a plan file".to_string(),
+            args: vec![
+                arg(
+                    "id",
+                    "Plan ID",
+                    true,
+                    None,
+                    None,
+                    Some("The plan identifier"),
+                ),
+                arg("title", "Title", false, None, None, Some("Plan title")),
+                arg(
+                    "status",
+                    "Status",
+                    false,
+                    None,
+                    None,
+                    Some("Plan status: draft, approved, in_progress, complete"),
+                ),
+                arg(
+                    "content",
+                    "Content",
+                    false,
+                    None,
+                    None,
+                    Some("Plan content in markdown"),
+                ),
+            ],
+        })
+        .register(RegisteredCommand {
+            id: "plan.delete".to_string(),
+            label: "Delete Plan".to_string(),
+            description: "Remove a plan file".to_string(),
+            args: vec![arg(
+                "id",
+                "Plan ID",
+                true,
+                None,
+                None,
+                Some("The plan identifier"),
+            )],
+        })
 }

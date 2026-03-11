@@ -1,8 +1,11 @@
 // Submodule declarations
 pub mod agents;
 pub mod analytics;
+pub mod browser_tools;
 pub mod global_agents;
 pub mod global_workflow;
+pub mod harness_config;
+pub mod plan_tools;
 pub mod project;
 pub mod ssh;
 pub mod tasks;
@@ -16,6 +19,8 @@ pub use self::agents::*;
 pub use self::analytics::*;
 pub use self::global_agents::*;
 pub use self::global_workflow::*;
+pub use self::harness_config::*;
+pub use self::plan_tools::*;
 pub use self::project::*;
 pub use self::ssh::*;
 pub use self::tasks::*;

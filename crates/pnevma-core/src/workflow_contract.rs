@@ -74,6 +74,25 @@ pub struct WorkflowHooks {
     pub before_run: Option<Vec<String>>,
     pub after_run: Option<Vec<String>>,
     pub before_remove: Option<Vec<String>>,
+    pub verify: Option<Vec<VerificationHook>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationHook {
+    pub command: String,
+    pub description: String,
+    #[serde(default = "default_verify_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_verify_retries")]
+    pub max_retries: u32,
+}
+
+fn default_verify_timeout() -> u64 {
+    120
+}
+
+fn default_verify_retries() -> u32 {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

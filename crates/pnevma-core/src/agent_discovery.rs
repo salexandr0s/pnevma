@@ -164,14 +164,22 @@ pub fn discover_codex_agents(config_path: &Path) -> Vec<DiscoveredAgent> {
         let mut system_prompt = None;
 
         if let Some(config_file) = agent_table.get("config_file").and_then(|v| v.as_str()) {
-            let config_file_path = config_dir.join(config_file);
-            if !config_file_path.exists() {
-                tracing::debug!(
+            // Reject path traversal before any filesystem access
+            let has_traversal = Path::new(config_file)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+            if has_traversal {
+                tracing::warn!(
                     config_file,
-                    "codex agent config_file not found, skipping file load"
+                    "codex agent config_file contains path traversal, skipping agent"
                 );
-            } else {
-                // Prevent path traversal — config_file must resolve inside config_dir
+                continue;
+            }
+
+            let config_file_path = config_dir.join(config_file);
+
+            // Additionally verify canonicalized path stays inside config_dir (catches symlinks)
+            if config_file_path.exists() {
                 let ok = config_file_path
                     .canonicalize()
                     .ok()
@@ -190,6 +198,7 @@ pub fn discover_codex_agents(config_path: &Path) -> Vec<DiscoveredAgent> {
                     continue;
                 }
             }
+
             if let Ok(agent_content) = std::fs::read_to_string(&config_file_path) {
                 if let Ok(agent_table) = agent_content.parse::<toml::Table>() {
                     if let Some(m) = agent_table.get("model").and_then(|v| v.as_str()) {
@@ -480,6 +489,33 @@ description = "Should be kept"
 
         let agents = discover_codex_agents(&config_path);
         assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_discover_codex_agents_path_traversal_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        fs::create_dir(&agents_dir).unwrap();
+
+        // Create a secret file outside the config directory
+        let secret = dir.path().join("secret.toml");
+        fs::write(&secret, "model = \"stolen-model\"\n").unwrap();
+
+        // Config references a file that escapes via ..
+        let config_path = agents_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[agents.evil]
+description = "Tries path traversal"
+config_file = "../secret.toml"
+"#,
+        )
+        .unwrap();
+
+        let agents = discover_codex_agents(&config_path);
+        // Agent with path traversal is skipped entirely
+        assert_eq!(agents.len(), 0);
     }
 
     #[test]

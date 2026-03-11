@@ -270,6 +270,10 @@ enum PaneFactory {
         paneTuple(BrowserPaneView(frame: .zero, url: url))
     }
 
+    static func makeHarnessConfig() -> (PaneID, NSView & PaneContent) {
+        paneTuple(HarnessConfigPaneView(frame: .zero))
+    }
+
     static func make(from persistedPane: PersistedPane) -> (PaneID, NSView & PaneContent) {
         let inner: (NSView & PaneContent)
         switch persistedPane.type {
@@ -318,6 +322,8 @@ enum PaneFactory {
             inner = RulesManagerPaneView(frame: .zero)
         case "browser":
             inner = BrowserPaneView.fromMetadata(persistedPane.metadataJSON)
+        case "harness_config":
+            inner = HarnessConfigPaneView(frame: .zero)
         default:
             inner = RestoreErrorPaneView(
                 paneID: persistedPane.paneID,
@@ -352,7 +358,8 @@ enum PaneFactory {
         case "notifications": return makeNotifications()
         case "daily_brief":   return makeDailyBrief()
         case "rules":         return makeRulesManager()
-        case "browser":       return makeBrowser()
+        case "browser":        return makeBrowser()
+        case "harness_config": return makeHarnessConfig()
         default:              return nil
         }
     }
@@ -363,7 +370,7 @@ enum PaneFactory {
 
     static func availablePaneTypes(for workspace: Workspace?) -> Set<String> {
         guard let workspace else {
-            return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics"]
+            return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"]
         }
         if workspace.showsProjectToolsInUI {
             return [
@@ -382,9 +389,10 @@ enum PaneFactory {
                 "analytics",
                 "daily_brief",
                 "rules",
+                "harness_config",
             ]
         }
-        return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics"]
+        return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"]
     }
 }
 
