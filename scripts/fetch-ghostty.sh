@@ -18,6 +18,17 @@ working_tree_dirty() {
     ! git -C "$GHOSTTY_DIR" diff --cached --quiet --ignore-submodules --no-ext-diff
 }
 
+initial_no_checkout_state() {
+  git -C "$GHOSTTY_DIR" diff --quiet --ignore-submodules --no-ext-diff || return 1
+  ! git -C "$GHOSTTY_DIR" diff --cached --quiet --ignore-submodules --no-ext-diff || return 1
+  [[ -z "$(git -C "$GHOSTTY_DIR" ls-files --others --exclude-standard)" ]] || return 1
+
+  local status_output
+  status_output="$(git -C "$GHOSTTY_DIR" status --short)"
+  [[ -n "$status_output" ]] || return 1
+  ! grep -qv '^D  ' <<<"$status_output"
+}
+
 patch_touched_files() {
   if [[ ! -d "$PATCH_DIR" ]]; then
     return
@@ -109,7 +120,7 @@ apply_local_patches() {
 }
 
 checkout_expected_base() {
-  if working_tree_dirty; then
+  if working_tree_dirty && ! initial_no_checkout_state; then
     fail "unexpected local changes in $GHOSTTY_DIR; clean the vendor checkout before refetching"
   fi
 
