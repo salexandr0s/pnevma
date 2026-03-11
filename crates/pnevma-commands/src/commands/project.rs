@@ -5814,7 +5814,10 @@ enable_entropy_guard = false
         .await
         .expect_err("path traversal should be rejected");
 
-        assert!(err.contains("path") || err.contains("unsafe"), "error should mention path: {err}");
+        assert!(
+            err.contains("path") || err.contains("unsafe"),
+            "error should mention path: {err}"
+        );
         // Verify the file outside the project wasn't modified
         let on_disk = std::fs::read_to_string(temp.path().join("secret.txt")).unwrap();
         assert_eq!(on_disk, "secret");
@@ -5851,7 +5854,10 @@ enable_entropy_guard = false
         .await
         .expect_err("writing to nonexistent file should fail");
 
-        assert!(err.contains("not found"), "error should say not found: {err}");
+        assert!(
+            err.contains("not found"),
+            "error should say not found: {err}"
+        );
     }
 
     #[tokio::test]

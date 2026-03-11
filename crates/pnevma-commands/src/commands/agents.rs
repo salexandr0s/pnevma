@@ -18,6 +18,9 @@ pub struct AgentProfileView {
     pub active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub source: String,
+    pub source_path: Option<String>,
+    pub user_modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,12 +47,113 @@ fn profile_row_to_view(row: pnevma_db::AgentProfileRow) -> AgentProfileView {
         active: row.active,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        source: row.source,
+        source_path: row.source_path,
+        user_modified: row.user_modified,
     }
+}
+
+// ─── Discovery sync ─────────────────────────────────────────────────────────
+
+async fn sync_discovered_project_agents(state: &AppState) -> Result<(), String> {
+    let (project_id, project_path, db) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (
+            ctx.project_id.to_string(),
+            ctx.project_path.clone(),
+            ctx.db.clone(),
+        )
+    };
+
+    let discovered = pnevma_core::agent_discovery::discover_project_agents(&project_path);
+    if discovered.is_empty() {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+
+    for agent in discovered {
+        let existing = db
+            .get_agent_profile_by_source_path(&project_id, &agent.source_path)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if let Some(existing) = existing {
+            if existing.user_modified {
+                continue;
+            }
+            let updated = pnevma_db::AgentProfileRow {
+                id: existing.id,
+                project_id: existing.project_id,
+                name: agent.name,
+                role: agent.role,
+                provider: agent.provider,
+                model: agent.model,
+                token_budget: existing.token_budget,
+                timeout_minutes: existing.timeout_minutes,
+                max_concurrent: existing.max_concurrent,
+                stations_json: existing.stations_json,
+                config_json: existing.config_json,
+                active: existing.active,
+                created_at: existing.created_at,
+                updated_at: now,
+                system_prompt: agent.system_prompt,
+                source: agent.source,
+                source_path: Some(agent.source_path),
+                user_modified: false,
+            };
+            if let Err(e) = db.update_agent_profile(&updated).await {
+                tracing::warn!(error = %e, "failed to update discovered project agent");
+            }
+        } else {
+            // Check for name collision with user-created agent
+            if let Ok(Some(by_name)) = db.get_agent_profile_by_name(&project_id, &agent.name).await
+            {
+                if by_name.source == "user" {
+                    continue;
+                }
+            }
+
+            let row = pnevma_db::AgentProfileRow {
+                id: Uuid::new_v4().to_string(),
+                project_id: project_id.clone(),
+                name: agent.name,
+                role: agent.role,
+                provider: agent.provider,
+                model: agent.model,
+                token_budget: 200000,
+                timeout_minutes: 30,
+                max_concurrent: 2,
+                stations_json: "[]".to_string(),
+                config_json: "{}".to_string(),
+                active: true,
+                created_at: now,
+                updated_at: now,
+                system_prompt: agent.system_prompt,
+                source: agent.source,
+                source_path: Some(agent.source_path),
+                user_modified: false,
+            };
+            if let Err(e) = db.create_agent_profile(&row).await {
+                tracing::warn!(error = %e, "failed to insert discovered project agent");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 pub async fn list_agent_profiles(state: &AppState) -> Result<Vec<AgentProfileView>, String> {
+    // Sync discovered agents before listing (errors are non-fatal)
+    if let Err(e) = sync_discovered_project_agents(state).await {
+        tracing::warn!(error = %e, "project agent discovery sync failed");
+    }
+
     let (project_id, db) = {
         let current = state.current.lock().await;
         let ctx = current
@@ -249,6 +353,9 @@ pub async fn create_agent_profile(
         updated_at: now,
         role: input.role.unwrap_or_else(|| "build".to_string()),
         system_prompt: input.system_prompt,
+        source: "user".to_string(),
+        source_path: None,
+        user_modified: false,
     };
     db.create_agent_profile(&row)
         .await
@@ -295,6 +402,9 @@ pub async fn update_agent_profile(
         updated_at: now,
         role: input.role.unwrap_or(existing.role),
         system_prompt: input.system_prompt.or(existing.system_prompt),
+        source: existing.source,
+        source_path: existing.source_path,
+        user_modified: true,
     };
     db.update_agent_profile(&updated)
         .await
@@ -310,6 +420,24 @@ pub async fn delete_agent_profile(id: String, state: &AppState) -> Result<(), St
             .ok_or_else(|| "no open project".to_string())?;
         ctx.db.clone()
     };
+
+    let existing = db.get_agent_profile(&id).await.map_err(|e| e.to_string())?;
+
+    // Discovered agents: soft-delete (active=false, user_modified=true) so sync won't re-import
+    if let Some(row) = existing {
+        if row.source != "user" {
+            let mut updated = row;
+            updated.active = false;
+            updated.user_modified = true;
+            updated.updated_at = Utc::now();
+            db.update_agent_profile(&updated)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
+
+    // User-created agents: hard delete
     db.delete_agent_profile(&id)
         .await
         .map_err(|e| e.to_string())?;
@@ -348,6 +476,9 @@ pub async fn copy_agent_to_global(id: String, state: &AppState) -> Result<String
         active: true,
         created_at: now,
         updated_at: now,
+        source: "user".to_string(),
+        source_path: None,
+        user_modified: false,
     };
     global_db
         .create_global_agent_profile(&row)

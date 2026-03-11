@@ -57,6 +57,9 @@ struct AgentRow: View {
                     Text(agent.name)
                         .font(.headline)
                     RoleBadge(role: agent.role)
+                    if let source = agent.source, source != "user" {
+                        SourceBadge(source: source)
+                    }
                     if !agent.active {
                         Text("inactive")
                             .font(.caption2)
@@ -114,8 +117,8 @@ struct AgentFormCard: View {
     @Binding var agent: AgentProfileFullItem
     let onSave: (AgentProfileFullItem) -> Void
     let onCancel: () -> Void
+    @State private var showAdvanced = false
     @State private var stationsText: String = ""
-    @State private var promptExpanded = false
 
     var body: some View {
         ScrollView {
@@ -132,9 +135,47 @@ struct AgentFormCard: View {
                         .disabled(agent.name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
-                GroupBox("Identity") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("Name", text: $agent.name)
+                // Name
+                TextField("Agent name", text: $agent.name)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.title3)
+
+                // Provider + Model
+                HStack(spacing: 8) {
+                    Picker("", selection: $agent.provider) {
+                        Text("Anthropic").tag("anthropic")
+                        Text("OpenAI").tag("openai")
+                    }
+                    .labelsHidden()
+                    .frame(width: 120)
+                    TextField("Model ID", text: $agent.model)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                // System Prompt — always visible, full editor
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("System Prompt")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: Binding(
+                        get: { agent.systemPrompt ?? "" },
+                        set: { agent.systemPrompt = $0.isEmpty ? nil : $0 }
+                    ))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(.rect(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                    )
+                }
+
+                // Advanced
+                DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Picker("Role", selection: $agent.role) {
                             Text("Build").tag("build")
                             Text("Plan").tag("plan")
@@ -144,17 +185,6 @@ struct AgentFormCard: View {
                             Text("Test").tag("test")
                             Text("Custom").tag("custom")
                         }
-                    }
-                    .padding(4)
-                }
-
-                GroupBox("Model") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Picker("Provider", selection: $agent.provider) {
-                            Text("Anthropic").tag("anthropic")
-                            Text("OpenAI").tag("openai")
-                        }
-                        TextField("Model", text: $agent.model)
                         HStack {
                             Text("Token Budget")
                             Spacer()
@@ -162,12 +192,6 @@ struct AgentFormCard: View {
                                 .frame(width: 100)
                                 .multilineTextAlignment(.trailing)
                         }
-                    }
-                    .padding(4)
-                }
-
-                GroupBox("Execution") {
-                    VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Timeout (min)")
                             Spacer()
@@ -176,46 +200,20 @@ struct AgentFormCard: View {
                                 .multilineTextAlignment(.trailing)
                         }
                         Stepper("Max Concurrent: \(agent.maxConcurrent)", value: $agent.maxConcurrent, in: 1...10)
+                        TextField("Stations (comma-separated)", text: $stationsText)
+                            .onAppear { stationsText = agent.stations.joined(separator: ", ") }
+                            .onChange(of: stationsText) {
+                                agent.stations = stationsText
+                                    .split(separator: ",")
+                                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                                    .filter { !$0.isEmpty }
+                            }
                         Toggle("Active", isOn: $agent.active)
                     }
-                    .padding(4)
+                    .padding(.top, 8)
                 }
-
-                GroupBox("Stations") {
-                    TextField("Comma-separated station names", text: $stationsText)
-                        .onAppear { stationsText = agent.stations.joined(separator: ", ") }
-                        .onChange(of: stationsText) {
-                            agent.stations = stationsText
-                                .split(separator: ",")
-                                .map { $0.trimmingCharacters(in: .whitespaces) }
-                                .filter { !$0.isEmpty }
-                        }
-                        .padding(4)
-                }
-
-                GroupBox("System Prompt") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if promptExpanded {
-                            TextEditor(text: Binding(
-                                get: { agent.systemPrompt ?? "" },
-                                set: { agent.systemPrompt = $0.isEmpty ? nil : $0 }
-                            ))
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 120)
-                        } else {
-                            TextField("Optional system prompt", text: Binding(
-                                get: { agent.systemPrompt ?? "" },
-                                set: { agent.systemPrompt = $0.isEmpty ? nil : $0 }
-                            ))
-                        }
-                        Button(promptExpanded ? "Collapse" : "Expand") {
-                            promptExpanded.toggle()
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                    }
-                    .padding(4)
-                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
             .padding(16)
         }

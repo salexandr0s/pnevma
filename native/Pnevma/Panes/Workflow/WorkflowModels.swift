@@ -117,6 +117,9 @@ struct AgentProfileItem: Identifiable, Codable {
     let systemPrompt: String?
     let active: Bool?
     let scope: String?
+    let source: String?
+    let sourcePath: String?
+    let userModified: Bool?
 
     var displayName: String {
         "\(name) (\(provider) / \(model))"
@@ -129,7 +132,9 @@ struct AgentProfileItem: Identifiable, Codable {
         case maxConcurrent = "max_concurrent"
         case stations
         case systemPrompt = "system_prompt"
-        case active, scope
+        case active, scope, source
+        case sourcePath = "source_path"
+        case userModified = "user_modified"
     }
 }
 
@@ -149,6 +154,9 @@ struct AgentProfileFullItem: Identifiable, Codable {
     let scope: String?
     let createdAt: String?
     let updatedAt: String?
+    let source: String?
+    let sourcePath: String?
+    let userModified: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name, role, provider, model
@@ -161,6 +169,9 @@ struct AgentProfileFullItem: Identifiable, Codable {
         case active, scope
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case source
+        case sourcePath = "source_path"
+        case userModified = "user_modified"
     }
 }
 

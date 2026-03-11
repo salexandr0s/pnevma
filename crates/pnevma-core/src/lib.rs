@@ -1,3 +1,4 @@
+pub mod agent_discovery;
 pub mod config;
 pub mod error;
 pub mod error_signatures;

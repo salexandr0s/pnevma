@@ -409,6 +409,9 @@ pub struct AgentProfileRow {
     pub updated_at: DateTime<Utc>,
     pub role: String,                  // NEW - migration 0015
     pub system_prompt: Option<String>, // NEW - migration 0015
+    pub source: String,
+    pub source_path: Option<String>,
+    pub user_modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -487,6 +490,9 @@ pub struct GlobalAgentProfileRow {
     pub active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub source: String,
+    pub source_path: Option<String>,
+    pub user_modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

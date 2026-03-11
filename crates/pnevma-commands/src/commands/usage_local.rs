@@ -54,11 +54,9 @@ pub struct ModelShare {
 /// Scans both Claude Code and Codex CLI local JSONL data and returns usage snapshots.
 pub async fn get_local_usage(days: Option<i64>) -> Vec<ProviderUsageSnapshot> {
     let days = days.unwrap_or(30).clamp(1, 90) as u32;
-    tokio::task::spawn_blocking(move || {
-        vec![scan_claude_usage(days), scan_codex_usage(days)]
-    })
-    .await
-    .unwrap_or_else(|_| vec![])
+    tokio::task::spawn_blocking(move || vec![scan_claude_usage(days), scan_codex_usage(days)])
+        .await
+        .unwrap_or_else(|_| vec![])
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -302,7 +300,13 @@ pub fn scan_claude_usage(days: u32) -> ProviderUsageSnapshot {
                 }
             }
 
-            parse_claude_file(&file_path, cutoff, &day_keys, &mut day_map, &mut model_tokens);
+            parse_claude_file(
+                &file_path,
+                cutoff,
+                &day_keys,
+                &mut day_map,
+                &mut model_tokens,
+            );
         }
     }
 
@@ -471,13 +475,7 @@ pub fn scan_codex_usage(days: u32) -> ProviderUsageSnapshot {
                 continue;
             }
 
-            parse_codex_file(
-                &file_path,
-                cutoff,
-                key,
-                &mut day_map,
-                &mut model_tokens,
-            );
+            parse_codex_file(&file_path, cutoff, key, &mut day_map, &mut model_tokens);
         }
     }
 
@@ -583,12 +581,10 @@ fn parse_codex_file(
                         .unwrap_or(0);
 
                     // Compute deltas to avoid double-counting cumulative totals
-                    let delta_input =
-                        (new_total_input - session_state.last_total_input).max(0);
+                    let delta_input = (new_total_input - session_state.last_total_input).max(0);
                     let delta_cached_input =
                         (new_total_cached_input - session_state.last_total_cached_input).max(0);
-                    let delta_output =
-                        (new_total_output - session_state.last_total_output).max(0);
+                    let delta_output = (new_total_output - session_state.last_total_output).max(0);
 
                     // Update tracking state
                     session_state.last_total_input = new_total_input;

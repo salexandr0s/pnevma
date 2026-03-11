@@ -1745,12 +1745,20 @@ pub async fn route_method(
                 .get("content")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .ok_or_else(|| ("invalid_params".to_string(), "missing required param: content".to_string()))?;
+                .ok_or_else(|| {
+                    (
+                        "invalid_params".to_string(),
+                        "missing required param: content".to_string(),
+                    )
+                })?;
             let result =
                 commands::write_file_target(commands::WriteFileInput { path, content }, state)
                     .await
                     .map_err(|e| {
-                        let code = if e.contains("not found") || e.contains("escapes") || e.contains("not a file") {
+                        let code = if e.contains("not found")
+                            || e.contains("escapes")
+                            || e.contains("not a file")
+                        {
                             "invalid_params"
                         } else if e.contains("no open project") {
                             "precondition_failed"

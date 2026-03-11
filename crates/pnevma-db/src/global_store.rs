@@ -110,6 +110,14 @@ impl GlobalDb {
         .execute(&pool)
         .await?;
 
+        for stmt in &[
+            "ALTER TABLE global_agent_profiles ADD COLUMN source TEXT NOT NULL DEFAULT 'user'",
+            "ALTER TABLE global_agent_profiles ADD COLUMN source_path TEXT",
+            "ALTER TABLE global_agent_profiles ADD COLUMN user_modified INTEGER NOT NULL DEFAULT 0",
+        ] {
+            let _ = sqlx::query(stmt).execute(&pool).await;
+        }
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS global_ssh_profiles (
                 id TEXT PRIMARY KEY,
@@ -312,8 +320,9 @@ impl GlobalDb {
         sqlx::query(
             "INSERT INTO global_agent_profiles
                 (id, name, role, provider, model, token_budget, timeout_minutes,
-                 max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
+                 source, source_path, user_modified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         )
         .bind(&row.id)
         .bind(&row.name)
@@ -329,6 +338,9 @@ impl GlobalDb {
         .bind(row.active)
         .bind(row.created_at)
         .bind(row.updated_at)
+        .bind(&row.source)
+        .bind(&row.source_path)
+        .bind(row.user_modified)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -340,7 +352,8 @@ impl GlobalDb {
     ) -> Result<Option<GlobalAgentProfileRow>, DbError> {
         let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
-                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
+                    source, source_path, user_modified
              FROM global_agent_profiles WHERE id = ?1",
         )
         .bind(id)
@@ -355,7 +368,8 @@ impl GlobalDb {
     ) -> Result<Option<GlobalAgentProfileRow>, DbError> {
         let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
-                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
+                    source, source_path, user_modified
              FROM global_agent_profiles WHERE name = ?1",
         )
         .bind(name)
@@ -364,10 +378,27 @@ impl GlobalDb {
         Ok(row)
     }
 
+    pub async fn get_global_agent_profile_by_source_path(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<GlobalAgentProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
+            "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
+                    source, source_path, user_modified
+             FROM global_agent_profiles WHERE source_path = ?1",
+        )
+        .bind(source_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     pub async fn list_global_agent_profiles(&self) -> Result<Vec<GlobalAgentProfileRow>, DbError> {
         let rows = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
-                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at
+                    max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
+                    source, source_path, user_modified
              FROM global_agent_profiles WHERE active = 1 ORDER BY name",
         )
         .fetch_all(&self.pool)
@@ -383,8 +414,9 @@ impl GlobalDb {
             "UPDATE global_agent_profiles
              SET name = ?1, role = ?2, provider = ?3, model = ?4, token_budget = ?5,
                  timeout_minutes = ?6, max_concurrent = ?7, stations_json = ?8,
-                 config_json = ?9, system_prompt = ?10, active = ?11, updated_at = ?12
-             WHERE id = ?13",
+                 config_json = ?9, system_prompt = ?10, active = ?11, updated_at = ?12,
+                 source = ?13, source_path = ?14, user_modified = ?15
+             WHERE id = ?16",
         )
         .bind(&row.name)
         .bind(&row.role)
@@ -398,6 +430,9 @@ impl GlobalDb {
         .bind(&row.system_prompt)
         .bind(row.active)
         .bind(row.updated_at)
+        .bind(&row.source)
+        .bind(&row.source_path)
+        .bind(row.user_modified)
         .bind(&row.id)
         .execute(&self.pool)
         .await?;

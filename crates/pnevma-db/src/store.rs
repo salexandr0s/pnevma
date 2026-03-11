@@ -2192,8 +2192,8 @@ impl Db {
             INSERT INTO agent_profiles
                 (id, project_id, name, provider, model, token_budget, timeout_minutes,
                  max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                 role, system_prompt)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 role, system_prompt, source, source_path, user_modified)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#,
         )
         .bind(&row.id)
@@ -2211,6 +2211,9 @@ impl Db {
         .bind(row.updated_at)
         .bind(&row.role)
         .bind(&row.system_prompt)
+        .bind(&row.source)
+        .bind(&row.source_path)
+        .bind(row.user_modified)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2221,7 +2224,7 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt
+                   role, system_prompt, source, source_path, user_modified
             FROM agent_profiles
             WHERE id = ?1
             "#,
@@ -2241,13 +2244,34 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt
+                   role, system_prompt, source, source_path, user_modified
             FROM agent_profiles
             WHERE project_id = ?1 AND name = ?2
             "#,
         )
         .bind(project_id)
         .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_agent_profile_by_source_path(
+        &self,
+        project_id: &str,
+        source_path: &str,
+    ) -> Result<Option<AgentProfileRow>, DbError> {
+        let row = sqlx::query_as::<_, AgentProfileRow>(
+            r#"
+            SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
+                   max_concurrent, stations_json, config_json, active, created_at, updated_at,
+                   role, system_prompt, source, source_path, user_modified
+            FROM agent_profiles
+            WHERE project_id = ?1 AND source_path = ?2
+            "#,
+        )
+        .bind(project_id)
+        .bind(source_path)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
@@ -2261,7 +2285,7 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt
+                   role, system_prompt, source, source_path, user_modified
             FROM agent_profiles
             WHERE project_id = ?1 AND active = 1
             ORDER BY name
@@ -2280,8 +2304,9 @@ impl Db {
             SET name = ?1, provider = ?2, model = ?3, token_budget = ?4,
                 timeout_minutes = ?5, max_concurrent = ?6, stations_json = ?7,
                 config_json = ?8, active = ?9, updated_at = ?10,
-                role = ?11, system_prompt = ?12
-            WHERE id = ?13
+                role = ?11, system_prompt = ?12,
+                source = ?13, source_path = ?14, user_modified = ?15
+            WHERE id = ?16
             "#,
         )
         .bind(&row.name)
@@ -2296,6 +2321,9 @@ impl Db {
         .bind(row.updated_at)
         .bind(&row.role)
         .bind(&row.system_prompt)
+        .bind(&row.source)
+        .bind(&row.source_path)
+        .bind(row.user_modified)
         .bind(&row.id)
         .execute(&self.pool)
         .await?;

@@ -50,3 +50,36 @@ struct RoleBadge: View {
             .clipShape(.rect(cornerRadius: 4))
     }
 }
+
+// MARK: - SourceBadge
+
+struct SourceBadge: View {
+    let source: String
+
+    var color: Color {
+        switch source.lowercased() {
+        case "claude-code": return .indigo
+        case "codex": return .teal
+        default: return .gray
+        }
+    }
+
+    var label: String {
+        switch source.lowercased() {
+        case "claude-code": return "Claude"
+        case "codex": return "Codex"
+        default: return source
+        }
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.caption2)
+            .fontWeight(.medium)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.2))
+            .foregroundStyle(color)
+            .clipShape(.rect(cornerRadius: 4))
+    }
+}

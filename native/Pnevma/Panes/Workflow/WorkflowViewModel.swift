@@ -466,7 +466,10 @@ final class AgentViewModel {
             active: true,
             scope: scope.rawValue.lowercased(),
             createdAt: nil,
-            updatedAt: nil
+            updatedAt: nil,
+            source: "user",
+            sourcePath: nil,
+            userModified: false
         )
     }
 
