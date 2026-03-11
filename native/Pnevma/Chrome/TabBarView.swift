@@ -9,6 +9,7 @@ final class TabBarView: NSView {
         let id: UUID
         var title: String
         var isActive: Bool
+        var hasNotification: Bool = false
     }
 
     var tabs: [Tab] = [] {
@@ -85,6 +86,7 @@ final class TabBarView: NSView {
                 title: tab.title,
                 isActive: tab.isActive,
                 showClose: tabs.count > 1,
+                hasNotification: tab.hasNotification,
                 theme: theme
             )
             button.onSelect = { [weak self] in self?.onSelectTab?(index) }
@@ -178,11 +180,13 @@ private final class TabButton: NSView {
     private let titleLabel: NSTextField
     private let closeButton: NSButton
     private let isActive: Bool
+    private let hasNotification: Bool
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
 
-    init(frame: NSRect, title: String, isActive: Bool, showClose: Bool, theme: GhosttyThemeProvider) {
+    init(frame: NSRect, title: String, isActive: Bool, showClose: Bool, hasNotification: Bool, theme: GhosttyThemeProvider) {
         self.isActive = isActive
+        self.hasNotification = hasNotification
 
         titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 10.5, weight: isActive ? .semibold : .regular)
@@ -257,6 +261,15 @@ private final class TabButton: NSView {
         } else if isHovering {
             theme.foregroundColor.withAlphaComponent(0.04).setFill()
             tabPath.fill()
+        }
+
+        if hasNotification && !isActive {
+            let dotSize: CGFloat = 6
+            let dotX = min(titleLabel.frame.maxX + 4, bounds.width - Metrics.horizontalPadding - dotSize)
+            let dotY = (bounds.height - dotSize) / 2
+            let dotRect = NSRect(x: dotX, y: dotY, width: dotSize, height: dotSize)
+            NSColor.systemOrange.setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
         }
     }
 

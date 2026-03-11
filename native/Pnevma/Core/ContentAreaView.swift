@@ -29,6 +29,7 @@ final class ContentAreaView: NSView {
     // MARK: - Init
 
     private var themeObserver: NSObjectProtocol?
+    private var paneAttentionObserver: NSObjectProtocol?
 
     init(frame: NSRect, rootPaneView: NSView & PaneContent) {
         layoutEngine = PaneLayoutEngine(rootPaneID: rootPaneView.paneID)
@@ -57,6 +58,14 @@ final class ContentAreaView: NSView {
             self?.updateOwnBackground()
             self?.updateNonTerminalPaneBackgrounds()
         }
+        paneAttentionObserver = NotificationCenter.default.addObserver(
+            forName: .paneNeedsAttention,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let paneID = notification.userInfo?["paneID"] as? PaneID else { return }
+            self?.showNotificationRing(for: paneID)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
@@ -68,6 +77,9 @@ final class ContentAreaView: NSView {
         }
         if let themeObserver {
             NotificationCenter.default.removeObserver(themeObserver)
+        }
+        if let paneAttentionObserver {
+            NotificationCenter.default.removeObserver(paneAttentionObserver)
         }
     }
 
@@ -89,6 +101,9 @@ final class ContentAreaView: NSView {
         repositionPanes()
         repositionDividers()
         updateFocusBorder()
+        for (id, ring) in notificationRingViews {
+            if let view = paneViews[id] { ring.frame = view.frame }
+        }
     }
 
     /// Full relayout: reposition panes + rebuild dividers. For structural changes.
@@ -410,6 +425,7 @@ final class ContentAreaView: NSView {
         focusBorderView?.removeFromSuperview()
         focusBorderView = nil
         for (_, ring) in notificationRingViews {
+            ring.stopPulsing()
             ring.removeFromSuperview()
         }
         notificationRingViews.removeAll()
@@ -601,39 +617,33 @@ final class ContentAreaView: NSView {
 
     // MARK: - Notification Rings
 
-    /// Show a notification ring around the given pane. Auto-dismisses after 5 seconds
-    /// or when the pane gains focus.
+    /// The set of pane IDs that currently have an active notification ring.
+    var paneIDsWithNotificationRings: Set<PaneID> {
+        Set(notificationRingViews.keys)
+    }
+
+    /// Show a persistent pulsing notification ring around the given pane.
+    /// Stays until the pane gains focus.
     func showNotificationRing(for paneID: PaneID) {
         guard let view = paneViews[paneID] else { return }
 
         // Don't ring the focused pane
         if paneID == layoutEngine.activePaneID { return }
 
-        if let existing = notificationRingViews[paneID] {
-            existing.frame = view.frame
-            existing.flash()
-            return
-        }
+        // Already pulsing — no-op
+        if notificationRingViews[paneID] != nil { return }
 
         let ring = NotificationRingView(frame: view.frame)
-        if ring.superview == nil {
-            addSubview(ring, positioned: .above, relativeTo: nil)
-        }
+        addSubview(ring, positioned: .above, relativeTo: nil)
         notificationRingViews[paneID] = ring
-        ring.flash()
+        ring.startPulsing()
 
         onTerminalNotification?()
-
-        // Auto-dismiss after 5 seconds
-        Task { @MainActor [weak self, weak ring] in
-            try? await Task.sleep(for: .seconds(5))
-            guard let self, let ring, ring.superview != nil else { return }
-            self.dismissNotificationRing(for: paneID)
-        }
     }
 
     private func dismissNotificationRing(for paneID: PaneID) {
         if let ring = notificationRingViews.removeValue(forKey: paneID) {
+            ring.stopPulsing()
             ring.removeFromSuperview()
         }
     }
@@ -764,6 +774,7 @@ final class ContentAreaView: NSView {
 
 extension Notification.Name {
     static let focusBorderPreferencesChanged = Notification.Name("focusBorderPreferencesChanged")
+    static let paneNeedsAttention = Notification.Name("paneNeedsAttention")
 }
 
 // MARK: - Focus Border Preferences
@@ -950,15 +961,15 @@ private final class DividerView: NSView {
 
 // MARK: - NotificationRingView
 
-/// Animated colored border overlay shown when a terminal pane receives a notification.
-/// Similar to FocusBorderView but with a distinctive notification color and fade animation.
+/// Animated colored border overlay shown when a terminal pane needs attention.
+/// Pulses persistently until the pane is focused.
 private final class NotificationRingView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 0
         layer?.borderWidth = 2
-        layer?.borderColor = NSColor.systemOrange.cgColor
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
         layer?.opacity = 0
     }
 
@@ -966,22 +977,50 @@ private final class NotificationRingView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func flash() {
-        // Fade in
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.2)
-        layer?.opacity = 1.0
-        CATransaction.commit()
+    func startPulsing() {
+        layer?.removeAllAnimations()
 
-        // Fade out after delay
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(3.0))
-            guard let self, self.superview != nil else { return }
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(1.0)
-            self.layer?.opacity = 0
-            CATransaction.commit()
-        }
+        let accentColor = NSColor.controlAccentColor
+        layer?.borderColor = accentColor.cgColor
+        layer?.shadowColor = accentColor.cgColor
+        layer?.shadowOffset = .zero
+        layer?.shadowRadius = 8
+        layer?.opacity = 1.0
+
+        let opacityAnim = CABasicAnimation(keyPath: "opacity")
+        opacityAnim.fromValue = 0.3
+        opacityAnim.toValue = 0.7
+        opacityAnim.duration = 1.2
+        opacityAnim.autoreverses = true
+        opacityAnim.repeatCount = .infinity
+        opacityAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        let shadowAnim = CABasicAnimation(keyPath: "shadowOpacity")
+        shadowAnim.fromValue = 0.2
+        shadowAnim.toValue = 0.6
+        shadowAnim.duration = 1.2
+        shadowAnim.autoreverses = true
+        shadowAnim.repeatCount = .infinity
+        shadowAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        layer?.add(opacityAnim, forKey: "pulseOpacity")
+        layer?.add(shadowAnim, forKey: "pulseShadow")
+    }
+
+    func stopPulsing() {
+        layer?.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.3)
+        layer?.opacity = 0
+        layer?.shadowOpacity = 0
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        let accentColor = NSColor.controlAccentColor
+        layer?.borderColor = accentColor.cgColor
+        layer?.shadowColor = accentColor.cgColor
     }
 
     override func accessibilityLabel() -> String? { "Notification indicator" }

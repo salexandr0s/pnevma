@@ -5,6 +5,9 @@ import Observation
 
 @Observable @MainActor
 final class NotificationsViewModel {
+    /// Shared instance used by both the popover and the full notifications pane.
+    static let shared = NotificationsViewModel()
+
     private enum ViewState: Equatable {
         case waiting(String)
         case loading(String)
@@ -110,7 +113,9 @@ final class NotificationsViewModel {
                         body: $0.body,
                         timestamp: $0.createdAt,
                         isRead: !$0.unread,
-                        sourcePaneType: nil
+                        sourcePaneType: nil,
+                        sessionID: $0.sessionID,
+                        taskID: $0.taskID
                     )
                 }
                 self.finishLoading(mapped)

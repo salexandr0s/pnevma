@@ -1069,6 +1069,22 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         hostView.onSurfaceReady = { [weak self] in
             self?.installAgentLauncher()
         }
+        hostView.onDesktopNotification = { [weak self] _, _ in
+            guard let self else { return }
+            NotificationCenter.default.post(
+                name: .paneNeedsAttention,
+                object: nil,
+                userInfo: ["paneID": self.paneID]
+            )
+        }
+        hostView.onBell = { [weak self] in
+            guard let self else { return }
+            NotificationCenter.default.post(
+                name: .paneNeedsAttention,
+                object: nil,
+                userInfo: ["paneID": self.paneID]
+            )
+        }
         replaceContent(with: hostView)
         self.hostView = hostView
         hostView.ensureSurfaceCreated()
@@ -1122,6 +1138,22 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             hostView.onSurfaceReady = { [weak self] in
                 self?.installAgentLauncher()
             }
+        }
+        hostView.onDesktopNotification = { [weak self] _, _ in
+            guard let self else { return }
+            NotificationCenter.default.post(
+                name: .paneNeedsAttention,
+                object: nil,
+                userInfo: ["paneID": self.paneID]
+            )
+        }
+        hostView.onBell = { [weak self] in
+            guard let self else { return }
+            NotificationCenter.default.post(
+                name: .paneNeedsAttention,
+                object: nil,
+                userInfo: ["paneID": self.paneID]
+            )
         }
         replaceContent(with: hostView)
         self.hostView = hostView

@@ -10,6 +10,8 @@ struct NotificationItem: Identifiable {
     let timestamp: String
     var isRead: Bool
     let sourcePaneType: String?
+    let sessionID: String?
+    let taskID: String?
 }
 
 // MARK: - Backend param/response types (internal for ViewModel use)

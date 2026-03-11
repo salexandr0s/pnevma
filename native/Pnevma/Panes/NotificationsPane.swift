@@ -3,10 +3,11 @@ import Observation
 import Cocoa
 
 struct NotificationsView: View {
-    @State private var viewModel = NotificationsViewModel()
+    @State private var viewModel = NotificationsViewModel.shared
     @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         VStack(spacing: 0) {
             HStack {
                 Text("Notifications")
@@ -82,7 +83,6 @@ struct NotificationsView: View {
                     .background(Color(nsColor: theme.backgroundColor))
             }
         }
-        .task { await viewModel.activate() }
         .accessibilityIdentifier("pane.notifications")
     }
 }
@@ -116,6 +116,11 @@ struct NotificationRow: View {
                 Text(notification.timestamp)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                if let sessionID = notification.sessionID {
+                    Label("Session: \(sessionID.prefix(8))", systemImage: "terminal")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             Spacer()

@@ -177,6 +177,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let sessionStore = SessionStore(commandBus: bus)
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
+            _ = NotificationsViewModel.shared // Initialize the singleton early
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
             _ = engine
@@ -189,6 +190,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self?.updateTabBar()
             self?.persistence?.markDirty()
+            // After workspace switch, rings were cleared by beginViewSwap — sync the count
+            if let workspace = self?.workspaceManager?.activeWorkspace {
+                workspace.terminalNotificationCount = self?.contentAreaView?.paneIDsWithNotificationRings.count ?? 0
+            }
+            self?.updateNotificationBadge()
+        }
+        workspaceManager?.onNotificationCountChanged = { [weak self] _ in
+            self?.updateNotificationBadge()
         }
 
         persistence = SessionPersistence()
@@ -283,10 +292,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if let view = self?.contentAreaView?.activePaneView {
                 self?.statusBar?.updateActivePane(view.title)
             }
+            // Focusing a pane dismisses its notification ring, so reset the terminal count
+            // based on how many rings are still active.
+            if let self, let workspace = self.workspaceManager?.activeWorkspace {
+                let activeRings = self.contentAreaView?.paneIDsWithNotificationRings.count ?? 0
+                workspace.terminalNotificationCount = activeRings
+                self.updateNotificationBadge()
+                self.updateTabBar()
+            }
             self?.persistence?.markDirty()
         }
         contentAreaView?.onPanePersistenceChanged = { [weak self] in
             self?.persistence?.markDirty()
+        }
+
+        contentAreaView?.onTerminalNotification = { [weak self] in
+            guard let self, let workspace = self.workspaceManager?.activeWorkspace else { return }
+            workspace.terminalNotificationCount += 1
+            self.updateNotificationBadge()
+            self.updateTabBar()
         }
 
         contentAreaView?.onAllPanesClosed = { [weak self] in
@@ -371,6 +395,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             hoverTintColor: .systemYellow
         )
         notificationToolbarButton = notificationsBtn
+        let badge = BadgeOverlayView(frame: NSRect(x: 12, y: 0, width: 18, height: 12))
+        notificationsBtn.addSubview(badge)
+        notificationBadge = badge
         let addWorkspaceBtn = makeTitlebarButton(
             symbolName: "plus",
             accessibilityDescription: "Open Workspace",
@@ -814,8 +841,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let showTabBar = workspace.tabs.count > 1
         setTabBarVisible(showTabBar)
+        let notifyingPanes = contentAreaView?.paneIDsWithNotificationRings ?? []
         tabBarView?.tabs = workspace.tabs.enumerated().map { (i, tab) in
-            TabBarView.Tab(id: tab.id, title: tab.title, isActive: i == workspace.activeTabIndex)
+            let isActive = i == workspace.activeTabIndex
+            let hasNotification: Bool
+            if isActive {
+                hasNotification = false
+            } else {
+                let tabPaneIDs = Set(tab.layoutEngine.root?.allPaneIDs ?? [])
+                hasNotification = !tabPaneIDs.isDisjoint(with: notifyingPanes)
+            }
+            return TabBarView.Tab(id: tab.id, title: tab.title, isActive: isActive, hasNotification: hasNotification)
         }
     }
 
@@ -1385,6 +1421,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationsPopover: NSPopover?
     private var sessionsPopover: NSPopover?
     private weak var notificationToolbarButton: NSButton?
+    private weak var notificationBadge: BadgeOverlayView?
 
     private func showSessionManager() {
         if let popover = sessionsPopover, popover.isShown {
@@ -1406,6 +1443,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionsPopover = popover
     }
 
+    private func updateNotificationBadge() {
+        guard let workspace = workspaceManager?.activeWorkspace else {
+            notificationBadge?.count = 0
+            return
+        }
+        notificationBadge?.count = workspace.unreadNotifications + workspace.terminalNotificationCount
+    }
+
     @objc private func showNotifications() {
         if let popover = notificationsPopover, popover.isShown {
             popover.performClose(nil)
@@ -1413,13 +1458,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let button = notificationToolbarButton else { return }
 
+        // Ensure data is loaded (idempotent if already active)
+        Task { await NotificationsViewModel.shared.activate() }
+
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 340, height: 280)
+        popover.contentSize = NSSize(width: 380, height: 400)
         popover.behavior = .transient
         popover.animates = true
-        popover.contentViewController = NSHostingController(rootView: NotificationsPopoverView())
+        popover.contentViewController = NSHostingController(
+            rootView: NotificationsPopoverView(onViewAll: { [weak self, weak popover] in
+                popover?.performClose(nil)
+                self?.openNotificationsPane()
+            })
+            .environment(GhosttyThemeProvider.shared)
+        )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         notificationsPopover = popover
+    }
+
+    private func openNotificationsPane() {
+        guard let (_, pane) = PaneFactory.make(type: "notifications") else { return }
+        if contentAreaView?.activePaneView?.paneType == "notifications" { return }
+        contentAreaView?.replaceActivePane(with: pane)
     }
 }
 
@@ -1793,33 +1853,118 @@ private final class ThemedSeparatorView: NSView {
 // MARK: - Notifications Popover
 
 struct NotificationsPopoverView: View {
+    @State private var viewModel = NotificationsViewModel.shared
+    var onViewAll: (() -> Void)?
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Notifications")
                     .font(.headline)
                 Spacer()
+                Button("Mark All Read") { viewModel.markAllRead() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .font(.caption)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
             Divider()
 
-            Spacer()
-
-            VStack(spacing: 10) {
-                Image(systemName: "bell.slash")
-                    .font(.system(size: 32))
-                    .foregroundStyle(.secondary.opacity(0.5))
-                Text("No notifications yet")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                Text("Desktop notifications will appear here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if let statusMessage = viewModel.statusMessage {
+                Spacer()
+                VStack(spacing: 10) {
+                    Image(systemName: "bell.badge")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text(statusMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            } else if viewModel.filteredNotifications.isEmpty {
+                Spacer()
+                VStack(spacing: 10) {
+                    Image(systemName: "bell.slash")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text("No notifications yet")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text("Desktop notifications will appear here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            } else {
+                List(viewModel.filteredNotifications.prefix(10)) { notification in
+                    NotificationRow(notification: notification)
+                        .onTapGesture { viewModel.markRead(notification.id) }
+                }
+                .listStyle(.plain)
             }
 
-            Spacer()
+            Divider()
+
+            Button(action: { onViewAll?() }) {
+                Text("View All")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
         }
     }
+}
+
+private final class BadgeOverlayView: NSView {
+    var count: Int = 0 {
+        didSet {
+            isHidden = count <= 0
+            needsDisplay = true
+        }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard count > 0 else { return }
+
+        let text = count > 99 ? "99+" : "\(count)"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 8, weight: .bold),
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = (text as NSString).size(withAttributes: attributes)
+
+        let capsuleWidth = max(textSize.width + 6, 14)
+        let capsuleHeight: CGFloat = 12
+        let capsuleRect = NSRect(
+            x: bounds.width - capsuleWidth,
+            y: 0,
+            width: capsuleWidth,
+            height: capsuleHeight
+        )
+        let capsulePath = NSBezierPath(roundedRect: capsuleRect, xRadius: capsuleHeight / 2, yRadius: capsuleHeight / 2)
+        NSColor.systemRed.setFill()
+        capsulePath.fill()
+
+        let textRect = NSRect(
+            x: capsuleRect.midX - textSize.width / 2,
+            y: capsuleRect.midY - textSize.height / 2,
+            width: textSize.width,
+            height: textSize.height
+        )
+        (text as NSString).draw(in: textRect, withAttributes: attributes)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

@@ -21,6 +21,10 @@ final class WorkspaceManager {
     @ObservationIgnored
     var onActiveWorkspaceChanged: ((PaneLayoutEngine) -> Void)?
 
+    /// Called when unread or terminal notification counts change on the active workspace.
+    @ObservationIgnored
+    var onNotificationCountChanged: ((Int) -> Void)?
+
     @ObservationIgnored
     private let commandBus: any CommandCalling
     @ObservationIgnored
@@ -572,6 +576,7 @@ final class WorkspaceManager {
         workspace.costToday = summary.costToday
         workspace.unreadNotifications = summary.unreadNotifications
         workspace.gitDirty = summary.gitDirty ?? false
+        onNotificationCountChanged?(workspace.unreadNotifications + workspace.terminalNotificationCount)
     }
 
     @discardableResult
