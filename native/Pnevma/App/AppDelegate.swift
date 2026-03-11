@@ -262,12 +262,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard contentAreaView?.anyPaneHasActiveProcess == true else { return .terminateNow }
-        confirmClose(
-            title: "Quit Pnevma?",
-            message: "The terminal still has a running process. If you quit the process will be killed."
-        ) {
-            sender.reply(toApplicationShouldTerminate: true)
+        guard let contentArea = contentAreaView else { return .terminateNow }
+        contentArea.anyPaneRequiresCloseConfirmation { [weak self] requiresConfirmation in
+            guard let self else {
+                sender.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            if requiresConfirmation {
+                self.confirmClose(
+                    title: "Quit Pnevma?",
+                    message: "The terminal still has a running process. If you quit the process will be killed.",
+                    onCancel: {
+                        sender.reply(toApplicationShouldTerminate: false)
+                    }
+                ) {
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+            } else {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
         }
         return .terminateLater
     }
@@ -887,12 +900,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let isActiveTab = index == workspace.activeTabIndex
 
         // If closing the active tab and it has running processes, confirm first.
-        if isActiveTab, contentAreaView?.anyPaneHasActiveProcess == true {
-            confirmClose(title: "Close Tab?", message: "The terminal still has a running process. If you close the tab the process will be killed.") { [weak self] in
+        guard isActiveTab, let contentArea = contentAreaView else {
+            performCloseTab(at: index)
+            return
+        }
+        contentArea.anyPaneRequiresCloseConfirmation { [weak self] requiresConfirmation in
+            if requiresConfirmation {
+                self?.confirmClose(
+                    title: "Close Tab?",
+                    message: "The terminal still has a running process. If you close the tab the process will be killed."
+                ) {
+                    self?.performCloseTab(at: index)
+                }
+            } else {
                 self?.performCloseTab(at: index)
             }
-        } else {
-            performCloseTab(at: index)
         }
     }
 
@@ -958,12 +980,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func closePaneAction() {
         guard let contentArea = contentAreaView else { return }
-        if contentArea.activePaneHasActiveProcess {
-            confirmClose(title: "Close Terminal?", message: "The terminal still has a running process. If you close the terminal the process will be killed.") {
+        contentArea.activePaneRequiresCloseConfirmation { [weak self, weak contentArea] requiresConfirmation in
+            guard let contentArea else { return }
+            if requiresConfirmation {
+                self?.confirmClose(
+                    title: "Close Terminal?",
+                    message: "The terminal still has a running process. If you close the terminal the process will be killed."
+                ) {
+                    contentArea.closeActivePane()
+                }
+            } else {
                 contentArea.closeActivePane()
             }
-        } else {
-            contentArea.closeActivePane()
         }
     }
 
@@ -2051,13 +2079,21 @@ extension AppDelegate: NSWindowDelegate {
             closeConfirmed = false
             return true
         }
-        guard contentAreaView?.anyPaneHasActiveProcess == true else { return true }
-        confirmClose(
-            title: "Close Window?",
-            message: "The terminal still has a running process. If you close the window the process will be killed."
-        ) { [weak self] in
-            self?.closeConfirmed = true
-            self?.window?.close()
+        guard let contentArea = contentAreaView else { return true }
+        contentArea.anyPaneRequiresCloseConfirmation { [weak self] requiresConfirmation in
+            guard let self else { return }
+            if requiresConfirmation {
+                self.confirmClose(
+                    title: "Close Window?",
+                    message: "The terminal still has a running process. If you close the window the process will be killed."
+                ) {
+                    self.closeConfirmed = true
+                    self.window?.close()
+                }
+            } else {
+                self.closeConfirmed = true
+                self.window?.close()
+            }
         }
         return false
     }
@@ -2067,7 +2103,12 @@ extension AppDelegate: NSWindowDelegate {
 
 extension AppDelegate {
     /// Show a confirmation alert styled like Ghostty's close prompts.
-    func confirmClose(title: String, message: String, onConfirm: @escaping () -> Void) {
+    func confirmClose(
+        title: String,
+        message: String,
+        onCancel: (() -> Void)? = nil,
+        onConfirm: @escaping () -> Void
+    ) {
         guard let win = window, win.attachedSheet == nil else { return }
         let alert = NSAlert()
         alert.messageText = title
@@ -2078,6 +2119,8 @@ extension AppDelegate {
         alert.beginSheetModal(for: win) { response in
             if response == .alertFirstButtonReturn {
                 onConfirm()
+            } else {
+                onCancel?()
             }
         }
     }

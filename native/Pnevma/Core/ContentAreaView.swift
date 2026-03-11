@@ -116,6 +116,38 @@ final class ContentAreaView: NSView {
         updateFocusBorder()
     }
 
+    private func paneRequiresCloseConfirmation(
+        _ pane: NSView & PaneContent,
+        completion: @escaping (Bool) -> Void
+    ) {
+        if let terminalPane = pane as? any TerminalPaneControlling {
+            terminalPane.requestCloseDecision(completion)
+        } else {
+            completion(pane.hasActiveProcess)
+        }
+    }
+
+    private func anyPaneRequiresCloseConfirmation(
+        _ paneIDs: ArraySlice<PaneID>,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let paneID = paneIDs.first else {
+            completion(false)
+            return
+        }
+        guard let pane = paneViews[paneID] else {
+            anyPaneRequiresCloseConfirmation(paneIDs.dropFirst(), completion: completion)
+            return
+        }
+        paneRequiresCloseConfirmation(pane) { [weak self] requiresConfirmation in
+            if requiresConfirmation {
+                completion(true)
+            } else {
+                self?.anyPaneRequiresCloseConfirmation(paneIDs.dropFirst(), completion: completion)
+            }
+        }
+    }
+
     /// Recompute and apply pane frames. Safe to call during drag.
     private func repositionPanes() {
         if let zoomedID = zoomedPaneID {
@@ -394,6 +426,20 @@ final class ContentAreaView: NSView {
     /// Whether any pane in the current layout has a running process.
     var anyPaneHasActiveProcess: Bool {
         paneViews.values.contains { $0.hasActiveProcess }
+    }
+
+    func activePaneRequiresCloseConfirmation(_ completion: @escaping (Bool) -> Void) {
+        guard let active = layoutEngine.activePaneID,
+              let pane = paneViews[active] else {
+            completion(false)
+            return
+        }
+        paneRequiresCloseConfirmation(pane, completion: completion)
+    }
+
+    func anyPaneRequiresCloseConfirmation(_ completion: @escaping (Bool) -> Void) {
+        let paneIDs = Array(paneViews.keys)
+        anyPaneRequiresCloseConfirmation(paneIDs[...], completion: completion)
     }
 
     /// Navigate focus in the given direction.

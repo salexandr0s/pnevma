@@ -169,6 +169,12 @@ class TerminalSurface {
     /// Whether the terminal surface is alive (has a backing ghostty surface).
     var isAlive: Bool { surface != nil }
 
+    /// Whether the foreground process for this surface has exited.
+    var processExited: Bool {
+        guard let surface else { return true }
+        return ghostty_surface_process_exited(surface)
+    }
+
     var isRendererReady: Bool {
         surface != nil
     }
@@ -178,7 +184,7 @@ class TerminalSurface {
     }
 
     /// Called when ghostty requests the surface to close.
-    var onClose: (() -> Void)?
+    var onClose: ((Bool) -> Void)?
 
     init(
         hostView: NSView,
@@ -406,8 +412,7 @@ class TerminalSurface {
     // MARK: - Callbacks
 
     private func handleClose(processAlive: Bool) {
-        _ = processAlive
-        onClose?()
+        onClose?(processAlive)
     }
 
     @MainActor
@@ -589,10 +594,11 @@ class TerminalSurface {
 
     // MARK: - Placeholder (no GhosttyKit)
 
-    var onClose: (() -> Void)?
+    var onClose: ((Bool) -> Void)?
 
     var isRendererReady: Bool { false }
     var isAlive: Bool { false }
+    var processExited: Bool { true }
 
     static var isRealRendererAvailable: Bool { false }
 

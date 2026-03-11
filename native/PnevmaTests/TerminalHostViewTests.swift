@@ -93,4 +93,34 @@ final class TerminalHostViewTests: XCTestCase {
 
         XCTAssertTrue(window.firstResponder === hostView)
     }
+
+    func testCloseCoordinatorRoutesExplicitCloseDecisionWithoutClosingPane() {
+        let coordinator = TerminalCloseCoordinator()
+        var requestedClose = false
+        var decision: Bool?
+        var terminalCloseSignal: Bool?
+
+        coordinator.requestClose(
+            using: { requestedClose = true },
+            completion: { decision = $0 }
+        )
+        coordinator.handleSurfaceClose(processAlive: false) { processAlive in
+            terminalCloseSignal = processAlive
+        }
+
+        XCTAssertTrue(requestedClose)
+        XCTAssertEqual(decision, false)
+        XCTAssertNil(terminalCloseSignal)
+    }
+
+    func testCloseCoordinatorForwardsRealTerminalCloseWhenNoDecisionIsPending() {
+        let coordinator = TerminalCloseCoordinator()
+        var terminalCloseSignal: Bool?
+
+        coordinator.handleSurfaceClose(processAlive: true) { processAlive in
+            terminalCloseSignal = processAlive
+        }
+
+        XCTAssertEqual(terminalCloseSignal, true)
+    }
 }
