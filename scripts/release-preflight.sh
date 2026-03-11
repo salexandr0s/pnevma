@@ -155,15 +155,9 @@ run_in_dir "$ROOT_DIR" "just check" just check
 run_in_dir "$ROOT_DIR" "cargo deny check" cargo deny check
 run_in_dir "$ROOT_DIR" "just ghostty-build" just ghostty-build
 run_in_dir "$ROOT_DIR" "just spm-test-clean" just spm-test-clean
+run_in_dir "$ROOT_DIR" "just xcodegen-check" just xcodegen-check
 
 # ── Native build validation ──────────────────────────────────────────────────
-
-print_check "xcodegen: generate project"
-if (cd "$NATIVE_DIR" && xcodegen generate --spec project.yml --project . >/dev/null 2>&1); then
-  pass "xcodegen project generated"
-else
-  fail "xcodegen project generation failed"
-fi
 
 run_in_dir "$ROOT_DIR" "just xcode-build-release" just xcode-build-release
 

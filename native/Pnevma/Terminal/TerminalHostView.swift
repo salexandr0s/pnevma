@@ -1,4 +1,7 @@
 import Cocoa
+#if canImport(GhosttyKit)
+import GhosttyKit
+#endif
 
 /// AppKit NSView that hosts a TerminalSurface.
 /// Bridges AppKit event dispatch to libghostty input handling.

@@ -2054,6 +2054,34 @@ pub async fn route_method(
             serde_json::to_value(settings)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "usage.providers.overview" => {
+            let input: commands::ProviderUsageOverviewInput = serde_json::from_value(params.clone())
+                .unwrap_or(commands::ProviderUsageOverviewInput {
+                    force_refresh: false,
+                    local_usage_days: 30,
+                });
+            let overview = commands::get_provider_usage_overview(input, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(overview)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "usage.providers.settings.get" => serde_json::to_value(
+            commands::get_provider_usage_settings(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "usage.providers.settings.set" => {
+            let input: commands::SetProviderUsageSettingsInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            let settings = commands::set_provider_usage_settings(input, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(settings)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "telemetry.set" => {
             let opted_in = parse_optional_bool_param(params, "opted_in")
                 .ok_or_else(|| ("invalid_params".to_string(), "missing opted_in".to_string()))?;

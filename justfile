@@ -18,7 +18,7 @@ rust_tool := "./scripts/with-rust-toolchain.sh"
 clean_log := "./scripts/assert-clean-command-log.sh"
 native_log_dir := "native/build/logs"
 xcode_derived_data := "native/DerivedData"
-ghostty_xcframework_target := env_var_or_default("GHOSTTY_XCFRAMEWORK_TARGET", "universal")
+ghostty_xcframework_target := env_var_or_default("GHOSTTY_XCFRAMEWORK_TARGET", "native")
 
 # ── Stage 1: Ghostty xcframework (Zig) ────────────────────────────────────────
 
@@ -36,6 +36,7 @@ ghostty-build: ghostty-check
     @echo "Building Ghostty xcframework (target={{ghostty_xcframework_target}})..."
     mkdir -p {{native_log_dir}}
     ./scripts/fetch-ghostty.sh
+    @if [ -d vendor/ghostty/.zig-cache ]; then find vendor/ghostty/.zig-cache -mindepth 1 -delete; fi
     log="$PWD/{{native_log_dir}}/ghostty-build.log"; \
       cd vendor/ghostty; \
       set -o pipefail; \
@@ -84,6 +85,11 @@ xcodegen:
     cd native && xcodegen generate --spec project.yml --project .
     @echo "Generated native/Pnevma.xcodeproj"
 
+xcodegen-check: xcodegen
+    @echo "Verifying generated Xcode project is in sync..."
+    git diff --exit-code -- native/Pnevma.xcodeproj
+    @echo "Xcode project is in sync"
+
 # Note: xcode-build depends on rust-build completing first
 xcode-build: xcodegen rust-build
     @echo "Building native macOS app..."
@@ -110,16 +116,20 @@ xcode-ui-test: xcodegen rust-build
 # SPM build path (alternative to xcodebuild)
 spm-build: rust-build
     @echo "Building via Swift Package Manager..."
+    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
     cd native && swift build -c debug
     @echo "SPM build complete"
 
 spm-test: rust-build
     @echo "Running tests via Swift Package Manager..."
+    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
     cd native && swift test
     @echo "SPM tests complete"
 
 spm-test-clean: rust-build
     @echo "Running clean Swift Package Manager test gate..."
+    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
+    rm -rf native/.build
     mkdir -p {{native_log_dir}}
     {{clean_log}} --log {{native_log_dir}}/swift-test.log -- zsh -lc 'cd native && swift test'
     @echo "SPM tests complete"

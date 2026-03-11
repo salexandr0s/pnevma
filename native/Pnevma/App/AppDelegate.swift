@@ -1,4 +1,7 @@
 import Cocoa
+#if canImport(GhosttyKit)
+import GhosttyKit
+#endif
 import SwiftUI
 import os
 
@@ -44,6 +47,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smokeHostView: TerminalHostView?
     private var smokeTimeoutWorkItem: DispatchWorkItem?
     private var runtimeSettingsObserver: NSObjectProtocol?
+    private var providerUsageStoreObserver: NSObjectProtocol?
     var updateCoordinator: AppUpdateCoordinator?
 
     // MARK: - App Lifecycle
@@ -183,6 +187,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
             _ = NotificationsViewModel.shared // Initialize the singleton early
+            _ = ProviderUsageStore.shared
+            Task { await ProviderUsageStore.shared.activate() }
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
             _ = engine
@@ -216,6 +222,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.applyRuntimeSettings()
             }
         }
+        providerUsageStoreObserver = NotificationCenter.default.addObserver(
+            forName: .providerUsageStoreDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateUsageToolbarStatus()
+        }
         applyRuntimeSettings()
     }
 
@@ -225,6 +238,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let runtimeSettingsObserver {
             NotificationCenter.default.removeObserver(runtimeSettingsObserver)
             self.runtimeSettingsObserver = nil
+        }
+        if let providerUsageStoreObserver {
+            NotificationCenter.default.removeObserver(providerUsageStoreObserver)
+            self.providerUsageStoreObserver = nil
         }
 
         // Free ghostty app singleton before process exit.
@@ -1174,14 +1191,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "Open Workspace"
         alert.informativeText = "Choose whether to create a local project workspace or a remote SSH workspace."
         let persistenceToggle = makePersistenceToggle()
-        let persistenceHelper = makePersistenceHelperLabel()
-        let accessory = NSStackView(views: [persistenceToggle, persistenceHelper])
-        accessory.orientation = .vertical
-        accessory.alignment = .leading
-        accessory.spacing = 6
-        accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
-        persistenceHelper.preferredMaxLayoutWidth = 320
-        alert.accessoryView = accessory
+        alert.accessoryView = makePersistenceAccessory(
+            toggle: persistenceToggle,
+            helperLabel: makePersistenceHelperLabel(),
+            width: 320
+        )
         alert.addButton(withTitle: "Local")
         alert.addButton(withTitle: "Remote")
         alert.addButton(withTitle: "Cancel")
@@ -1328,7 +1342,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         pathField.placeholderString = "/path/to/project"
 
         let persistenceToggle = makePersistenceToggle()
-        let persistenceHelper = makePersistenceHelperLabel()
 
         let accessory = NSStackView(views: [
             hostLabel,
@@ -1339,8 +1352,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             portField,
             pathLabel,
             pathField,
-            persistenceToggle,
-            persistenceHelper,
+            makePersistenceAccessory(
+                toggle: persistenceToggle,
+                helperLabel: makePersistenceHelperLabel(),
+                width: 360
+            ),
         ])
         accessory.orientation = .vertical
         accessory.alignment = .leading
@@ -1351,7 +1367,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         userField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         portField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        persistenceHelper.preferredMaxLayoutWidth = 360
         alert.accessoryView = accessory
         alert.addButton(withTitle: "Open Workspace")
         alert.addButton(withTitle: "Cancel")
@@ -1416,6 +1431,37 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 0
         return label
+    }
+
+    private func makePersistenceAccessory(
+        toggle: NSButton,
+        helperLabel: NSTextField,
+        width: CGFloat
+    ) -> NSView {
+        helperLabel.preferredMaxLayoutWidth = width
+
+        let stack = NSStackView(views: [toggle, helperLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 1))
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: width),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+
+        container.layoutSubtreeIfNeeded()
+        container.frame.size = container.fittingSize
+        return container
     }
 
     private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) {
