@@ -7,11 +7,11 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::RwLock;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::sync::broadcast;
+use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -60,14 +60,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
         let id = Uuid::new_v4();
         let (tx, _) = broadcast::channel(2048);
-        self.channels
-            .write()
-            .expect("channel lock poisoned")
-            .insert(id, tx);
-        self.configs
-            .write()
-            .expect("config lock poisoned")
-            .insert(id, config.clone());
+        self.channels.write().await.insert(id, tx);
+        self.configs.write().await.insert(id, config.clone());
 
         Ok(AgentHandle {
             id,
@@ -82,14 +76,14 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let tx = self
             .channels
             .read()
-            .expect("channel lock poisoned")
+            .await
             .get(&handle.id)
             .cloned()
             .ok_or_else(|| AgentError::Unavailable("missing event channel".to_string()))?;
         let cfg = self
             .configs
             .read()
-            .expect("config lock poisoned")
+            .await
             .get(&handle.id)
             .cloned()
             .ok_or_else(|| AgentError::Unavailable("missing config".to_string()))?;
@@ -145,10 +139,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         // Store PID for interrupt/stop lifecycle management.
         if let Some(pid) = child.id() {
-            self.processes
-                .write()
-                .expect("process lock poisoned")
-                .insert(handle.id, pid);
+            self.processes.write().await.insert(handle.id, pid);
         }
 
         let stdout = child
@@ -304,23 +295,17 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 Err(err) => {
                     let _ = tx.send(AgentEvent::Error(err.to_string()));
                     let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
-                    processes
-                        .write()
-                        .expect("process lock poisoned")
-                        .remove(&handle_id);
+                    processes.write().await.remove(&handle_id);
                     return;
                 }
             };
 
-            processes
-                .write()
-                .expect("process lock poisoned")
-                .remove(&handle_id);
+            processes.write().await.remove(&handle_id);
             let out_result = out_task.await;
             let _ = err_task.await;
 
             if let Ok((tokens_in, tokens_out, cost_usd, model_name)) = out_result {
-                costs.write().expect("cost lock poisoned").insert(
+                costs.write().await.insert(
                     handle_id,
                     CostRecord {
                         provider: "claude-code".to_string(),
@@ -353,12 +338,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        let pid_found = if let Some(&pid) = self
-            .processes
-            .read()
-            .expect("process lock poisoned")
-            .get(&handle.id)
-        {
+        let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGINT) };
             if ret != 0 {
@@ -369,12 +349,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             false
         };
         if pid_found {
-            if let Some(tx) = self
-                .channels
-                .read()
-                .expect("channel lock poisoned")
-                .get(&handle.id)
-            {
+            if let Some(tx) = self.channels.read().await.get(&handle.id) {
                 let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Paused));
             }
             Ok(())
@@ -385,12 +360,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
-        let pid_found = if let Some(&pid) = self
-            .processes
-            .read()
-            .expect("process lock poisoned")
-            .get(&handle.id)
-        {
+        let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
             if ret != 0 {
@@ -401,7 +371,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let should_kill = {
-                    let procs = processes.read().expect("process lock poisoned");
+                    let procs = processes.read().await;
                     procs.get(&agent_id).copied() == Some(pid)
                 };
                 if should_kill {
@@ -409,10 +379,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     if ret != 0 {
                         tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGKILL) failed");
                     }
-                    processes
-                        .write()
-                        .expect("process lock poisoned")
-                        .remove(&agent_id);
+                    processes.write().await.remove(&agent_id);
                 }
             });
             true
@@ -420,12 +387,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             false
         };
         if pid_found {
-            if let Some(tx) = self
-                .channels
-                .read()
-                .expect("channel lock poisoned")
-                .get(&handle.id)
-            {
+            if let Some(tx) = self.channels.read().await.get(&handle.id) {
                 let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
             }
             Ok(())
@@ -435,27 +397,21 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn events(&self, handle: &AgentHandle) -> broadcast::Receiver<AgentEvent> {
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
-            tx.subscribe()
-        } else {
-            let (tx, rx) = broadcast::channel(4);
-            let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
-            rx
+        // NOTE: try_read() is used because this is a sync fn (trait requirement).
+        // Under write contention, this may briefly return a fallback error receiver
+        // even for valid handles — callers retry on the next poll cycle.
+        if let Ok(guard) = self.channels.try_read() {
+            if let Some(tx) = guard.get(&handle.id) {
+                return tx.subscribe();
+            }
         }
+        let (tx, rx) = broadcast::channel(4);
+        let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
+        rx
     }
 
     async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
-        if let Some(record) = self
-            .costs
-            .read()
-            .expect("cost lock poisoned")
-            .get(&handle.id)
-        {
+        if let Some(record) = self.costs.read().await.get(&handle.id) {
             return Ok(record.clone());
         }
 
@@ -620,7 +576,7 @@ mod tests {
         let handle = make_handle();
         // Insert a channel so the adapter knows the handle, but no PID
         let (tx, _) = broadcast::channel(16);
-        adapter.channels.write().unwrap().insert(handle.id, tx);
+        adapter.channels.write().await.insert(handle.id, tx);
 
         let err = adapter.interrupt(&handle).await.unwrap_err();
         assert!(
@@ -634,7 +590,7 @@ mod tests {
         let adapter = ClaudeCodeAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
-        adapter.channels.write().unwrap().insert(handle.id, tx);
+        adapter.channels.write().await.insert(handle.id, tx);
 
         let err = adapter.stop(&handle).await.unwrap_err();
         assert!(

@@ -95,9 +95,9 @@ The embedded terminal (libghostty/GhosttyKit) runs in-process. A vulnerability i
 
 The terminal supports OSC 52 (clipboard write escape sequence), consistent with terminal emulator norms. A malicious program running in the terminal can write to the system clipboard. This is standard terminal behavior; users who run untrusted code in terminals accept this risk.
 
-### `$EDITOR` spawned without validation
+### `$EDITOR` spawned with path validation
 
-When opening files in an external editor, the `$EDITOR` environment variable is used without validation. This is a local-user-only risk — the user controls their own `$EDITOR` value.
+When opening files in an external editor, the `$EDITOR` environment variable is resolved to an absolute path and verified to exist before spawning. Shell metacharacters are not evaluated. This remains a local-user-only risk — the user controls their own `$EDITOR` value.
 
 ### Prompt injection sanitizer gaps
 
@@ -111,9 +111,9 @@ Remote auth now records a subject and safe token identifier for issued, used, an
 
 The `npx` binary can execute arbitrary npm packages. The current allowlist permits `npx` without restricting which packages it can run. Restricting to known runner patterns (e.g. `npx @anthropic-ai/claude-code`) is a future improvement.
 
-### SBOM not signed or attested
+### SBOM attestation
 
-Release SBOMs are generated but not signed with sigstore attestation. Future work: re-add `id-token: write` permission to `release.yml` and implement `actions/attest-build-provenance`.
+Release SBOMs are generated (CycloneDX JSON) and attested via GitHub Actions build provenance (`actions/attest-build-provenance@v2.2.3`). Attestation includes both the release archive and SBOM artifact. The release workflow uses `id-token: write` permission for OIDC-based signing.
 
 ## Residual risks to track
 

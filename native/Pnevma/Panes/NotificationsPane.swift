@@ -4,6 +4,7 @@ import Cocoa
 
 struct NotificationsView: View {
     @State private var viewModel = NotificationsViewModel.shared
+    @State private var showClearAllAlert = false
     @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
@@ -27,8 +28,9 @@ struct NotificationsView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
                     .accessibilityLabel("Mark all notifications as read")
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
 
-                Button("Clear") { viewModel.clearAll() }
+                Button("Clear") { showClearAllAlert = true }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Clear all notifications")
@@ -49,20 +51,7 @@ struct NotificationsView: View {
                 .padding(.top, 40)
                 Spacer()
             } else if viewModel.filteredNotifications.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "bell.slash")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                    Text("No Notifications")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                    Text("You're all caught up")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.top, 40)
-                Spacer()
+                EmptyStateView(icon: "bell.slash", title: "No Notifications", message: "You're all caught up")
             } else {
                 List(viewModel.filteredNotifications) { notification in
                     NotificationRow(notification: notification)
@@ -72,16 +61,12 @@ struct NotificationsView: View {
                 .listStyle(.plain)
             }
         }
-        .overlay(alignment: .bottom) {
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: theme.backgroundColor))
-            }
+        .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
+        .alert("Clear All Notifications?", isPresented: $showClearAllAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear All", role: .destructive) { viewModel.clearAll() }
+        } message: {
+            Text("This will remove all notifications.")
         }
         .accessibilityIdentifier("pane.notifications")
     }

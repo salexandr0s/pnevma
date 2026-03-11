@@ -118,22 +118,6 @@ enum GhosttyManagedConfigCodec {
         .joined(separator: "\n")
     }
 
-    static func ensureIncludeBlock(in text: String, managedPath: URL) -> (text: String, alreadyIntegrated: Bool) {
-        let block = includeBlock(for: managedPath)
-        let newline = text.contains("\r\n") ? "\r\n" : "\n"
-        if let startRange = text.range(of: markerStart), let endRange = text.range(of: markerEnd) {
-            let replaceRange = startRange.lowerBound..<endRange.upperBound
-            var updated = text
-            updated.replaceSubrange(replaceRange, with: block)
-            return (updated, true)
-        }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return (block + newline, false)
-        }
-        return (trimmed + newline + newline + block + newline, false)
-    }
-
     static func removeIncludeBlock(from text: String) -> String {
         guard let startRange = text.range(of: markerStart), let endRange = text.range(of: markerEnd) else {
             return text
@@ -421,7 +405,7 @@ final class GhosttyConfigController {
         let paths = try resolvedPaths()
         let configText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""
         let managedText = (try? String(contentsOf: paths.managedPath, encoding: .utf8)) ?? ""
-        let parsedConfig = GhosttyManagedConfigCodec.parseManagedFile(configText)
+        let parsedConfig = GhosttyManagedConfigCodec.parseManagedFile(managedText)
         let configOwner = runtimeConfigOwner()
         let effectiveValues = buildEffectiveValues(from: configOwner, configText: configText, managedText: managedText)
         return GhosttyConfigSnapshot(
@@ -681,36 +665,6 @@ final class GhosttyConfigController {
             try FileManager.default.removeItem(at: url)
         }
         try FileManager.default.moveItem(at: temporaryURL, to: url)
-    }
-
-    private func restoreMainFile(_ content: String, to url: URL) throws {
-        try writeAtomically(content, to: url)
-    }
-
-    private func restoreManagedFile(_ content: String, existed: Bool, to url: URL) throws {
-        if existed {
-            try writeAtomically(content, to: url)
-            return
-        }
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-    }
-
-    private func changedKeys(previous: String, next: String) -> [String] {
-        let previousParsed = GhosttyManagedConfigCodec.parseManagedFile(previous)
-        let nextParsed = GhosttyManagedConfigCodec.parseManagedFile(next)
-        let previousKeys = Set(previousParsed.values.keys).union(previousParsed.keybinds.isEmpty ? Set<String>() : Set(["keybind"]))
-        let nextKeys = Set(nextParsed.values.keys).union(nextParsed.keybinds.isEmpty ? Set<String>() : Set(["keybind"]))
-        let allKeys = previousKeys.union(nextKeys)
-        return allKeys
-            .filter { key in
-                if key == "keybind" {
-                    return previousParsed.keybinds.map(\.rawBinding) != nextParsed.keybinds.map(\.rawBinding)
-                }
-                return previousParsed.values[key] != nextParsed.values[key]
-            }
-            .sorted()
     }
 
     private func audit(

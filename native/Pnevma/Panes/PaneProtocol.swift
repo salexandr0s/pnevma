@@ -494,7 +494,7 @@ private struct WelcomeContentView: View {
             .offset(y: appeared ? 0 : 8)
         }
         .onAppear {
-            withAnimation(.easeOut(duration: 0.4).delay(0.05)) {
+            withAnimation(DesignTokens.Motion.resolved(.easeOut(duration: 0.4).delay(0.05))) {
                 appeared = true
             }
         }

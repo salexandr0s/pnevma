@@ -53,6 +53,11 @@ final class DailyBriefViewModel {
         }
     }
 
+    var isLoading: Bool {
+        if case .loading = viewState { return true }
+        return false
+    }
+
     func activate() async {
         handleActivationState(activationHub.currentState)
     }

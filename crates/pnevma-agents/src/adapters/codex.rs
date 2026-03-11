@@ -7,11 +7,15 @@ use chrono::Utc;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::broadcast;
+use tokio::sync::RwLock;
 use uuid::Uuid;
+
+static USAGE_RE: OnceLock<Regex> = OnceLock::new();
+static COST_RE: OnceLock<Regex> = OnceLock::new();
 
 #[derive(Default)]
 pub struct CodexAdapter {
@@ -33,14 +37,8 @@ impl AgentAdapter for CodexAdapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
         let id = Uuid::new_v4();
         let (tx, _) = broadcast::channel(2048);
-        self.channels
-            .write()
-            .expect("channel lock poisoned")
-            .insert(id, tx);
-        self.configs
-            .write()
-            .expect("config lock poisoned")
-            .insert(id, config.clone());
+        self.channels.write().await.insert(id, tx);
+        self.configs.write().await.insert(id, config.clone());
 
         Ok(AgentHandle {
             id,
@@ -55,14 +53,14 @@ impl AgentAdapter for CodexAdapter {
         let tx = self
             .channels
             .read()
-            .expect("channel lock poisoned")
+            .await
             .get(&handle.id)
             .cloned()
             .ok_or_else(|| AgentError::Unavailable("missing event channel".to_string()))?;
         let cfg = self
             .configs
             .read()
-            .expect("config lock poisoned")
+            .await
             .get(&handle.id)
             .cloned()
             .ok_or_else(|| AgentError::Unavailable("missing config".to_string()))?;
@@ -112,10 +110,7 @@ impl AgentAdapter for CodexAdapter {
 
         // Store PID for interrupt/stop lifecycle management.
         if let Some(pid) = child.id() {
-            self.processes
-                .write()
-                .expect("process lock poisoned")
-                .insert(handle.id, pid);
+            self.processes.write().await.insert(handle.id, pid);
         }
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -127,10 +122,12 @@ impl AgentAdapter for CodexAdapter {
             drop(stdin); // Close stdin so codex knows input is complete
         }
 
-        let usage_re = Regex::new(r"(?i)(tokens|input_tokens|usage)[^0-9]*(\d+)")
-            .map_err(|e| AgentError::Parse(e.to_string()))?;
-        let cost_re = Regex::new(r"(?i)(cost|usd)[^0-9]*([0-9]+(?:\.[0-9]+)?)")
-            .map_err(|e| AgentError::Parse(e.to_string()))?;
+        let usage_re = USAGE_RE
+            .get_or_init(|| Regex::new(r"(?i)(tokens|input_tokens|usage)[^0-9]*(\d+)").unwrap())
+            .clone();
+        let cost_re = COST_RE
+            .get_or_init(|| Regex::new(r"(?i)(cost|usd)[^0-9]*([0-9]+(?:\.[0-9]+)?)").unwrap())
+            .clone();
 
         let stdout = child
             .stdout
@@ -213,18 +210,12 @@ impl AgentAdapter for CodexAdapter {
                 Err(err) => {
                     let _ = tx.send(AgentEvent::Error(err.to_string()));
                     let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Failed));
-                    processes
-                        .write()
-                        .expect("process lock poisoned")
-                        .remove(&handle_id);
+                    processes.write().await.remove(&handle_id);
                     return;
                 }
             };
 
-            processes
-                .write()
-                .expect("process lock poisoned")
-                .remove(&handle_id);
+            processes.write().await.remove(&handle_id);
             let out_result = out_task.await;
             let _ = err_task.await;
 
@@ -232,7 +223,7 @@ impl AgentAdapter for CodexAdapter {
                 tracing::warn!(error = %e, "stdout reader task failed; cost record unavailable");
             }
             if let Ok((tokens_in, cost_usd)) = out_result {
-                costs.write().expect("cost lock poisoned").insert(
+                costs.write().await.insert(
                     handle_id,
                     CostRecord {
                         provider: "codex".to_string(),
@@ -264,12 +255,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        let pid_found = if let Some(&pid) = self
-            .processes
-            .read()
-            .expect("process lock poisoned")
-            .get(&handle.id)
-        {
+        let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGINT) };
             if ret != 0 {
@@ -280,12 +266,7 @@ impl AgentAdapter for CodexAdapter {
             false
         };
         if pid_found {
-            if let Some(tx) = self
-                .channels
-                .read()
-                .expect("channel lock poisoned")
-                .get(&handle.id)
-            {
+            if let Some(tx) = self.channels.read().await.get(&handle.id) {
                 let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Paused));
             }
             Ok(())
@@ -296,12 +277,7 @@ impl AgentAdapter for CodexAdapter {
 
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
-        let pid_found = if let Some(&pid) = self
-            .processes
-            .read()
-            .expect("process lock poisoned")
-            .get(&handle.id)
-        {
+        let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
             let ret = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
             if ret != 0 {
@@ -312,7 +288,7 @@ impl AgentAdapter for CodexAdapter {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let should_kill = {
-                    let procs = processes.read().expect("process lock poisoned");
+                    let procs = processes.read().await;
                     procs.get(&agent_id).copied() == Some(pid)
                 };
                 if should_kill {
@@ -321,10 +297,7 @@ impl AgentAdapter for CodexAdapter {
                     if ret != 0 {
                         tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGKILL) failed");
                     }
-                    processes
-                        .write()
-                        .expect("process lock poisoned")
-                        .remove(&agent_id);
+                    processes.write().await.remove(&agent_id);
                 }
             });
             true
@@ -332,12 +305,7 @@ impl AgentAdapter for CodexAdapter {
             false
         };
         if pid_found {
-            if let Some(tx) = self
-                .channels
-                .read()
-                .expect("channel lock poisoned")
-                .get(&handle.id)
-            {
+            if let Some(tx) = self.channels.read().await.get(&handle.id) {
                 let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
             }
             Ok(())
@@ -347,22 +315,21 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn events(&self, handle: &AgentHandle) -> broadcast::Receiver<AgentEvent> {
-        if let Some(tx) = self
-            .channels
-            .read()
-            .expect("channel lock poisoned")
-            .get(&handle.id)
-        {
-            tx.subscribe()
-        } else {
-            let (tx, rx) = broadcast::channel(4);
-            let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
-            rx
+        // NOTE: try_read() is used because this is a sync fn (trait requirement).
+        // Under write contention, this may briefly return a fallback error receiver
+        // even for valid handles — callers retry on the next poll cycle.
+        if let Ok(guard) = self.channels.try_read() {
+            if let Some(tx) = guard.get(&handle.id) {
+                return tx.subscribe();
+            }
         }
+        let (tx, rx) = broadcast::channel(4);
+        let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
+        rx
     }
 
     async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
-        let costs = self.costs.read().expect("costs lock poisoned");
+        let costs = self.costs.read().await;
         Ok(costs.get(&handle.id).cloned().unwrap_or(CostRecord {
             provider: "codex".to_string(),
             model: None,
@@ -408,19 +375,19 @@ mod tests {
 
     // ── Construction ─────────────────────────────────────────────────────────
 
-    #[test]
-    fn new_creates_empty_adapter() {
+    #[tokio::test]
+    async fn new_creates_empty_adapter() {
         let adapter = CodexAdapter::new();
-        assert!(adapter.channels.read().unwrap().is_empty());
-        assert!(adapter.configs.read().unwrap().is_empty());
-        assert!(adapter.processes.read().unwrap().is_empty());
-        assert!(adapter.costs.read().unwrap().is_empty());
+        assert!(adapter.channels.read().await.is_empty());
+        assert!(adapter.configs.read().await.is_empty());
+        assert!(adapter.processes.read().await.is_empty());
+        assert!(adapter.costs.read().await.is_empty());
     }
 
-    #[test]
-    fn default_creates_empty_adapter() {
+    #[tokio::test]
+    async fn default_creates_empty_adapter() {
         let adapter = CodexAdapter::default();
-        assert!(adapter.channels.read().unwrap().is_empty());
+        assert!(adapter.channels.read().await.is_empty());
     }
 
     // ── Spawn registers channel and config ───────────────────────────────────
@@ -437,12 +404,12 @@ mod tests {
         assert_eq!(handle.provider, "codex");
 
         // channel registered
-        assert!(adapter.channels.read().unwrap().contains_key(&handle.id));
+        assert!(adapter.channels.read().await.contains_key(&handle.id));
         // config stored
         let stored_cfg = adapter
             .configs
             .read()
-            .unwrap()
+            .await
             .get(&handle.id)
             .cloned()
             .expect("config stored");
@@ -503,7 +470,7 @@ mod tests {
         let adapter = CodexAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
-        adapter.channels.write().unwrap().insert(handle.id, tx);
+        adapter.channels.write().await.insert(handle.id, tx);
 
         let err = adapter.interrupt(&handle).await.unwrap_err();
         assert!(
@@ -517,7 +484,7 @@ mod tests {
         let adapter = CodexAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
-        adapter.channels.write().unwrap().insert(handle.id, tx);
+        adapter.channels.write().await.insert(handle.id, tx);
 
         let err = adapter.stop(&handle).await.unwrap_err();
         assert!(

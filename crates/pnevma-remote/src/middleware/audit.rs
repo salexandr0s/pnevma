@@ -72,6 +72,18 @@ pub async fn audit_log(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let ip = addr.ip();
+    let user_agent = req
+        .headers()
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let content_length = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
     let start = Instant::now();
 
     let response = next.run(req).await;
@@ -85,6 +97,8 @@ pub async fn audit_log(
             remote_ip = %ip,
             status = status,
             elapsed_ms = elapsed_ms,
+            user_agent = %user_agent,
+            content_length = %content_length,
             auth_event = auth.auth_event,
             subject = %auth.subject,
             token_id = auth.token_id.as_deref().unwrap_or("-"),
@@ -97,9 +111,60 @@ pub async fn audit_log(
             remote_ip = %ip,
             status = status,
             elapsed_ms = elapsed_ms,
+            user_agent = %user_agent,
+            content_length = %content_length,
             "request"
         );
     }
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_auth_context_token_issued() {
+        let ctx = AuditAuthContext::token_issued("user1".to_string(), "tid1".to_string());
+        assert_eq!(ctx.auth_event, "token_issued");
+        assert_eq!(ctx.subject, "user1");
+        assert_eq!(ctx.token_id.as_deref(), Some("tid1"));
+        assert!(ctx.token_source.is_none());
+    }
+
+    #[test]
+    fn audit_auth_context_token_revoked() {
+        let ctx = AuditAuthContext::token_revoked("user2".to_string(), "tid2".to_string());
+        assert_eq!(ctx.auth_event, "token_revoked");
+        assert_eq!(ctx.subject, "user2");
+        assert_eq!(ctx.token_id.as_deref(), Some("tid2"));
+        assert!(ctx.token_source.is_none());
+    }
+
+    #[test]
+    fn audit_auth_context_authenticated_request() {
+        let ctx = AuditAuthContext::authenticated_request(
+            "user3".to_string(),
+            "tid3".to_string(),
+            AuthTokenSource::AuthorizationHeader,
+        );
+        assert_eq!(ctx.auth_event, "authenticated_request");
+        assert_eq!(ctx.subject, "user3");
+        assert_eq!(ctx.token_id.as_deref(), Some("tid3"));
+        assert_eq!(ctx.token_source, Some(AuthTokenSource::AuthorizationHeader));
+    }
+
+    #[test]
+    fn audit_auth_context_websocket_authenticated() {
+        let ctx = AuditAuthContext::websocket_authenticated(
+            "user4".to_string(),
+            "tid4".to_string(),
+            AuthTokenSource::QueryParam,
+        );
+        assert_eq!(ctx.auth_event, "websocket_authenticated");
+        assert_eq!(ctx.subject, "user4");
+        assert_eq!(ctx.token_id.as_deref(), Some("tid4"));
+        assert_eq!(ctx.token_source, Some(AuthTokenSource::QueryParam));
+    }
 }

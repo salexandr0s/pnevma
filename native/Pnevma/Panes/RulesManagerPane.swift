@@ -34,7 +34,8 @@ private struct ToggleRuleParams: Encodable {
 
 struct RulesManagerView: View {
     @State private var viewModel = RulesManagerViewModel()
-    @Environment(GhosttyThemeProvider.self) var theme
+    @State private var showDeleteAlert = false
+    @State private var ruleToDelete: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,6 +46,7 @@ struct RulesManagerView: View {
                 Button("Add Rule") { viewModel.showAddSheet = true }
                     .buttonStyle(.bordered)
                     .disabled(!viewModel.isProjectOpen)
+                    .keyboardShortcut("n", modifiers: .command)
             }
             .padding(12)
 
@@ -76,23 +78,29 @@ struct RulesManagerView: View {
                         RuleRow(
                             rule: rule,
                             onToggle: { viewModel.toggleRule(rule: rule) },
-                            onDelete: { viewModel.deleteRule(id: rule.id) }
+                            onDelete: {
+                                ruleToDelete = rule.id
+                                showDeleteAlert = true
+                            }
                         )
+                        .accessibilityElement(children: .combine)
                     }
                 }
                 .listStyle(.plain)
             }
         }
         .overlay(alignment: .bottom) {
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: theme.backgroundColor))
+            ErrorBanner(message: viewModel.actionError)
+        }
+        .alert("Delete Rule?", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                if let id = ruleToDelete {
+                    viewModel.deleteRule(id: id)
+                }
             }
+        } message: {
+            Text("This rule will be permanently removed.")
         }
         // sheet(isPresented:) is intentional: the sheet creates a new rule from scratch
         // with no pre-existing item, so sheet(item:) does not apply here.
@@ -101,6 +109,7 @@ struct RulesManagerView: View {
                 viewModel.addRule(name: name, description: content, type: scope)
             })
         }
+        .accessibilityIdentifier("pane.rules")
         .task { await viewModel.activate() }
     }
 }

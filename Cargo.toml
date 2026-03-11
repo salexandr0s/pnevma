@@ -50,7 +50,7 @@ subtle = "2"
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "limit", "trace"] }
 tokio-rustls = "0.26"
 rustls = "0.23"
 rcgen = "0.13"
@@ -58,6 +58,7 @@ governor = "0.8"
 dashmap = "6"
 rand = "0.8"
 hex = "0.4"
+security-framework = "2"
 reqwest = { version = "0.12", features = ["json"] }
 
 [profile.dev]

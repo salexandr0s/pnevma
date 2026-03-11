@@ -21,10 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           toolchain: 1.93.1
           components: rustfmt, clippy
@@ -63,22 +64,11 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
-      - name: Rust quality gates
-        run: just check
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
 
-      - name: Build Ghostty xcframework
-        run: just ghostty-build
-
-      - name: Run SwiftPM tests
-        run: just spm-test-clean
-
-      - name: Build release app
-        run: just xcode-build-release
-
-      - name: Check entitlements
-        run: |
-          APP_PATH="$GITHUB_WORKSPACE/native/build/Build/Products/Release/Pnevma.app" \
-          ./scripts/check-entitlements.sh
+      - name: Run release preflight
+        run: ./scripts/release-preflight.sh
 
       - name: Package release archive
         run: |

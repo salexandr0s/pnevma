@@ -81,6 +81,7 @@ final class CommandPalette: NSPanel {
         searchField.placeholderString = "Type a command..."
         searchField.font = .systemFont(ofSize: 16)
         searchField.delegate = self
+        searchField.setAccessibilityLabel("Command search")
         contentView.addSubview(searchField)
 
         // Table view for results
@@ -296,9 +297,9 @@ private final class CommandCellView: NSTableCellView {
     private func applyThemeColors() {
         let fg = GhosttyThemeProvider.shared.foregroundColor
         titleLabel.textColor = fg.withAlphaComponent(0.85)
-        categoryLabel.textColor = fg.withAlphaComponent(0.5)
-        shortcutLabel.textColor = fg.withAlphaComponent(0.35)
-        descriptionLabel.textColor = fg.withAlphaComponent(0.35)
+        categoryLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
+        shortcutLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
+        descriptionLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
     }
 
     func configure(title: String, category: String, shortcut: String?, description: String? = nil) {

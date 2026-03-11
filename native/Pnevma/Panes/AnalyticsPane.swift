@@ -79,17 +79,42 @@ struct UsageView: View {
     @State private var viewModel = UsageViewModel()
 
     var body: some View {
-        Group {
-            if let statusMessage = viewModel.statusMessage {
-                EmptyStateView(
-                    icon: "chart.bar.xaxis",
-                    title: statusMessage
-                )
-            } else {
-                usageContent
+        VStack(spacing: 0) {
+            HStack {
+                Text("Analytics")
+                    .font(.headline)
+                Spacer()
+                Button { viewModel.load() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("r", modifiers: .command)
+                .accessibilityLabel("Refresh analytics")
+            }
+            .padding(12)
+
+            Divider()
+
+            Group {
+                if let statusMessage = viewModel.statusMessage {
+                    VStack(spacing: 8) {
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        EmptyStateView(
+                            icon: "chart.bar.xaxis",
+                            title: statusMessage
+                        )
+                    }
+                } else {
+                    usageContent
+                }
             }
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.analytics")
     }
 
     @ViewBuilder
@@ -224,7 +249,7 @@ private struct ProviderCard: View {
                     }
                     GeometryReader { geo in
                         Capsule()
-                            .fill(Color.accentColor.opacity(0.25))
+                            .fill(Color.accentColor.opacity(DesignTokens.Opacity.strong))
                             .frame(width: geo.size.width * model.sharePercent / 100, height: 4)
                     }
                     .frame(height: 4)
@@ -304,6 +329,7 @@ private struct StatCell: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.secondary.opacity(0.08))
         )
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -355,6 +381,11 @@ final class UsageViewModel {
         case .ready:
             return nil
         }
+    }
+
+    var isLoading: Bool {
+        if case .loading = viewState { return true }
+        return false
     }
 
     func activate() async {

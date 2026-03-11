@@ -121,7 +121,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_token_response_sets_audit_context() {
-        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24));
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
         let app = Router::new()
             .route("/api/auth/token", post(create_token))
             .with_state(Arc::clone(&store));
@@ -159,7 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_token_response_sets_audit_context() {
-        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24));
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
         let issued = store.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         let app = Router::new()
             .route("/api/auth/token", delete(revoke_token))

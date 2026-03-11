@@ -34,6 +34,8 @@ fn is_session_active(session_id: &Uuid, active_sessions: &[Uuid]) -> bool {
 }
 
 /// Check whether a worktree path exists on disk.
+// NOTE: Sync filesystem check is acceptable here — reconcile_claims is a sync function
+// called infrequently during reconciliation sweeps.
 fn worktree_exists(path: &str) -> bool {
     Path::new(path).exists()
 }

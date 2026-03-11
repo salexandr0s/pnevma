@@ -22,6 +22,7 @@ struct DiffView: View {
             }
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.diff")
     }
 
     // MARK: Sidebar
@@ -69,6 +70,7 @@ struct DiffView: View {
                             .lineLimit(1)
                     }
                     .tag(file.id)
+                    .accessibilityAddTraits(.isButton)
                 }
                 .listStyle(.plain)
             }
@@ -107,10 +109,7 @@ struct DiffView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding()
             } else {
-                Text("Select a file to view diff")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding()
+                EmptyStateView(icon: "doc.text", title: "Select a file")
             }
         }
     }
@@ -176,16 +175,16 @@ struct DiffLineView: View {
 
     private var contentColor: Color {
         switch line.type {
-        case .addition: return Color(.sRGB, red: 0.6, green: 1.0, blue: 0.6)
-        case .deletion: return Color(.sRGB, red: 1.0, green: 0.6, blue: 0.6)
+        case .addition: return DiffColors.additionContent
+        case .deletion: return DiffColors.deletionContent
         case .context: return .primary
         }
     }
 
     private var backgroundColor: Color {
         switch line.type {
-        case .addition: return .green.opacity(0.18)
-        case .deletion: return .red.opacity(0.18)
+        case .addition: return DiffColors.additionBackground
+        case .deletion: return DiffColors.deletionBackground
         case .context: return .clear
         }
     }

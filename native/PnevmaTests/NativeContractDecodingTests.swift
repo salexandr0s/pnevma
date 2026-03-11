@@ -39,38 +39,17 @@ final class NativeContractDecodingTests: XCTestCase {
         XCTAssertEqual(workflowDetail.steps.first?.taskId, "task-1")
     }
 
-    func testAnalyticsAndDailyBriefContractsDecodeRepresentativePayloads() throws {
-        let breakdown = try decoder.decode(
-            [UsageBreakdown].self,
+    func testUsageSnapshotAndDailyBriefContractsDecodeRepresentativePayloads() throws {
+        let usageSnapshots = try decoder.decode(
+            [ProviderUsageSnapshot].self,
             from: Data(
-                #"[{"provider":"anthropic","tokens_in":1200,"tokens_out":2400,"estimated_usd":1.25,"record_count":3}]"#.utf8
+                #"[{"provider":"claude","status":"ok","error_message":null,"days":[{"date":"2026-03-08","input_tokens":1200,"output_tokens":2400,"cache_read_tokens":300,"cache_write_tokens":50,"requests":3}],"totals":{"total_input_tokens":1200,"total_output_tokens":2400,"total_cache_read_tokens":300,"total_cache_write_tokens":50,"total_requests":3,"avg_daily_tokens":3600,"peak_day":"2026-03-08","peak_day_tokens":3600},"top_models":[{"model":"claude-sonnet","tokens":3600,"share_percent":100.0}]}]"#.utf8
             )
         )
-        XCTAssertEqual(breakdown.first?.recordCount, 3)
-
-        let byModel = try decoder.decode(
-            [UsageByModel].self,
-            from: Data(
-                #"[{"provider":"anthropic","model":"claude-sonnet","tokens_in":1200,"tokens_out":2400,"estimated_usd":1.25}]"#.utf8
-            )
-        )
-        XCTAssertEqual(byModel.first?.model, "claude-sonnet")
-
-        let trend = try decoder.decode(
-            [UsageDailyTrend].self,
-            from: Data(
-                #"[{"date":"2026-03-08","tokens_in":1200,"tokens_out":2400,"estimated_usd":1.25}]"#.utf8
-            )
-        )
-        XCTAssertEqual(trend.first?.date, "2026-03-08")
-
-        let errors = try decoder.decode(
-            [ErrorSignatureItem].self,
-            from: Data(
-                #"[{"id":"sig-1","signature_hash":"hash","canonical_message":"backend failed","category":"decode","first_seen":"2026-03-07T00:00:00Z","last_seen":"2026-03-08T00:00:00Z","total_count":2,"sample_output":"missing key","remediation_hint":"check contract"}]"#.utf8
-            )
-        )
-        XCTAssertEqual(errors.first?.signatureHash, "hash")
+        XCTAssertEqual(usageSnapshots.first?.provider, "claude")
+        XCTAssertEqual(usageSnapshots.first?.totals.totalRequests, 3)
+        XCTAssertEqual(usageSnapshots.first?.days.first?.inputTokens, 1200)
+        XCTAssertEqual(usageSnapshots.first?.topModels.first?.model, "claude-sonnet")
 
         let brief = try decoder.decode(
             DailyBrief.self,

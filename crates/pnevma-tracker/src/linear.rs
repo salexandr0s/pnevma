@@ -180,11 +180,26 @@ impl TrackerAdapter for LinearAdapter {
     }
 
     async fn fetch_states(&self, ids: &[String]) -> Result<Vec<TrackerItem>, TrackerError> {
-        let mut items = Vec::new();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build a single batched query using GraphQL aliases.
+        // Linear IDs are UUIDs; reject any containing GraphQL-breaking chars.
         for id in ids {
-            let query = r#"
-                query($id: String!) {
-                    issue(id: $id) {
+            if id.contains('"') || id.contains('\\') {
+                return Err(TrackerError::Config(format!(
+                    "invalid issue ID (contains quote or backslash): {id}"
+                )));
+            }
+        }
+
+        let alias_queries: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                format!(
+                    r#"i{i}: issue(id: "{id}") {{
                         id
                         identifier
                         title
@@ -192,27 +207,22 @@ impl TrackerAdapter for LinearAdapter {
                         url
                         priority
                         updatedAt
-                        state {
-                            name
-                        }
-                        labels {
-                            nodes {
-                                name
-                            }
-                        }
-                        assignee {
-                            name
-                        }
-                    }
-                }
-            "#;
+                        state {{ name }}
+                        labels {{ nodes {{ name }} }}
+                        assignee {{ name }}
+                    }}"#
+                )
+            })
+            .collect();
 
-            match self
-                .graphql_query(query, serde_json::json!({"id": id}))
-                .await
-            {
-                Ok(data) => {
-                    if let Some(node) = data.get("issue") {
+        let query = format!("query {{ {} }}", alias_queries.join("\n"));
+
+        match self.graphql_query(&query, serde_json::json!({})).await {
+            Ok(data) => {
+                let mut items = Vec::new();
+                for (i, id) in ids.iter().enumerate() {
+                    let alias = format!("i{i}");
+                    if let Some(node) = data.get(&alias) {
                         let state_name = node
                             .get("state")
                             .and_then(|s| s.get("name"))
@@ -269,14 +279,100 @@ impl TrackerAdapter for LinearAdapter {
                                 .and_then(|s| s.parse::<DateTime<Utc>>().ok())
                                 .unwrap_or_else(Utc::now),
                         });
+                    } else {
+                        warn!(id = %id, "issue not found in batched response");
                     }
                 }
-                Err(e) => {
-                    warn!(id = %id, error = %e, "failed to fetch issue state");
+                Ok(items)
+            }
+            Err(e) => {
+                warn!(error = %e, "batched fetch_states failed, falling back to individual queries");
+                // Fallback to individual queries if batch fails
+                let mut items = Vec::new();
+                for id in ids {
+                    let query = r#"
+                        query($id: String!) {
+                            issue(id: $id) {
+                                id identifier title description url priority updatedAt
+                                state { name }
+                                labels { nodes { name } }
+                                assignee { name }
+                            }
+                        }
+                    "#;
+                    match self
+                        .graphql_query(query, serde_json::json!({"id": id}))
+                        .await
+                    {
+                        Ok(data) => {
+                            if let Some(node) = data.get("issue") {
+                                let state_name = node
+                                    .get("state")
+                                    .and_then(|s| s.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown");
+                                let labels: Vec<String> = node
+                                    .get("labels")
+                                    .and_then(|l| l.get("nodes"))
+                                    .and_then(|n| n.as_array())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|l| {
+                                                l.get("name")?.as_str().map(String::from)
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                items.push(TrackerItem {
+                                    kind: "linear".to_string(),
+                                    external_id: node
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(id)
+                                        .to_string(),
+                                    identifier: node
+                                        .get("identifier")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    title: node
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    description: node
+                                        .get("description")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from),
+                                    url: node
+                                        .get("url")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    state: ExternalState::from_linear_state(state_name),
+                                    priority: node.get("priority").and_then(|p| p.as_f64()),
+                                    labels,
+                                    assignee: node
+                                        .get("assignee")
+                                        .and_then(|a| a.get("name"))
+                                        .and_then(|n| n.as_str())
+                                        .map(String::from),
+                                    updated_at: node
+                                        .get("updatedAt")
+                                        .and_then(|u| u.as_str())
+                                        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                                        .unwrap_or_else(Utc::now),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            warn!(id = %id, error = %e, "failed to fetch issue state");
+                        }
+                    }
                 }
+                Ok(items)
             }
         }
-        Ok(items)
     }
 
     async fn transition_item(&self, transition: &StateTransition) -> Result<(), TrackerError> {

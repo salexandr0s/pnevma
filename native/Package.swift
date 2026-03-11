@@ -71,6 +71,7 @@ let package = Package(
             ],
             swiftSettings: [
                 .unsafeFlags([
+                    "-enable-bare-slash-regex",
                     "-disable-bridging-pch",
                     "-import-objc-header", "Pnevma/Bridge/Pnevma-Bridging-Header.h",
                 ]),

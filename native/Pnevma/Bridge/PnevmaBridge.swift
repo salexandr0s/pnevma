@@ -291,16 +291,6 @@ final class PnevmaBridge: @unchecked Sendable {
         }
     }
 
-    /// Register a callback for raw PTY session output.
-    /// The callback is invoked from a background thread for every chunk of terminal output.
-    func setSessionOutputCallback(_ cb: SessionOutputCallback, ctx: UnsafeMutableRawPointer?) {
-        handleLock.lock()
-        let h = handle
-        handleLock.unlock()
-        guard let h = h else { return }
-        pnevma_set_session_output_callback(h, cb, ctx)
-    }
-
     func destroy() {
         handleLock.lock()
         let h = handle

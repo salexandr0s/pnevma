@@ -308,6 +308,7 @@ private struct GhosttySettingsToolbar: View {
             }
             .buttonStyle(.plain)
             .help("Browse themes")
+            .accessibilityLabel("Browse themes")
 
             if hasDiagnostics {
                 Button {
@@ -317,6 +318,7 @@ private struct GhosttySettingsToolbar: View {
                         .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Show diagnostics")
                 .popover(isPresented: $showDiagnostics) {
                     GhosttyDiagnosticsPopover(viewModel: viewModel)
                 }
@@ -755,6 +757,7 @@ private struct GhosttySettingsBottomBar: View {
                 Image(systemName: "doc.text.magnifyingglass")
             }
             .help("Preview generated config file")
+            .accessibilityLabel("Preview generated config file")
 
             Button("Reload") { viewModel.reload() }
             Button("Revert") { viewModel.revert() }

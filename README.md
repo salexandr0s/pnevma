@@ -120,7 +120,7 @@ Pnevma is a **native macOS app** (Swift/AppKit) backed by a **Rust workspace**. 
 
 ### Native app
 
-The `native/` directory contains the Swift/AppKit application. The project file is generated from `native/project.yml` using XcodeGen. UI is organized into **13 pane types** (terminal, task board, review, merge queue, replay, daily brief, diff, search, file browser, settings, rules manager, notifications, SSH manager) rendered in a configurable multi-pane grid.
+The `native/` directory contains the Swift/AppKit application. The project file is generated from `native/project.yml` using XcodeGen. UI is organized into **15 pane types** (terminal, task board, replay, file browser, SSH manager, workflow, review, merge queue, diff, search, usage, notifications, daily brief, rules, browser) rendered in a configurable multi-pane grid.
 
 ## Configuration
 

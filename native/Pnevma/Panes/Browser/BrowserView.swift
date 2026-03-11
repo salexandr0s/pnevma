@@ -75,6 +75,7 @@ struct BrowserView: View {
             }
         }
         .background(Color.clear)
+        .accessibilityIdentifier("pane.browser")
         .onAppear {
             viewModel.webView.onRequestPanelFocus = { [weak viewModel] in
                 viewModel?.showSuggestions = false
@@ -177,6 +178,7 @@ struct BrowserView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Find in page")
+            .keyboardShortcut("f", modifiers: .command)
         }
     }
 
@@ -291,6 +293,7 @@ struct BrowserView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("\(entry.title), \(URL(string: entry.url)?.host(percentEncoded: false) ?? entry.url)")
                         }
                     }
                 }

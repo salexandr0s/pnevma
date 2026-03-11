@@ -52,6 +52,7 @@ struct SearchView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .keyboardShortcut(.escape, modifiers: [])
                 }
             }
             .padding(12)

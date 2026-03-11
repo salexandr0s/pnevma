@@ -4,6 +4,8 @@ import SwiftUI
 
 struct AgentsSection: View {
     var viewModel: AgentViewModel
+    @State private var showDeleteAgentAlert = false
+    @State private var agentToDelete: String? = nil
 
     var body: some View {
         if let editingAgent = viewModel.editingAgent {
@@ -19,28 +21,35 @@ struct AgentsSection: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if viewModel.agents.isEmpty {
-            VStack(spacing: 12) {
-                Image(systemName: "person.3")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.secondary)
-                Text("No agent profiles")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                Text("Create an agent profile to configure AI agent behavior.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Create Agent") { viewModel.startCreating() }
-                    .buttonStyle(.borderedProminent)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyStateView(
+                icon: "person.3",
+                title: "No Agent Profiles",
+                message: "Create an agent profile to configure AI agent behavior.",
+                actionTitle: "Create Agent",
+                action: { viewModel.startCreating() }
+            )
         } else {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(viewModel.agents) { agent in
-                        AgentRow(agent: agent, viewModel: viewModel)
+                        AgentRow(agent: agent, viewModel: viewModel, onRequestDelete: { id in
+                            agentToDelete = id
+                            showDeleteAgentAlert = true
+                        })
+                        .accessibilityElement(children: .combine)
                     }
                 }
                 .padding(12)
+            }
+            .alert("Delete Agent Profile?", isPresented: $showDeleteAgentAlert) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    if let id = agentToDelete {
+                        viewModel.delete(id)
+                    }
+                }
+            } message: {
+                Text("This agent profile will be permanently removed.")
             }
         }
     }
@@ -49,6 +58,7 @@ struct AgentsSection: View {
 struct AgentRow: View {
     let agent: AgentProfileFullItem
     var viewModel: AgentViewModel
+    var onRequestDelete: (String) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -90,7 +100,7 @@ struct AgentRow: View {
                     Image(systemName: "pencil")
                 }
                 .buttonStyle(.borderless)
-                Button(action: { viewModel.delete(agent.id) }) {
+                Button(action: { onRequestDelete(agent.id) }) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)

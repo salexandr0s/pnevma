@@ -29,6 +29,7 @@ enum DesignTokens {
         static let tabBarHeight: CGFloat = 24
         static let paneMinWidth: CGFloat = 200
         static let paneMinHeight: CGFloat = 100
+        static let treeIndent: CGFloat = 14
     }
 
     // MARK: - Opacity
@@ -38,5 +39,24 @@ enum DesignTokens {
         static let medium: CGFloat = 0.15
         static let strong: CGFloat = 0.30
         static let prominent: CGFloat = 0.50
+    }
+
+    // MARK: - Text Opacity (WCAG AA compliant)
+    enum TextOpacity {
+        static let primary: CGFloat = 0.92
+        static let secondary: CGFloat = 0.70
+        static let tertiary: CGFloat = 0.50
+    }
+
+    // MARK: - Font Sizes
+    enum Font {
+        static let mono: CGFloat = 11
+        static let caption: CGFloat = 10
+        static let body: CGFloat = 13
+    }
+
+    // MARK: - Interaction
+    enum Interaction {
+        static let minTouchTarget: CGFloat = 28
     }
 }

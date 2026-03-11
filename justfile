@@ -162,7 +162,7 @@ clean:
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 
-# Check FFI coverage — tauri commands vs bridge exports
+# Check FFI coverage — RPC command routes vs bridge exports
 ffi-coverage:
     @echo "Checking FFI command coverage..."
     @./scripts/check-ffi-coverage.sh

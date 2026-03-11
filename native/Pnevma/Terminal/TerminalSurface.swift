@@ -39,6 +39,10 @@ class TerminalSurface {
     static var clipboardStringProvider: () -> String = {
         NSPasteboard.general.string(forType: .string) ?? ""
     }
+    static var clipboardStringWriter: (String) -> Void = { string in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
 
     static func decodeSelectionText(
         text: UnsafePointer<CChar>?,
@@ -50,8 +54,14 @@ class TerminalSurface {
         return selection.isEmpty ? nil : selection
     }
 
+    @MainActor
     static func clipboardStringForRequest(confirmed _: Bool) -> String {
-        return clipboardStringProvider()
+        clipboardStringProvider()
+    }
+
+    @MainActor
+    static func writeClipboardString(_ string: String) {
+        clipboardStringWriter(string)
     }
 
     #if canImport(GhosttyKit)
@@ -93,17 +103,22 @@ class TerminalSurface {
             },
             read_clipboard_cb: { userdata, _, statePtr in
                 guard let surface = TerminalSurface.surface(from: userdata) else { return }
-                surface.completeClipboardRead(state: statePtr, confirmed: false)
+                Task { @MainActor in
+                    surface.completeClipboardRead(state: statePtr, confirmed: false)
+                }
             },
             confirm_read_clipboard_cb: { userdata, _, statePtr, _ in
                 guard let surface = TerminalSurface.surface(from: userdata) else { return }
-                surface.completeClipboardRead(state: statePtr, confirmed: true)
+                Task { @MainActor in
+                    surface.completeClipboardRead(state: statePtr, confirmed: true)
+                }
             },
             write_clipboard_cb: { _, content, _, confirm in
                 guard !confirm, let content else { return }
                 let string = String(cString: content)
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(string, forType: .string)
+                Task { @MainActor in
+                    TerminalSurface.writeClipboardString(string)
+                }
             },
             close_surface_cb: { userdata, processAlive in
                 guard let userdata else { return }
@@ -125,7 +140,7 @@ class TerminalSurface {
             // (e.g. "light:X,dark:Y") resolve correctly at the app level.
             let scheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
-            ghostty_app_set_color_scheme(ghosttyApp!, scheme)
+            if let app = ghosttyApp { ghostty_app_set_color_scheme(app, scheme) }
             Log.terminal.info("ghostty app initialized")
         }
     }
@@ -246,18 +261,6 @@ class TerminalSurface {
         Self.surfaceRegistry.remove(self)
     }
 
-    // MARK: - Rendering
-
-    func refresh() {
-        guard let surface else { return }
-        ghostty_surface_refresh(surface)
-    }
-
-    func draw() {
-        guard let surface else { return }
-        ghostty_surface_draw(surface)
-    }
-
     // MARK: - Layout
 
     func resize(width: UInt32, height: UInt32) {
@@ -284,11 +287,6 @@ class TerminalSurface {
     func setDisplayID(_ displayID: UInt32) {
         guard let surface else { return }
         ghostty_surface_set_display_id(surface, displayID)
-    }
-
-    func setOcclusion(_ occluded: Bool) {
-        guard let surface else { return }
-        ghostty_surface_set_occlusion(surface, occluded)
     }
 
     func setColorScheme(_ scheme: ghostty_color_scheme_e) {
@@ -378,21 +376,6 @@ class TerminalSurface {
         ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
     }
 
-    // MARK: - Selection
-
-    func hasSelection() -> Bool {
-        guard let surface else { return false }
-        return ghostty_surface_has_selection(surface)
-    }
-
-    func getSelection() -> String? {
-        guard let surface else { return nil }
-        var text = ghostty_text_s()
-        guard ghostty_surface_read_selection(surface, &text) else { return nil }
-        defer { ghostty_surface_free_text(surface, &text) }
-        return Self.decodeSelectionText(text: text.text, length: Int(text.text_len))
-    }
-
     func requestClose() {
         guard let surface else { return }
         ghostty_surface_request_close(surface)
@@ -405,11 +388,13 @@ class TerminalSurface {
         onClose?()
     }
 
+    @MainActor
     private func completeClipboardRead(state: UnsafeMutableRawPointer?, confirmed: Bool) {
         let content = Self.clipboardStringForRequest(confirmed: confirmed)
         completeClipboardRequest(content, state: state, confirmed: confirmed)
     }
 
+    @MainActor
     private func completeClipboardRequest(
         _ data: String,
         state: UnsafeMutableRawPointer?,
@@ -611,14 +596,11 @@ class TerminalSurface {
         Log.terminal.info("Placeholder: no ghostty surface created")
     }
 
-    func refresh() {}
-    func draw() {}
     func resize(width: UInt32, height: UInt32) {}
     func size() -> (columns: UInt16, rows: UInt16)? { nil }
     func setContentScale(_ scale: Double) {}
     func setFocus(_ focused: Bool) {}
     func setDisplayID(_ displayID: UInt32) {}
-    func setOcclusion(_ occluded: Bool) {}
     @discardableResult func sendKey(_ event: Any) -> Bool { false }
     func sendText(_ text: String) {}
     func sendPreedit(_ text: String) {}
@@ -626,8 +608,6 @@ class TerminalSurface {
     @discardableResult func sendMouseButton(state: Any, button: Any, mods: Any) -> Bool { false }
     func sendMousePos(x: Double, y: Double, mods: Any) {}
     func sendMouseScroll(x: Double, y: Double, scrollMods: Any) {}
-    func hasSelection() -> Bool { false }
-    func getSelection() -> String? { nil }
     func requestClose() {}
 
     #endif

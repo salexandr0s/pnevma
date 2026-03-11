@@ -125,13 +125,13 @@ Verify that recognizable provider credentials are redacted before persistence an
 
 ```bash
 # 1. Sign
-bash scripts/release-macos-sign.sh /path/to/Pnevma.app
+APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-sign.sh
 
 # 2. Notarize
-bash scripts/release-macos-notarize.sh /path/to/Pnevma.app
+APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-notarize.sh
 
 # 3. Staple and verify
-bash scripts/release-macos-staple-verify.sh /path/to/Pnevma.app
+APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-staple-verify.sh
 
 # 4. Verify Gatekeeper passes
 spctl --assess --type exec /path/to/Pnevma.app && echo "PASS" || echo "FAIL"

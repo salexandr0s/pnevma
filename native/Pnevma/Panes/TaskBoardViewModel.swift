@@ -69,6 +69,11 @@ final class TaskBoardViewModel {
         }
     }
 
+    var isLoadingState: Bool {
+        if case .loading = viewState { return true }
+        return false
+    }
+
     func activate() async {
         handleActivationState(activationHub.currentState)
     }

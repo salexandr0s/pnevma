@@ -73,11 +73,13 @@ struct WorkflowView: View {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
+                    .keyboardShortcut("n", modifiers: .command)
                 } else if workflowTab == .library {
                     Button(action: { workflowTab = .builder; viewModel.resetBuilder() }) {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
+                    .keyboardShortcut("n", modifiers: .command)
                 }
             }
             .padding(12)
@@ -110,6 +112,7 @@ struct WorkflowView: View {
             viewModel.load()
             agentViewModel.load()
         }
+        .accessibilityIdentifier("pane.workflow")
     }
 }
 
@@ -118,6 +121,8 @@ struct WorkflowView: View {
 struct LibrarySection: View {
     var viewModel: WorkflowViewModel
     var onEdit: (WorkflowDefItem) -> Void
+    @State private var showDeleteAlert = false
+    @State private var workflowToDelete: String? = nil
 
     var body: some View {
         if viewModel.definitions.isEmpty {
@@ -151,7 +156,8 @@ struct LibrarySection: View {
                                 .buttonStyle(.borderless)
                                 .font(.caption)
                             Button("Delete") {
-                                if let dbId = def.dbId { viewModel.deleteWorkflow(dbId) }
+                                workflowToDelete = def.dbId
+                                showDeleteAlert = true
                             }
                             .buttonStyle(.borderless)
                             .font(.caption)
@@ -163,6 +169,16 @@ struct LibrarySection: View {
                     }
                 }
                 .padding(.vertical, 4)
+            }
+            .alert("Delete Workflow?", isPresented: $showDeleteAlert) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    if let id = workflowToDelete {
+                        viewModel.deleteWorkflow(id)
+                    }
+                }
+            } message: {
+                Text("This workflow will be permanently removed.")
             }
         }
     }

@@ -636,7 +636,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.general.error("Smoke failed: \(message)")
         }
 
-        if AppLaunchContext.smokeMode == .ghostty {
+        if AppLaunchContext.smokeMode != nil {
             _exit(Int32(success ? 0 : 1))
         }
 

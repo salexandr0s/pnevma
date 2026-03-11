@@ -543,9 +543,6 @@ final class ContentAreaView: NSView {
 
     private var zoomedPaneID: PaneID?
 
-    /// Whether a pane is currently zoomed to fill the content area.
-    var isZoomed: Bool { zoomedPaneID != nil }
-
     /// Toggle zoom: maximize the active pane to fill the entire content area,
     /// or restore the previous split layout.
     func toggleZoom() {
@@ -979,6 +976,11 @@ private final class NotificationRingView: NSView {
 
     func startPulsing() {
         layer?.removeAllAnimations()
+
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            layer?.opacity = 0.5
+            return
+        }
 
         let accentColor = NSColor.controlAccentColor
         layer?.borderColor = accentColor.cgColor

@@ -21,6 +21,8 @@ struct MergeQueueItem: Identifiable, Decodable {
 
 struct MergeQueueView: View {
     @State private var viewModel = MergeQueueViewModel()
+    @State private var showMergeAlert = false
+    @State private var itemToMerge: MergeQueueItem? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +32,7 @@ struct MergeQueueView: View {
                 Spacer()
                 Button("Refresh") { viewModel.load() }
                     .buttonStyle(.bordered)
+                    .keyboardShortcut("r", modifiers: .command)
             }
             .padding(12)
 
@@ -37,39 +40,55 @@ struct MergeQueueView: View {
 
             Group {
                 if let statusMessage = viewModel.statusMessage {
-                    EmptyStateView(
-                        icon: "arrow.triangle.merge",
-                        title: statusMessage
-                    )
+                    VStack(spacing: 8) {
+                        if viewModel.isLoadingState {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        EmptyStateView(
+                            icon: "arrow.triangle.merge",
+                            title: statusMessage
+                        )
+                    }
                 } else if viewModel.items.isEmpty {
                     EmptyStateView(
                         icon: "arrow.triangle.merge",
-                        title: "Merge queue is empty",
-                        message: "Completed tasks will appear here for merging"
+                        title: "Merge Queue Empty",
+                        message: "No branches queued for merge"
                     )
                 } else {
                     List {
                         ForEach(viewModel.items) { item in
                             MergeQueueRow(
                                 item: item,
-                                onMerge: { viewModel.merge(item) },
+                                onMerge: {
+                                    itemToMerge = item
+                                    showMergeAlert = true
+                                },
                                 onMoveUp: { viewModel.reorder(taskId: item.taskId, direction: "up") },
                                 onMoveDown: { viewModel.reorder(taskId: item.taskId, direction: "down") }
                             )
+                            .accessibilityElement(children: .combine)
                         }
                     }
                     .listStyle(.plain)
                 }
             }
-
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-            }
         }
+        .overlay(alignment: .bottom) {
+            ErrorBanner(message: viewModel.actionError)
+        }
+        .alert("Merge Branch?", isPresented: $showMergeAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Merge", role: .destructive) {
+                if let item = itemToMerge {
+                    viewModel.merge(item)
+                }
+            }
+        } message: {
+            Text("This will merge the branch into the target.")
+        }
+        .accessibilityIdentifier("pane.mergeQueue")
         .task { await viewModel.activate() }
     }
 }
@@ -98,17 +117,20 @@ struct MergeQueueRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Move up")
+                .accessibilityLabel("Move up")
 
                 Button(action: onMoveDown) {
                     Image(systemName: "chevron.down")
                 }
                 .buttonStyle(.plain)
                 .help("Move down")
+                .accessibilityLabel("Move down")
             }
 
             Button("Merge") { onMerge() }
                 .buttonStyle(.bordered)
                 .disabled(item.status != "Queued")
+                .accessibilityLabel("Merge")
         }
         .padding(.vertical, 4)
     }
@@ -212,6 +234,11 @@ final class MergeQueueViewModel {
         case .ready:
             return nil
         }
+    }
+
+    var isLoadingState: Bool {
+        if case .loading = viewState { return true }
+        return false
     }
 
     func activate() async {

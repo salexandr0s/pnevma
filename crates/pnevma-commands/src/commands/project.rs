@@ -2168,11 +2168,39 @@ pub async fn open_file_target(
     let launched_editor = if editor_mode {
         if let Ok(editor) = std::env::var("EDITOR") {
             if !editor.trim().is_empty() {
-                TokioCommand::new(editor)
-                    .arg(&abs)
-                    .current_dir(&project_path)
-                    .spawn()
-                    .is_ok()
+                // Validate $EDITOR: resolve to an absolute path and verify it exists.
+                // This prevents spawning arbitrary scripts from a poisoned env var.
+                let editor_path = std::path::Path::new(editor.trim());
+                let resolved = if editor_path.is_absolute() {
+                    Some(editor_path.to_path_buf())
+                } else {
+                    // Search PATH for the binary
+                    std::env::var("PATH").ok().and_then(|path_var| {
+                        path_var.split(':').find_map(|dir| {
+                            let candidate = std::path::Path::new(dir).join(editor.trim());
+                            if candidate.is_file() {
+                                Some(candidate)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                };
+                if let Some(ref path) = resolved {
+                    if path.is_file() {
+                        TokioCommand::new(path)
+                            .arg(&abs)
+                            .current_dir(&project_path)
+                            .spawn()
+                            .is_ok()
+                    } else {
+                        tracing::warn!(editor = %editor, "EDITOR binary not found, skipping");
+                        false
+                    }
+                } else {
+                    tracing::warn!(editor = %editor, "EDITOR binary not found on PATH, skipping");
+                    false
+                }
             } else {
                 false
             }

@@ -40,18 +40,18 @@ pub struct TokenStore {
 }
 
 impl TokenStore {
-    pub fn new(password: String, ttl_hours: u64) -> Self {
+    pub fn new(password: String, ttl_hours: u64) -> Result<Self, RemoteError> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let password_hash = argon2
             .hash_password(password.as_bytes(), &salt)
-            .expect("failed to hash password")
+            .map_err(|e| RemoteError::Auth(format!("failed to hash password: {e}")))?
             .to_string();
-        Self {
+        Ok(Self {
             tokens: DashMap::new(),
             password_hash,
             ttl_hours,
-        }
+        })
     }
 
     /// Generate a 256-bit random hex token, store it, and return it.
@@ -185,7 +185,7 @@ mod tests {
     use super::*;
 
     fn store() -> TokenStore {
-        TokenStore::new("correcthorsebatterystaple".to_string(), 24)
+        TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap()
     }
 
     #[test]
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn expired_token_ttl_zero_is_rejected() {
         // TTL of 0 hours means tokens expire immediately.
-        let ts = TokenStore::new("pass".to_string(), 0);
+        let ts = TokenStore::new("pass".to_string(), 0).unwrap();
         let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         // age_secs (0) >= ttl_secs (0), so token is invalid
         assert!(ts.validate_token(&token.token, "127.0.0.1").is_none());
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn cleanup_expired_removes_zero_ttl_tokens() {
-        let ts = TokenStore::new("pass".to_string(), 0);
+        let ts = TokenStore::new("pass".to_string(), 0).unwrap();
         let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         ts.cleanup_expired();
         assert!(!ts.tokens.contains_key(&token_lookup_key(&token.token)));
@@ -287,7 +287,7 @@ mod tests {
     fn max_length_password_is_accepted() {
         // Create a store with a 128-char password
         let password = "b".repeat(128);
-        let ts = TokenStore::new(password.clone(), 24);
+        let ts = TokenStore::new(password.clone(), 24).unwrap();
         assert!(ts.validate_password(&password));
     }
 

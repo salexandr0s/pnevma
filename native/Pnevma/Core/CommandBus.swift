@@ -7,7 +7,7 @@ protocol CommandCalling {
 }
 
 actor CommandBus: CommandCalling {
-    static var shared: CommandBus!
+    static var shared: CommandBus?
 
     private let bridge: PnevmaBridge
 

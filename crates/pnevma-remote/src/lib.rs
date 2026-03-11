@@ -35,18 +35,13 @@ pub trait CommandRouter: Send + Sync + 'static {
 /// Handle to the running remote server, used to trigger a graceful shutdown.
 pub struct RemoteServerHandle {
     shutdown_tx: oneshot::Sender<()>,
-    join: tokio::task::JoinHandle<()>,
+    _join: tokio::task::JoinHandle<()>,
 }
 
 impl RemoteServerHandle {
     /// Signal the server to shut down gracefully.
     pub fn shutdown(self) {
         let _ = self.shutdown_tx.send(());
-    }
-
-    /// Wait for the server to finish (blocks until shutdown).
-    pub async fn wait(self) {
-        let _ = self.join.await;
     }
 }
 
@@ -66,17 +61,8 @@ pub async fn start_remote_server(
     let token_store = Arc::new(TokenStore::new(
         password.to_string(),
         config.token_ttl_hours,
-    ));
+    )?);
     token_store.spawn_cleanup();
-
-    let app = server::build_router(
-        &config,
-        command_router,
-        remote_events,
-        token_store,
-        frontend_dir,
-    )
-    .await;
 
     // Determine bind address — Tailscale is required; no insecure fallback.
     let ts_ip = match tailscale::get_tailscale_self_ip().await {
@@ -92,13 +78,23 @@ pub async fn start_remote_server(
     };
     let bind_addr = SocketAddr::from((ts_ip, config.port));
 
-    let tls_config = tls::load_tls_config(
+    let (tls_config, tls_fingerprint) = tls::load_tls_config(
         &config.tls_mode,
         Some(std::net::IpAddr::V4(ts_ip)),
         config.tls_allow_self_signed_fallback,
     )
     .await?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+
+    let app = server::build_router(
+        &config,
+        command_router,
+        remote_events,
+        token_store,
+        frontend_dir,
+        tls_fingerprint,
+    )
+    .await;
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -112,7 +108,10 @@ pub async fn start_remote_server(
         axum_serve_tls(listener, acceptor, app, shutdown_rx).await;
     });
 
-    Ok(RemoteServerHandle { shutdown_tx, join })
+    Ok(RemoteServerHandle {
+        shutdown_tx,
+        _join: join,
+    })
 }
 
 /// Run an axum app over TLS by manually accepting connections.

@@ -20,7 +20,7 @@ pub use events::{
 };
 pub use orchestration::{DispatchOrchestrator, DispatchRequest, DispatchResult, PoolState};
 pub use protected_actions::{ActionKind, ActionRiskInfo, RiskLevel};
-pub use stories::{DetectedStory, StoryDetector, StoryStatus};
+pub use stories::StoryStatus;
 pub use task::{
     Check, CheckType, ContextManifestItem, ContextPack, Priority, TaskContract, TaskExternalSource,
     TaskStatus, TransitionError,

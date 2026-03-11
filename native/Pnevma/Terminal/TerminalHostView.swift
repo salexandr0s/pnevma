@@ -256,43 +256,54 @@ final class TerminalHostView: NSView, NSTextInputClient {
         state: ghostty_input_mouse_state_e,
         button: ghostty_input_mouse_button_e,
         event: NSEvent
-    ) {
+    ) -> Bool {
         terminalSurface?.sendMouseButton(
             state: state,
             button: button,
             mods: ghosttyMods(from: event.modifierFlags)
-        )
+        ) ?? false
     }
 
     override func mouseDown(with event: NSEvent) {
         forwardMousePosition(event)
-        forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, event: event)
+        _ = forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func mouseUp(with event: NSEvent) {
         forwardMousePosition(event)
-        forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, event: event)
+        _ = forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
         forwardMousePosition(event)
-        forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event)
-        super.rightMouseDown(with: event)
+        if !forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event) {
+            super.rightMouseDown(with: event)
+        }
     }
 
     override func rightMouseUp(with event: NSEvent) {
         forwardMousePosition(event)
-        forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, event: event)
+        if !forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, event: event) {
+            super.rightMouseUp(with: event)
+        }
     }
 
     override func otherMouseDown(with event: NSEvent) {
+        guard Self.shouldTreatAsMiddleMouseButton(event.buttonNumber) else {
+            super.otherMouseDown(with: event)
+            return
+        }
         forwardMousePosition(event)
-        forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
+        _ = forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        guard Self.shouldTreatAsMiddleMouseButton(event.buttonNumber) else {
+            super.otherMouseUp(with: event)
+            return
+        }
         forwardMousePosition(event)
-        forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE, event: event)
+        _ = forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
     #endif
 
@@ -353,7 +364,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
         #if canImport(GhosttyKit)
         if let surface = terminalSurface {
             let (x, y, w, h) = surface.imePoint()
-            return NSRect(x: x, y: y, width: w, height: h)
+            return screenRectFromGhosttyRect(x: x, y: y, width: w, height: h)
         }
         #endif
         return .zero
@@ -605,6 +616,18 @@ final class TerminalHostView: NSView, NSTextInputClient {
         #endif
     }
 
+    // Ghostty reports IME geometry in top-left view coordinates; AppKit expects screen coordinates.
+    func screenRectFromGhosttyRect(x: Double, y: Double, width: Double, height: Double) -> NSRect {
+        let viewRect = NSRect(x: x, y: bounds.height - y, width: width, height: height)
+        let windowRect = convert(viewRect, to: nil)
+        guard let window else { return windowRect }
+        return window.convertToScreen(windowRect)
+    }
+
+    static func shouldTreatAsMiddleMouseButton(_ buttonNumber: Int) -> Bool {
+        buttonNumber == 2
+    }
+
     private func extractText(_ string: Any) -> String? {
         (string as? NSAttributedString)?.string ?? (string as? String)
     }
@@ -616,12 +639,14 @@ final class TerminalHostView: NSView, NSTextInputClient {
 /// Uses the ghostty `unfocused-split-fill` color with alpha derived from
 /// `unfocused-split-opacity`. Passes through all mouse events.
 private final class UnfocusedOverlayView: NSView {
+    private var themeObserver: NSObjectProtocol?
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         updateOverlayColor()
 
-        NotificationCenter.default.addObserver(
+        themeObserver = NotificationCenter.default.addObserver(
             forName: GhosttyThemeProvider.didChangeNotification,
             object: nil,
             queue: .main
@@ -631,6 +656,12 @@ private final class UnfocusedOverlayView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -659,7 +690,7 @@ private func withGhosttyKeyEvent<T>(
     key.keycode = UInt32(event.keyCode)
     key.composing = false
 
-    if let chars = event.characters, !chars.isEmpty {
+    if let chars = eventText(for: event), !chars.isEmpty {
         return chars.withCString { ptr in
             key.text = ptr
             applyUnshiftedCodepoint(to: &key, event: event)
@@ -673,7 +704,7 @@ private func withGhosttyKeyEvent<T>(
 }
 
 private func applyUnshiftedCodepoint(to key: inout ghostty_input_key_s, event: NSEvent) {
-    if let base = event.characters(byApplyingModifiers: []),
+    if let base = eventTextIgnoringModifiers(for: event),
        let scalar = base.unicodeScalars.first {
         key.unshifted_codepoint = scalar.value
     }
@@ -681,8 +712,8 @@ private func applyUnshiftedCodepoint(to key: inout ghostty_input_key_s, event: N
 
 private func computeConsumedMods(from event: NSEvent) -> ghostty_input_mods_e {
     var consumed: UInt32 = GHOSTTY_MODS_NONE.rawValue
-    guard let chars = event.characters, !chars.isEmpty,
-          let baseChars = event.characters(byApplyingModifiers: []), !baseChars.isEmpty else {
+    guard let chars = eventText(for: event), !chars.isEmpty,
+          let baseChars = eventTextIgnoringModifiers(for: event), !baseChars.isEmpty else {
         return ghostty_input_mods_e(consumed)
     }
     if chars != baseChars {
@@ -694,6 +725,24 @@ private func computeConsumedMods(from event: NSEvent) -> ghostty_input_mods_e {
         }
     }
     return ghostty_input_mods_e(consumed)
+}
+
+private func eventText(for event: NSEvent) -> String? {
+    switch event.type {
+    case .keyDown, .keyUp:
+        return event.characters
+    default:
+        return nil
+    }
+}
+
+private func eventTextIgnoringModifiers(for event: NSEvent) -> String? {
+    switch event.type {
+    case .keyDown, .keyUp:
+        return event.characters(byApplyingModifiers: [])
+    default:
+        return nil
+    }
 }
 
 private func ghosttyMods(from flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {

@@ -27,6 +27,9 @@ final class CapsuleButton: NSView {
         wantsLayer = true
         setAccessibilityLabel(label)
         toolTip = label
+        NotificationCenter.default.addObserver(forName: GhosttyThemeProvider.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.needsDisplay = true
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -42,11 +45,11 @@ final class CapsuleButton: NSView {
         let path = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
 
         // Background
-        NSColor.white.withAlphaComponent(isHovering ? 0.12 : 0.06).setFill()
+        GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(isHovering ? 0.12 : 0.06).setFill()
         path.fill()
 
         // Border
-        NSColor.white.withAlphaComponent(isHovering ? 0.2 : 0.1).setStroke()
+        GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(isHovering ? 0.2 : 0.1).setStroke()
         path.lineWidth = 0.5
         path.stroke()
 

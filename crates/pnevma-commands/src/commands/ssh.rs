@@ -328,6 +328,7 @@ pub async fn generate_ssh_key(
     let key_type = input.key_type.as_deref().unwrap_or("ed25519");
     let comment = input.comment.as_deref().unwrap_or("");
     let key = pnevma_ssh::generate_key(&ssh_dir, &input.name, key_type, comment)
+        .await
         .map_err(|e| e.to_string())?;
     Ok(SshKeyInfoView {
         name: key.name,

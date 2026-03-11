@@ -27,12 +27,13 @@ struct AddButton: View {
             Image(systemName: "plus")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(isHovering ? Color.green : Color.secondary)
-                .frame(width: 22, height: 22)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel("Add workspace")
+        .help("Add workspace")
         .accessibilityIdentifier("sidebar.addWorkspace")
     }
 }
@@ -48,12 +49,13 @@ struct CloseButton: View {
             Image(systemName: "xmark")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(isHovering ? Color.red : Color.secondary)
-                .frame(width: 20, height: 20)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel("Close workspace")
+        .help("Close workspace")
     }
 }
 
@@ -65,7 +67,7 @@ struct ToolsSectionHeader: View {
 
     var body: some View {
         Button(action: {
-            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+            withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.15))) { isExpanded.toggle() }
         }) {
             HStack {
                 Text("TOOLS")

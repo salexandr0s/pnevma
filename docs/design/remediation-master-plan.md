@@ -179,3 +179,26 @@ Phase 3 is manual/E2E and requires a working build with all fixes applied.
 | Hardening         | 5      | ~12                     |
 | E2E Validation    | 10     | 0 (testing only)        |
 | **Total**         | **55** | **~59**                 |
+
+---
+
+## Completion Notes
+
+Items completed as of 2026-03-11:
+
+- **A1**: RequestBodyLimitLayer(2MB) added to server.rs
+- **A2**: WebSocket max_message_size(65536) configured
+- **A3**: session.send_input excluded from RPC allowlist; session.new excluded from RPC allowlist
+- **A4**: Query-string token restricted to WebSocket upgrade requests only
+- **A5**: Secrets in CLI args resolved via security-framework crate
+- **A6**: auto_approve configurable; env stripping implemented
+- **B1**: Token revocation with DELETE /api/auth/token
+- **B2**: Secret redaction populated from keychain/env
+- **B5**: Token TTL changed to second-precision comparison
+- **B6**: Tailscale IPv6 CGNAT range added
+- **B7**: SSH keygen comment validation added
+- **B8**: Self-signed cert fingerprint returned as X-TLS-Fingerprint response header
+- **C6**: CLAUDE.md created at project root
+- **C7**: audit.toml created with RUSTSEC-2023-0071 accepted risk
+- **E1**: cargo audit wired to `just check`
+- **E4**: cargo-deny added to CI with deny.toml

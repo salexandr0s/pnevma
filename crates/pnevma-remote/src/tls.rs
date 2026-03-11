@@ -11,11 +11,15 @@ static INSTALL_RUSTLS_PROVIDER: Once = Once::new();
 ///
 /// `tailscale_ip` is forwarded to `generate_self_signed_cert` so the cert
 /// includes the Tailscale IP as a Subject Alternative Name.
+///
+/// Returns the `ServerConfig` and an optional hex-encoded SHA256 fingerprint.
+/// The fingerprint is `Some` only for self-signed certificates; real certificates
+/// (e.g. from Tailscale) return `None`.
 pub async fn load_tls_config(
     mode: &str,
     tailscale_ip: Option<IpAddr>,
     allow_self_signed_fallback: bool,
-) -> Result<ServerConfig, RemoteError> {
+) -> Result<(ServerConfig, Option<String>), RemoteError> {
     ensure_rustls_crypto_provider();
 
     match mode {
@@ -34,7 +38,7 @@ fn ensure_rustls_crypto_provider() {
 async fn load_tailscale_cert(
     tailscale_ip: Option<IpAddr>,
     allow_self_signed_fallback: bool,
-) -> Result<ServerConfig, RemoteError> {
+) -> Result<(ServerConfig, Option<String>), RemoteError> {
     // Tailscale stores certs in /var/lib/tailscale/certs/ or ~/.local/share/tailscale/certs/
     let candidates = [
         "/var/lib/tailscale/certs".to_string(),
@@ -47,12 +51,15 @@ async fn load_tailscale_cert(
 
     for dir in &candidates {
         let path = std::path::Path::new(dir);
-        if !path.exists() {
+        if !tokio::fs::try_exists(path).await.unwrap_or(false) {
             continue;
         }
         // Match .crt and .key files by base name to avoid pairing unrelated certs
         let mut cert_path = None;
         let mut key_path = None;
+        // std::fs::read_dir is intentionally kept sync here — converting directory
+        // iteration to async is complex and this runs once at startup with a small,
+        // bounded directory.
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -60,7 +67,7 @@ async fn load_tailscale_cert(
                 if name_str.ends_with(".crt") {
                     let stem = name_str.trim_end_matches(".crt");
                     let key_candidate = entry.path().with_file_name(format!("{stem}.key"));
-                    if key_candidate.exists() {
+                    if tokio::fs::try_exists(&key_candidate).await.unwrap_or(false) {
                         cert_path = Some(entry.path());
                         key_path = Some(key_candidate);
                         break;
@@ -75,7 +82,7 @@ async fn load_tailscale_cert(
             let key_pem = tokio::fs::read(&key_path).await.map_err(|e| {
                 RemoteError::Tls(format!("Failed to read key {}: {e}", key_path.display()))
             })?;
-            return build_rustls_config_from_pem(&cert_pem, &key_pem);
+            return build_rustls_config_from_pem(&cert_pem, &key_pem).map(|config| (config, None));
         }
     }
 
@@ -107,7 +114,9 @@ fn build_rustls_config_from_pem(
     build_server_config(certs, key)
 }
 
-fn generate_self_signed_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfig, RemoteError> {
+fn generate_self_signed_cert(
+    tailscale_ip: Option<IpAddr>,
+) -> Result<(ServerConfig, Option<String>), RemoteError> {
     let mut subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     if let Some(ip) = tailscale_ip {
         subject_alt_names.push(ip.to_string());
@@ -119,13 +128,14 @@ fn generate_self_signed_cert(tailscale_ip: Option<IpAddr>) -> Result<ServerConfi
     let cert_der = CertificateDer::from(cert.cert.der().to_vec());
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
 
-    {
+    let fingerprint = {
         use sha2::{Digest, Sha256};
-        let fingerprint = hex::encode(Sha256::digest(cert_der.as_ref()));
-        tracing::info!(fingerprint = %fingerprint, "Generated self-signed TLS certificate");
-    }
+        hex::encode(Sha256::digest(cert_der.as_ref()))
+    };
+    tracing::info!(fingerprint = %fingerprint, "Generated self-signed TLS certificate");
 
-    build_server_config(vec![cert_der], key_der)
+    let config = build_server_config(vec![cert_der], key_der)?;
+    Ok((config, Some(fingerprint)))
 }
 
 fn build_server_config(
@@ -146,6 +156,74 @@ mod tests {
 
     #[test]
     fn self_signed_tls_config_builds_without_preinstalled_provider() {
-        let _config = generate_self_signed_cert(None).expect("self-signed TLS config should build");
+        let (_config, _fp) =
+            generate_self_signed_cert(None).expect("self-signed TLS config should build");
+    }
+
+    #[test]
+    fn self_signed_returns_fingerprint() {
+        let (_config, fingerprint) =
+            generate_self_signed_cert(None).expect("self-signed TLS config should build");
+        let fp = fingerprint.expect("self-signed should return a fingerprint");
+        assert_eq!(fp.len(), 64, "SHA256 fingerprint should be 64 hex chars");
+        assert!(
+            fp.chars().all(|c| c.is_ascii_hexdigit()),
+            "fingerprint should be hex"
+        );
+    }
+
+    #[test]
+    fn self_signed_includes_localhost_san() {
+        // generate_simple_self_signed embeds SANs in the DER certificate.
+        // Verify "localhost" and "127.0.0.1" appear in the raw DER bytes.
+        let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+        let cert =
+            generate_simple_self_signed(subject_alt_names).expect("rcgen should generate cert");
+        let der = cert.cert.der().as_ref();
+        assert!(
+            der.windows(b"localhost".len()).any(|w| w == b"localhost"),
+            "cert DER should contain 'localhost' SAN"
+        );
+        // IPv4 127.0.0.1 is encoded as 4 raw bytes in SAN IPAddress: [127, 0, 0, 1]
+        assert!(
+            der.windows(4).any(|w| w == [127, 0, 0, 1]),
+            "cert DER should contain 127.0.0.1 SAN as raw IP bytes"
+        );
+    }
+
+    #[test]
+    fn self_signed_includes_tailscale_ip_san() {
+        let ip: IpAddr = "100.64.0.1".parse().unwrap();
+        let mut subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+        subject_alt_names.push(ip.to_string());
+        let cert = generate_simple_self_signed(subject_alt_names)
+            .expect("rcgen should generate cert with tailscale IP");
+        let der = cert.cert.der().as_ref();
+        // 100.64.0.1 encoded as raw bytes: [100, 64, 0, 1]
+        assert!(
+            der.windows(4).any(|w| w == [100, 64, 0, 1]),
+            "cert DER should contain 100.64.0.1 SAN as raw IP bytes"
+        );
+    }
+
+    #[test]
+    fn self_signed_without_tailscale_ip() {
+        let (_config, fp) =
+            generate_self_signed_cert(None).expect("should build without tailscale IP");
+        assert!(fp.is_some());
+    }
+
+    #[test]
+    fn crypto_provider_install_is_idempotent() {
+        ensure_rustls_crypto_provider();
+        ensure_rustls_crypto_provider();
+        // No panic = success
+    }
+
+    #[test]
+    fn build_rustls_config_from_pem_rejects_invalid_cert() {
+        ensure_rustls_crypto_provider();
+        let result = build_rustls_config_from_pem(b"not a valid pem", b"not a key");
+        assert!(result.is_err());
     }
 }

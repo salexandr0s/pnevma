@@ -95,6 +95,7 @@ struct ToastOverlayView: View {
             }
         }
         .animation(.easeInOut(duration: DesignTokens.Motion.normal), value: manager.currentToast?.id)
+        .transaction { $0.disablesAnimations = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     }
 
     private func iconColor(_ style: ToastMessage.ToastStyle) -> Color {

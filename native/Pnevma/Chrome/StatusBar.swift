@@ -43,7 +43,7 @@ final class StatusBar: NSView {
         wantsLayer = true
         layer?.isOpaque = true
 
-        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: DesignTokens.Font.mono, weight: .regular)
         let secondaryColor = NSColor.secondaryLabelColor
 
         for label in [branchLabel, agentsLabel, paneLabel] {
@@ -138,7 +138,7 @@ final class StatusBar: NSView {
 
     private func applyThemeColors() {
         let theme = GhosttyThemeProvider.shared
-        let fgColor = theme.foregroundColor.withAlphaComponent(0.6)
+        let fgColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.secondary)
         for label in [branchLabel, agentsLabel, paneLabel] {
             label.textColor = fgColor
         }

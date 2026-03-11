@@ -63,6 +63,17 @@ enum DiffLineType {
     case context, addition, deletion
 }
 
+// MARK: - Diff Colors
+
+import SwiftUI
+
+enum DiffColors {
+    static let additionContent = Color(.sRGB, red: 0.6, green: 1.0, blue: 0.6)
+    static let deletionContent = Color(.sRGB, red: 1.0, green: 0.6, blue: 0.6)
+    static let additionBackground = Color.green.opacity(0.18)
+    static let deletionBackground = Color.red.opacity(0.18)
+}
+
 /// A task item carrying just the fields needed for the diff task selector.
 struct DiffTaskItem: Identifiable {
     let id: String

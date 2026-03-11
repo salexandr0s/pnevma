@@ -367,6 +367,41 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(rootPane?.type, "terminal")
     }
 
+    func testSwitchingToAlreadyActiveTerminalWorkspaceIsNoOp() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+
+        _ = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        try await waitUntil {
+            await bus.currentProjectID() == "project-a"
+        }
+
+        let terminal = manager.ensureTerminalWorkspace()
+        manager.switchToWorkspace(terminal.id)
+        try await waitUntil {
+            await bus.closeCount() == 1
+        }
+
+        manager.switchToWorkspace(terminal.id)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let closeCount = await bus.closeCount()
+        XCTAssertEqual(manager.activeWorkspaceID, terminal.id)
+        XCTAssertEqual(closeCount, 1)
+    }
+
     func testProjectWorkspaceSeedsTerminalPaneAfterOpen() async throws {
         let bus = MockCommandBus(specs: [
             .init(
@@ -767,7 +802,7 @@ final class WorkspaceManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             PaneFactory.availablePaneTypes(for: workspace),
-            Set(["terminal", "ssh", "workflow", "notifications", "browser", "analytics"])
+            Set(["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"])
         )
         XCTAssertEqual(
             activationHub.currentState,

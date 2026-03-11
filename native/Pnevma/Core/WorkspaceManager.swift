@@ -169,6 +169,7 @@ final class WorkspaceManager {
 
     func switchToWorkspace(_ id: UUID) {
         guard workspaces.contains(where: { $0.id == id }) else { return }
+        guard activeWorkspaceID != id else { return }
         activateWorkspace(id: id)
         Log.workspace.info("Switched to workspace \(id)")
     }

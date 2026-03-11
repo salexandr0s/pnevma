@@ -1,7 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use axum::{
-    middleware,
+    body::Body,
+    extract::Request,
+    middleware::{self, Next},
     routing::{delete, get, post},
     Router,
 };
@@ -28,6 +30,7 @@ pub async fn build_router(
     remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
     token_store: Arc<TokenStore>,
     frontend_dir: Option<PathBuf>,
+    tls_fingerprint: Option<String>,
 ) -> Router {
     let api_rate_limit = RateLimitState::new(config.rate_limit_rpm);
     let auth_rate_limit = RateLimitState::new(5); // 5 req/min for auth
@@ -116,6 +119,24 @@ pub async fn build_router(
         }
     }
 
+    if let Some(fp) = tls_fingerprint {
+        let fingerprint_value = format!("sha256:{fp}");
+        app = app.layer(middleware::from_fn(
+            move |req: Request<Body>, next: Next| {
+                let fp_value = fingerprint_value.clone();
+                async move {
+                    let mut response = next.run(req).await;
+                    response.headers_mut().insert(
+                        axum::http::HeaderName::from_static("x-tls-fingerprint"),
+                        axum::http::HeaderValue::from_str(&fp_value)
+                            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("error")),
+                    );
+                    response
+                }
+            },
+        ));
+    }
+
     app
 }
 
@@ -142,10 +163,93 @@ mod tests {
     #[tokio::test]
     async fn build_router_accepts_current_route_syntax() {
         let config = RemoteAccessConfig::default();
-        let token_store = Arc::new(TokenStore::new("password".to_string(), 24));
+        let token_store = Arc::new(TokenStore::new("password".to_string(), 24).unwrap());
         let (events_tx, _) = broadcast::channel(8);
 
-        let _router =
-            build_router(&config, Arc::new(NoopRouter), events_tx, token_store, None).await;
+        let _router = build_router(
+            &config,
+            Arc::new(NoopRouter),
+            events_tx,
+            token_store,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn fingerprint_header_injected_when_self_signed() {
+        use axum::{body::Body, extract::ConnectInfo, http::Request};
+        use std::net::SocketAddr;
+        use tower::ServiceExt;
+
+        let config = RemoteAccessConfig::default();
+        let token_store = Arc::new(TokenStore::new("password".to_string(), 24).unwrap());
+        let (events_tx, _) = broadcast::channel(8);
+
+        let fp = "a".repeat(64); // fake 64-char hex fingerprint
+        let app = build_router(
+            &config,
+            Arc::new(NoopRouter),
+            events_tx,
+            token_store,
+            None,
+            Some(fp.clone()),
+        )
+        .await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        let header = response
+            .headers()
+            .get("x-tls-fingerprint")
+            .expect("X-TLS-Fingerprint header should be present");
+        assert_eq!(header.to_str().unwrap(), format!("sha256:{fp}"),);
+    }
+
+    #[tokio::test]
+    async fn no_fingerprint_header_when_none() {
+        use axum::{body::Body, extract::ConnectInfo, http::Request};
+        use std::net::SocketAddr;
+        use tower::ServiceExt;
+
+        let config = RemoteAccessConfig::default();
+        let token_store = Arc::new(TokenStore::new("password".to_string(), 24).unwrap());
+        let (events_tx, _) = broadcast::channel(8);
+
+        let app = build_router(
+            &config,
+            Arc::new(NoopRouter),
+            events_tx,
+            token_store,
+            None,
+            None,
+        )
+        .await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert!(
+            response.headers().get("x-tls-fingerprint").is_none(),
+            "X-TLS-Fingerprint header should not be present when fingerprint is None"
+        );
     }
 }

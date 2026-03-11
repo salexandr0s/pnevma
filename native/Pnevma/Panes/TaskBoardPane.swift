@@ -99,10 +99,16 @@ struct TaskBoardView: View {
             )
 
             if let statusMessage = viewModel.statusMessage {
-                EmptyStateView(
-                    icon: "rectangle.stack.badge.person.crop",
-                    title: statusMessage
-                )
+                VStack(spacing: 8) {
+                    if viewModel.isLoadingState {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    EmptyStateView(
+                        icon: "rectangle.stack.badge.person.crop",
+                        title: statusMessage
+                    )
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(TaskBoardSurface(cornerRadius: 28))
             } else if viewModel.allTasks.isEmpty {
@@ -153,18 +159,7 @@ struct TaskBoardView: View {
         }
         .background(TaskBoardBackdrop())
         .overlay(alignment: .bottom) {
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule()
-                            .fill(Color(nsColor: .systemRed).opacity(0.88))
-                    )
-                    .padding(.bottom, 14)
-            }
+            ErrorBanner(message: viewModel.actionError)
         }
         // sheet(isPresented:) is intentional: the sheet creates a new task from a blank draft
         // with no pre-existing item, so sheet(item:) does not apply here.
@@ -253,6 +248,7 @@ private struct TaskBoardHeader: View {
                 Capsule()
                     .stroke(Color.accentColor.opacity(0.24), lineWidth: 1)
             )
+            .keyboardShortcut("n", modifiers: .command)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -413,6 +409,7 @@ private struct TaskLaneColumn: View {
                                 onDispatch: { onDispatch(task) },
                                 onStatusChange: { onStatusChange(task, $0) }
                             )
+                            .accessibilityElement(children: .combine)
                         }
                     }
                     .padding(.vertical, 2)
@@ -857,7 +854,7 @@ private struct TaskBoardSurface: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
+            .fill(Color(nsColor: theme.foregroundColor).opacity(DesignTokens.Opacity.subtle))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(Color(nsColor: theme.foregroundColor).opacity(0.05), lineWidth: 1)

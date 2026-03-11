@@ -77,7 +77,6 @@ enum ConfigCategory: String, CaseIterable, Identifiable {
 
 struct HarnessConfigView: View {
     @State private var viewModel = HarnessConfigViewModel()
-    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         HSplitView {
@@ -143,16 +142,9 @@ struct HarnessConfigView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: theme.backgroundColor))
-            }
+            ErrorBanner(message: viewModel.actionError)
         }
+        .accessibilityIdentifier("pane.harnessConfig")
         .task { await viewModel.activate() }
         .onChange(of: viewModel.selectedKey) { _, newKey in
             viewModel.didSelectKey(newKey)
@@ -184,6 +176,7 @@ struct HarnessConfigRow: View {
             }
         }
         .padding(.vertical, 2)
+        .accessibilityAddTraits(.isButton)
     }
 }
 

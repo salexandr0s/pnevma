@@ -20,8 +20,10 @@ final class SshManagerViewModel {
             scheduleDismissActionError()
             return
         }
+        isLoading = true
         Task { [weak self] in
             guard let self else { return }
+            defer { self.isLoading = false }
             do {
                 async let profilesResult: [SshProfile] = bus.call(method: "ssh.list_profiles")
                 async let devicesResult: [TailscaleDevice] = bus.call(method: "ssh.discover_tailscale")
@@ -117,6 +119,8 @@ final class SshManagerViewModel {
         actionError = "Use Open Workspace to start a remote Tailscale session for \(device.hostname)."
         scheduleDismissActionError()
     }
+
+    private(set) var isLoading = false
 
     private func scheduleDismissActionError() {
         Task { [weak self] in

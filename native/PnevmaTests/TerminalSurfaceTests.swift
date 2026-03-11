@@ -2,10 +2,15 @@ import Cocoa
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class TerminalSurfaceTests: XCTestCase {
     override func tearDown() {
         TerminalSurface.clipboardStringProvider = {
             NSPasteboard.general.string(forType: .string) ?? ""
+        }
+        TerminalSurface.clipboardStringWriter = { string in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(string, forType: .string)
         }
         super.tearDown()
     }
@@ -35,5 +40,14 @@ final class TerminalSurfaceTests: XCTestCase {
         }
 
         XCTAssertEqual(selection, "hello")
+    }
+
+    func testWriteClipboardStringUsesWriter() {
+        var writes: [String] = []
+        TerminalSurface.clipboardStringWriter = { writes.append($0) }
+
+        TerminalSurface.writeClipboardString("clipboard-text")
+
+        XCTAssertEqual(writes, ["clipboard-text"])
     }
 }

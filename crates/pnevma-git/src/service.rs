@@ -137,6 +137,8 @@ impl GitService {
         let remove_res = self.git(["worktree", "remove", "--force", path]).await;
         if let Err(err) = remove_res {
             // The path may already be gone after a manual cleanup or failed run.
+            // NOTE: sync exists() is acceptable — this is a single-call error-path
+            // check after `git worktree remove` already failed.
             if Path::new(path).exists() {
                 return Err(err);
             }

@@ -6,7 +6,6 @@ import Cocoa
 
 struct SshManagerView: View {
     @State private var viewModel = SshManagerViewModel()
-    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,50 +15,55 @@ struct SshManagerView: View {
                 Spacer()
                 Button("Add Profile") { viewModel.showAddSheet = true }
                     .buttonStyle(.bordered)
+                    .keyboardShortcut("n", modifiers: .command)
             }
             .padding(12)
 
             Divider()
 
-            List {
-                // SSH Profiles
-                Section("Profiles") {
-                    ForEach(viewModel.profiles) { profile in
-                        SshProfileRow(profile: profile,
-                                      onConnect: { viewModel.connect(profile) },
-                                      onDisconnect: { viewModel.disconnect(profile) })
+            if viewModel.isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.profiles.isEmpty && viewModel.tailscaleDevices.isEmpty {
+                EmptyStateView(
+                    icon: "network",
+                    title: "No SSH Profiles",
+                    actionTitle: "Add Profile",
+                    action: { viewModel.showAddSheet = true }
+                )
+            } else {
+                List {
+                    // SSH Profiles
+                    Section("Profiles") {
+                        ForEach(viewModel.profiles) { profile in
+                            SshProfileRow(profile: profile,
+                                          onConnect: { viewModel.connect(profile) },
+                                          onDisconnect: { viewModel.disconnect(profile) })
+                                .accessibilityElement(children: .combine)
+                        }
                     }
-                }
 
-                // Tailscale discovery
-                if !viewModel.tailscaleDevices.isEmpty {
-                    Section("Tailscale Network") {
-                        ForEach(viewModel.tailscaleDevices) { device in
-                            TailscaleRow(device: device,
-                                         onConnect: { viewModel.connectTailscale(device) })
+                    // Tailscale discovery
+                    if !viewModel.tailscaleDevices.isEmpty {
+                        Section("Tailscale Network") {
+                            ForEach(viewModel.tailscaleDevices) { device in
+                                TailscaleRow(device: device,
+                                             onConnect: { viewModel.connectTailscale(device) })
+                            }
                         }
                     }
                 }
-            }
-            .listStyle(.sidebar)
-        }
-        .overlay(alignment: .bottom) {
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: theme.backgroundColor))
+                .listStyle(.sidebar)
             }
         }
+        .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
         // sheet(isPresented:) is intentional: the sheet creates a new profile from scratch
         // with no pre-existing item, so sheet(item:) does not apply here.
         .sheet(isPresented: $viewModel.showAddSheet) {
             AddSshProfileSheet(onAdd: { viewModel.addProfile($0) })
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.ssh")
     }
 }
 

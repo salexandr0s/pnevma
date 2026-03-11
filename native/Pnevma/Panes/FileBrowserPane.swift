@@ -24,7 +24,6 @@ struct FileBrowserView: View {
     @State private var isReaderMode = false
     @State private var showDiscardAlert = false
     @State private var pendingNode: FileNode?
-    @Environment(GhosttyThemeProvider.self) var theme
 
     private var isMarkdownFile: Bool {
         guard let path = viewModel.selectedFilePath else { return false }
@@ -137,17 +136,7 @@ struct FileBrowserView: View {
                 isReaderMode = false
             }
         }
-        .overlay(alignment: .bottom) {
-            if let error = viewModel.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: theme.backgroundColor))
-            }
-        }
+        .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
         .alert("Unsaved Changes", isPresented: $showDiscardAlert) {
             Button("Discard", role: .destructive) {
                 viewModel.discardChanges()
@@ -307,7 +296,7 @@ private struct FileTreeRow: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.leading, CGFloat(depth) * 14 + 8)
+            .padding(.leading, CGFloat(depth) * DesignTokens.Layout.treeIndent + 8)
             .padding(.trailing, 8)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -329,7 +318,7 @@ private struct FileTreeRow: View {
                         Text("Empty")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .padding(.leading, CGFloat(depth + 1) * 14 + 42)
+                            .padding(.leading, CGFloat(depth + 1) * DesignTokens.Layout.treeIndent + 42)
                             .padding(.vertical, 4)
                     } else {
                         ForEach(children) { child in
@@ -344,7 +333,7 @@ private struct FileTreeRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.leading, CGFloat(depth + 1) * 14 + 24)
+                    .padding(.leading, CGFloat(depth + 1) * DesignTokens.Layout.treeIndent + 24)
                     .padding(.vertical, 4)
                 }
             }

@@ -138,7 +138,7 @@ pub fn list_ssh_keys(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
     Ok(keys)
 }
 
-pub fn generate_key(
+pub async fn generate_key(
     ssh_dir: &Path,
     name: &str,
     key_type: &str,
@@ -184,7 +184,7 @@ pub fn generate_key(
     let passphrase = generate_passphrase();
 
     // Step 1: Generate key with an empty passphrase (no secret in process args).
-    let output = std::process::Command::new("ssh-keygen")
+    let output = tokio::process::Command::new("ssh-keygen")
         .args([
             "-t",
             effective_type,
@@ -195,7 +195,8 @@ pub fn generate_key(
             "-N",
             "",
         ])
-        .output()?;
+        .output()
+        .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -206,10 +207,10 @@ pub fn generate_key(
     // appears in `ps` output. `ssh-keygen -p -f <key>` in interactive mode
     // prompts for: new passphrase, confirm new passphrase (skips old when empty).
     let rekey_succeeded = {
-        use std::io::Write as _;
         use std::process::Stdio;
+        use tokio::io::AsyncWriteExt as _;
 
-        let mut child = std::process::Command::new("ssh-keygen")
+        let mut child = tokio::process::Command::new("ssh-keygen")
             .args(["-p", "-f", &key_path_str])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -220,14 +221,14 @@ pub fn generate_key(
             // When the old passphrase is empty, ssh-keygen skips prompting
             // for it and goes straight to new + confirm.
             // New passphrase
-            stdin.write_all(passphrase.as_bytes())?;
-            stdin.write_all(b"\n")?;
+            stdin.write_all(passphrase.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
             // Confirm new passphrase
-            stdin.write_all(passphrase.as_bytes())?;
-            stdin.write_all(b"\n")?;
+            stdin.write_all(passphrase.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
         }
 
-        let rekey_output = child.wait_with_output()?;
+        let rekey_output = child.wait_with_output().await?;
         if rekey_output.status.success() {
             true
         } else {

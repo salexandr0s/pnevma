@@ -99,7 +99,7 @@ final class TabBarView: NSView {
         let plusBtn = HoverTintButton(
             frame: .zero,
             normalColor: theme.foregroundColor.withAlphaComponent(0.64),
-            hoverColor: .systemGreen
+            hoverColor: GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(0.5)
         )
         plusBtn.bezelStyle = .inline
         plusBtn.isBordered = false
@@ -189,8 +189,8 @@ private final class TabButton: NSView {
         self.hasNotification = hasNotification
 
         titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 10.5, weight: isActive ? .semibold : .regular)
-        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? 0.92 : 0.56)
+        titleLabel.font = .systemFont(ofSize: DesignTokens.Font.caption, weight: isActive ? .semibold : .regular)
+        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
 
@@ -227,16 +227,17 @@ private final class TabButton: NSView {
         super.layout()
         let closeSize = Metrics.closeSize
         let padding = Metrics.horizontalPadding
+        let touchTarget = DesignTokens.Interaction.minTouchTarget
         closeButton.frame = NSRect(
-            x: bounds.width - closeSize - padding,
-            y: (bounds.height - closeSize) / 2,
-            width: closeSize,
-            height: closeSize
+            x: bounds.width - touchTarget - padding + (touchTarget - closeSize) / 2,
+            y: (bounds.height - touchTarget) / 2,
+            width: touchTarget,
+            height: touchTarget
         )
         titleLabel.frame = NSRect(
             x: padding,
             y: (bounds.height - Metrics.titleHeight) / 2,
-            width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : closeSize + Metrics.closeGap),
+            width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : touchTarget + Metrics.closeGap),
             height: Metrics.titleHeight
         )
     }
@@ -307,7 +308,7 @@ private final class TabButton: NSView {
     }
 
     func applyTheme(_ theme: GhosttyThemeProvider) {
-        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? 0.92 : 0.56)
+        titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary)
         needsDisplay = true
     }
 }

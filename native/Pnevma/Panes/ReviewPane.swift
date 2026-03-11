@@ -24,6 +24,7 @@ struct ReviewView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.review")
     }
 
     // MARK: Left panel — tasks pending review
@@ -43,24 +44,12 @@ struct ReviewView: View {
             Divider()
 
             if viewModel.reviewTasks.isEmpty {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "checkmark.seal")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.tertiary)
-                    Text("No Tasks")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text("No tasks awaiting review")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity)
-                Spacer()
+                EmptyStateView(icon: "checkmark.seal", title: "No Tasks", message: "No tasks awaiting review")
             } else {
                 List(viewModel.reviewTasks, selection: $viewModel.selectedTaskID) { task in
                     ReviewTaskRow(task: task)
                         .tag(task.id)
+                        .accessibilityAddTraits(.isButton)
                 }
                 .listStyle(.sidebar)
             }
@@ -119,26 +108,27 @@ struct ReviewView: View {
                             .frame(minHeight: 80)
                     }
 
-                    if let error = viewModel.actionError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-
                     Spacer()
 
                     HStack {
                         Button("Reject") { viewModel.reject() }
                             .buttonStyle(.bordered)
                             .disabled(viewModel.isActing)
+                            .accessibilityLabel("Reject")
+                            .accessibilityAddTraits(.isButton)
 
                         Spacer()
 
                         Button("Approve") { viewModel.approve() }
                             .buttonStyle(.borderedProminent)
                             .disabled(viewModel.isActing || !viewModel.allCriteriaMet)
+                            .keyboardShortcut("a", modifiers: [.command, .shift])
+                            .accessibilityLabel("Approve")
+                            .accessibilityAddTraits(.isButton)
                     }
                     .padding(.bottom, 12)
+
+                    ErrorBanner(message: viewModel.actionError)
                 }
                 .padding(.horizontal, 12)
                 .frame(minWidth: 280, maxHeight: .infinity)

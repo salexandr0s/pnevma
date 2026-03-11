@@ -4,6 +4,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE_DIR="$ROOT_DIR/native"
 FAILURES=0
+RELEASE_REQUIRE_SIGNING_ENV="${RELEASE_REQUIRE_SIGNING_ENV:-0}"
+
+current_branch() {
+  git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true
+}
+
+resolve_sync_ref() {
+  if [[ -n "${RELEASE_GIT_SYNC_REF:-}" ]]; then
+    printf '%s\n' "$RELEASE_GIT_SYNC_REF"
+    return 0
+  fi
+
+  if [[ "$(current_branch)" == "main" || "${GITHUB_REF_NAME:-}" == "main" ]]; then
+    printf 'origin/main\n'
+  fi
+}
 
 resolve_release_app_path() {
   local candidate
@@ -78,9 +94,46 @@ run_in_dir() {
   fi
 }
 
+check_git_clean() {
+  local status
+  print_check "git: worktree clean"
+  status="$(git -C "$ROOT_DIR" status --short --untracked-files=normal)"
+  if [[ -n "$status" ]]; then
+    printf '%s\n' "$status"
+    fail "git worktree is dirty"
+  else
+    pass "git worktree is clean"
+  fi
+}
+
+check_git_sync() {
+  local sync_ref ahead behind
+  sync_ref="$(resolve_sync_ref)"
+
+  if [[ -z "$sync_ref" ]]; then
+    print_check "git: sync status"
+    pass "skipped sync check on non-main branch"
+    return 0
+  fi
+
+  print_check "git: sync with $sync_ref"
+  if ! git -C "$ROOT_DIR" rev-parse --verify "$sync_ref" >/dev/null 2>&1; then
+    fail "$sync_ref is unavailable; fetch full history or set RELEASE_GIT_SYNC_REF"
+    return 0
+  fi
+
+  read -r ahead behind < <(git -C "$ROOT_DIR" rev-list --left-right --count HEAD..."$sync_ref")
+  if [[ "$ahead" == "0" && "$behind" == "0" ]]; then
+    pass "HEAD matches $sync_ref"
+  else
+    fail "HEAD is ahead by $ahead and behind by $behind relative to $sync_ref"
+  fi
+}
+
 # ── Tooling checks ──────────────────────────────────────────────────────────
 
 check_cmd cargo
+check_cmd cargo-deny
 check_cmd rustc
 check_cmd git
 check_cmd just
@@ -90,6 +143,11 @@ check_cmd codesign
 check_cmd xcodebuild
 check_cmd xcodegen
 check_cmd zig
+
+# ── Git release hygiene ─────────────────────────────────────────────────────
+
+check_git_clean
+check_git_sync
 
 # ── Rust quality gates ───────────────────────────────────────────────────────
 
@@ -123,14 +181,19 @@ else
   fail "packaged launch smoke failed"
 fi
 
-# ── Environment variables for signing ───────────────────────────────────────
+# ── Optional environment variables for signing ──────────────────────────────
 
-for key in \
-  APPLE_SIGNING_IDENTITY \
-  APPLE_NOTARY_PROFILE
-do
-  check_env_var "$key"
-done
+if [[ "$RELEASE_REQUIRE_SIGNING_ENV" == "1" ]]; then
+  for key in \
+    APPLE_SIGNING_IDENTITY \
+    APPLE_NOTARY_PROFILE
+  do
+    check_env_var "$key"
+  done
+else
+  print_check "env: signing credentials"
+  pass "signing env checks skipped (set RELEASE_REQUIRE_SIGNING_ENV=1 to enforce)"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

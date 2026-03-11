@@ -145,17 +145,42 @@ struct DailyBriefView: View {
     @State private var viewModel = DailyBriefViewModel()
 
     var body: some View {
-        Group {
-            if let statusMessage = viewModel.statusMessage {
-                EmptyStateView(
-                    icon: "calendar.badge.clock",
-                    title: statusMessage
-                )
-            } else if let brief = viewModel.brief {
-                contentView(brief: brief)
+        VStack(spacing: 0) {
+            HStack {
+                Text("Daily Brief")
+                    .font(.headline)
+                Spacer()
+                Button { viewModel.load() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("r", modifiers: .command)
+                .accessibilityLabel("Refresh daily brief")
+            }
+            .padding(12)
+
+            Divider()
+
+            Group {
+                if let statusMessage = viewModel.statusMessage {
+                    VStack(spacing: 8) {
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        EmptyStateView(
+                            icon: "calendar.badge.clock",
+                            title: statusMessage
+                        )
+                    }
+                } else if let brief = viewModel.brief {
+                    contentView(brief: brief)
+                }
             }
         }
         .task { await viewModel.activate() }
+        .accessibilityIdentifier("pane.dailyBrief")
     }
 
     @ViewBuilder
@@ -291,6 +316,7 @@ struct MetricCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
         )
+        .accessibilityElement(children: .combine)
     }
 }
 

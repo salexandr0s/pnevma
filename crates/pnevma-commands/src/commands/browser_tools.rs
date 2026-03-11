@@ -1,6 +1,9 @@
 use pnevma_agents::DynamicToolDef;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+// NOTE: std::sync::Mutex is intentional here — held briefly in sync event
+// emitter context, not across .await points. Does not have the poisoning
+// risk that std::sync::RwLock has in the agent adapters.
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, warn};

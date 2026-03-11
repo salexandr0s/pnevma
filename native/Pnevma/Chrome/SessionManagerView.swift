@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionManagerView: View {
     var store: SessionStore
+    @State private var showKillAllAlert = false
     @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
@@ -16,7 +17,7 @@ struct SessionManagerView: View {
                     .foregroundStyle(.secondary)
 
                 Button {
-                    store.killAll()
+                    showKillAllAlert = true
                 } label: {
                     Text("Kill All")
                         .font(.caption)
@@ -79,16 +80,12 @@ struct SessionManagerView: View {
             }
         }
         .frame(width: 380, height: 320)
-        .overlay(alignment: .bottom) {
-            if let error = store.actionError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: theme.backgroundColor))
-            }
+        .overlay(alignment: .bottom) { ErrorBanner(message: store.actionError) }
+        .alert("Kill All Sessions?", isPresented: $showKillAllAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Kill All", role: .destructive) { store.killAll() }
+        } message: {
+            Text("This will terminate all active sessions.")
         }
         .task { await store.activate() }
     }

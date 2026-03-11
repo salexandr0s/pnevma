@@ -210,7 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_sets_authenticated_request_audit_context() {
-        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24));
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
         let issued = store.create_token("127.0.0.1", "operator-a");
         let app = Router::new()
             .route("/api/status", get(|| async { StatusCode::OK }))
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_sets_websocket_audit_context_for_query_token() {
-        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24));
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
         let issued = store.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
         let app = Router::new()
             .route("/api/ws", get(|| async { StatusCode::OK }))

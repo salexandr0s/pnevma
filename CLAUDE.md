@@ -43,9 +43,10 @@ Run `just check` before every commit. Run `just xcode-build` after any FFI chang
 | `pnevma-context`  | Context pack compiler — scope/claude_md/git_diff/grep discovery strategies |
 | `pnevma-db`       | SQLite schema, migrations, typed query layer (18 row types)                |
 | `pnevma-ssh`      | SSH key management, profile builder, Tailscale discovery                   |
-| `pnevma-commands` | RPC command router — maps string command IDs to backend handlers           |
+| `pnevma-commands` | RPC command router (14 submodules: agents, analytics, browser_tools, global_agents, global_workflow, harness_config, plan_tools, project, ssh, tasks, tracker, tracker_tools, usage_local, workflow) (macOS-only) |
 | `pnevma-remote`   | HTTP/WS remote access server (TLS, auth, rate limiting, CORS)              |
 | `pnevma-bridge`   | C FFI entry point — compiles to `libpnevma_bridge.a` linked by Swift app   |
+| `pnevma-tracker`  | Issue tracker integration (Linear adapter, state sync, transitions)        |
 
 ---
 

@@ -7,7 +7,6 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ContextCompileMode {
-    V1,
     V2,
 }
 
@@ -58,7 +57,6 @@ impl ContextCompiler {
             ));
         }
         match self.config.mode {
-            ContextCompileMode::V1 => self.compile_v1(input),
             ContextCompileMode::V2 => self.compile_v2(input),
         }
     }
@@ -79,67 +77,6 @@ impl ContextCompiler {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
-    }
-
-    fn compile_v1(
-        &self,
-        input: ContextCompileInput,
-    ) -> Result<ContextCompilerResult, ContextError> {
-        let task = self.redact_task(input.task);
-        if task.goal.trim().is_empty() {
-            return Err(ContextError::Compile(
-                "task goal cannot be empty for context compilation".to_string(),
-            ));
-        }
-        let project_brief = self.redact_string(&input.project_brief);
-        let architecture_notes = self.redact_string(&input.architecture_notes);
-        let conventions = self.redact_strings(&input.conventions);
-        let rules = self.redact_strings(&input.rules);
-        let relevant_file_contents = self.redact_file_contents(&input.relevant_file_contents);
-        let prior_task_summaries = self.redact_strings(&input.prior_task_summaries);
-        let markdown = format!(
-            "# Task Context\n\n## Goal\n{}\n\n## Acceptance Criteria\n{}\n\n## Constraints\n{}\n\n## Scope\n{}\n\n## Rules\n{}\n",
-            task.goal,
-            task.acceptance_criteria
-                .iter()
-                .map(|c| format!("- {}", c.description))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            task.constraints
-                .iter()
-                .map(|c| format!("- {}", c))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            task.scope
-                .iter()
-                .map(|s| format!("- {}", s))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            rules
-                .iter()
-                .map(|r| format!("- {}", r))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-
-        let pack = ContextPack {
-            task_contract: Box::new(task),
-            project_brief,
-            architecture_notes,
-            conventions,
-            rules,
-            relevant_file_contents,
-            prior_task_summaries,
-            token_budget: self.config.token_budget,
-            actual_tokens: markdown.len() / 4,
-            manifest: vec![ContextManifestItem {
-                kind: "v1_simplified".to_string(),
-                included: true,
-                reason: None,
-            }],
-        };
-
-        Ok(ContextCompilerResult { pack, markdown })
     }
 
     fn compile_v2(

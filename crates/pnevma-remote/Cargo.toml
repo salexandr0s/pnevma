@@ -5,18 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-axum = { version = "0.8", features = ["ws", "macros"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs", "limit", "trace"] }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 tokio = { workspace = true }
-tokio-rustls = "0.26"
-rustls = "0.23"
-rcgen = "0.13"
-governor = "0.8"
-dashmap = "6"
-rand = "0.8"
-hex = "0.4"
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+governor = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { workspace = true }

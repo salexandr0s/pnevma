@@ -40,7 +40,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install native build tools
-        run: brew install xcodegen zig
+        run: brew install just xcodegen zig
 
       - name: Verify xcodegen version
         run: |
@@ -152,7 +152,7 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
           subject-path: |
             ${{ env.ARCHIVE }}

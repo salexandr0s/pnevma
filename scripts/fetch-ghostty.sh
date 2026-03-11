@@ -50,7 +50,13 @@ dirty_tree_matches_expected_patches() {
 }
 
 fetch_expected_refs() {
-  git -C "$GHOSTTY_DIR" fetch --tags origin "$GHOSTTY_REF" "$GHOSTTY_COMMIT"
+  if git -C "$GHOSTTY_DIR" ls-remote --exit-code --tags origin "refs/tags/$GHOSTTY_REF" >/dev/null 2>&1; then
+    git -C "$GHOSTTY_DIR" fetch origin \
+      "$GHOSTTY_COMMIT" \
+      "refs/tags/$GHOSTTY_REF:refs/tags/$GHOSTTY_REF"
+  else
+    git -C "$GHOSTTY_DIR" fetch origin "$GHOSTTY_REF" "$GHOSTTY_COMMIT"
+  fi
 }
 
 verify_ref_provenance() {
