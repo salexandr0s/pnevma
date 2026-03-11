@@ -39,7 +39,7 @@ verify_version() {
 }
 
 install_xcodegen() {
-  local url install_dir tmpdir archive_path
+  local url install_dir tmpdir archive_path extracted_root
   url="$(xcodegen_download_url)"
   install_dir="$XCODEGEN_INSTALL_ROOT/xcodegen-$XCODEGEN_VERSION"
 
@@ -56,10 +56,12 @@ install_xcodegen() {
   echo "Downloading XcodeGen from $url" >&2
   curl -sSfL "$url" -o "$archive_path"
   unzip -q "$archive_path" -d "$tmpdir"
+  extracted_root="$tmpdir/xcodegen"
+  [[ -d "$extracted_root" ]] || fail "unexpected XcodeGen archive layout"
 
   rm -rf "$install_dir"
-  mkdir -p "$install_dir"
-  mv "$tmpdir/bin" "$install_dir/bin"
+  mkdir -p "$XCODEGEN_INSTALL_ROOT"
+  mv "$extracted_root" "$install_dir"
   verify_version "$install_dir/bin/xcodegen"
 
   rm -rf "$tmpdir"
