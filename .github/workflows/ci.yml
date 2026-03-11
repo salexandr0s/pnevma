@@ -101,13 +101,13 @@ jobs:
         run: cargo install cargo-cyclonedx --locked
 
       - name: Generate SBOM
-        run: cargo cyclonedx --format json --output-cdx
+        run: cargo cyclonedx --format json
 
       - name: Upload SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sbom
-          path: ./**/bom.cdx.json
+          path: ./**/*.cdx.json
           retention-days: ${{ env.CI_ARTIFACT_RETENTION_DAYS }}
 
   native-build:
