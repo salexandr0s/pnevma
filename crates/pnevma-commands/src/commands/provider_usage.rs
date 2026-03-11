@@ -891,18 +891,27 @@ async fn read_claude_oauth_token() -> Result<String, String> {
             .map_err(|e| format!("failed to read Claude credentials: {e}"))?;
         let value: Value = serde_json::from_str(&raw)
             .map_err(|e| format!("failed to parse Claude credentials: {e}"))?;
-        if let Some(token) = extract_string_at_paths(
-            &value,
-            &[
-                &["access_token"],
-                &["tokens", "access_token"],
-                &["oauth", "access_token"],
-            ],
-        ) {
+        if let Some(token) = extract_claude_oauth_token(&value) {
             return Ok(token);
         }
     }
     Err("Claude OAuth credentials not found".to_string())
+}
+
+fn extract_claude_oauth_token(value: &Value) -> Option<String> {
+    extract_string_at_paths(
+        value,
+        &[
+            &["access_token"],
+            &["accessToken"],
+            &["tokens", "access_token"],
+            &["tokens", "accessToken"],
+            &["oauth", "access_token"],
+            &["oauth", "accessToken"],
+            &["claudeAiOauth", "access_token"],
+            &["claudeAiOauth", "accessToken"],
+        ],
+    )
 }
 
 fn claude_oauth_candidate_paths() -> Result<Vec<PathBuf>, String> {
@@ -1159,5 +1168,19 @@ mod tests {
 
         assert!(!status.logged_in);
         assert_eq!(status.auth_method.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn extract_claude_oauth_token_supports_current_claude_ai_shape() {
+        let value = json!({
+            "claudeAiOauth": {
+                "accessToken": "test-token"
+            }
+        });
+
+        assert_eq!(
+            extract_claude_oauth_token(&value),
+            Some("test-token".to_string())
+        );
     }
 }
