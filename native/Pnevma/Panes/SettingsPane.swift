@@ -724,15 +724,17 @@ private struct GhosttySettingsBottomBar: View {
     var body: some View {
         HStack(spacing: DesignTokens.Spacing.md) {
             if let snapshot = viewModel.snapshot {
-                Text(snapshot.configPath.lastPathComponent)
+                let editablePath = snapshot.includeIntegrated ? snapshot.managedPath : snapshot.configPath
+
+                Text(editablePath.lastPathComponent)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .help(snapshot.configPath.path)
+                    .help(editablePath.path)
 
-                Image(systemName: snapshot.includeIntegrated ? "checkmark.circle.fill" : "wrench.and.screwdriver")
+                Image(systemName: snapshot.includeIntegrated ? "checkmark.circle.fill" : "pencil.circle")
                     .font(.caption)
                     .foregroundStyle(snapshot.includeIntegrated ? Color.secondary : Color.orange)
-                    .help(snapshot.includeIntegrated ? "Managed include active" : "Managed include will be added on save")
+                    .help(snapshot.includeIntegrated ? "Editing the Pnevma-managed Ghostty include file." : "Editing the main Ghostty config directly.")
             }
 
             Spacer()
@@ -756,8 +758,8 @@ private struct GhosttySettingsBottomBar: View {
             } label: {
                 Image(systemName: "doc.text.magnifyingglass")
             }
-            .help("Preview generated config file")
-            .accessibilityLabel("Preview generated config file")
+            .help("Preview the editable Ghostty settings file")
+            .accessibilityLabel("Preview the editable Ghostty settings file")
 
             Button("Reload") { viewModel.reload() }
             Button("Revert") { viewModel.revert() }
@@ -780,7 +782,7 @@ private struct GhosttyPreviewSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Generated Config Preview")
+                Text("Ghostty File Preview")
                     .font(.headline)
                 Spacer()
                 Button("Copy") {
@@ -795,7 +797,7 @@ private struct GhosttyPreviewSheet: View {
             Divider()
 
             ScrollView {
-                Text(preview.isEmpty ? "# Pnevma has not written a managed Ghostty file yet." : preview)
+                Text(preview.isEmpty ? "# Ghostty config preview unavailable." : preview)
                     .font(.system(.body, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)

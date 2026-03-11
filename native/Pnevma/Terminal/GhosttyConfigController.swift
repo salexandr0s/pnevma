@@ -1,6 +1,16 @@
 import AppKit
 import Foundation
 
+enum GhosttyConfigKeyNormalizer {
+    private static let aliases: [String: String] = [
+        "background-blur-radius": "background-blur",
+    ]
+
+    static func canonicalKey(for key: String) -> String {
+        aliases[key] ?? key
+    }
+}
+
 enum GhosttyValueOrigin: String {
     case managed
     case manual
@@ -81,6 +91,18 @@ struct GhosttyConfigSnapshot {
     }
 }
 
+struct GhosttyEditableConfigDraft: Equatable {
+    let includeIntegrated: Bool
+    let values: [String: [String]]
+    let keybinds: [GhosttyManagedKeybind]
+    let previewText: String
+}
+
+struct GhosttyConfigSavePlan: Equatable {
+    let configText: String
+    let managedText: String?
+}
+
 enum GhosttyConfigControllerError: LocalizedError {
     case runtimeUnavailable
     case configPathUnavailable
@@ -125,6 +147,10 @@ enum GhosttyManagedConfigCodec {
         var updated = text
         updated.removeSubrange(startRange.lowerBound..<endRange.upperBound)
         return updated.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func hasIncludeBlock(in text: String) -> Bool {
+        text.contains(markerStart) && text.contains(markerEnd)
     }
 
     static func manualKeys(from text: String) -> Set<String> {
@@ -186,9 +212,10 @@ enum GhosttyManagedConfigCodec {
         guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), let separator = trimmed.firstIndex(of: "=") else {
             return nil
         }
-        let key = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
+        let rawKey = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
         let value = trimmed[trimmed.index(after: separator)...].trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty, !value.isEmpty else { return nil }
+        guard !rawKey.isEmpty, !value.isEmpty else { return nil }
+        let key = GhosttyConfigKeyNormalizer.canonicalKey(for: String(rawKey))
         return (key, value)
     }
 
@@ -405,19 +432,19 @@ final class GhosttyConfigController {
         let paths = try resolvedPaths()
         let configText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""
         let managedText = (try? String(contentsOf: paths.managedPath, encoding: .utf8)) ?? ""
-        let parsedConfig = GhosttyManagedConfigCodec.parseManagedFile(managedText)
+        let editableDraft = Self.loadEditableDraft(configText: configText, managedText: managedText)
         let configOwner = runtimeConfigOwner()
         let effectiveValues = buildEffectiveValues(from: configOwner, configText: configText, managedText: managedText)
         return GhosttyConfigSnapshot(
             configPath: paths.configPath,
             managedPath: paths.managedPath,
-            includeIntegrated: true,
+            includeIntegrated: editableDraft.includeIntegrated,
             diagnostics: configOwner.diagnostics,
-            managedValues: parsedConfig.values,
-            keybinds: parsedConfig.keybinds,
+            managedValues: editableDraft.values,
+            keybinds: editableDraft.keybinds,
             effectiveValues: effectiveValues,
             manualKeys: [],
-            generatedPreview: configText
+            generatedPreview: editableDraft.previewText
         )
     }
 
@@ -427,21 +454,41 @@ final class GhosttyConfigController {
         let paths = try resolvedPaths()
 
         let originalText = (try? String(contentsOf: paths.configPath, encoding: .utf8)) ?? ""
-        let updatedText = updateConfigText(originalText, with: values, keybinds: keybinds)
+        let originalManagedPath = paths.managedPath
+        let originalManagedFileExisted = FileManager.default.fileExists(atPath: originalManagedPath.path)
+        let originalManagedText = (try? String(contentsOf: originalManagedPath, encoding: .utf8)) ?? ""
+        let savePlan = Self.buildSavePlan(
+            configText: originalText,
+            managedText: originalManagedText,
+            values: values,
+            keybinds: keybinds
+        )
+        let includeWasIntegrated = savePlan.managedText != nil
+        let auditPath = includeWasIntegrated ? paths.managedPath.path : paths.configPath.path
 
         do {
-            try writeAtomically(updatedText, to: paths.configPath)
+            if savePlan.configText != originalText {
+                try writeAtomically(savePlan.configText, to: paths.configPath)
+            }
+            if let managedText = savePlan.managedText {
+                try writeAtomically(managedText, to: originalManagedPath)
+            }
 
             let reloaded = TerminalConfig()
             let introducedDiagnostics = reloaded.diagnostics.filter { !baselineDiagnostics.contains($0) }
             if !introducedDiagnostics.isEmpty {
                 try writeAtomically(originalText, to: paths.configPath)
+                try restoreManagedFile(
+                    existed: originalManagedFileExisted,
+                    content: originalManagedText,
+                    path: originalManagedPath
+                )
                 audit(
                     action: "ghostty_settings_apply_failed",
                     changedKeys: [],
                     diagnostics: introducedDiagnostics,
                     applied: false,
-                    managedPath: paths.configPath.path
+                    managedPath: auditPath
                 )
                 throw GhosttyConfigControllerError.invalidConfig(introducedDiagnostics)
             }
@@ -455,7 +502,7 @@ final class GhosttyConfigController {
                 changedKeys: [],
                 diagnostics: reloaded.diagnostics,
                 applied: true,
-                managedPath: paths.configPath.path
+                managedPath: auditPath
             )
 
             return try loadSnapshot()
@@ -463,12 +510,17 @@ final class GhosttyConfigController {
             throw error
         } catch {
             try? writeAtomically(originalText, to: paths.configPath)
+            try? restoreManagedFile(
+                existed: originalManagedFileExisted,
+                content: originalManagedText,
+                path: originalManagedPath
+            )
             audit(
                 action: "ghostty_settings_apply_failed",
                 changedKeys: [],
                 diagnostics: [error.localizedDescription],
                 applied: false,
-                managedPath: paths.configPath.path
+                managedPath: auditPath
             )
             throw GhosttyConfigControllerError.saveFailed(error.localizedDescription)
         }
@@ -476,7 +528,7 @@ final class GhosttyConfigController {
 
     /// Update config file text in-place: replace existing keys, append new ones,
     /// and rebuild keybind lines. Preserves comments and structure.
-    private func updateConfigText(_ text: String, with values: [String: [String]], keybinds: [GhosttyManagedKeybind]) -> String {
+    private static func updateConfigText(_ text: String, with values: [String: [String]], keybinds: [GhosttyManagedKeybind]) -> String {
         var remainingValues = values
         var lines: [String] = []
         let inputLines = text.components(separatedBy: "\n")
@@ -503,7 +555,8 @@ final class GhosttyConfigController {
             // Skip existing keybind lines — we'll rewrite all keybinds at the end
             if !trimmed.isEmpty, !trimmed.hasPrefix("#"),
                let eqIdx = trimmed.firstIndex(of: "=") {
-                let lineKey = trimmed[..<eqIdx].trimmingCharacters(in: .whitespaces)
+                let rawLineKey = String(trimmed[..<eqIdx].trimmingCharacters(in: .whitespaces))
+                let lineKey = GhosttyConfigKeyNormalizer.canonicalKey(for: rawLineKey)
                 if lineKey == "keybind" {
                     continue
                 }
@@ -516,7 +569,8 @@ final class GhosttyConfigController {
                 continue
             }
 
-            let key = trimmed[..<eqIndex].trimmingCharacters(in: .whitespaces)
+            let rawKey = String(trimmed[..<eqIndex].trimmingCharacters(in: .whitespaces))
+            let key = GhosttyConfigKeyNormalizer.canonicalKey(for: rawKey)
 
             if let newValues = remainingValues[key] {
                 if !writtenKeys.contains(key) {
@@ -589,7 +643,7 @@ final class GhosttyConfigController {
         // For keys that scalarRawValue can't read (complex types like ?Theme,
         // ?TerminalColor, RepeatableString, enums, etc.), fall back to parsing
         // the config files directly. The managed file takes precedence.
-        let fileParsed = parseConfigText(managedText, thenFallback: configText)
+        let fileParsed = Self.loadEffectiveFileValues(configText: configText, managedText: managedText)
         for descriptor in GhosttySchema.descriptors where descriptor.valueKind != .keybinds {
             if values[descriptor.key] == nil, let fileValue = fileParsed[descriptor.key] {
                 values[descriptor.key] = fileValue
@@ -601,29 +655,15 @@ final class GhosttyConfigController {
 
     /// Parse key=value pairs from config text. If a key appears in both texts,
     /// the primary text wins (last occurrence of each key wins within a file).
-    private func parseConfigText(_ primary: String, thenFallback fallback: String) -> [String: String] {
-        var values: [String: String] = [:]
-        for line in fallback.components(separatedBy: .newlines) {
-            if let entry = parseSimpleEntry(line) {
-                values[entry.key] = entry.value
-            }
-        }
-        for line in primary.components(separatedBy: .newlines) {
-            if let entry = parseSimpleEntry(line) {
-                values[entry.key] = entry.value
+    private static func parseConfigText(_ primary: String, thenFallback fallback: String) -> [String: String] {
+        var values = GhosttyManagedConfigCodec.parseManagedFile(fallback).values
+            .compactMapValues(\.last)
+        for (key, rawValues) in GhosttyManagedConfigCodec.parseManagedFile(primary).values {
+            if let lastValue = rawValues.last {
+                values[key] = lastValue
             }
         }
         return values
-    }
-
-    private func parseSimpleEntry(_ line: String) -> (key: String, value: String)? {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
-              let eqIndex = trimmed.firstIndex(of: "=") else { return nil }
-        let key = trimmed[..<eqIndex].trimmingCharacters(in: .whitespaces)
-        let value = trimmed[trimmed.index(after: eqIndex)...].trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty, !value.isEmpty else { return nil }
-        return (key, value)
     }
 
     private func resolvedPaths() throws -> (configPath: URL, managedPath: URL) {
@@ -647,9 +687,78 @@ final class GhosttyConfigController {
         }
         #endif
 
-        return FileManager.default.homeDirectoryForCurrentUser
+        return Self.defaultConfigPath()
+    }
+
+    static func loadKeybinds(configText: String, managedText: String) -> [GhosttyManagedKeybind] {
+        let configWithoutInclude = GhosttyManagedConfigCodec.removeIncludeBlock(from: configText)
+        let configKeybinds = GhosttyManagedConfigCodec.parseManagedFile(configWithoutInclude).keybinds
+        guard GhosttyManagedConfigCodec.hasIncludeBlock(in: configText) else {
+            return configKeybinds
+        }
+        let managedKeybinds = GhosttyManagedConfigCodec.parseManagedFile(managedText).keybinds
+        return configKeybinds + managedKeybinds
+    }
+
+    static func defaultConfigPath(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory
             .appendingPathComponent(".config/ghostty", isDirectory: true)
-            .appendingPathComponent("config.ghostty")
+            .appendingPathComponent("config")
+    }
+
+    static func loadEffectiveFileValues(configText: String, managedText: String) -> [String: String] {
+        let configWithoutInclude = GhosttyManagedConfigCodec.removeIncludeBlock(from: configText)
+        if GhosttyManagedConfigCodec.hasIncludeBlock(in: configText) {
+            return parseConfigText(managedText, thenFallback: configWithoutInclude)
+        }
+        return parseConfigText(configWithoutInclude, thenFallback: "")
+    }
+
+    static func loadEditableDraft(configText: String, managedText: String) -> GhosttyEditableConfigDraft {
+        let includeIntegrated = GhosttyManagedConfigCodec.hasIncludeBlock(in: configText)
+        let configWithoutInclude = GhosttyManagedConfigCodec.removeIncludeBlock(from: configText)
+        let configDraft = GhosttyManagedConfigCodec.parseManagedFile(configWithoutInclude)
+
+        guard includeIntegrated else {
+            return GhosttyEditableConfigDraft(
+                includeIntegrated: false,
+                values: configDraft.values,
+                keybinds: configDraft.keybinds,
+                previewText: configText
+            )
+        }
+
+        let managedDraft = GhosttyManagedConfigCodec.parseManagedFile(managedText)
+        var flattenedValues = configDraft.values
+        for (key, rawValues) in managedDraft.values {
+            flattenedValues[key] = rawValues
+        }
+
+        return GhosttyEditableConfigDraft(
+            includeIntegrated: true,
+            values: flattenedValues,
+            keybinds: loadKeybinds(configText: configText, managedText: managedText),
+            previewText: managedText
+        )
+    }
+
+    static func buildSavePlan(
+        configText: String,
+        managedText _: String,
+        values: [String: [String]],
+        keybinds: [GhosttyManagedKeybind]
+    ) -> GhosttyConfigSavePlan {
+        if GhosttyManagedConfigCodec.hasIncludeBlock(in: configText) {
+            return GhosttyConfigSavePlan(
+                configText: configText,
+                managedText: GhosttyManagedConfigCodec.renderManagedFile(values: values, keybinds: keybinds)
+            )
+        }
+
+        return GhosttyConfigSavePlan(
+            configText: updateConfigText(configText, with: values, keybinds: keybinds),
+            managedText: nil
+        )
     }
 
     private func writeAtomically(_ content: String, to url: URL) throws {
@@ -665,6 +774,14 @@ final class GhosttyConfigController {
             try FileManager.default.removeItem(at: url)
         }
         try FileManager.default.moveItem(at: temporaryURL, to: url)
+    }
+
+    private func restoreManagedFile(existed: Bool, content: String, path: URL) throws {
+        if existed {
+            try writeAtomically(content, to: path)
+        } else if FileManager.default.fileExists(atPath: path.path) {
+            try FileManager.default.removeItem(at: path)
+        }
     }
 
     private func audit(
