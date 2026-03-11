@@ -17,7 +17,7 @@ env:
 jobs:
   release-package-preflight:
     name: Release package preflight
-    runs-on: macos-latest
+    runs-on: macos-26
     env:
       GHOSTTY_XCFRAMEWORK_TARGET: native
     steps:
@@ -138,7 +138,7 @@ jobs:
 
   release-sign-notarize-dry-run:
     name: Release sign/notarize dry run
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: [release-package-preflight, check-signing-secrets]
     if: github.event_name != 'pull_request' && needs.check-signing-secrets.outputs.available == 'true'
     steps:

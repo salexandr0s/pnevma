@@ -137,6 +137,8 @@ Tasks:
   - `KEYCHAIN_PASSWORD`
 - have CI create the `notarytool` profile on the runner with
   `xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" ... --keychain "$KEYCHAIN_PATH"`,
+- run native GitHub jobs on the `macos-26` runner line so the vendored Ghostty
+  build uses the Xcode 26/macOS 26 SDK stack it now expects,
 - verify at least one maintainer machine can run the full sign and notarize flow locally.
 
 Checks:

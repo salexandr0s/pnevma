@@ -48,6 +48,9 @@ create a `notarytool` keychain profile on the runner. Configure the repository
 secrets below before expecting the release-rehearsal notarization jobs to go
 green:
 
+Native GitHub workflows are pinned to the `macos-26` runner image because the
+vendored Ghostty `v1.2.0` build requires the Xcode 26/macOS 26 toolchain line.
+
 - `APPLE_CERTIFICATE`: base64-encoded `Developer ID Application` `.p12`
 - `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12`
 - `APPLE_SIGNING_IDENTITY`: exact identity string, for example
