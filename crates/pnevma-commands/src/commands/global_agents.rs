@@ -256,7 +256,12 @@ pub async fn update_global_agent(
         max_concurrent: input.max_concurrent.unwrap_or(existing.max_concurrent),
         stations_json,
         config_json: input.config_json.unwrap_or(existing.config_json),
-        system_prompt: input.system_prompt.or(existing.system_prompt),
+        // Some("...") → set, Some("") → clear, None → keep existing
+        system_prompt: match input.system_prompt {
+            Some(ref s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.system_prompt,
+        },
         active: input.active.unwrap_or(existing.active),
         created_at: existing.created_at,
         updated_at: now,

@@ -408,7 +408,12 @@ pub async fn update_agent_profile(
         created_at: existing.created_at,
         updated_at: now,
         role: input.role.unwrap_or(existing.role),
-        system_prompt: input.system_prompt.or(existing.system_prompt),
+        // Some("...") → set, Some("") → clear, None → keep existing
+        system_prompt: match input.system_prompt {
+            Some(ref s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.system_prompt,
+        },
         source: existing.source,
         source_path: existing.source_path,
         user_modified: true,

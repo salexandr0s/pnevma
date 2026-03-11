@@ -31,6 +31,14 @@ fn map_claude_model(short: &str) -> String {
     }
 }
 
+/// Infer agent role from declared tool list.
+///
+/// - Empty tools list: "build" (no tools declared = full capability assumed)
+/// - Only read-oriented tools (Read/Glob/Grep/Bash/WebFetch/WebSearch): "research"
+/// - Any write tool (Write/Edit/NotebookEdit/etc.) present: "build"
+///
+/// Note: Bash is classified as read-only here because Claude Code agents with
+/// only Bash+Read are typically research/review agents, not implementation agents.
 fn infer_role_from_tools(tools: &[String]) -> String {
     if tools.is_empty() {
         return "build".to_string();
@@ -66,7 +74,9 @@ pub fn discover_claude_code_agents(dir: &Path) -> Vec<DiscoveredAgent> {
 }
 
 fn parse_claude_code_agent(path: &Path) -> Result<DiscoveredAgent, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    // Normalize CRLF to LF for Windows-authored files
+    let content = raw.replace("\r\n", "\n");
 
     // Extract YAML frontmatter between first two "---" lines
     let trimmed = content.trim_start();
@@ -155,23 +165,30 @@ pub fn discover_codex_agents(config_path: &Path) -> Vec<DiscoveredAgent> {
 
         if let Some(config_file) = agent_table.get("config_file").and_then(|v| v.as_str()) {
             let config_file_path = config_dir.join(config_file);
-            // Prevent path traversal — config_file must resolve inside config_dir
-            let ok = config_file_path
-                .canonicalize()
-                .ok()
-                .and_then(|resolved| {
-                    config_dir
-                        .canonicalize()
-                        .ok()
-                        .map(|base| resolved.starts_with(&base))
-                })
-                .unwrap_or(false);
-            if !ok {
-                tracing::warn!(
+            if !config_file_path.exists() {
+                tracing::debug!(
                     config_file,
-                    "codex agent config_file escapes config directory, skipping"
+                    "codex agent config_file not found, skipping file load"
                 );
-                continue;
+            } else {
+                // Prevent path traversal — config_file must resolve inside config_dir
+                let ok = config_file_path
+                    .canonicalize()
+                    .ok()
+                    .and_then(|resolved| {
+                        config_dir
+                            .canonicalize()
+                            .ok()
+                            .map(|base| resolved.starts_with(&base))
+                    })
+                    .unwrap_or(false);
+                if !ok {
+                    tracing::warn!(
+                        config_file,
+                        "codex agent config_file escapes config directory, skipping agent"
+                    );
+                    continue;
+                }
             }
             if let Ok(agent_content) = std::fs::read_to_string(&config_file_path) {
                 if let Ok(agent_table) = agent_content.parse::<toml::Table>() {
@@ -257,4 +274,230 @@ pub fn discover_project_agents(project_path: &Path) -> Vec<DiscoveredAgent> {
         &project_path.join(".codex/config.toml"),
     ));
     agents
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_map_claude_model() {
+        assert_eq!(map_claude_model("sonnet"), "claude-sonnet-4-6");
+        assert_eq!(map_claude_model("opus"), "claude-opus-4-6");
+        assert_eq!(map_claude_model("haiku"), "claude-haiku-4-5");
+        assert_eq!(map_claude_model("claude-sonnet-4-6"), "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn test_infer_role_empty_tools() {
+        assert_eq!(infer_role_from_tools(&[]), "build");
+    }
+
+    #[test]
+    fn test_infer_role_read_only_tools() {
+        let tools = vec!["Read".into(), "Glob".into(), "Grep".into(), "Bash".into()];
+        assert_eq!(infer_role_from_tools(&tools), "research");
+    }
+
+    #[test]
+    fn test_infer_role_write_tools() {
+        let tools = vec!["Read".into(), "Edit".into(), "Bash".into()];
+        assert_eq!(infer_role_from_tools(&tools), "build");
+    }
+
+    #[test]
+    fn test_parse_claude_code_agent_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-agent.md");
+        fs::write(
+            &path,
+            "---\nname: coder\nmodel: opus\n---\n\n# Instructions\nWrite code.\n",
+        )
+        .unwrap();
+
+        let agent = parse_claude_code_agent(&path).unwrap();
+        assert_eq!(agent.name, "coder");
+        assert_eq!(agent.model, "claude-opus-4-6");
+        assert_eq!(agent.provider, "anthropic");
+        assert_eq!(agent.role, "build");
+        assert_eq!(agent.source, "claude-code");
+        assert!(agent.system_prompt.unwrap().contains("Write code."));
+    }
+
+    #[test]
+    fn test_parse_claude_code_agent_with_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reviewer.md");
+        fs::write(
+            &path,
+            "---\nname: reviewer\nmodel: sonnet\ntools:\n  - Read\n  - Grep\n---\n\nReview only.\n",
+        )
+        .unwrap();
+
+        let agent = parse_claude_code_agent(&path).unwrap();
+        assert_eq!(agent.name, "reviewer");
+        assert_eq!(agent.role, "research");
+        assert_eq!(agent.tools, vec!["Read", "Grep"]);
+    }
+
+    #[test]
+    fn test_parse_claude_code_agent_no_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("minimal.md");
+        fs::write(&path, "---\nname: minimal\n---\n").unwrap();
+
+        let agent = parse_claude_code_agent(&path).unwrap();
+        assert_eq!(agent.name, "minimal");
+        assert!(agent.system_prompt.is_none());
+    }
+
+    #[test]
+    fn test_parse_claude_code_agent_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crlf.md");
+        fs::write(
+            &path,
+            "---\r\nname: crlf-agent\r\nmodel: haiku\r\n---\r\n\r\nBody text.\r\n",
+        )
+        .unwrap();
+
+        let agent = parse_claude_code_agent(&path).unwrap();
+        assert_eq!(agent.name, "crlf-agent");
+        assert_eq!(agent.model, "claude-haiku-4-5");
+        assert!(agent.system_prompt.unwrap().contains("Body text."));
+    }
+
+    #[test]
+    fn test_parse_claude_code_agent_no_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.md");
+        fs::write(&path, "# Just markdown\nNo frontmatter here.\n").unwrap();
+
+        assert!(parse_claude_code_agent(&path).is_err());
+    }
+
+    #[test]
+    fn test_parse_claude_code_agent_name_from_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my-agent.md");
+        fs::write(&path, "---\nmodel: sonnet\n---\n\nPrompt.\n").unwrap();
+
+        let agent = parse_claude_code_agent(&path).unwrap();
+        assert_eq!(agent.name, "my-agent");
+    }
+
+    #[test]
+    fn test_discover_claude_code_agents_nonexistent_dir() {
+        let agents = discover_claude_code_agents(Path::new("/nonexistent/path"));
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_discover_claude_code_agents_skips_non_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        fs::create_dir(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("good.md"),
+            "---\nname: good\n---\n\nPrompt.\n",
+        )
+        .unwrap();
+        fs::write(agents_dir.join("ignored.txt"), "not an agent").unwrap();
+
+        let agents = discover_claude_code_agents(&agents_dir);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "good");
+    }
+
+    #[test]
+    fn test_discover_codex_agents_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+model = "gpt-5"
+
+[agents.explorer]
+description = "Explores code"
+
+[agents.builder]
+description = "Builds things"
+"#,
+        )
+        .unwrap();
+
+        let agents = discover_codex_agents(&config_path);
+        assert_eq!(agents.len(), 2);
+
+        let explorer = agents.iter().find(|a| a.name == "explorer").unwrap();
+        assert_eq!(explorer.role, "research");
+        assert_eq!(explorer.provider, "openai");
+        assert_eq!(explorer.model, "gpt-5");
+        assert_eq!(explorer.source, "codex");
+        assert!(explorer.source_path.contains("#explorer"));
+
+        let builder = agents.iter().find(|a| a.name == "builder").unwrap();
+        assert_eq!(builder.role, "build");
+    }
+
+    #[test]
+    fn test_discover_codex_agents_skips_bare_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[agents.default]
+# no description, no config_file → should be skipped
+
+[agents.worker]
+# same
+
+[agents.custom]
+description = "Should be kept"
+"#,
+        )
+        .unwrap();
+
+        let agents = discover_codex_agents(&config_path);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "custom");
+    }
+
+    #[test]
+    fn test_discover_codex_agents_nonexistent() {
+        let agents = discover_codex_agents(Path::new("/nonexistent/config.toml"));
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_discover_codex_agents_no_agents_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "model = \"gpt-4o\"\n").unwrap();
+
+        let agents = discover_codex_agents(&config_path);
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_discover_codex_agents_claude_model_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+model = "claude-sonnet-4-6"
+
+[agents.helper]
+description = "Uses Claude"
+"#,
+        )
+        .unwrap();
+
+        let agents = discover_codex_agents(&config_path);
+        assert_eq!(agents[0].provider, "anthropic");
+    }
 }

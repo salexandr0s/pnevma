@@ -60,14 +60,6 @@ struct AgentRow: View {
                     if let source = agent.source, source != "user" {
                         SourceBadge(source: source)
                     }
-                    if !agent.active {
-                        Text("inactive")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.gray.opacity(0.3))
-                            .clipShape(.rect(cornerRadius: 4))
-                    }
                 }
                 Text("\(agent.provider) / \(agent.model)")
                     .font(.caption)
