@@ -41,7 +41,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install native build tools
-        run: brew install xcodegen zig
+        run: brew install just xcodegen zig
 
       - name: Verify xcodegen version
         run: |
