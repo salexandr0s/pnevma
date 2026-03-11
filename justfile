@@ -18,6 +18,7 @@ rust_tool := "./scripts/with-rust-toolchain.sh"
 clean_log := "./scripts/assert-clean-command-log.sh"
 native_log_dir := "native/build/logs"
 xcode_derived_data := "native/DerivedData"
+ghostty_xcframework_target := env_var_or_default("GHOSTTY_XCFRAMEWORK_TARGET", "universal")
 
 # ── Stage 1: Ghostty xcframework (Zig) ────────────────────────────────────────
 
@@ -32,9 +33,13 @@ ghostty-check:
      fi
 
 ghostty-build: ghostty-check
-    @echo "Building Ghostty xcframework..."
+    @echo "Building Ghostty xcframework (target={{ghostty_xcframework_target}})..."
+    mkdir -p {{native_log_dir}}
     ./scripts/fetch-ghostty.sh
-    cd vendor/ghostty && zig build -Demit-xcframework=true -Doptimize=ReleaseFast
+    log="$PWD/{{native_log_dir}}/ghostty-build.log"; \
+      cd vendor/ghostty; \
+      set -o pipefail; \
+      zig build -Demit-xcframework=true -Dxcframework-target={{ghostty_xcframework_target}} -Doptimize=ReleaseFast 2>&1 | tee "$log"
     @echo "Ghostty xcframework built at vendor/ghostty/macos/GhosttyKit.xcframework"
 
 # ── Stage 2: Rust staticlib (Cargo) ──────────────────────────────────────────
