@@ -28,12 +28,48 @@ private let usageRelativeFormatter = RelativeDateTimeFormatter()
 
 private let usageRequestDayFormatter: DateFormatter = {
     let formatter = DateFormatter()
-    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.calendar = .autoupdatingCurrent
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.timeZone = .autoupdatingCurrent
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter
 }()
+
+private let usageRequestTimestampFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+enum UsageRequestBoundary {
+    case start
+    case end
+}
+
+func usageRequestTimestamp(
+    for date: Date,
+    boundary: UsageRequestBoundary,
+    calendar: Calendar = .autoupdatingCurrent,
+    timeZone: TimeZone = .autoupdatingCurrent
+) -> String {
+    var calendar = calendar
+    calendar.timeZone = timeZone
+
+    let interval = calendar.dateInterval(of: .day, for: date)
+        ?? DateInterval(start: calendar.startOfDay(for: date), duration: 86_400)
+    let value = switch boundary {
+    case .start:
+        interval.start
+    case .end:
+        interval.end.addingTimeInterval(-0.001)
+    }
+
+    let formatter = usageRequestTimestampFormatter.copy() as? ISO8601DateFormatter ?? ISO8601DateFormatter()
+    formatter.timeZone = timeZone
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: value)
+}
 
 private func formatTokens(_ value: Int) -> String {
     value.formatted(.number.grouping(.automatic))
@@ -53,6 +89,10 @@ private func formatCost(_ value: Double) -> String {
 private func formatDateLabel(_ raw: String) -> String {
     guard let date = usageDayParser.date(from: raw) else { return raw }
     return date.formatted(.dateTime.month(.abbreviated).day())
+}
+
+private func formatSelectedDate(_ date: Date) -> String {
+    date.formatted(.dateTime.month(.abbreviated).day().year())
 }
 
 private func formatRelativeTimestamp(_ raw: String?) -> String {
@@ -338,6 +378,7 @@ final class UsageViewModel {
     var searchQuery = ""
     var pageSize = 25
     var currentPage = 1
+    var selectedQuickRangeDays: Int? = 30
 
     var rangeStart: Date
     var rangeEnd: Date
@@ -368,9 +409,10 @@ final class UsageViewModel {
         self.commandBus = commandBus
         self.activationHub = activationHub
 
-        let end = Date()
+        let calendar = Calendar.autoupdatingCurrent
+        let end = calendar.startOfDay(for: Date())
         self.rangeEnd = end
-        self.rangeStart = Calendar.current.date(byAdding: .day, value: -29, to: end) ?? end
+        self.rangeStart = calendar.date(byAdding: .day, value: -29, to: end) ?? end
 
         activationObserverID = activationHub.addObserver { [weak self] state in
             Task { @MainActor [weak self] in
@@ -397,6 +439,27 @@ final class UsageViewModel {
     var isLoading: Bool {
         if case .loading = coreState { return true }
         return false
+    }
+
+    var rangeLabel: String {
+        let start = formatSelectedDate(rangeStart)
+        let end = formatSelectedDate(rangeEnd)
+        return start == end ? start : "\(start) - \(end)"
+    }
+
+    var emptyStateDetail: String {
+        switch coreState {
+        case .failed(let message) where message.contains("older backend binary"):
+            return "Rebuild the app so the Rust bridge and native UI are on the same revision."
+        case .failed(let message) where message == "No trusted or open projects are available.":
+            return "Trust a workspace or open a project to inspect tracked usage across projects."
+        case .waiting, .loading, .failed:
+            return scope == .global
+                ? "Trust a workspace or open a project to inspect tracked usage across projects."
+                : "Open a project or switch to global scope to inspect tracked usage."
+        case .ready:
+            return ""
+        }
     }
 
     var diagnosticsMessage: String? {
@@ -507,15 +570,17 @@ final class UsageViewModel {
         return "\(count) row\(count == 1 ? "" : "s") • page \(currentPage)/\(totalPages)"
     }
 
+    var hasTrackedUsageInWindow: Bool {
+        guard let summary else { return false }
+        return summary.totals.totalTokens > 0 || summary.totals.totalCostUsd > 0
+    }
+
     func activate() async {
         handleActivationState(activationHub.currentState)
     }
 
     func refresh() {
-        loadCore(showLoadingState: summary == nil)
-        if segment == .diagnostics {
-            loadDiagnostics(showLoadingState: diagnostics == nil)
-        }
+        reloadUsageData(showLoadingState: true)
     }
 
     func setSegment(_ segment: UsageSegment) {
@@ -531,45 +596,40 @@ final class UsageViewModel {
         providerFilter = "All"
         modelFilter = "All"
         statusFilter = "All"
-        loadCore(showLoadingState: summary == nil)
-        if segment == .diagnostics {
-            loadDiagnostics(showLoadingState: diagnostics == nil)
-        } else {
-            diagnostics = nil
-            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
-        }
+        reloadUsageData(showLoadingState: true)
     }
 
     func applyQuickRange(days: Int) {
-        let end = Date()
+        let calendar = Calendar.autoupdatingCurrent
+        let end = calendar.startOfDay(for: Date())
         rangeEnd = end
-        rangeStart = Calendar.current.date(byAdding: .day, value: -(days - 1), to: end) ?? end
-        loadCore(showLoadingState: summary == nil)
-        if segment == .diagnostics {
-            loadDiagnostics(showLoadingState: diagnostics == nil)
-        } else {
-            diagnostics = nil
-            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
-        }
+        rangeStart = calendar.date(byAdding: .day, value: -(days - 1), to: end) ?? end
+        selectedQuickRangeDays = days
+        reloadUsageData(showLoadingState: true)
     }
 
     func updateDates(start: Date? = nil, end: Date? = nil) {
         if let start {
-            rangeStart = start
+            rangeStart = normalizeDay(start)
         }
         if let end {
-            rangeEnd = end
+            rangeEnd = normalizeDay(end)
         }
         if rangeStart > rangeEnd {
             swap(&rangeStart, &rangeEnd)
         }
-        loadCore(showLoadingState: summary == nil)
-        if segment == .diagnostics {
-            loadDiagnostics(showLoadingState: diagnostics == nil)
-        } else {
-            diagnostics = nil
-            diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
+        selectedQuickRangeDays = nil
+        reloadUsageData(showLoadingState: true)
+    }
+
+    func setDateRange(start: Date, end: Date) {
+        rangeStart = normalizeDay(start)
+        rangeEnd = normalizeDay(end)
+        if rangeStart > rangeEnd {
+            swap(&rangeStart, &rangeEnd)
         }
+        selectedQuickRangeDays = nil
+        reloadUsageData(showLoadingState: true)
     }
 
     func setExplorerMode(_ mode: UsageExplorerMode) {
@@ -627,6 +687,24 @@ final class UsageViewModel {
             try content.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             coreState = .failed(error.localizedDescription)
+        }
+    }
+
+    private func normalizeDay(_ date: Date) -> Date {
+        Calendar.autoupdatingCurrent.startOfDay(for: date)
+    }
+
+    private func resetDiagnosticsState() {
+        diagnostics = nil
+        diagnosticsState = .waiting("Open Diagnostics to load provider parity and tracking health.")
+    }
+
+    private func reloadUsageData(showLoadingState: Bool) {
+        loadCore(showLoadingState: showLoadingState)
+        if segment == .diagnostics {
+            loadDiagnostics(showLoadingState: diagnostics == nil)
+        } else {
+            resetDiagnosticsState()
         }
     }
 
@@ -748,13 +826,9 @@ final class UsageViewModel {
     private func requestParams() -> UsageRequestParams {
         UsageRequestParams(
             scope: scope.rawValue,
-            from: formatRequestDay(rangeStart),
-            to: formatRequestDay(rangeEnd)
+            from: usageRequestTimestamp(for: rangeStart, boundary: .start),
+            to: usageRequestTimestamp(for: rangeEnd, boundary: .end)
         )
-    }
-
-    private func formatRequestDay(_ date: Date) -> String {
-        usageRequestDayFormatter.string(from: date)
     }
 
     private func loadCore(showLoadingState: Bool) {
@@ -795,6 +869,7 @@ final class UsageViewModel {
                 self.tasks = resultTasks
                 self.currentPage = min(self.currentPage, self.totalPages)
                 self.coreState = .ready
+                self.prefetchDiagnosticsIfNeeded(for: resultSummary)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.handleCoreFailure(error)
@@ -832,14 +907,20 @@ final class UsageViewModel {
     }
 
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        if scope == .global {
+            if case .closed = state {
+                coreTask?.cancel()
+                diagnosticsTask?.cancel()
+            }
+            reloadUsageData(showLoadingState: summary == nil)
+            return
+        }
+
         switch state {
         case .idle, .opening:
             coreState = .waiting("Waiting for project activation...")
         case .open:
-            loadCore(showLoadingState: summary == nil)
-            if segment == .diagnostics, diagnostics == nil {
-                loadDiagnostics(showLoadingState: true)
-            }
+            reloadUsageData(showLoadingState: summary == nil)
         case .failed(_, _, let message):
             coreState = .failed(message)
         case .closed:
@@ -861,6 +942,14 @@ final class UsageViewModel {
         }
         coreState = .failed(error.localizedDescription)
     }
+
+    private func prefetchDiagnosticsIfNeeded(for summary: UsageAnalyticsSummary) {
+        guard summary.totals.totalTokens == 0, summary.totals.totalCostUsd == 0 else { return }
+        if segment == .diagnostics || diagnostics != nil || isDiagnosticsLoading {
+            return
+        }
+        loadDiagnostics(showLoadingState: false)
+    }
 }
 
 private struct UsageRequestParams: Encodable {
@@ -873,6 +962,9 @@ private struct UsageRequestParams: Encodable {
 
 struct UsageView: View {
     @State private var viewModel = UsageViewModel()
+    @State private var isShowingDateRangePicker = false
+    @State private var draftRangeStart = Date()
+    @State private var draftRangeEnd = Date()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -888,16 +980,12 @@ struct UsageView: View {
                     EmptyStateView(
                         icon: "chart.bar.doc.horizontal",
                         title: statusMessage,
-                        message: "Open a project or switch to global scope to inspect tracked usage."
+                        message: viewModel.emptyStateDetail
                     )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 0) {
-                    segmentPicker
-                    Divider()
-                    segmentContent
-                }
+                segmentContent
             }
         }
         .task { await viewModel.activate() }
@@ -905,7 +993,7 @@ struct UsageView: View {
     }
 
     private var toolbar: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Usage Intelligence")
@@ -915,87 +1003,129 @@ struct UsageView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
+                Button("Refresh", systemImage: "arrow.clockwise") {
                     viewModel.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
                 }
+                .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
                 .keyboardShortcut("r", modifiers: .command)
                 .accessibilityLabel("Refresh usage intelligence")
             }
 
-            HStack(spacing: 10) {
-                Picker("Scope", selection: Binding(
-                    get: { viewModel.scope },
-                    set: { viewModel.setScope($0) }
-                )) {
-                    ForEach(UsageScope.allCases) { scope in
-                        Text(scope.label).tag(scope)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    scopeSection
+                    viewSection
+                    rangeSection
+                    Spacer(minLength: 0)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 14) {
+                        scopeSection
+                        viewSection
                     }
+                    rangeSection
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-
-                QuickRangeButton(title: "1D") {
-                    viewModel.applyQuickRange(days: 1)
-                }
-                QuickRangeButton(title: "7D") {
-                    viewModel.applyQuickRange(days: 7)
-                }
-                QuickRangeButton(title: "30D") {
-                    viewModel.applyQuickRange(days: 30)
-                }
-                QuickRangeButton(title: "90D") {
-                    viewModel.applyQuickRange(days: 90)
-                }
-
-                Divider()
-                    .frame(height: 18)
-
-                DatePicker(
-                    "From",
-                    selection: Binding(
-                        get: { viewModel.rangeStart },
-                        set: { viewModel.updateDates(start: $0) }
-                    ),
-                    displayedComponents: .date
-                )
-                .labelsHidden()
-
-                DatePicker(
-                    "To",
-                    selection: Binding(
-                        get: { viewModel.rangeEnd },
-                        set: { viewModel.updateDates(end: $0) }
-                    ),
-                    displayedComponents: .date
-                )
-                .labelsHidden()
-
-                Spacer()
             }
         }
         .padding(12)
     }
 
-    private var segmentPicker: some View {
-        HStack {
-            Picker("Segment", selection: Binding(
-                get: { viewModel.segment },
-                set: { viewModel.setSegment($0) }
-            )) {
-                ForEach(UsageSegment.allCases) { segment in
-                    Text(segment.label).tag(segment)
+    private var scopeSection: some View {
+        UsageToolbarSection(title: "Scope") {
+            UsageChoiceBar(
+                options: Array(UsageScope.allCases),
+                selection: viewModel.scope,
+                title: \.label,
+                action: { viewModel.setScope($0) }
+            )
+            .frame(minWidth: 170)
+        }
+    }
+
+    private var viewSection: some View {
+        UsageToolbarSection(title: "View") {
+            UsageChoiceBar(
+                options: Array(UsageSegment.allCases),
+                selection: viewModel.segment,
+                title: \.label,
+                action: { viewModel.setSegment($0) }
+            )
+            .frame(minWidth: 280)
+        }
+    }
+
+    private var rangeSection: some View {
+        UsageToolbarSection(title: "Range") {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    quickRangeButtons
+                    dateRangeButton
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    quickRangeButtons
+                    dateRangeButton
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 300)
-
-            Spacer()
         }
-        .padding(12)
+    }
+
+    private var quickRangeButtons: some View {
+        HStack(spacing: 8) {
+            QuickRangeButton(
+                title: "1D",
+                isSelected: viewModel.selectedQuickRangeDays == 1
+            ) {
+                viewModel.applyQuickRange(days: 1)
+            }
+            QuickRangeButton(
+                title: "7D",
+                isSelected: viewModel.selectedQuickRangeDays == 7
+            ) {
+                viewModel.applyQuickRange(days: 7)
+            }
+            QuickRangeButton(
+                title: "30D",
+                isSelected: viewModel.selectedQuickRangeDays == 30
+            ) {
+                viewModel.applyQuickRange(days: 30)
+            }
+            QuickRangeButton(
+                title: "90D",
+                isSelected: viewModel.selectedQuickRangeDays == 90
+            ) {
+                viewModel.applyQuickRange(days: 90)
+            }
+        }
+    }
+
+    private var dateRangeButton: some View {
+        Button {
+            draftRangeStart = viewModel.rangeStart
+            draftRangeEnd = viewModel.rangeEnd
+            isShowingDateRangePicker = true
+        } label: {
+            Label(viewModel.rangeLabel, systemImage: "calendar")
+                .lineLimit(1)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityHint("Choose a start date and end date")
+        .popover(isPresented: $isShowingDateRangePicker, arrowEdge: .top) {
+            UsageDateRangePopover(
+                start: $draftRangeStart,
+                end: $draftRangeEnd,
+                onCancel: {
+                    isShowingDateRangePicker = false
+                },
+                onApply: { start, end in
+                    viewModel.setDateRange(start: start, end: end)
+                    isShowingDateRangePicker = false
+                }
+            )
+        }
     }
 
     @ViewBuilder
@@ -1011,6 +1141,144 @@ struct UsageView: View {
     }
 }
 
+private struct UsageToolbarSection<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content
+        }
+    }
+}
+
+private struct UsageChoiceBar<Option: Identifiable & Hashable>: View {
+    let options: [Option]
+    let selection: Option
+    let title: KeyPath<Option, String>
+    let action: (Option) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options) { option in
+                let isSelected = option == selection
+                Button(option[keyPath: title]) {
+                    action(option)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? Color.accentColor : Color.clear)
+                )
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.10))
+        )
+    }
+}
+
+private struct UsageDateRangePopover: View {
+    @Binding var start: Date
+    @Binding var end: Date
+
+    let onCancel: () -> Void
+    let onApply: (Date, Date) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Choose Date Range")
+                    .font(.headline)
+                Text("\(formatSelectedDate(start)) - \(formatSelectedDate(end))")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    startCalendarColumn
+                    endCalendarColumn
+                }
+
+                VStack(alignment: .leading, spacing: 16) {
+                    startCalendarColumn
+                    endCalendarColumn
+                }
+            }
+
+            HStack {
+                Button("Cancel", role: .cancel, action: onCancel)
+                Spacer()
+                Button("Apply") {
+                    onApply(start, end)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 360)
+        .onChange(of: start) {
+            if start > end {
+                end = start
+            }
+        }
+        .onChange(of: end) {
+            if end < start {
+                start = end
+            }
+        }
+    }
+
+    private var startCalendarColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Start")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            DatePicker(
+                "Start",
+                selection: $start,
+                in: ...end,
+                displayedComponents: .date
+            )
+            .datePickerStyle(.graphical)
+            .labelsHidden()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var endCalendarColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("End")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            DatePicker(
+                "End",
+                selection: $end,
+                in: start...,
+                displayedComponents: .date
+            )
+            .datePickerStyle(.graphical)
+            .labelsHidden()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 // MARK: - Overview
 
 private struct OverviewSegment: View {
@@ -1020,25 +1288,55 @@ private struct OverviewSegment: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let summary = viewModel.summary {
-                    metricsGrid(summary: summary)
-                    trendCard(summary: summary)
-
-                    HStack(alignment: .top, spacing: 14) {
-                        BreakdownCard(
-                            title: "Top Providers",
-                            caption: "Spend by provider in the selected window",
-                            items: summary.topProviders
-                        )
-                        BreakdownCard(
-                            title: "Top Models",
-                            caption: "Spend grouped by model and provider",
-                            items: summary.topModels
+                    if !viewModel.hasTrackedUsageInWindow {
+                        UsageCoverageBanner(
+                            diagnostics: viewModel.diagnostics,
+                            windowLabel: "\(summary.from) to \(summary.to)",
+                            onOpenDiagnostics: { viewModel.setSegment(.diagnostics) }
                         )
                     }
 
-                    HStack(alignment: .top, spacing: 14) {
-                        ActivityCard(activity: summary.activity)
-                        TopTasksCard(tasks: summary.topTasks)
+                    metricsGrid(summary: summary)
+                    trendCard(summary: summary)
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 14) {
+                            BreakdownCard(
+                                title: "Top Providers",
+                                caption: "Spend by provider in the selected window",
+                                items: summary.topProviders
+                            )
+                            BreakdownCard(
+                                title: "Top Models",
+                                caption: "Spend grouped by model and provider",
+                                items: summary.topModels
+                            )
+                        }
+
+                        VStack(alignment: .leading, spacing: 14) {
+                            BreakdownCard(
+                                title: "Top Providers",
+                                caption: "Spend by provider in the selected window",
+                                items: summary.topProviders
+                            )
+                            BreakdownCard(
+                                title: "Top Models",
+                                caption: "Spend grouped by model and provider",
+                                items: summary.topModels
+                            )
+                        }
+                    }
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 14) {
+                            ActivityCard(activity: summary.activity)
+                            TopTasksCard(tasks: summary.topTasks)
+                        }
+
+                        VStack(alignment: .leading, spacing: 14) {
+                            ActivityCard(activity: summary.activity)
+                            TopTasksCard(tasks: summary.topTasks)
+                        }
                     }
 
                     ErrorHotspotsCard(hotspots: summary.errorHotspots)
@@ -1049,7 +1347,10 @@ private struct OverviewSegment: View {
     }
 
     private func metricsGrid(summary: UsageAnalyticsSummary) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 10)],
+            spacing: 10
+        ) {
             MetricCard(label: "Total Cost", value: formatCost(summary.totals.totalCostUsd))
             MetricCard(label: "Total Tokens", value: formatCompactTokens(summary.totals.totalTokens))
             MetricCard(label: "Avg Daily Cost", value: formatCost(summary.totals.avgDailyCostUsd))
@@ -1074,16 +1375,13 @@ private struct OverviewSegment: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Picker("Metric", selection: Binding(
-                        get: { viewModel.trendMetric },
-                        set: { viewModel.trendMetric = $0 }
-                    )) {
-                        ForEach(UsageTrendMetric.allCases) { metric in
-                            Text(metric.label).tag(metric)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 170)
+                    UsageChoiceBar(
+                        options: Array(UsageTrendMetric.allCases),
+                        selection: viewModel.trendMetric,
+                        title: \.label,
+                        action: { viewModel.trendMetric = $0 }
+                    )
+                    .frame(width: 180)
                 }
 
                 if summary.dailyTrend.isEmpty {
@@ -1148,53 +1446,17 @@ private struct ExplorerSegment: View {
             filterBar
             Divider()
 
-            HStack {
-                Picker("Rows", selection: Binding(
-                    get: { viewModel.explorerMode },
-                    set: { viewModel.setExplorerMode($0) }
-                )) {
-                    ForEach(UsageExplorerMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    explorerModeControl
+                    Spacer()
+                    explorerActions
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
 
-                Spacer()
-
-                Picker("Sort", selection: Binding(
-                    get: { viewModel.explorerSort },
-                    set: { viewModel.setSort($0) }
-                )) {
-                    ForEach(UsageExplorerSort.allCases) { sort in
-                        Text(sort.label).tag(sort)
-                    }
+                VStack(alignment: .leading, spacing: 10) {
+                    explorerModeControl
+                    explorerActions
                 }
-                .pickerStyle(.menu)
-                .frame(width: 110)
-
-                Picker("Page Size", selection: Binding(
-                    get: { viewModel.pageSize },
-                    set: { viewModel.setPageSize($0) }
-                )) {
-                    Text("25").tag(25)
-                    Text("50").tag(50)
-                    Text("100").tag(100)
-                }
-                .pickerStyle(.menu)
-                .frame(width: 90)
-
-                Button("Export CSV") {
-                    viewModel.exportExplorer(asJSON: false)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Button("Export JSON") {
-                    viewModel.exportExplorer(asJSON: true)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
             .padding(12)
 
@@ -1203,9 +1465,15 @@ private struct ExplorerSegment: View {
             ScrollView {
                 VStack(spacing: 0) {
                     if viewModel.explorerMode == .sessions {
-                        SessionExplorerTable(rows: viewModel.visibleSessions)
+                        SessionExplorerTable(
+                            rows: viewModel.visibleSessions,
+                            hasTrackedUsageInWindow: viewModel.hasTrackedUsageInWindow
+                        )
                     } else {
-                        TaskExplorerTable(rows: viewModel.visibleTasks)
+                        TaskExplorerTable(
+                            rows: viewModel.visibleTasks,
+                            hasTrackedUsageInWindow: viewModel.hasTrackedUsageInWindow
+                        )
                     }
                 }
                 .padding(16)
@@ -1239,7 +1507,7 @@ private struct ExplorerSegment: View {
     }
 
     private var filterBar: some View {
-        VStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
                 MenuPicker(
                     title: "Provider",
@@ -1268,8 +1536,87 @@ private struct ExplorerSegment: View {
                 )
                 .textFieldStyle(.roundedBorder)
             }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    MenuPicker(
+                        title: "Provider",
+                        selection: viewModel.providerFilter,
+                        options: viewModel.availableProviders,
+                        action: viewModel.setProviderFilter(_:))
+
+                    MenuPicker(
+                        title: "Model",
+                        selection: viewModel.modelFilter,
+                        options: viewModel.availableModels,
+                        action: viewModel.setModelFilter(_:))
+
+                    MenuPicker(
+                        title: "Status",
+                        selection: viewModel.statusFilter,
+                        options: viewModel.availableStatuses,
+                        action: viewModel.setStatusFilter(_:))
+                }
+
+                TextField(
+                    "Search session, task, branch, provider, model...",
+                    text: Binding(
+                        get: { viewModel.searchQuery },
+                        set: { viewModel.setSearchQuery($0) }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+            }
         }
         .padding(12)
+    }
+
+    private var explorerModeControl: some View {
+        UsageChoiceBar(
+            options: Array(UsageExplorerMode.allCases),
+            selection: viewModel.explorerMode,
+            title: \.label,
+            action: { viewModel.setExplorerMode($0) }
+        )
+        .frame(width: 220)
+    }
+
+    private var explorerActions: some View {
+        HStack(spacing: 8) {
+            Picker("Sort", selection: Binding(
+                get: { viewModel.explorerSort },
+                set: { viewModel.setSort($0) }
+            )) {
+                ForEach(UsageExplorerSort.allCases) { sort in
+                    Text(sort.label).tag(sort)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 110)
+
+            Picker("Page Size", selection: Binding(
+                get: { viewModel.pageSize },
+                set: { viewModel.setPageSize($0) }
+            )) {
+                Text("25").tag(25)
+                Text("50").tag(50)
+                Text("100").tag(100)
+            }
+            .pickerStyle(.menu)
+            .frame(width: 90)
+
+            Button("Export CSV") {
+                viewModel.exportExplorer(asJSON: false)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button("Export JSON") {
+                viewModel.exportExplorer(asJSON: true)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
     }
 }
 
@@ -1295,7 +1642,17 @@ private struct DiagnosticsSegment: View {
             } else if let diagnostics = viewModel.diagnostics {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                        if let message = viewModel.diagnosticsMessage {
+                            UsageInlineNotice(
+                                title: "Diagnostics refresh issue",
+                                message: message
+                            )
+                        }
+
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 160, maximum: 220), spacing: 10)],
+                            spacing: 10
+                        ) {
                             MetricCard(label: "Tracked Cost Rows", value: formatTokens(diagnostics.trackedCostRows))
                             MetricCard(label: "Untracked Cost Rows", value: formatTokens(diagnostics.untrackedCostRows))
                             MetricCard(label: "Projects", value: "\(diagnostics.projectNames.count)")
@@ -1332,6 +1689,108 @@ private struct DiagnosticsSegment: View {
                 }
             }
         }
+    }
+}
+
+private struct UsageInlineNotice: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline)
+                    .bold()
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.orange.opacity(0.10))
+        )
+    }
+}
+
+private struct UsageCoverageBanner: View {
+    let diagnostics: UsageDiagnostics?
+    let windowLabel: String
+    let onOpenDiagnostics: () -> Void
+
+    private var providerSummary: String? {
+        guard let diagnostics else { return nil }
+        let providers = diagnostics.localProviderSnapshots
+            .filter(\.hasData)
+            .map(\.displayName)
+        guard !providers.isEmpty else { return nil }
+        return ListFormatter.localizedString(byJoining: providers)
+    }
+
+    private var detail: String {
+        guard let diagnostics else {
+            return "Pnevma has not recorded tracked cost rows for \(windowLabel). This usually means cost ingestion has not populated this workspace yet."
+        }
+
+        if let providerSummary {
+            return "\(providerSummary) local session files show activity on this machine in the selected window, but this workspace still has zero tracked cost rows."
+        }
+
+        if diagnostics.untrackedCostRows > 0 {
+            return "This window has untracked cost rows but no tracked usage yet. Open Diagnostics to inspect source coverage before sharing this pane with testers."
+        }
+
+        return "Pnevma has not recorded tracked cost rows for \(windowLabel). Open Diagnostics to confirm whether this is a true zero-usage window or a tracking gap."
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "waveform.path.badge.minus")
+                .font(.title3)
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("No tracked usage in this window")
+                    .font(.headline)
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    UsageTag(text: windowLabel)
+                    if let diagnostics {
+                        UsageTag(text: "\(diagnostics.trackedCostRows) tracked rows")
+                    }
+                    Button("Open Diagnostics", action: onOpenDiagnostics)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.10))
+        )
+    }
+}
+
+private struct UsageTag: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(Color.secondary.opacity(0.12))
+            )
     }
 }
 
@@ -1413,7 +1872,7 @@ private struct ActivityCard: View {
                                     .fill(Color.accentColor.opacity(opacity(bucket.totalTokens, maxValue: weekdayMax)))
                                     .frame(width: 34, height: 26)
                                 Text(bucket.label)
-                                    .font(.caption2)
+                                    .font(.caption)
                             }
                             .frame(maxWidth: .infinity)
                         }
@@ -1430,7 +1889,7 @@ private struct ActivityCard: View {
                                     .fill(Color.blue.opacity(opacity(bucket.totalTokens, maxValue: hourMax)))
                                     .frame(height: 18)
                                 Text("\(bucket.index)")
-                                    .font(.caption2)
+                                    .font(.caption)
                             }
                         }
                     }
@@ -1627,12 +2086,20 @@ private struct DetailRow: View {
 
 private struct QuickRangeButton: View {
     let title: String
+    let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
-        Button(title, action: action)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+        Group {
+            if isSelected {
+                Button(title, action: action)
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button(title, action: action)
+                    .buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.small)
     }
 }
 
@@ -1675,6 +2142,7 @@ private struct MenuPicker: View {
 
 private struct SessionExplorerTable: View {
     let rows: [UsageSessionAnalyticsRow]
+    let hasTrackedUsageInWindow: Bool
 
     var body: some View {
         GroupBox {
@@ -1684,8 +2152,12 @@ private struct SessionExplorerTable: View {
                 if rows.isEmpty {
                     EmptyStateView(
                         icon: "rectangle.stack.badge.person.crop",
-                        title: "No sessions match the current filters",
-                        message: "Adjust the filters or widen the date range."
+                        title: hasTrackedUsageInWindow
+                            ? "No sessions match the current filters"
+                            : "No tracked usage sessions in this window",
+                        message: hasTrackedUsageInWindow
+                            ? "Adjust the filters or widen the date range."
+                            : "Tracked cost analytics are empty for this range, so the explorer has no rows to inspect yet."
                     )
                     .frame(height: 220)
                 } else {
@@ -1714,6 +2186,7 @@ private struct SessionExplorerTable: View {
 
 private struct TaskExplorerTable: View {
     let rows: [UsageTaskAnalyticsRow]
+    let hasTrackedUsageInWindow: Bool
 
     var body: some View {
         GroupBox {
@@ -1723,8 +2196,12 @@ private struct TaskExplorerTable: View {
                 if rows.isEmpty {
                     EmptyStateView(
                         icon: "list.bullet.rectangle",
-                        title: "No tasks match the current filters",
-                        message: "Adjust the filters or widen the date range."
+                        title: hasTrackedUsageInWindow
+                            ? "No tasks match the current filters"
+                            : "No tracked usage tasks in this window",
+                        message: hasTrackedUsageInWindow
+                            ? "Adjust the filters or widen the date range."
+                            : "Tracked cost analytics are empty for this range, so the explorer has no rows to inspect yet."
                     )
                     .frame(height: 220)
                 } else {

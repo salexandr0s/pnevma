@@ -28,6 +28,7 @@
 		3A31CDC8BA234E1B645BC4C2 /* FileBrowserPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5102701F8777ED8EDFD2770F /* FileBrowserPaneTests.swift */; };
 		40F4C483EED0254A1A42CD74 /* PaneLayoutEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */; };
 		44D5E0CD0BF7689EDBC69C2C /* SshManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = E583CFB106DF6039794D692B /* SshManagerPane.swift */; };
+		45CD12FF8659175326E93EF0 /* AnalyticsPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A99AD2ED9E04B529C0A40432 /* AnalyticsPaneTests.swift */; };
 		468E8EF67D617BBBF721468C /* SessionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A82E97D5DE09094D1B0EDCF /* SessionBridge.swift */; };
 		46A93EAACB88DED2171BCE94 /* PnevmaJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 481C3D9236E2D0321C7F9915 /* PnevmaJSON.swift */; };
 		49023C532DCD5386EE7E200C /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 468AAC06ABE58313EAB56B51 /* SystemConfiguration.framework */; };
@@ -230,6 +231,7 @@
 		A780DE5BFCCFF70D529C9F98 /* MergeQueuePane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeQueuePane.swift; sourceTree = "<group>"; };
 		A8A07E1279159400943EB739 /* BrowserViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserViewModel.swift; sourceTree = "<group>"; };
 		A8D239E4D9D6D2BBEFCE9CDD /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
+		A99AD2ED9E04B529C0A40432 /* AnalyticsPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsPaneTests.swift; sourceTree = "<group>"; };
 		AB2ABF5369D15A88A22276EB /* ReviewPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewPane.swift; sourceTree = "<group>"; };
 		AC189336BEE185BB13D2ED00 /* SidebarToolButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarToolButton.swift; sourceTree = "<group>"; };
 		B452A6B7E71B07847C6CB3BC /* WorkspaceTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTabTests.swift; sourceTree = "<group>"; };
@@ -447,6 +449,7 @@
 		A730B687549039C16E92E7E1 /* PnevmaTests */ = {
 			isa = PBXGroup;
 			children = (
+				A99AD2ED9E04B529C0A40432 /* AnalyticsPaneTests.swift */,
 				B6800D33AEB839FC8E6DE560 /* AppLaunchContextTests.swift */,
 				2002D27CB3C59FEB276F8AB3 /* AppUpdateCoordinatorTests.swift */,
 				00AC90491564E38CEE6DD40F /* CommandBusTests.swift */,
@@ -589,6 +592,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5948A3AF9B25FB971310FB9D /* Build configuration list for PBXNativeTarget "Pnevma" */;
 			buildPhases = (
+				D8BD220250856AB772A64785 /* Build Rust Bridge */,
 				A696CFEA5784697437BE6EFB /* Sources */,
 				F8E1F120DC096D8201D31417 /* Resources */,
 				59CE2FE693B4E9D149AD0FD7 /* Frameworks */,
@@ -671,11 +675,34 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		D8BD220250856AB772A64785 /* Build Rust Bridge */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Bridge";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		2D59E671072C1AD248BBC8D9 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				45CD12FF8659175326E93EF0 /* AnalyticsPaneTests.swift in Sources */,
 				67151FA13A049289D08BFECD /* AppLaunchContextTests.swift in Sources */,
 				E5BD329D9EC1AC7BFA66175C /* AppUpdateCoordinatorTests.swift in Sources */,
 				C835AD707B86071BCC2AA70C /* CommandBusTests.swift in Sources */,

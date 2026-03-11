@@ -51,6 +51,19 @@ targets:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
+    preBuildScripts:
+      - name: Build Rust Bridge
+        shell: /bin/zsh
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          cd "$SRCROOT/.."
+
+          if [[ "${CONFIGURATION}" == "Release" ]]; then
+            ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release
+          else
+            ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin
+          fi
     sources:
       - path: Pnevma
         excludes:

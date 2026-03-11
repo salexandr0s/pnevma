@@ -136,7 +136,12 @@ enum PnevmaError: Error, LocalizedError {
             return "The workspace configuration changed and must be trusted again before opening."
         case "no open project":
             return "No active project is available."
+        case "no projects available":
+            return "No trusted or open projects are available."
         default:
+            if message.hasPrefix("unknown method: analytics.usage_") {
+                return "This build is using an older backend binary. Rebuild the app so the Rust bridge matches the native UI."
+            }
             return message
         }
     }

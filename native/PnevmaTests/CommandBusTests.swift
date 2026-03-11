@@ -132,6 +132,26 @@ final class CommandBusTests: XCTestCase {
         )
     }
 
+    func testBackendErrorLocalizedDescriptionMapsUsageAvailabilityFailures() {
+        let availabilityError = PnevmaError.backendError(
+            method: "analytics.usage_summary",
+            message: "no projects available"
+        )
+        XCTAssertEqual(
+            availabilityError.localizedDescription,
+            "No trusted or open projects are available."
+        )
+
+        let staleBridgeError = PnevmaError.backendError(
+            method: "analytics.usage_summary",
+            message: "unknown method: analytics.usage_summary"
+        )
+        XCTAssertEqual(
+            staleBridgeError.localizedDescription,
+            "This build is using an older backend binary. Rebuild the app so the Rust bridge matches the native UI."
+        )
+    }
+
     func testPnevmaJSONDecoderDecodesSnakeCaseProjectIDs() throws {
         let json = #"""
         {

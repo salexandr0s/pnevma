@@ -278,9 +278,9 @@ struct ErrorHotspotAggregateRow {
     remediation_hint: Option<String>,
 }
 
-fn parse_usage_datetime(input: &str, end_of_day: bool) -> Option<DateTime<Utc>> {
+fn parse_usage_boundary(input: &str, end_of_day: bool) -> Option<(DateTime<Utc>, NaiveDate)> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(input) {
-        return Some(parsed.with_timezone(&Utc));
+        return Some((parsed.with_timezone(&Utc), parsed.date_naive()));
     }
 
     let date = NaiveDate::parse_from_str(input, "%Y-%m-%d").ok()?;
@@ -289,9 +289,9 @@ fn parse_usage_datetime(input: &str, end_of_day: bool) -> Option<DateTime<Utc>> 
     } else {
         NaiveTime::from_hms_opt(0, 0, 0)?
     };
-    Some(DateTime::<Utc>::from_naive_utc_and_offset(
-        NaiveDateTime::new(date, time),
-        Utc,
+    Some((
+        DateTime::<Utc>::from_naive_utc_and_offset(NaiveDateTime::new(date, time), Utc),
+        date,
     ))
 }
 
@@ -301,23 +301,23 @@ fn resolve_usage_time_range(
 ) -> Result<UsageTimeRange, String> {
     let default_to = Utc::now();
     let default_from = default_to - Duration::days(29);
-
-    let mut from_dt = from
+    let (mut from_dt, mut from_day) = from
         .as_deref()
-        .and_then(|value| parse_usage_datetime(value, false))
-        .unwrap_or(default_from);
-    let mut to_dt = to
+        .and_then(|value| parse_usage_boundary(value, false))
+        .unwrap_or((default_from, default_from.date_naive()));
+    let (mut to_dt, mut to_day) = to
         .as_deref()
-        .and_then(|value| parse_usage_datetime(value, true))
-        .unwrap_or(default_to);
+        .and_then(|value| parse_usage_boundary(value, true))
+        .unwrap_or((default_to, default_to.date_naive()));
 
     if from_dt > to_dt {
         std::mem::swap(&mut from_dt, &mut to_dt);
+        std::mem::swap(&mut from_day, &mut to_day);
     }
 
-    let from_date = from_dt.date_naive().format("%Y-%m-%d").to_string();
-    let to_date = to_dt.date_naive().format("%Y-%m-%d").to_string();
-    let day_count = (to_dt.date_naive() - from_dt.date_naive()).num_days() + 1;
+    let from_date = from_day.format("%Y-%m-%d").to_string();
+    let to_date = to_day.format("%Y-%m-%d").to_string();
+    let day_count = (to_day - from_day).num_days() + 1;
 
     Ok(UsageTimeRange {
         from: from_dt,
@@ -1472,6 +1472,21 @@ mod tests {
         assert_eq!(range.from_date, "2026-03-01");
         assert_eq!(range.to_date, "2026-03-08");
         assert_eq!(range.day_count, 8);
+    }
+
+    #[test]
+    fn resolve_usage_time_range_preserves_requested_local_dates_for_rfc3339_inputs() {
+        let range = resolve_usage_time_range(
+            Some("2026-03-11T00:00:00+01:00".to_string()),
+            Some("2026-03-11T23:59:59.999+01:00".to_string()),
+        )
+        .expect("range");
+
+        assert_eq!(range.from_date, "2026-03-11");
+        assert_eq!(range.to_date, "2026-03-11");
+        assert_eq!(range.day_count, 1);
+        assert_eq!(range.from.to_rfc3339(), "2026-03-10T23:00:00+00:00");
+        assert_eq!(range.to.to_rfc3339(), "2026-03-11T22:59:59.999+00:00");
     }
 
     #[test]
