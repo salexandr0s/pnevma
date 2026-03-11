@@ -66,19 +66,26 @@ jobs:
       - name: Run release preflight
         run: ./scripts/release-preflight.sh
 
-      - name: Package release archive
+      - name: Package release DMG
         run: |
-          APP_PATH="$GITHUB_WORKSPACE/native/build/Build/Products/Release/Pnevma.app"
-          ARCHIVE="$GITHUB_WORKSPACE/Pnevma-rehearsal-macos-arm64.tar.gz"
-          tar -czf "$ARCHIVE" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
-          mkdir -p "$RUNNER_TEMP/release-rehearsal"
-          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/release-rehearsal"
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
-          echo "EXTRACTED_APP=$RUNNER_TEMP/release-rehearsal/Pnevma.app" >> "$GITHUB_ENV"
+          APP_PATH="$GITHUB_WORKSPACE/native/build/Release/Pnevma.app"
+          test -d "$APP_PATH"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$GITHUB_WORKSPACE/native/Info.plist")"
+          DMG_PATH="$GITHUB_WORKSPACE/Pnevma-${VERSION}-macos-arm64.dmg"
+          CHECKSUM_PATH="${DMG_PATH}.sha256"
+          APP_PATH="$APP_PATH" \
+          DMG_PATH="$DMG_PATH" \
+          CHECKSUM_PATH="$CHECKSUM_PATH" \
+          ./scripts/release-macos-package-dmg.sh
+          {
+            echo "APP_PATH=$APP_PATH"
+            echo "DMG_PATH=$DMG_PATH"
+            echo "CHECKSUM_PATH=$CHECKSUM_PATH"
+          } >> "$GITHUB_ENV"
 
       - name: Run packaged launch smoke
         run: |
-          APP_PATH="$EXTRACTED_APP" \
+          DMG_PATH="$DMG_PATH" \
           LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-rehearsal-launch.log" \
           ./scripts/run-packaged-launch-smoke.sh
 
@@ -88,7 +95,9 @@ jobs:
         with:
           name: release-package-preflight
           path: |
-            ${{ env.ARCHIVE }}
+            ${{ env.APP_PATH }}
+            ${{ env.DMG_PATH }}
+            ${{ env.CHECKSUM_PATH }}
             native/build/logs/**
           retention-days: ${{ env.RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS }}
 
@@ -112,9 +121,12 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          if [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" && -n "$APPLE_NOTARY_PROFILE" && -n "$KEYCHAIN_PASSWORD" ]]; then
+          if [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" && -n "$APPLE_NOTARY_PROFILE" && -n "$APPLE_NOTARY_APPLE_ID" && -n "$APPLE_NOTARY_TEAM_ID" && -n "$APPLE_NOTARY_PASSWORD" && -n "$KEYCHAIN_PASSWORD" ]]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::Signing secrets not configured — skipping sign/notarize dry run"
@@ -137,18 +149,28 @@ jobs:
           name: release-package-preflight
           path: ${{ runner.temp }}/release-package-preflight
 
-      - name: Extract packaged app
+      - name: Resolve packaged app paths
         run: |
-          ARCHIVE="$(find "$RUNNER_TEMP/release-package-preflight" -name 'Pnevma-rehearsal-macos-arm64.tar.gz' -print -quit)"
-          test -n "$ARCHIVE"
+          APP_PATH="$(find "$RUNNER_TEMP/release-package-preflight" -type d -name 'Pnevma.app' -print -quit)"
+          test -n "$APP_PATH"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
           mkdir -p "$RUNNER_TEMP/release-sign"
-          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/release-sign"
-          echo "APP_PATH=$RUNNER_TEMP/release-sign/Pnevma.app" >> "$GITHUB_ENV"
+          {
+            echo "APP_PATH=$APP_PATH"
+            echo "VERSION=$VERSION"
+            echo "DMG_PATH=$RUNNER_TEMP/release-sign/Pnevma-${VERSION}-macos-arm64.dmg"
+            echo "CHECKSUM_PATH=$RUNNER_TEMP/release-sign/Pnevma-${VERSION}-macos-arm64.dmg.sha256"
+          } >> "$GITHUB_ENV"
+          mkdir -p release-evidence
 
       - name: Import signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           CERT_PATH="$RUNNER_TEMP/certificate.p12"
@@ -160,39 +182,73 @@ jobs:
           security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
+          xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" \
+            --keychain "$KEYCHAIN_PATH"
+          echo "APPLE_NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Sign app
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
+          SIGNING_KEYCHAIN_PATH: ${{ env.APPLE_NOTARY_KEYCHAIN }}
+        run: APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh | tee release-evidence/app-sign.txt
+
+      - name: Check signed app entitlements
+        run: APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh | tee release-evidence/app-entitlements-check.txt
 
       - name: Notarize app
         env:
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh
+        run: APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh | tee release-evidence/app-notarize.txt
 
       - name: Staple and verify
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh
+        run: APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh | tee release-evidence/app-staple-verify.txt
+
+      - name: Package signed DMG
+        run: |
+          APP_PATH="$APP_PATH" \
+          DMG_PATH="$DMG_PATH" \
+          CHECKSUM_PATH="$CHECKSUM_PATH" \
+          ./scripts/release-macos-package-dmg.sh | tee release-evidence/dmg-package.txt
+
+      - name: Sign DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          SIGNING_KEYCHAIN_PATH: ${{ env.APPLE_NOTARY_KEYCHAIN }}
+        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-sign.sh | tee release-evidence/dmg-sign.txt
+
+      - name: Notarize DMG
+        env:
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-notarize.sh | tee release-evidence/dmg-notarize.txt
+
+      - name: Staple and verify DMG
+        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-staple-verify.sh | tee release-evidence/dmg-staple-verify.txt
 
       - name: Run packaged launch smoke after stapling
         run: |
-          APP_PATH="$APP_PATH" \
-          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-rehearsal-stapled-launch.log" \
+          DMG_PATH="$DMG_PATH" \
+          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-rehearsal-dmg-launch.log" \
           ./scripts/run-packaged-launch-smoke.sh
 
       - name: Collect release evidence
         run: |
-          mkdir -p release-evidence
-          APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh > release-evidence/entitlements-check.txt
-          codesign -d --entitlements :- "$APP_PATH" > release-evidence/entitlements.plist 2>/dev/null
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH" > release-evidence/codesign-verify.txt 2>&1
-          spctl --assess --type exec --verbose=4 "$APP_PATH" > release-evidence/spctl.txt 2>&1
+          codesign -d --entitlements :- "$APP_PATH" > release-evidence/app-entitlements.plist 2>/dev/null
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH" > release-evidence/app-codesign-verify.txt 2>&1
+          spctl --assess --type exec --verbose=4 "$APP_PATH" > release-evidence/app-spctl.txt 2>&1
+          codesign --verify --verbose=2 "$DMG_PATH" > release-evidence/dmg-codesign-verify.txt 2>&1
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" > release-evidence/dmg-spctl.txt 2>&1
+          cp "$CHECKSUM_PATH" release-evidence/
 
       - name: Upload release dry-run evidence
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: release-sign-notarize-dry-run
           path: |
+            ${{ env.DMG_PATH }}
+            ${{ env.CHECKSUM_PATH }}
             release-evidence/**
             native/build/logs/**
           retention-days: ${{ env.RELEASE_REHEARSAL_ARTIFACT_RETENTION_DAYS }}

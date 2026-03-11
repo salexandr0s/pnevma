@@ -62,10 +62,12 @@
 		814A8D45A056D95FB4F60CF7 /* WorkflowComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4794D322DD90D3AF023D7349 /* WorkflowComponents.swift */; };
 		82AAFC84C2E2B5A74C9611E9 /* GhosttyThemeBrowserViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56FFA62C53B156737FB105D1 /* GhosttyThemeBrowserViewModel.swift */; };
 		85D62E9F841A1785E787BBE0 /* SidebarToolItemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63BD67A7F3112CAA1C86EC8D /* SidebarToolItemTests.swift */; };
+		8D91908BEC5077C385A92F85 /* ProviderUsageUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0038E0CFBF83A217D8CD6F5 /* ProviderUsageUI.swift */; };
 		8DFFD6BE13FCA68D148972DF /* AnalyticsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49F50D96B00FEA12C3609484 /* AnalyticsPane.swift */; };
 		8EDFEC8F919D2DDBA67989C0 /* PnevmaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9439B284463792B5897069AB /* PnevmaTests.swift */; };
 		8F808B9FE8967F0E61B6E407 /* DailyBriefModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 894D9B98602B0C07B8E14A91 /* DailyBriefModels.swift */; };
 		911D8778472DAA448B2A5B9F /* PnevmaBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828FFB7F22FC420210D6AC17 /* PnevmaBridge.swift */; };
+		9293129C4B4204BEF5470D0C /* ProviderUsageStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 961D96CD857A757E6A4D1AB4 /* ProviderUsageStoreTests.swift */; };
 		946B6A90DBBA4FD2BC43CD67 /* BrowserFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0A1DBF6363C1B411F7A7E4 /* BrowserFind.swift */; };
 		959DD98492FA05388B3126AF /* DiffModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6491699B8E190F510BA8274F /* DiffModels.swift */; };
 		9FCF28D3EF23A47A0B5743D9 /* GhosttyThemeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62741B6EA28060BADC0E8C4D /* GhosttyThemeProvider.swift */; };
@@ -221,6 +223,7 @@
 		9487127BAE20CEC7D51CF580 /* PnevmaUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaUITestCase.swift; sourceTree = "<group>"; };
 		94DE8468190157901DC6F08A /* WorkspaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManagerTests.swift; sourceTree = "<group>"; };
 		94FA64B07BFC3DEF5B13EE6D /* TitlebarActionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TitlebarActionsView.swift; sourceTree = "<group>"; };
+		961D96CD857A757E6A4D1AB4 /* ProviderUsageStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageStoreTests.swift; sourceTree = "<group>"; };
 		97B09EA1F6E0490ED9FB92B0 /* BrowserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModels.swift; sourceTree = "<group>"; };
 		980546DDAF78E79A3DD73BE3 /* PaneLayoutEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngine.swift; sourceTree = "<group>"; };
 		9898DF3A58726617A4A1C216 /* readability.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = readability.min.js; sourceTree = "<group>"; };
@@ -238,6 +241,7 @@
 		A99AD2ED9E04B529C0A40432 /* AnalyticsPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsPaneTests.swift; sourceTree = "<group>"; };
 		AB2ABF5369D15A88A22276EB /* ReviewPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewPane.swift; sourceTree = "<group>"; };
 		AC189336BEE185BB13D2ED00 /* SidebarToolButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarToolButton.swift; sourceTree = "<group>"; };
+		B0038E0CFBF83A217D8CD6F5 /* ProviderUsageUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageUI.swift; sourceTree = "<group>"; };
 		B0F8F30B2834C839A23EF433 /* NotificationsPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsPaneTests.swift; sourceTree = "<group>"; };
 		B452A6B7E71B07847C6CB3BC /* WorkspaceTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTabTests.swift; sourceTree = "<group>"; };
 		B6800D33AEB839FC8E6DE560 /* AppLaunchContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLaunchContextTests.swift; sourceTree = "<group>"; };
@@ -341,6 +345,7 @@
 				77B834396916F6473B7B5042 /* NotificationsPane.swift */,
 				196C36D831D8FBE7FA0F8069 /* NotificationsViewModel.swift */,
 				B93BC7712A7A9D828EE8FCB6 /* PaneProtocol.swift */,
+				B0038E0CFBF83A217D8CD6F5 /* ProviderUsageUI.swift */,
 				7FEF7CEEB10962C75ABA7BC2 /* ReplayPane.swift */,
 				7B462FBAB0921D0CE2AA439E /* ReviewModels.swift */,
 				AB2ABF5369D15A88A22276EB /* ReviewPane.swift */,
@@ -465,6 +470,7 @@
 				B0F8F30B2834C839A23EF433 /* NotificationsPaneTests.swift */,
 				309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */,
 				9439B284463792B5897069AB /* PnevmaTests.swift */,
+				961D96CD857A757E6A4D1AB4 /* ProviderUsageStoreTests.swift */,
 				E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */,
 				4DA8D93A9DA7AD679F94E734 /* RulesManagerPaneTests.swift */,
 				7560B255B6D2B74ABC51407F /* SessionBridgeTests.swift */,
@@ -721,6 +727,7 @@
 				03D7C347F2A9A3C4B7F27DE9 /* NotificationsPaneTests.swift in Sources */,
 				40F4C483EED0254A1A42CD74 /* PaneLayoutEngineTests.swift in Sources */,
 				8EDFEC8F919D2DDBA67989C0 /* PnevmaTests.swift in Sources */,
+				9293129C4B4204BEF5470D0C /* ProviderUsageStoreTests.swift in Sources */,
 				C03D2547C25174593CC629C5 /* ReplayPaneTests.swift in Sources */,
 				AEFE6A15B8B4E5EF3094B63D /* RulesManagerPaneTests.swift in Sources */,
 				D1A00B8413239A2FEC022E28 /* SessionBridgeTests.swift in Sources */,
@@ -788,6 +795,7 @@
 				BF980285DCD2037C225FDBD4 /* PnevmaApp.swift in Sources */,
 				911D8778472DAA448B2A5B9F /* PnevmaBridge.swift in Sources */,
 				46A93EAACB88DED2171BCE94 /* PnevmaJSON.swift in Sources */,
+				8D91908BEC5077C385A92F85 /* ProviderUsageUI.swift in Sources */,
 				05F0F974E55AA38AB470D415 /* ReducedMotionHelper.swift in Sources */,
 				F5F79F02C1F4D95DC5B3F83B /* ReplayPane.swift in Sources */,
 				573E73105E89966185B75A13 /* ReviewModels.swift in Sources */,

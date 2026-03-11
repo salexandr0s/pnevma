@@ -149,6 +149,9 @@ jobs:
             echo "WARNING: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
           fi
 
+      - name: Check generated Xcode project parity
+        run: just xcodegen-check
+
       - name: Build Ghostty xcframework
         run: just ghostty-build
 

@@ -5,6 +5,14 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE_DIR="$ROOT_DIR/native"
 FAILURES=0
 RELEASE_REQUIRE_SIGNING_ENV="${RELEASE_REQUIRE_SIGNING_ENV:-0}"
+PREVIEW_ARTIFACT_DIR=""
+
+cleanup() {
+  if [[ -n "$PREVIEW_ARTIFACT_DIR" && -d "$PREVIEW_ARTIFACT_DIR" ]]; then
+    rm -rf "$PREVIEW_ARTIFACT_DIR"
+  fi
+}
+trap cleanup EXIT
 
 current_branch() {
   git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true
@@ -33,6 +41,10 @@ resolve_release_app_path() {
     fi
   done
   printf '%s\n' "$NATIVE_DIR/build/Release/Pnevma.app"
+}
+
+resolve_release_version() {
+  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$NATIVE_DIR/Info.plist"
 }
 
 print_check() {
@@ -168,8 +180,23 @@ else
   fail "checked-in entitlements do not match allowlist"
 fi
 
+release_version="$(resolve_release_version)"
+PREVIEW_ARTIFACT_DIR="$(mktemp -d -t pnevma-release-preflight.XXXXXX)"
+release_dmg_path="$PREVIEW_ARTIFACT_DIR/Pnevma-${release_version}-macos-arm64.dmg"
+release_checksum_path="${release_dmg_path}.sha256"
+
+print_check "package release DMG"
+if APP_PATH="$(resolve_release_app_path)" \
+  DMG_PATH="$release_dmg_path" \
+  CHECKSUM_PATH="$release_checksum_path" \
+  ./scripts/release-macos-package-dmg.sh >/dev/null 2>&1; then
+  pass "package release DMG"
+else
+  fail "package release DMG"
+fi
+
 print_check "packaged launch smoke"
-if APP_PATH="$(resolve_release_app_path)" ./scripts/run-packaged-launch-smoke.sh >/dev/null 2>&1; then
+if DMG_PATH="$release_dmg_path" ./scripts/run-packaged-launch-smoke.sh >/dev/null 2>&1; then
   pass "packaged launch smoke succeeded"
 else
   fail "packaged launch smoke failed"

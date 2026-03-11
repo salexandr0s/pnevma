@@ -6,10 +6,18 @@ Pnevma is in the native macOS phase: the Rust workspace, Swift/AppKit shell, Gho
 
 Release hardening is the active priority until the exit bar in [`hardening-exit-criteria.md`](./hardening-exit-criteria.md) is met.
 
+Current release target:
+
+- version: `v0.1.1`
+- artifact: notarized, stapled `arm64` macOS `.dmg`
+- evidence: SBOM, entitlement output, effective entitlements, `codesign`,
+  `spctl`, notarization logs, stapling logs, checksum, and packaged launch
+  smoke output
+
 Primary remaining work:
 
 - stabilize native and release-rehearsal CI so `main` can reach 10 consecutive green runs
-- complete clean-machine install and launch validation for the website artifact
+- complete clean-machine install and launch validation for the website DMG artifact
 - finish any remaining remediation-plan items that still apply to the current codebase
 
 ## Confirmed In-Tree Capabilities
@@ -19,6 +27,7 @@ Primary remaining work:
 - remote HTTP/WebSocket server with request size limits, token auth, revocation, rate limiting, and Tailscale guard rails
 - CI security gates including `cargo audit`, `cargo deny`, secret scanning, and pinned GitHub Actions
 - release preflight, entitlement checks, signing/notarization scripts, and rehearsal workflows
+- documented `v0.1.1` release identity, DMG artifact target, and GitHub notarization secret contract
 - backend-backed global app settings in `~/.config/pnevma/config.toml`
 
 ## Source of Truth

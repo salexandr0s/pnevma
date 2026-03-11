@@ -10,7 +10,8 @@ Hardening is complete only when all of the following are true:
 2. Ghostty smoke runs in CI and is green.
 3. Native warning-free gates are enforced in CI for `swift test`, `xcodebuild build`, and `xcodebuild test`.
 4. Release package preflight is green on `main`.
-5. Sign/notarize rehearsal is green anywhere the Apple signing secrets are available.
+5. Sign/notarize rehearsal is green anywhere the Apple signing and `notarytool`
+   credential secrets are available.
 6. `main` has at least 10 consecutive green runs across the native and release-rehearsal lanes.
 
 ## Merge Policy During Hardening
@@ -35,6 +36,9 @@ The following do not merge during hardening:
 - `CI / Native app build`
 - `Release Rehearsal / Release package preflight`
 - `Release Rehearsal / Release sign/notarize dry run`
+
+The rehearsal lanes are expected to validate the public `v0.1.1` DMG release
+path, not a legacy `tar.gz` archive path.
 
 ## Smoke Commands
 

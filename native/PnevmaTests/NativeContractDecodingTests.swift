@@ -40,6 +40,26 @@ final class NativeContractDecodingTests: XCTestCase {
     }
 
     func testUsageAnalyticsAndDailyBriefContractsDecodeRepresentativePayloads() throws {
+        let providerOverview = try decoder.decode(
+            ProviderUsageOverview.self,
+            from: Data(
+                #"{"generated_at":"2026-03-11T12:00:00Z","refresh_interval_seconds":120,"stale_after_seconds":120,"providers":[{"provider":"codex","display_name":"Codex","status":"ok","status_message":null,"repair_hint":null,"source":"cli-rpc","account_email":"user@example.com","plan_label":"Pro","last_refreshed_at":"2026-03-11T12:00:00Z","session_window":{"label":"Current Session","percent_used":25.0,"percent_remaining":75.0,"reset_at":"2026-03-11T17:00:00Z"},"weekly_window":{"label":"Current Week","percent_used":40.0,"percent_remaining":60.0,"reset_at":"2026-03-15T23:00:00Z"},"model_windows":[],"credit":{"label":"Credits","balance_display":"42.50","is_unlimited":false},"local_usage":{"requests":10,"input_tokens":1200,"output_tokens":2400,"total_tokens":3600,"top_model":"gpt-5-codex","peak_day":"2026-03-10","peak_day_tokens":2100},"dashboard_extras":null}]}"#.utf8
+            )
+        )
+        XCTAssertEqual(providerOverview.providers.first?.provider, "codex")
+        XCTAssertEqual(providerOverview.providers.first?.credit?.balanceDisplay, "42.50")
+        XCTAssertEqual(providerOverview.providers.first?.localUsage.totalTokens, 3600)
+
+        let providerSettings = try decoder.decode(
+            ProviderUsageSettingsSnapshot.self,
+            from: Data(
+                #"{"refresh_interval_seconds":120,"codex":{"source":"auto","web_extras_enabled":false,"keychain_prompt_policy":"user_action","manual_cookie_configured":true},"claude":{"source":"oauth","web_extras_enabled":true,"keychain_prompt_policy":"always","manual_cookie_configured":false}}"#.utf8
+            )
+        )
+        XCTAssertEqual(providerSettings.refreshIntervalSeconds, 120)
+        XCTAssertEqual(providerSettings.codex.source, "auto")
+        XCTAssertTrue(providerSettings.codex.manualCookieConfigured)
+
         let usageSnapshots = try decoder.decode(
             [ProviderUsageSnapshot].self,
             from: Data(

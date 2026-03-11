@@ -38,8 +38,8 @@ Pnevma already has significant release infrastructure in place:
 Current known gaps:
 
 - the remaining hardened-runtime exception is `com.apple.security.cs.disable-library-validation`; it still needs periodic revalidation against signed release builds,
-- the published artifact shape is currently `tar.gz`, which is not the intended final website UX,
-- versioning is inconsistent between the Rust workspace and the app bundle,
+- the public release target is `v0.1.1`, but the repository and bundle metadata still need to stay aligned on every candidate,
+- the DMG packaging and verification path must fully replace the current `tar.gz` rehearsal shape,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
 - rehearsal lanes must be green and stable on `main`.
 
@@ -96,7 +96,7 @@ Make versioning and product identity internally consistent across the bundle, re
 
 Tasks:
 
-- choose the first public version number,
+- ship `v0.1.1` as the first public notarized release,
 - align `Cargo.toml` workspace version with the app release versioning approach,
 - align `CFBundleShortVersionString`,
 - align `CFBundleVersion` with a monotonically increasing build number or release build sequence,
@@ -112,7 +112,7 @@ Checks:
 Exit criteria:
 
 - one documented versioning policy exists,
-- the next RC can be tagged without any metadata ambiguity.
+- the `v0.1.1` RC can be tagged without any metadata ambiguity.
 
 ### Phase 2: Apple credentials and operator setup
 
@@ -131,7 +131,12 @@ Tasks:
   - `APPLE_CERTIFICATE_PASSWORD`
   - `APPLE_SIGNING_IDENTITY`
   - `APPLE_NOTARY_PROFILE`
+  - `APPLE_NOTARY_APPLE_ID`
+  - `APPLE_NOTARY_TEAM_ID`
+  - `APPLE_NOTARY_PASSWORD`
   - `KEYCHAIN_PASSWORD`
+- have CI create the `notarytool` profile on the runner with
+  `xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" ... --keychain "$KEYCHAIN_PATH"`,
 - verify at least one maintainer machine can run the full sign and notarize flow locally.
 
 Checks:
@@ -177,6 +182,19 @@ Evidence to record for each retained entitlement:
 - observed failure mode when removed,
 - test command or smoke procedure that reproduces the failure.
 
+Current retained entitlements and rationale:
+
+- `com.apple.security.cs.disable-library-validation`
+  GhosttyKit must load under the hardened runtime, and the checked-in
+  entitlement file already records that Ghostty's own macOS app retains the
+  same exception. Keep it until a signed release build proves GhosttyKit can
+  launch, render, and accept interactive input without it.
+- `com.apple.security.network.client`
+  The shipping app initiates outbound connections for GitHub release version
+  checks and optionally for remote access, Tailscale discovery, provider CLI
+  traffic, and other maintainer-triggered network paths. Removing it would
+  knowingly break supported release behavior.
+
 Exit criteria:
 
 - the entitlement list is minimized,
@@ -200,7 +218,7 @@ Acceptable fallback:
 Tasks:
 
 - stop treating `tar.gz` as the final public artifact,
-- choose `.dmg` or ZIP as the initial website distribution format,
+- ship a stapled `.dmg` as the initial website distribution format,
 - ensure the published artifact is created after signing, notarization, and stapling,
 - verify the artifact preserves bundle integrity after download and extraction,
 - update the release workflow to publish the same artifact that was validated during rehearsal,

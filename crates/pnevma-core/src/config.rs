@@ -672,10 +672,7 @@ fn validate_global_config(cfg: &GlobalConfig) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn validate_usage_provider_config(
-    cfg: &UsageProviderConfig,
-    label: &str,
-) -> Result<(), CoreError> {
+fn validate_usage_provider_config(cfg: &UsageProviderConfig, label: &str) -> Result<(), CoreError> {
     if cfg.source != "auto" && cfg.source != "cli" && cfg.source != "oauth" && cfg.source != "local"
     {
         return Err(CoreError::InvalidConfig(format!(

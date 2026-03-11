@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENTITLEMENTS_PATH="${ENTITLEMENTS_PATH:-$ROOT_DIR/native/Pnevma/Pnevma.entitlements}"
+SIGNING_KEYCHAIN_PATH="${SIGNING_KEYCHAIN_PATH:-}"
 
 # Default: detect the xcodebuild release output location.
 # Override APP_PATH to use a custom location.
@@ -37,6 +38,11 @@ if [[ ! -e "$SIGN_TARGET_PATH" ]]; then
   exit 1
 fi
 
+CODESIGN_ARGS=(--force --timestamp --sign "$APPLE_SIGNING_IDENTITY")
+if [[ -n "$SIGNING_KEYCHAIN_PATH" ]]; then
+  CODESIGN_ARGS+=(--keychain "$SIGNING_KEYCHAIN_PATH")
+fi
+
 if [[ -d "$SIGN_TARGET_PATH" && "$SIGN_TARGET_PATH" == *.app ]]; then
   echo "Signing app bundle $SIGN_TARGET_PATH"
 
@@ -45,36 +51,35 @@ if [[ -d "$SIGN_TARGET_PATH" && "$SIGN_TARGET_PATH" == *.app ]]; then
     exit 1
   fi
 
+  # Retry safety: interrupted codesign runs can leave .cstemp files behind.
+  find "$SIGN_TARGET_PATH" -name "*.cstemp" -delete
+
   # Sign embedded frameworks/dylibs first (inside-out signing), then the outer app.
   if [[ -d "$SIGN_TARGET_PATH/Contents/Frameworks" ]]; then
     find "$SIGN_TARGET_PATH/Contents/Frameworks" \( -name "*.framework" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' fw; do
       echo "Signing embedded: $fw"
-      codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$fw"
+      codesign "${CODESIGN_ARGS[@]}" --options runtime "$fw"
     done
   fi
 
   codesign \
-    --force \
+    "${CODESIGN_ARGS[@]}" \
     --options runtime \
-    --timestamp \
     --entitlements "$ENTITLEMENTS_PATH" \
-    --sign "$APPLE_SIGNING_IDENTITY" \
     "$SIGN_TARGET_PATH"
 
   echo "Verifying app signature"
   codesign --verify --deep --strict --verbose=2 "$SIGN_TARGET_PATH"
-  spctl --assess --type execute --verbose=4 "$SIGN_TARGET_PATH"
-  echo "Signed app ready: $SIGN_TARGET_PATH"
+  echo "Signed app ready for notarization: $SIGN_TARGET_PATH"
   exit 0
 fi
 
 if [[ -f "$SIGN_TARGET_PATH" && "$SIGN_TARGET_PATH" == *.dmg ]]; then
   echo "Signing disk image $SIGN_TARGET_PATH"
-  codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$SIGN_TARGET_PATH"
+  codesign "${CODESIGN_ARGS[@]}" "$SIGN_TARGET_PATH"
   echo "Verifying disk image signature"
   codesign --verify --verbose=2 "$SIGN_TARGET_PATH"
-  spctl --assess --type open --context context:primary-signature --verbose=4 "$SIGN_TARGET_PATH"
-  echo "Signed disk image ready: $SIGN_TARGET_PATH"
+  echo "Signed disk image ready for notarization: $SIGN_TARGET_PATH"
   exit 0
 fi
 

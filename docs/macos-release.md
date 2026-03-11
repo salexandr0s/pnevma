@@ -1,6 +1,11 @@
 # macOS Release Signing + Notarization
 
-This repository ships a supported native macOS release flow for the notarized `.app` bundle:
+Pnevma `v0.1.1` targets a public website release distributed as a notarized,
+stapled `arm64` macOS `.dmg`. The release workflow still signs and validates the
+inner `.app` first, then packages and notarizes the public DMG artifact.
+
+This repository ships a supported native macOS release flow for the signed app
+bundle:
 
 - `scripts/release-preflight.sh`
 - `scripts/release-macos-sign.sh`
@@ -8,7 +13,9 @@ This repository ships a supported native macOS release flow for the notarized `.
 - `scripts/release-macos-staple-verify.sh`
 - `scripts/check-entitlements.sh`
 
-The legacy `scripts/release-updater-*.sh` helpers are intentionally disabled. Pnevma ships real version checking against GitHub releases but does not yet perform in-app self-update.
+The legacy `scripts/release-updater-*.sh` helpers are intentionally disabled.
+Pnevma ships real version checking against GitHub releases but does not yet
+perform in-app self-update.
 
 ## Prerequisites
 
@@ -34,6 +41,46 @@ xcrun notarytool store-credentials "pnevma-notary" \
 - `APP_PATH` (optional override for app bundle path)
 - `ZIP_PATH` (optional override for notarization archive path)
 
+## GitHub Actions secret setup
+
+GitHub Actions needs both signing material and the credentials required to
+create a `notarytool` keychain profile on the runner. Configure the repository
+secrets below before expecting the release-rehearsal notarization jobs to go
+green:
+
+- `APPLE_CERTIFICATE`: base64-encoded `Developer ID Application` `.p12`
+- `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12`
+- `APPLE_SIGNING_IDENTITY`: exact identity string, for example
+  `Developer ID Application: Your Name (TEAMID1234)`
+- `KEYCHAIN_PASSWORD`: password for the temporary runner keychain
+- `APPLE_NOTARY_PROFILE`: `pnevma-notary`
+- `APPLE_NOTARY_APPLE_ID`: Apple ID used for notarization
+- `APPLE_NOTARY_TEAM_ID`: Apple Developer Team ID
+- `APPLE_NOTARY_PASSWORD`: app-specific password for the Apple ID above
+
+Recommended setup from a maintainer machine:
+
+```bash
+gh secret set APPLE_CERTIFICATE --repo salexandr0s/pnevma < certificate.p12.base64
+gh secret set APPLE_CERTIFICATE_PASSWORD --repo salexandr0s/pnevma
+gh secret set APPLE_SIGNING_IDENTITY --repo salexandr0s/pnevma
+gh secret set KEYCHAIN_PASSWORD --repo salexandr0s/pnevma
+gh secret set APPLE_NOTARY_PROFILE --repo salexandr0s/pnevma --body "pnevma-notary"
+gh secret set APPLE_NOTARY_APPLE_ID --repo salexandr0s/pnevma
+gh secret set APPLE_NOTARY_TEAM_ID --repo salexandr0s/pnevma
+gh secret set APPLE_NOTARY_PASSWORD --repo salexandr0s/pnevma
+```
+
+The workflow should then run:
+
+```bash
+xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
+  --apple-id "$APPLE_NOTARY_APPLE_ID" \
+  --team-id "$APPLE_NOTARY_TEAM_ID" \
+  --password "$APPLE_NOTARY_PASSWORD" \
+  --keychain "$KEYCHAIN_PATH"
+```
+
 ## End-to-end flow
 
 Run preflight first:
@@ -48,7 +95,7 @@ Build the release app:
 just release
 ```
 
-Then sign, notarize, staple, and verify:
+Then sign, notarize, staple, and verify the inner app:
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
@@ -64,6 +111,44 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 spctl --assess --type exec --verbose=4 "$APP_PATH"
 ```
 
+Package and validate the public DMG artifact from the stapled app:
+
+```bash
+export VERSION="0.1.1"
+export DMG_DIR="$PWD/native/build/dmg"
+export DMG_STAGING="$DMG_DIR/Pnevma"
+export DMG_PATH="$PWD/Pnevma-${VERSION}-macos-arm64.dmg"
+
+mkdir -p "$DMG_STAGING"
+rm -rf "$DMG_STAGING/Pnevma.app" "$DMG_PATH"
+cp -R "$APP_PATH" "$DMG_STAGING/Pnevma.app"
+
+hdiutil create -volname "Pnevma" \
+  -srcfolder "$DMG_STAGING" \
+  -ov -format UDZO \
+  "$DMG_PATH"
+
+codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$DMG_PATH"
+xcrun notarytool submit "$DMG_PATH" \
+  --keychain-profile "$APPLE_NOTARY_PROFILE" \
+  --keychain "$APPLE_NOTARY_KEYCHAIN" \
+  --wait
+xcrun stapler staple "$DMG_PATH"
+xcrun stapler validate "$DMG_PATH"
+spctl --assess --type open --verbose=4 "$DMG_PATH"
+shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+```
+
+Final packaged-artifact rehearsal:
+
+```bash
+export DMG_MOUNT="$(mktemp -d /tmp/pnevma-dmg.XXXXXX)"
+hdiutil attach "$DMG_PATH" -mountpoint "$DMG_MOUNT" -nobrowse
+cp -R "$DMG_MOUNT/Pnevma.app" "$PWD/native/build/Pnevma-smoke.app"
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" ./scripts/run-packaged-launch-smoke.sh
+hdiutil detach "$DMG_MOUNT"
+```
+
 ## Evidence bundle
 
 Each release should preserve:
@@ -73,10 +158,25 @@ Each release should preserve:
 - `spctl --assess` output
 - effective entitlements plist
 - notarization/stapling logs
+- DMG checksum output
+- DMG mount or extraction smoke logs
 - remote/manual security test results
 
-The GitHub release workflow now uploads a `release-security-evidence` artifact containing the entitlement check, effective entitlements, `codesign`, and `spctl` output.
-Release SBOM and evidence artifacts are retained for 90 days in GitHub Actions.
+For `v0.1.1`, the expected evidence set is:
+
+- entitlement allowlist check output
+- effective entitlements plist from the signed app
+- `codesign --verify --deep --strict --verbose=2` output for the app
+- `spctl --assess --type execute --verbose=4` output for the app
+- app notarization submission and stapling logs
+- DMG notarization submission and stapling logs
+- packaged launch smoke output from a DMG-extracted app
+- `Pnevma-0.1.1-macos-arm64.dmg.sha256`
+- SBOM artifact(s)
+
+The GitHub release workflow should upload both the public DMG and a release
+evidence artifact containing the records above. Release SBOM and evidence
+artifacts are retained for 90 days in GitHub Actions.
 
 If the default keychain on a maintainer machine is not the login keychain, pass
 `APPLE_NOTARY_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"` so
@@ -91,6 +191,10 @@ Default release app path:
 Default notarization archive path:
 
 - `native/build/Pnevma-notarize.zip`
+
+Default public artifact path:
+
+- `Pnevma-0.1.1-macos-arm64.dmg`
 
 ## Version checking and update status
 
@@ -116,4 +220,4 @@ not added in this release. Distribution remains manual:
 
 1. build the native app,
 2. sign, notarize, and staple it,
-3. publish the notarized archive and release notes on GitHub.
+3. publish the notarized DMG, checksum, and release notes on GitHub.

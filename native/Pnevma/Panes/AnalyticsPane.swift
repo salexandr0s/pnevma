@@ -131,6 +131,7 @@ enum UsageScope: String, CaseIterable, Identifiable {
 
 enum UsageSegment: String, CaseIterable, Identifiable {
     case overview
+    case providers
     case explorer
     case diagnostics
 
@@ -139,6 +140,7 @@ enum UsageSegment: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .overview: return "Overview"
+        case .providers: return "Providers"
         case .explorer: return "Explorer"
         case .diagnostics: return "Diagnostics"
         }
@@ -398,6 +400,8 @@ final class UsageViewModel {
     @ObservationIgnored
     private var activationObserverID: UUID?
     @ObservationIgnored
+    private var navigationObserver: NSObjectProtocol?
+    @ObservationIgnored
     private var coreTask: Task<Void, Never>?
     @ObservationIgnored
     private var diagnosticsTask: Task<Void, Never>?
@@ -419,11 +423,24 @@ final class UsageViewModel {
                 self?.handleActivationState(state)
             }
         }
+        navigationObserver = NotificationCenter.default.addObserver(
+            forName: .analyticsSegmentRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyRequestedSegmentIfNeeded()
+            }
+        }
+        applyRequestedSegmentIfNeeded()
     }
 
     deinit {
         if let activationObserverID {
             activationHub.removeObserver(activationObserverID)
+        }
+        if let navigationObserver {
+            NotificationCenter.default.removeObserver(navigationObserver)
         }
     }
 
@@ -585,9 +602,18 @@ final class UsageViewModel {
 
     func setSegment(_ segment: UsageSegment) {
         self.segment = segment
+        guard segment != .providers else { return }
         if segment == .diagnostics, diagnostics == nil {
             loadDiagnostics(showLoadingState: true)
         }
+    }
+
+    func applyRequestedSegmentIfNeeded() {
+        guard let rawValue = AnalyticsNavigationHub.shared.takeRequestedSegmentRawValue(),
+              let segment = UsageSegment(rawValue: rawValue) else {
+            return
+        }
+        self.segment = segment
     }
 
     func setScope(_ scope: UsageScope) {
@@ -971,7 +997,9 @@ struct UsageView: View {
             toolbar
             Divider()
 
-            if let statusMessage = viewModel.statusMessage {
+            if viewModel.segment == .providers {
+                segmentContent
+            } else if let statusMessage = viewModel.statusMessage {
                 VStack(spacing: 8) {
                     if viewModel.isLoading {
                         ProgressView()
@@ -993,6 +1021,13 @@ struct UsageView: View {
     }
 
     private var toolbar: some View {
+        if viewModel.segment == .providers {
+            return AnyView(providersToolbar)
+        }
+        return AnyView(standardToolbar)
+    }
+
+    private var standardToolbar: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1027,6 +1062,39 @@ struct UsageView: View {
                     }
                     rangeSection
                 }
+            }
+        }
+        .padding(12)
+    }
+
+    private var providersToolbar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Provider Usage")
+                        .font(.headline)
+                    Text("Codex and Claude quota windows, credits, and local usage context")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") {
+                    Task { await ProviderUsageStore.shared.refresh(force: true) }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .keyboardShortcut("r", modifiers: .command)
+                .accessibilityLabel("Refresh provider usage")
+            }
+
+            UsageToolbarSection(title: "View") {
+                UsageChoiceBar(
+                    options: Array(UsageSegment.allCases),
+                    selection: viewModel.segment,
+                    title: \.label,
+                    action: { viewModel.setSegment($0) }
+                )
+                .frame(minWidth: 320)
             }
         }
         .padding(12)
@@ -1133,6 +1201,8 @@ struct UsageView: View {
         switch viewModel.segment {
         case .overview:
             OverviewSegment(viewModel: viewModel)
+        case .providers:
+            ProviderUsageDashboardView()
         case .explorer:
             ExplorerSegment(viewModel: viewModel)
         case .diagnostics:

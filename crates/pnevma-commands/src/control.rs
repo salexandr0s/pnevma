@@ -2055,11 +2055,13 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "usage.providers.overview" => {
-            let input: commands::ProviderUsageOverviewInput = serde_json::from_value(params.clone())
-                .unwrap_or(commands::ProviderUsageOverviewInput {
-                    force_refresh: false,
-                    local_usage_days: 30,
-                });
+            let input: commands::ProviderUsageOverviewInput = serde_json::from_value(
+                params.clone(),
+            )
+            .unwrap_or(commands::ProviderUsageOverviewInput {
+                force_refresh: false,
+                local_usage_days: 30,
+            });
             let overview = commands::get_provider_usage_overview(input, state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;

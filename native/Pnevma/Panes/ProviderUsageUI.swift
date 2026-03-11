@@ -148,7 +148,7 @@ private struct ProviderUsageProviderSettingsSave: Encodable {
     let clearManualCookie: Bool
 }
 
-enum ProviderUsageIndicatorState {
+enum ProviderUsageIndicatorState: Equatable {
     case hidden
     case ok
     case warning
@@ -461,10 +461,10 @@ struct ProviderUsagePopoverView: View {
 
     @MainActor
     init(
-        store: ProviderUsageStore = .shared,
+        store: ProviderUsageStore? = nil,
         onOpenDashboard: (() -> Void)? = nil
     ) {
-        _store = State(initialValue: store)
+        _store = State(initialValue: store ?? ProviderUsageStore.shared)
         self.onOpenDashboard = onOpenDashboard
     }
 
@@ -538,8 +538,8 @@ struct ProviderUsageDashboardView: View {
     @State private var store: ProviderUsageStore
 
     @MainActor
-    init(store: ProviderUsageStore = .shared) {
-        _store = State(initialValue: store)
+    init(store: ProviderUsageStore? = nil) {
+        _store = State(initialValue: store ?? ProviderUsageStore.shared)
     }
 
     var body: some View {

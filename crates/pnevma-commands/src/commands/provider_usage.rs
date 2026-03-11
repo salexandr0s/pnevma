@@ -1,7 +1,7 @@
 use super::*;
 use chrono::{DateTime, TimeZone, Utc};
 use pnevma_core::config::UsageProviderConfig;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -161,12 +161,9 @@ pub async fn get_provider_usage_overview(
         if let Some(snapshot) = codex_cached {
             Ok(snapshot)
         } else {
-            let snapshot = probe_provider_snapshot(
-                "codex",
-                &config.usage_providers.codex,
-                local_usage_days,
-            )
-            .await;
+            let snapshot =
+                probe_provider_snapshot("codex", &config.usage_providers.codex, local_usage_days)
+                    .await;
             if snapshot.status != "error" || snapshot.local_usage.total_tokens > 0 {
                 cache_snapshot(&codex_key, snapshot.clone());
             }
@@ -177,12 +174,9 @@ pub async fn get_provider_usage_overview(
         if let Some(snapshot) = claude_cached {
             Ok(snapshot)
         } else {
-            let snapshot = probe_provider_snapshot(
-                "claude",
-                &config.usage_providers.claude,
-                local_usage_days,
-            )
-            .await;
+            let snapshot =
+                probe_provider_snapshot("claude", &config.usage_providers.claude, local_usage_days)
+                    .await;
             if snapshot.status != "error" || snapshot.local_usage.total_tokens > 0 {
                 cache_snapshot(&claude_key, snapshot.clone());
             }
@@ -213,7 +207,9 @@ pub async fn get_provider_usage_overview(
     Ok(overview)
 }
 
-pub async fn get_provider_usage_settings(state: &AppState) -> Result<ProviderUsageSettingsView, String> {
+pub async fn get_provider_usage_settings(
+    state: &AppState,
+) -> Result<ProviderUsageSettingsView, String> {
     let config = load_effective_global_config_for_providers(state).await?;
     Ok(provider_usage_settings_from_config(&config).await)
 }
@@ -348,8 +344,10 @@ async fn probe_codex(config: &UsageProviderConfig) -> Result<ProviderProbeOutput
         ],
     );
     let mut windows = collect_windows(&output.rate_limits);
-    let session_window = take_matching_window(&mut windows, &["5h", "five_hour", "session", "primary"]);
-    let weekly_window = take_matching_window(&mut windows, &["weekly", "seven_day", "week", "secondary"]);
+    let session_window =
+        take_matching_window(&mut windows, &["5h", "five_hour", "session", "primary"]);
+    let weekly_window =
+        take_matching_window(&mut windows, &["weekly", "seven_day", "week", "secondary"]);
     let credit = extract_credit_view(&output.rate_limits, "Credits");
     Ok(ProviderProbeOutput {
         source: "cli-rpc".to_string(),
@@ -373,7 +371,10 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
         }
     }
 
-    Err("Claude OAuth usage is unavailable; only local usage data is currently available.".to_string())
+    Err(
+        "Claude OAuth usage is unavailable; only local usage data is currently available."
+            .to_string(),
+    )
 }
 
 struct CodexCliRpcOutput {
@@ -462,7 +463,10 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
     let rate_limits = responses
         .remove(&3)
         .ok_or_else(|| "codex account/rateLimits/read returned no result".to_string())?;
-    Ok(CodexCliRpcOutput { account, rate_limits })
+    Ok(CodexCliRpcOutput {
+        account,
+        rate_limits,
+    })
 }
 
 async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
@@ -488,7 +492,10 @@ async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
         .map_err(|e| format!("Claude OAuth request failed: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Claude OAuth request failed with {}", response.status()));
+        return Err(format!(
+            "Claude OAuth request failed with {}",
+            response.status()
+        ));
     }
 
     let value: Value = response
@@ -498,11 +505,7 @@ async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
 
     let account_email = extract_string_at_paths(
         &value,
-        &[
-            &["email"],
-            &["user", "email"],
-            &["account", "email"],
-        ],
+        &[&["email"], &["user", "email"], &["account", "email"]],
     );
     let plan_label = extract_string_at_paths(&value, &[&["rate_limit_tier"], &["plan"]]);
     let session_window = extract_named_window(&value, "five_hour", "Current Session")
@@ -530,7 +533,10 @@ async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
 
 async fn build_local_usage_summary(provider: &str, days: u32) -> ProviderLocalUsageSummaryView {
     let snapshots = get_local_usage(Some(days as i64)).await;
-    if let Some(snapshot) = snapshots.into_iter().find(|snapshot| snapshot.provider == provider) {
+    if let Some(snapshot) = snapshots
+        .into_iter()
+        .find(|snapshot| snapshot.provider == provider)
+    {
         ProviderLocalUsageSummaryView {
             requests: snapshot.totals.total_requests,
             input_tokens: snapshot.totals.total_input_tokens,
@@ -579,7 +585,7 @@ fn collect_windows_inner(value: &Value, path: &str, out: &mut Vec<ProviderQuotaW
     if extract_percent_used(value).is_some() {
         let label = path
             .split('.')
-            .last()
+            .next_back()
             .filter(|part| !part.is_empty())
             .unwrap_or("Window");
         out.push(window_from_value(&humanize_window_label(label), value));
@@ -605,7 +611,8 @@ fn collect_windows_inner(value: &Value, path: &str, out: &mut Vec<ProviderQuotaW
 }
 
 fn humanize_window_label(label: &str) -> String {
-    label.replace('_', " ")
+    label
+        .replace('_', " ")
         .split_whitespace()
         .map(|part| {
             let mut chars = part.chars();
@@ -630,8 +637,8 @@ fn take_matching_window(
 }
 
 fn extract_credit_view(value: &Value, label: &str) -> Option<ProviderCreditView> {
-    let unlimited = extract_bool_at_paths(value, &[&["unlimited"], &["credits", "unlimited"]])
-        .unwrap_or(false);
+    let unlimited =
+        extract_bool_at_paths(value, &[&["unlimited"], &["credits", "unlimited"]]).unwrap_or(false);
     let balance = extract_string_at_paths(
         value,
         &[
@@ -667,7 +674,12 @@ fn extract_extra_usage_credit(value: &Value) -> Option<ProviderCreditView> {
     let extra = value.get("extra_usage")?;
     let balance_display = extract_f64_at_paths(
         extra,
-        &[&["spend"], &["spent_usd"], &["cost_usd"], &["current_spend_usd"]],
+        &[
+            &["spend"],
+            &["spent_usd"],
+            &["cost_usd"],
+            &["current_spend_usd"],
+        ],
     )
     .map(|amount| format!("${amount:.2}"));
     let limit = extract_f64_at_paths(extra, &[&["limit"], &["limit_usd"], &["spend_limit_usd"]])
@@ -842,7 +854,11 @@ fn claude_oauth_candidate_paths() -> Result<Vec<PathBuf>, String> {
         .map(PathBuf::from)
         .ok_or_else(|| "HOME env var not set".to_string())?;
     paths.push(home.join(".claude").join(".credentials.json"));
-    paths.push(home.join(".config").join("claude").join(".credentials.json"));
+    paths.push(
+        home.join(".config")
+            .join("claude")
+            .join(".credentials.json"),
+    );
     Ok(paths)
 }
 
@@ -853,13 +869,15 @@ async fn provider_usage_settings_from_config(config: &GlobalConfig) -> ProviderU
             source: config.usage_providers.codex.source.clone(),
             web_extras_enabled: config.usage_providers.codex.web_extras_enabled,
             keychain_prompt_policy: config.usage_providers.codex.keychain_prompt_policy.clone(),
-            manual_cookie_configured: read_manual_cookie_configured(CODEX_MANUAL_COOKIE_ACCOUNT).await,
+            manual_cookie_configured: read_manual_cookie_configured(CODEX_MANUAL_COOKIE_ACCOUNT)
+                .await,
         },
         claude: ProviderUsageProviderSettingsView {
             source: config.usage_providers.claude.source.clone(),
             web_extras_enabled: config.usage_providers.claude.web_extras_enabled,
             keychain_prompt_policy: config.usage_providers.claude.keychain_prompt_policy.clone(),
-            manual_cookie_configured: read_manual_cookie_configured(CLAUDE_MANUAL_COOKIE_ACCOUNT).await,
+            manual_cookie_configured: read_manual_cookie_configured(CLAUDE_MANUAL_COOKIE_ACCOUNT)
+                .await,
         },
     }
 }
@@ -953,7 +971,9 @@ async fn delete_keychain_secret(service: &str, account: &str) -> Result<(), Stri
         if status.success() || status.code() == Some(44) {
             Ok(())
         } else {
-            Err(format!("failed to delete Keychain item {service}/{account}"))
+            Err(format!(
+                "failed to delete Keychain item {service}/{account}"
+            ))
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -963,7 +983,9 @@ async fn delete_keychain_secret(service: &str, account: &str) -> Result<(), Stri
     }
 }
 
-async fn load_effective_global_config_for_providers(state: &AppState) -> Result<GlobalConfig, String> {
+async fn load_effective_global_config_for_providers(
+    state: &AppState,
+) -> Result<GlobalConfig, String> {
     let current = state.current.lock().await;
     if let Some(ctx) = current.as_ref() {
         Ok(ctx.global_config.clone())
@@ -1027,7 +1049,10 @@ mod tests {
         let mut windows = collect_windows(&value);
         let session = take_matching_window(&mut windows, &["five"]);
         let week = take_matching_window(&mut windows, &["seven"]);
-        assert_eq!(session.as_ref().and_then(|item| item.percent_used), Some(24.0));
+        assert_eq!(
+            session.as_ref().and_then(|item| item.percent_used),
+            Some(24.0)
+        );
         assert_eq!(week.as_ref().and_then(|item| item.percent_used), Some(10.0));
     }
 
