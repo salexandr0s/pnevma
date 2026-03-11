@@ -48,7 +48,7 @@ struct SshManagerView: View {
                         Section("Tailscale Network") {
                             ForEach(viewModel.tailscaleDevices) { device in
                                 TailscaleRow(device: device,
-                                             onConnect: { viewModel.connectTailscale(device) })
+                                             onOpenWorkspace: { viewModel.openWorkspace(device) })
                             }
                         }
                     }
@@ -107,7 +107,7 @@ struct SshProfileRow: View {
 
 struct TailscaleRow: View {
     let device: TailscaleDevice
-    let onConnect: () -> Void
+    let onOpenWorkspace: () -> Void
 
     var body: some View {
         HStack {
@@ -126,8 +126,8 @@ struct TailscaleRow: View {
             Spacer()
 
             if device.isOnline {
-                Button("SSH") { onConnect() }
-                    .buttonStyle(.bordered)
+                Button("Open Workspace") { onOpenWorkspace() }
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
         }
@@ -181,7 +181,7 @@ struct AddSshProfileSheet: View {
 final class SshManagerPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "ssh"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "SSH" }
 
     override init(frame: NSRect) {

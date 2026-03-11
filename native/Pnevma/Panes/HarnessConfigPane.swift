@@ -375,7 +375,7 @@ extension HarnessConfigViewModel {
 final class HarnessConfigPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "harness_config"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Harness Config" }
 
     override init(frame: NSRect) {

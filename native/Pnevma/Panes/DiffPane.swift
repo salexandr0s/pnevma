@@ -195,7 +195,7 @@ struct DiffLineView: View {
 final class DiffPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "diff"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Diff" }
 
     override init(frame: NSRect) {

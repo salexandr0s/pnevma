@@ -402,7 +402,7 @@ final class ReplayViewModel {
 final class ReplayPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "replay"
-    let shouldPersist = false
+    let shouldPersist = true
     let sessionID: String?
     var title: String { "Replay" }
 

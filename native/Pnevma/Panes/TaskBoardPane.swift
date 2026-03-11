@@ -866,7 +866,7 @@ private struct TaskBoardSurface: View {
 final class TaskBoardPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "taskboard"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Task Board" }
 
     override init(frame: NSRect) {

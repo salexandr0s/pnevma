@@ -417,7 +417,7 @@ final class RulesManagerViewModel {
 final class RulesManagerPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "rules"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Rules" }
 
     override init(frame: NSRect) {

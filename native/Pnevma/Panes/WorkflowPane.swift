@@ -6,7 +6,7 @@ import Cocoa
 final class WorkflowPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "workflow"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Agents" }
 
     override init(frame: NSRect) {

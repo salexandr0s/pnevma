@@ -453,7 +453,7 @@ final class UsageViewModel {
 final class UsagePaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "analytics"  // Keep internal type for backwards compatibility
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Usage" }
 
     override init(frame: NSRect) {

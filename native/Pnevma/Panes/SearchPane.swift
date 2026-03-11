@@ -234,7 +234,7 @@ final class SearchViewModel {
 final class SearchPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "search"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Search" }
 
     override init(frame: NSRect) {

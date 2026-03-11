@@ -282,6 +282,37 @@ final class WorkspaceRestoreTests: XCTestCase {
         XCTAssertEqual(contentArea.activePaneView?.paneType, "terminal")
     }
 
+    func testSwitchingWorkspacesPreservesNativePaneDescriptor() {
+        let firstWorkspace = Workspace(name: "One")
+        let secondWorkspace = Workspace(name: "Two")
+        XCTAssertTrue(firstWorkspace.ensureActiveTabHasDisplayableRootPane())
+        XCTAssertTrue(secondWorkspace.ensureActiveTabHasDisplayableRootPane())
+
+        let (_, rootPane) = PaneFactory.makeWelcome()
+        let contentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            rootPaneView: rootPane
+        )
+
+        contentArea.setLayoutEngine(firstWorkspace.layoutEngine)
+
+        let workflowPane = WorkflowPaneView(frame: .zero)
+        let workflowPaneID = contentArea.replaceActivePane(with: workflowPane)
+
+        XCTAssertNotNil(workflowPaneID)
+        XCTAssertEqual(contentArea.activePaneView?.paneType, "workflow")
+        XCTAssertEqual(
+            workflowPaneID.flatMap { firstWorkspace.layoutEngine.persistedPane(for: $0)?.type },
+            "workflow"
+        )
+
+        contentArea.setLayoutEngine(secondWorkspace.layoutEngine)
+        contentArea.setLayoutEngine(firstWorkspace.layoutEngine)
+
+        XCTAssertEqual(contentArea.activePaneView?.paneType, "workflow")
+        XCTAssertNotEqual(contentArea.activePaneView?.paneType, "restore_error")
+    }
+
     func testTaskBoardViewModelWaitsForActivationBeforeLoading() async throws {
         let bus = ActivationPaneCommandBus()
         let activationHub = ActiveWorkspaceActivationHub()

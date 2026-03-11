@@ -127,7 +127,7 @@ struct NotificationRow: View {
 final class NotificationsPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "notifications"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Notifications" }
 
     override init(frame: NSRect) {

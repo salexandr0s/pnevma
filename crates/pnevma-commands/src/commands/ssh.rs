@@ -1,5 +1,6 @@
 use super::*;
 use pnevma_db::GlobalSshProfileRow;
+use std::collections::HashSet;
 
 // ─── SSH ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,14 @@ pub struct SshProfileView {
     pub source: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TailscaleDeviceView {
+    pub id: String,
+    pub hostname: String,
+    pub ip_address: String,
+    pub is_online: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +95,68 @@ fn global_ssh_profile_row_to_view(row: GlobalSshProfileRow) -> SshProfileView {
     }
 }
 
+fn ssh_profile_dedup_key(view: &SshProfileView) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        view.name.to_ascii_lowercase(),
+        view.host.to_ascii_lowercase(),
+        view.port,
+        view.user
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+        view.identity_file.as_deref().unwrap_or_default(),
+        view.proxy_jump.as_deref().unwrap_or_default()
+    )
+}
+
+fn split_legacy_tailscale_profiles(
+    views: Vec<SshProfileView>,
+) -> (Vec<String>, Vec<SshProfileView>) {
+    let mut legacy_ids = Vec::new();
+    let mut retained = Vec::new();
+
+    for view in views {
+        if view.source == "tailscale" {
+            legacy_ids.push(view.id.clone());
+            continue;
+        }
+        retained.push(view);
+    }
+
+    (legacy_ids, retained)
+}
+
+fn merge_saved_ssh_profile_views(
+    global_views: Vec<SshProfileView>,
+    project_views: Vec<SshProfileView>,
+) -> Vec<SshProfileView> {
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+
+    for view in global_views.into_iter().chain(project_views) {
+        if view.source == "tailscale" {
+            continue;
+        }
+        if !seen.insert(ssh_profile_dedup_key(&view)) {
+            continue;
+        }
+        merged.push(view);
+    }
+
+    merged.sort_by(|left, right| left.name.cmp(&right.name));
+    merged
+}
+
+fn tailscale_device_to_view(device: pnevma_ssh::TailscaleDevice) -> TailscaleDeviceView {
+    TailscaleDeviceView {
+        id: device.id,
+        hostname: device.hostname,
+        ip_address: device.ip_address,
+        is_online: device.is_online,
+    }
+}
+
 fn ssh_profile_to_global_row(profile: &pnevma_ssh::SshProfile) -> GlobalSshProfileRow {
     GlobalSshProfileRow {
         id: profile.id.clone(),
@@ -130,8 +201,40 @@ async fn list_project_ssh_profile_rows(state: &AppState) -> Result<Vec<SshProfil
         .map_err(|e| e.to_string())
 }
 
+async fn delete_legacy_global_tailscale_profiles(state: &AppState, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(global_db) = state.global_db() else {
+        return;
+    };
+    for id in ids {
+        if let Err(error) = global_db.delete_global_ssh_profile(id).await {
+            tracing::warn!(%id, error = %error, "failed to delete legacy global tailscale SSH profile");
+        }
+    }
+}
+
+async fn delete_legacy_project_tailscale_profiles(state: &AppState, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    let db = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| ctx.db.clone())
+    };
+    let Some(db) = db else {
+        return;
+    };
+    for id in ids {
+        if let Err(error) = db.delete_ssh_profile(id).await {
+            tracing::warn!(%id, error = %error, "failed to delete legacy project tailscale SSH profile");
+        }
+    }
+}
+
 pub async fn list_ssh_profiles(state: &AppState) -> Result<Vec<SshProfileView>, String> {
-    let mut views: Vec<SshProfileView> = state
+    let global_views: Vec<SshProfileView> = state
         .global_db()?
         .list_global_ssh_profiles()
         .await
@@ -140,15 +243,19 @@ pub async fn list_ssh_profiles(state: &AppState) -> Result<Vec<SshProfileView>, 
         .map(global_ssh_profile_row_to_view)
         .collect();
 
-    for row in list_project_ssh_profile_rows(state).await? {
-        if views.iter().any(|view| view.id == row.id) {
-            continue;
-        }
-        views.push(ssh_profile_row_to_view(row));
-    }
+    let project_views: Vec<SshProfileView> = list_project_ssh_profile_rows(state)
+        .await?
+        .into_iter()
+        .map(ssh_profile_row_to_view)
+        .collect();
 
-    views.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(views)
+    let (legacy_global_ids, global_views) = split_legacy_tailscale_profiles(global_views);
+    let (legacy_project_ids, project_views) = split_legacy_tailscale_profiles(project_views);
+
+    delete_legacy_global_tailscale_profiles(state, &legacy_global_ids).await;
+    delete_legacy_project_tailscale_profiles(state, &legacy_project_ids).await;
+
+    Ok(merge_saved_ssh_profile_views(global_views, project_views))
 }
 
 pub async fn upsert_ssh_profile(
@@ -190,21 +297,11 @@ pub async fn import_ssh_config(state: &AppState) -> Result<Vec<SshProfileView>, 
     Ok(views)
 }
 
-pub async fn discover_tailscale(state: &AppState) -> Result<Vec<SshProfileView>, String> {
-    let profiles = pnevma_ssh::discover_tailscale_devices()
+pub async fn discover_tailscale(_state: &AppState) -> Result<Vec<TailscaleDeviceView>, String> {
+    let devices = pnevma_ssh::discover_tailscale_devices()
         .await
         .map_err(|e| e.to_string())?;
-    let mut views = Vec::new();
-    for profile in &profiles {
-        let row = ssh_profile_to_global_row(profile);
-        state
-            .global_db()?
-            .upsert_global_ssh_profile(&row)
-            .await
-            .map_err(|e| e.to_string())?;
-        views.push(global_ssh_profile_row_to_view(row));
-    }
-    Ok(views)
+    Ok(devices.into_iter().map(tailscale_device_to_view).collect())
 }
 
 pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String, String> {
@@ -341,10 +438,12 @@ pub async fn generate_ssh_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_default_project_toml, is_supported_keybinding_action, normalize_layout_template_name,
-        pane_contains_unsaved_metadata, parse_osc_attention, project_is_initialized, redact_text,
-        session_state_may_be_unsaved,
+        build_default_project_toml, is_supported_keybinding_action, merge_saved_ssh_profile_views,
+        normalize_layout_template_name, pane_contains_unsaved_metadata, parse_osc_attention,
+        project_is_initialized, redact_text, session_state_may_be_unsaved,
+        split_legacy_tailscale_profiles, tailscale_device_to_view, SshProfileView,
     };
+    use chrono::Utc;
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -428,5 +527,119 @@ mod tests {
         assert!(is_supported_keybinding_action("task.dispatch_next_ready"));
         assert!(is_supported_keybinding_action("review.approve_next"));
         assert!(!is_supported_keybinding_action("custom.unknown"));
+    }
+
+    #[test]
+    fn saved_profile_merge_excludes_tailscale_and_semantic_duplicates() {
+        let now = Utc::now();
+        let global_manual = SshProfileView {
+            id: "global-manual".to_string(),
+            name: "Build Box".to_string(),
+            host: "build.example.com".to_string(),
+            port: 22,
+            user: Some("builder".to_string()),
+            identity_file: None,
+            proxy_jump: None,
+            tags: vec![],
+            source: "manual".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let project_duplicate = SshProfileView {
+            id: "project-duplicate".to_string(),
+            source: "project".to_string(),
+            ..global_manual.clone()
+        };
+        let global_tailscale = SshProfileView {
+            id: "global-ts".to_string(),
+            name: "worker.tailnet.ts.net".to_string(),
+            host: "worker.tailnet.ts.net".to_string(),
+            port: 22,
+            user: None,
+            identity_file: None,
+            proxy_jump: None,
+            tags: vec!["tailscale".to_string()],
+            source: "tailscale".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let unique_project = SshProfileView {
+            id: "project-unique".to_string(),
+            name: "Bastion".to_string(),
+            host: "bastion.example.com".to_string(),
+            port: 2222,
+            user: Some("ops".to_string()),
+            identity_file: Some("/tmp/id_ed25519".to_string()),
+            proxy_jump: None,
+            tags: vec![],
+            source: "project".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let merged = merge_saved_ssh_profile_views(
+            vec![global_manual.clone(), global_tailscale],
+            vec![project_duplicate, unique_project.clone()],
+        );
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].name, "Bastion");
+        assert_eq!(merged[1].name, "Build Box");
+        assert_eq!(merged[1].id, global_manual.id);
+        assert!(merged.iter().all(|view| view.source != "tailscale"));
+    }
+
+    #[test]
+    fn split_legacy_tailscale_profiles_collects_cleanup_ids() {
+        let now = Utc::now();
+        let legacy = SshProfileView {
+            id: "legacy-ts".to_string(),
+            name: "worker.tailnet.ts.net".to_string(),
+            host: "100.64.0.10".to_string(),
+            port: 22,
+            user: None,
+            identity_file: None,
+            proxy_jump: None,
+            tags: vec!["tailscale".to_string()],
+            source: "tailscale".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let saved = SshProfileView {
+            id: "saved-manual".to_string(),
+            name: "Build Box".to_string(),
+            host: "build.example.com".to_string(),
+            port: 22,
+            user: Some("builder".to_string()),
+            identity_file: None,
+            proxy_jump: None,
+            tags: vec![],
+            source: "manual".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let (legacy_ids, retained) =
+            split_legacy_tailscale_profiles(vec![legacy.clone(), saved.clone()]);
+
+        assert_eq!(legacy_ids, vec![legacy.id]);
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].id, saved.id);
+        assert_eq!(retained[0].source, "manual");
+    }
+
+    #[test]
+    fn tailscale_devices_map_to_device_views() {
+        let device = tailscale_device_to_view(pnevma_ssh::TailscaleDevice {
+            id: "peer-1".to_string(),
+            hostname: "worker.tailnet.ts.net".to_string(),
+            ip_address: "100.64.0.10".to_string(),
+            is_online: true,
+        });
+
+        assert_eq!(device.id, "peer-1");
+        assert_eq!(device.hostname, "worker.tailnet.ts.net");
+        assert_eq!(device.ip_address, "100.64.0.10");
+        assert!(device.is_online);
     }
 }

@@ -13,12 +13,17 @@ struct SidebarToolButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Label(tool.title, systemImage: tool.icon)
+            HStack(spacing: 10) {
+                Image(systemName: tool.icon)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(tool.isStub ? .tertiary : .secondary)
+                    .frame(width: 18, alignment: .center)
+
+                Text(tool.title)
                     .font(.callout)
-                    .labelStyle(.titleAndIcon)
                     .foregroundStyle(tool.isStub ? .tertiary : .primary)
-                Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 if tool.isStub {
                     Text("Soon")
                         .font(.system(size: 9, weight: .medium))
@@ -28,8 +33,9 @@ struct SidebarToolButton: View {
                         .background(Capsule().fill(Color.secondary.opacity(DesignTokens.Opacity.subtle)))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.vertical, 3)
             .background(
                 RoundedRectangle(cornerRadius: 5)
                     .fill(isActive ? Color.primary.opacity(DesignTokens.Opacity.light) :
@@ -37,6 +43,7 @@ struct SidebarToolButton: View {
             )
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 5))
         .onHover { isHovering = $0 }
         .contextMenu {
             if !tool.isStub {

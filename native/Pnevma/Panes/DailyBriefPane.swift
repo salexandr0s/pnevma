@@ -325,7 +325,7 @@ struct MetricCard: View {
 final class DailyBriefPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "daily_brief"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Daily Brief" }
 
     override init(frame: NSRect) {

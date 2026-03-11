@@ -1138,7 +1138,7 @@ struct TelemetrySettingsTab: View {
 final class SettingsPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "settings"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Settings" }
 
     override init(frame: NSRect) {

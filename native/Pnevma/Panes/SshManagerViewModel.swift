@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import Cocoa
 
 // MARK: - ViewModel
 
@@ -115,9 +116,13 @@ final class SshManagerViewModel {
         }
     }
 
-    func connectTailscale(_ device: TailscaleDevice) {
-        actionError = "Use Open Workspace to start a remote Tailscale session for \(device.hostname)."
-        scheduleDismissActionError()
+    func openWorkspace(_ device: TailscaleDevice) {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else {
+            actionError = "Workspace manager unavailable"
+            scheduleDismissActionError()
+            return
+        }
+        appDelegate.presentOpenRemoteWorkspacePanel(forTailscaleDevice: device)
     }
 
     private(set) var isLoading = false

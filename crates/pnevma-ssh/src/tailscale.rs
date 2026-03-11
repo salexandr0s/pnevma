@@ -1,17 +1,26 @@
 use std::{
     ffi::{OsStr, OsString},
+    net::IpAddr,
     path::PathBuf,
     sync::OnceLock,
 };
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use crate::error::SshError;
-use crate::profile::SshProfile;
 
 const TAILSCALE_BIN_ENV: &str = "PNEVMA_TAILSCALE_BIN";
 const FALLBACK_TAILSCALE_PATHS: &[&str] =
     &["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TailscaleDevice {
+    pub id: String,
+    pub hostname: String,
+    pub ip_address: String,
+    pub is_online: bool,
+}
 
 /// Validates Tailscale DNS names: only alphanumeric, dots, hyphens, underscores.
 fn is_valid_dns_name(name: &str) -> bool {
@@ -20,11 +29,40 @@ fn is_valid_dns_name(name: &str) -> bool {
     re.is_match(name)
 }
 
-/// Parse Tailscale status JSON into SSH profiles. Extracted for testability.
-pub(crate) fn parse_tailscale_status(json: &serde_json::Value) -> Vec<SshProfile> {
-    let mut profiles = vec![];
+fn preferred_tailscale_ip(peer: &serde_json::Value) -> Option<String> {
+    let candidates: Vec<String> = peer
+        .get("TailscaleIPs")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .chain(
+            peer.get("Addrs")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten(),
+        )
+        .filter_map(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    candidates
+        .iter()
+        .find(|value| value.parse::<IpAddr>().is_ok_and(|addr| addr.is_ipv4()))
+        .cloned()
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .find(|value| value.parse::<IpAddr>().is_ok())
+        })
+}
+
+/// Parse Tailscale status JSON into device rows for the SSH manager.
+pub(crate) fn parse_tailscale_status(json: &serde_json::Value) -> Vec<TailscaleDevice> {
+    let mut devices = vec![];
     if let Some(peers) = json.get("Peer").and_then(|p| p.as_object()) {
-        for (_key, peer) in peers {
+        for (peer_id, peer) in peers {
             let online = peer
                 .get("Online")
                 .and_then(|v| v.as_bool())
@@ -44,15 +82,21 @@ pub(crate) fn parse_tailscale_status(json: &serde_json::Value) -> Vec<SshProfile
             if !is_valid_dns_name(&dns_name) {
                 continue;
             }
-            let mut profile = SshProfile::new(dns_name.clone(), dns_name.clone(), "tailscale");
-            profile.tags = vec!["tailscale".to_string()];
-            profiles.push(profile);
+            let Some(ip_address) = preferred_tailscale_ip(peer) else {
+                continue;
+            };
+            devices.push(TailscaleDevice {
+                id: peer_id.to_string(),
+                hostname: dns_name,
+                ip_address,
+                is_online: true,
+            });
         }
     }
-    profiles
+    devices
 }
 
-pub async fn discover_tailscale_devices() -> Result<Vec<SshProfile>, SshError> {
+pub async fn discover_tailscale_devices() -> Result<Vec<TailscaleDevice>, SshError> {
     let tailscale_bin = resolve_tailscale_binary();
     let output = match tokio::process::Command::new(&tailscale_bin)
         .args(["status", "--json"])
@@ -123,27 +167,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_json_returns_empty_profiles() {
+    fn empty_json_returns_empty_devices() {
         let json = serde_json::json!({});
-        let profiles = parse_tailscale_status(&json);
-        assert!(profiles.is_empty());
+        let devices = parse_tailscale_status(&json);
+        assert!(devices.is_empty());
     }
 
     #[test]
-    fn online_peer_with_valid_dns_is_included() {
+    fn online_peer_with_valid_dns_and_ip_is_included() {
         let json = serde_json::json!({
             "Peer": {
                 "abc123": {
                     "Online": true,
-                    "DNSName": "mybox.tailnet.ts.net."
+                    "DNSName": "mybox.tailnet.ts.net.",
+                    "TailscaleIPs": ["100.64.0.10"]
                 }
             }
         });
-        let profiles = parse_tailscale_status(&json);
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].name, "mybox.tailnet.ts.net");
-        assert_eq!(profiles[0].source, "tailscale");
-        assert!(profiles[0].tags.contains(&"tailscale".to_string()));
+        let devices = parse_tailscale_status(&json);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "abc123");
+        assert_eq!(devices[0].hostname, "mybox.tailnet.ts.net");
+        assert_eq!(devices[0].ip_address, "100.64.0.10");
+        assert!(devices[0].is_online);
     }
 
     #[test]
@@ -152,12 +198,13 @@ mod tests {
             "Peer": {
                 "abc123": {
                     "Online": false,
-                    "DNSName": "offline-box.tailnet.ts.net."
+                    "DNSName": "offline-box.tailnet.ts.net.",
+                    "TailscaleIPs": ["100.64.0.11"]
                 }
             }
         });
-        let profiles = parse_tailscale_status(&json);
-        assert!(profiles.is_empty());
+        let devices = parse_tailscale_status(&json);
+        assert!(devices.is_empty());
     }
 
     #[test]
@@ -166,12 +213,13 @@ mod tests {
             "Peer": {
                 "abc123": {
                     "Online": true,
-                    "DNSName": "bad name with spaces"
+                    "DNSName": "bad name with spaces",
+                    "TailscaleIPs": ["100.64.0.12"]
                 }
             }
         });
-        let profiles = parse_tailscale_status(&json);
-        assert!(profiles.is_empty());
+        let devices = parse_tailscale_status(&json);
+        assert!(devices.is_empty());
     }
 
     #[test]
@@ -180,12 +228,13 @@ mod tests {
             "Peer": {
                 "abc123": {
                     "Online": true,
-                    "DNSName": ""
+                    "DNSName": "",
+                    "TailscaleIPs": ["100.64.0.13"]
                 }
             }
         });
-        let profiles = parse_tailscale_status(&json);
-        assert!(profiles.is_empty());
+        let devices = parse_tailscale_status(&json);
+        assert!(devices.is_empty());
     }
 
     #[test]
@@ -194,27 +243,31 @@ mod tests {
             "Peer": {
                 "abc123": {
                     "Online": true,
-                    "DNSName": "worker.example.ts.net."
+                    "DNSName": "worker.example.ts.net.",
+                    "TailscaleIPs": ["100.64.0.14"]
                 }
             }
         });
-        let profiles = parse_tailscale_status(&json);
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].name, "worker.example.ts.net");
+        let devices = parse_tailscale_status(&json);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].hostname, "worker.example.ts.net");
     }
 
     #[test]
     fn multiple_peers_mixed_online_status() {
         let json = serde_json::json!({
             "Peer": {
-                "peer1": { "Online": true,  "DNSName": "box1.ts.net." },
-                "peer2": { "Online": false, "DNSName": "box2.ts.net." },
-                "peer3": { "Online": true,  "DNSName": "box3.ts.net." }
+                "peer1": { "Online": true,  "DNSName": "box1.ts.net.", "TailscaleIPs": ["100.64.0.15"] },
+                "peer2": { "Online": false, "DNSName": "box2.ts.net.", "TailscaleIPs": ["100.64.0.16"] },
+                "peer3": { "Online": true,  "DNSName": "box3.ts.net.", "TailscaleIPs": ["100.64.0.17"] }
             }
         });
-        let profiles = parse_tailscale_status(&json);
-        assert_eq!(profiles.len(), 2);
-        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        let devices = parse_tailscale_status(&json);
+        assert_eq!(devices.len(), 2);
+        let names: Vec<&str> = devices
+            .iter()
+            .map(|device| device.hostname.as_str())
+            .collect();
         assert!(names.contains(&"box1.ts.net"));
         assert!(names.contains(&"box3.ts.net"));
     }
@@ -228,9 +281,55 @@ mod tests {
                 }
             }
         });
-        let profiles = parse_tailscale_status(&json);
+        let devices = parse_tailscale_status(&json);
         // Missing Online defaults to false → excluded
-        assert!(profiles.is_empty());
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn peer_without_tailscale_ip_is_skipped() {
+        let json = serde_json::json!({
+            "Peer": {
+                "abc123": {
+                    "Online": true,
+                    "DNSName": "worker.ts.net."
+                }
+            }
+        });
+        let devices = parse_tailscale_status(&json);
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn prefers_ipv4_tailscale_ip_when_multiple_addresses_exist() {
+        let json = serde_json::json!({
+            "Peer": {
+                "abc123": {
+                    "Online": true,
+                    "DNSName": "worker.ts.net.",
+                    "TailscaleIPs": ["fd7a:115c:a1e0::fa39:7f76", "100.126.127.118"]
+                }
+            }
+        });
+        let devices = parse_tailscale_status(&json);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].ip_address, "100.126.127.118");
+    }
+
+    #[test]
+    fn falls_back_to_addrs_when_tailscale_ips_are_missing() {
+        let json = serde_json::json!({
+            "Peer": {
+                "abc123": {
+                    "Online": true,
+                    "DNSName": "worker.ts.net.",
+                    "Addrs": ["100.64.0.18"]
+                }
+            }
+        });
+        let devices = parse_tailscale_status(&json);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].ip_address, "100.64.0.18");
     }
 
     #[test]

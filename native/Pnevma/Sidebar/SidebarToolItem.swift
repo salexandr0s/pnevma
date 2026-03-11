@@ -23,6 +23,7 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(id: "notifications", title: "Notifications", icon: "bell"),
     SidebarToolItem(id: "files", title: "File Browser", icon: "folder"),
     SidebarToolItem(id: "ssh", title: "SSH Manager", icon: "network"),
+    SidebarToolItem(id: "harness", title: "Harness Config", icon: "slider.horizontal.3"),
     SidebarToolItem(id: "replay", title: "Session Replay", icon: "play.rectangle"),
     SidebarToolItem(id: "browser", title: "Browser", icon: "globe"),
     SidebarToolItem(id: "search", title: "Search", icon: "magnifyingglass"),
@@ -44,6 +45,7 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "notifications",
             "files",
             "ssh",
+            "harness",
             "replay",
             "browser",
             "search",
@@ -55,7 +57,7 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "rules",
         ]
     } else {
-        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "browser", "analytics"]
+        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics"]
     }
 
     return allSidebarTools.filter { allowedIDs.contains($0.id) }

@@ -178,7 +178,7 @@ private struct ReviewTaskRow: View {
 final class ReviewPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "review"
-    let shouldPersist = false
+    let shouldPersist = true
     var title: String { "Review" }
 
     override init(frame: NSRect) {
