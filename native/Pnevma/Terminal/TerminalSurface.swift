@@ -495,9 +495,78 @@ class TerminalSurface {
             }
             return true
 
-        default:
-            // Window-management and other actions we don't handle.
+        case GHOSTTY_ACTION_OPEN_URL:
+            let v = action.action.open_url
+            if let urlPtr = v.url, v.len > 0 {
+                let data = Data(bytes: urlPtr, count: Int(v.len))
+                if let urlString = String(data: data, encoding: .utf8),
+                   let url = URL(string: urlString),
+                   let scheme = url.scheme?.lowercased(),
+                   ["http", "https", "mailto", "file"].contains(scheme) {
+                    Task { @MainActor in
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
             return true
+
+        case GHOSTTY_ACTION_MOUSE_VISIBILITY:
+            let v = action.action.mouse_visibility
+            Task { @MainActor in
+                switch v {
+                case GHOSTTY_MOUSE_HIDDEN:
+                    NSCursor.setHiddenUntilMouseMoves(true)
+                case GHOSTTY_MOUSE_VISIBLE:
+                    NSCursor.setHiddenUntilMouseMoves(false)
+                default:
+                    break
+                }
+            }
+            return true
+
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            let shape = action.action.mouse_shape
+            let surfacePtr = target.target.surface
+            Task { @MainActor in
+                NotificationCenter.default.post(
+                    name: .ghosttyMouseShape,
+                    object: nil,
+                    userInfo: ["surface": surfacePtr as Any, "shape": shape.rawValue]
+                )
+            }
+            return true
+
+        // Window/tab/split management — Pnevma manages its own layout,
+        // so consume these to prevent libghostty from attempting to handle them.
+        case GHOSTTY_ACTION_QUIT,
+             GHOSTTY_ACTION_NEW_WINDOW,
+             GHOSTTY_ACTION_NEW_TAB,
+             GHOSTTY_ACTION_NEW_SPLIT,
+             GHOSTTY_ACTION_CLOSE_TAB,
+             GHOSTTY_ACTION_CLOSE_WINDOW,
+             GHOSTTY_ACTION_TOGGLE_FULLSCREEN,
+             GHOSTTY_ACTION_TOGGLE_MAXIMIZE,
+             GHOSTTY_ACTION_TOGGLE_QUICK_TERMINAL,
+             GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE,
+             GHOSTTY_ACTION_TOGGLE_VISIBILITY,
+             GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM,
+             GHOSTTY_ACTION_MOVE_TAB,
+             GHOSTTY_ACTION_GOTO_TAB,
+             GHOSTTY_ACTION_GOTO_SPLIT,
+             GHOSTTY_ACTION_RESIZE_SPLIT,
+             GHOSTTY_ACTION_EQUALIZE_SPLITS,
+             GHOSTTY_ACTION_FLOAT_WINDOW,
+             GHOSTTY_ACTION_INITIAL_SIZE,
+             GHOSTTY_ACTION_RESET_WINDOW_SIZE,
+             GHOSTTY_ACTION_OPEN_CONFIG,
+             GHOSTTY_ACTION_CHECK_FOR_UPDATES:
+            return true
+
+        default:
+            // Return false for actions we don't explicitly handle so libghostty
+            // performs its default behavior (e.g. Kitty image rendering, mouse
+            // cursor shape, cell size reporting, etc.).
+            return false
         }
     }
 
@@ -571,4 +640,5 @@ extension Notification.Name {
     static let ghosttySetTitle = Notification.Name("ghosttySetTitle")
     static let ghosttyPwdChanged = Notification.Name("ghosttyPwdChanged")
     static let ghosttyRingBell = Notification.Name("ghosttyRingBell")
+    static let ghosttyMouseShape = Notification.Name("ghosttyMouseShape")
 }
