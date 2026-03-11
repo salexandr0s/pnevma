@@ -8,8 +8,9 @@ LOG_PATH="${LOG_PATH:-$ROOT_DIR/native/build/logs/packaged-launch-smoke.log}"
 TIMEOUT_SECS="${SMOKE_TIMEOUT_SECS:-20}"
 
 if [[ -n "$APP_PATH" && -n "$DMG_PATH" ]]; then
-  echo "error: provide only one of APP_PATH or DMG_PATH" >&2
-  exit 1
+  # GitHub Actions persists APP_PATH across steps; DMG_PATH is the explicit
+  # packaged-artifact target when both are present.
+  APP_PATH=""
 fi
 
 if [[ -z "$APP_PATH" && -z "$DMG_PATH" ]]; then
