@@ -265,6 +265,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
+        claimFirstResponderIfNeeded()
         forwardMousePosition(event)
         _ = forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
@@ -275,6 +276,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        claimFirstResponderIfNeeded()
         forwardMousePosition(event)
         if !forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event) {
             super.rightMouseDown(with: event)
@@ -293,6 +295,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
             super.otherMouseDown(with: event)
             return
         }
+        claimFirstResponderIfNeeded()
         forwardMousePosition(event)
         _ = forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
     }
@@ -313,6 +316,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     override func otherMouseDragged(with event: NSEvent) { forwardMousePosition(event) }
 
     override func scrollWheel(with event: NSEvent) {
+        claimFirstResponderIfNeeded()
         #if canImport(GhosttyKit)
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY
@@ -630,6 +634,12 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     private func extractText(_ string: Any) -> String? {
         (string as? NSAttributedString)?.string ?? (string as? String)
+    }
+
+    @discardableResult
+    private func claimFirstResponderIfNeeded() -> Bool {
+        guard window?.firstResponder !== self else { return true }
+        return window?.makeFirstResponder(self) ?? false
     }
 }
 

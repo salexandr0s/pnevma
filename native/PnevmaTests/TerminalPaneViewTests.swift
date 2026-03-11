@@ -2,6 +2,18 @@ import AppKit
 import XCTest
 @testable import Pnevma
 
+private struct TerminalPaneAnyEncodable: Encodable {
+    private let encodeValue: (Encoder) throws -> Void
+
+    init(_ value: any Encodable) {
+        self.encodeValue = value.encode(to:)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try encodeValue(encoder)
+    }
+}
+
 private actor TerminalPaneCommandBus: CommandCalling {
     private var createSessionCallCountValue = 0
 
@@ -70,6 +82,58 @@ private actor RetryingTerminalPaneCommandBus: CommandCalling {
 
     func createSessionCallCount() -> Int {
         createSessionCallCountValue
+    }
+
+    private func decode<T: Decodable>(_ json: String) throws -> T {
+        try PnevmaJSON.decoder().decode(T.self, from: Data(json.utf8))
+    }
+}
+
+private actor ExistingSessionTerminalPaneCommandBus: CommandCalling {
+    private var createSessionCallCountValue = 0
+    private var bindingCallCountValue = 0
+    private var lastBoundSessionIDValue: String?
+
+    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+        switch method {
+        case "session.new":
+            createSessionCallCountValue += 1
+            throw NSError(domain: "ExistingSessionTerminalPaneCommandBus", code: 1)
+        case "session.binding":
+            bindingCallCountValue += 1
+            if let params {
+                let data = try JSONEncoder().encode(TerminalPaneAnyEncodable(params))
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                lastBoundSessionIDValue = json?["session_id"] as? String ?? json?["sessionID"] as? String
+            }
+            let sessionID = lastBoundSessionIDValue ?? "session-existing"
+            return try decode(
+                #"""
+                {
+                  "session_id": "\#(sessionID)",
+                  "mode": "live_attach",
+                  "cwd": "/tmp/project",
+                  "env": [],
+                  "wait_after_command": false,
+                  "recovery_options": []
+                }
+                """#
+            )
+        default:
+            throw NSError(domain: "ExistingSessionTerminalPaneCommandBus", code: 2)
+        }
+    }
+
+    func createSessionCallCount() -> Int {
+        createSessionCallCountValue
+    }
+
+    func bindingCallCount() -> Int {
+        bindingCallCountValue
+    }
+
+    func lastBoundSessionID() -> String? {
+        lastBoundSessionIDValue
     }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
@@ -153,5 +217,88 @@ final class TerminalPaneViewTests: XCTestCase {
         try await waitUntil(timeoutNanos: 2_000_000_000) {
             await bus.createSessionCallCount() == 2 && pane.sessionID == "session-1"
         }
+    }
+
+    func testTerminalPaneLoadsExistingSessionIntoDeferredPane() async throws {
+        let bus = ExistingSessionTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        let priorWorkspaceProvider = PaneFactory.activeWorkspaceProvider
+        PaneFactory.sessionBridge = bridge
+        PaneFactory.activeWorkspaceProvider = {
+            Workspace(name: "Project", projectPath: "/tmp/project")
+        }
+        defer {
+            PaneFactory.sessionBridge = priorBridge
+            PaneFactory.activeWorkspaceProvider = priorWorkspaceProvider
+        }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        pane.loadSession(sessionID: "session-existing", workingDirectory: "/tmp/project")
+
+        try await waitUntil {
+            await bus.bindingCallCount() == 1 && pane.sessionID == "session-existing"
+        }
+
+        let createSessionCallCount = await bus.createSessionCallCount()
+        let lastBoundSessionID = await bus.lastBoundSessionID()
+
+        XCTAssertEqual(createSessionCallCount, 0)
+        XCTAssertEqual(lastBoundSessionID, "session-existing")
+        XCTAssertEqual(
+            TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
+            .managedSession
+        )
+    }
+
+    func testActiveTerminalPaneFocusesHostViewAfterJoiningWindow() throws {
+        let bus = TerminalPaneCommandBus()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: true,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .immediate,
+                remoteTarget: nil
+            ),
+            activationHub: ActiveWorkspaceActivationHub()
+        )
+        defer { pane.dispose() }
+
+        pane.activate()
+
+        let hostView = try XCTUnwrap(pane.subviews.compactMap { $0 as? TerminalHostView }.first)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: window.contentLayoutRect)
+        window.contentView = contentView
+
+        pane.frame = contentView.bounds
+        contentView.addSubview(pane)
+
+        XCTAssertTrue(window.firstResponder === hostView)
     }
 }

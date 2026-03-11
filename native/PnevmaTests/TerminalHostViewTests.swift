@@ -3,6 +3,10 @@ import CoreGraphics
 import XCTest
 @testable import Pnevma
 
+private final class FocusableTestView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+
 @MainActor
 final class TerminalHostViewTests: XCTestCase {
     override func setUp() {
@@ -51,5 +55,42 @@ final class TerminalHostViewTests: XCTestCase {
 
         XCTAssertEqual(event.type, .flagsChanged)
         XCTAssertNoThrow(hostView.flagsChanged(with: event))
+    }
+
+    func testMouseDownClaimsFirstResponder() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: window.contentLayoutRect)
+        window.contentView = contentView
+
+        let priorResponder = FocusableTestView(frame: NSRect(x: 20, y: 20, width: 120, height: 24))
+        let hostView = TerminalHostView(frame: NSRect(x: 20, y: 60, width: 200, height: 120))
+        contentView.addSubview(priorResponder)
+        contentView.addSubview(hostView)
+        window.makeKeyAndOrderFront(nil)
+
+        XCTAssertTrue(window.makeFirstResponder(priorResponder))
+        XCTAssertTrue(window.firstResponder === priorResponder)
+
+        let location = hostView.convert(NSPoint(x: 10, y: 10), to: nil)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: location,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        hostView.mouseDown(with: event)
+
+        XCTAssertTrue(window.firstResponder === hostView)
     }
 }

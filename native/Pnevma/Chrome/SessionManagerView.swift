@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionManagerView: View {
     var store: SessionStore
+    var onNewSession: (() -> Void)?
     @State private var showKillAllAlert = false
     @Environment(GhosttyThemeProvider.self) var theme
 
@@ -17,6 +18,16 @@ struct SessionManagerView: View {
                     .foregroundStyle(.secondary)
 
                 Button {
+                    onNewSession?()
+                } label: {
+                    Text("New")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .disabled(onNewSession == nil || !store.hasActiveProject)
+                .accessibilityLabel("New session")
+
+                Button {
                     showKillAllAlert = true
                 } label: {
                     Text("Kill All")
@@ -30,8 +41,9 @@ struct SessionManagerView: View {
                 Button {
                     store.refresh()
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Label("Refresh Sessions", systemImage: "arrow.clockwise")
                         .font(.caption)
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh sessions")
@@ -164,8 +176,9 @@ private struct SessionRow: View {
                 Button {
                     onKill()
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Label("Kill Session", systemImage: "xmark.circle.fill")
                         .font(.system(size: 14))
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(isHovering ? .red : .secondary.opacity(0.5))
                 }
                 .buttonStyle(.plain)
@@ -213,8 +226,9 @@ private struct SessionRow: View {
 
 struct SessionManagerPopoverView: View {
     var store: SessionStore
+    var onNewSession: (() -> Void)?
 
     var body: some View {
-        SessionManagerView(store: store)
+        SessionManagerView(store: store, onNewSession: onNewSession)
     }
 }

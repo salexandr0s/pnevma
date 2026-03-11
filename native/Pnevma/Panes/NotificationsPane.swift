@@ -3,9 +3,19 @@ import Observation
 import Cocoa
 
 struct NotificationsView: View {
-    @State private var viewModel = NotificationsViewModel.shared
+    @State private var viewModel: NotificationsViewModel
     @State private var showClearAllAlert = false
     @Environment(GhosttyThemeProvider.self) var theme
+
+    @MainActor
+    init(viewModel: NotificationsViewModel) {
+        _viewModel = State(initialValue: viewModel)
+    }
+
+    @MainActor
+    init() {
+        _viewModel = State(initialValue: NotificationsViewModel.shared)
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -68,6 +78,7 @@ struct NotificationsView: View {
         } message: {
             Text("This will remove all notifications.")
         }
+        .task { await viewModel.activate() }
         .accessibilityIdentifier("pane.notifications")
     }
 }

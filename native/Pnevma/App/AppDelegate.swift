@@ -292,6 +292,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Root placeholder pane
         let (_, rootPane) = PaneFactory.makeWelcome()
         contentAreaView = ContentAreaView(frame: windowContent.bounds, rootPaneView: rootPane)
+        contentAreaView?.availableLiveSessionsProvider = { [weak self] in
+            self?.sessionStore?.sessions ?? []
+        }
 
         contentAreaView?.onActivePaneChanged = { [weak self] _ in
             if let view = self?.contentAreaView?.activePaneView {
@@ -1170,23 +1173,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Open Workspace"
         alert.informativeText = "Choose whether to create a local project workspace or a remote SSH workspace."
+        let persistenceToggle = makePersistenceToggle()
+        let persistenceHelper = makePersistenceHelperLabel()
+        let accessory = NSStackView(views: [persistenceToggle, persistenceHelper])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 6
+        accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+        persistenceHelper.preferredMaxLayoutWidth = 320
+        alert.accessoryView = accessory
         alert.addButton(withTitle: "Local")
         alert.addButton(withTitle: "Remote")
         alert.addButton(withTitle: "Cancel")
 
+        let terminalMode: WorkspaceTerminalMode = persistenceToggle.state == .on ? .persistent : .nonPersistent
+
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            presentOpenLocalWorkspacePanel()
+            presentOpenLocalWorkspacePanel(terminalMode: terminalMode)
         case .alertSecondButtonReturn:
             Task { @MainActor [weak self] in
-                await self?.presentOpenRemoteWorkspacePanel()
+                await self?.presentOpenRemoteWorkspacePanel(terminalMode: terminalMode)
             }
         default:
             break
         }
     }
 
-    private func presentOpenLocalWorkspacePanel() {
+    private func presentOpenLocalWorkspacePanel(terminalMode: WorkspaceTerminalMode) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -1194,29 +1208,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.prompt = "Open Workspace"
         panel.message = "Select a local project directory"
 
-        let persistenceToggle = NSButton(
-            checkboxWithTitle: "Enable session persistence",
-            target: nil,
-            action: nil
-        )
-        persistenceToggle.state = .on
-        let helper = NSTextField(labelWithString: "Persistent workspaces use tmux-backed managed sessions. Unchecked starts a plain Ghostty shell.")
-        helper.textColor = .secondaryLabelColor
-        helper.lineBreakMode = .byWordWrapping
-        helper.maximumNumberOfLines = 0
-
-        let accessory = NSStackView(views: [persistenceToggle, helper])
-        accessory.orientation = .vertical
-        accessory.alignment = .leading
-        accessory.spacing = 8
-        accessory.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 0, right: 0)
-        helper.preferredMaxLayoutWidth = 320
-        panel.accessoryView = accessory
-
         guard panel.runModal() == .OK, let url = panel.url else { return }
         openLocalWorkspace(
             path: url.path,
-            terminalMode: persistenceToggle.state == .on ? .persistent : .nonPersistent
+            terminalMode: terminalMode
         )
     }
 
@@ -1231,7 +1226,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func presentOpenRemoteWorkspacePanel() async {
+    private func presentOpenRemoteWorkspacePanel(terminalMode: WorkspaceTerminalMode) async {
         guard let bus = commandBus else { return }
         guard ensureRemoteNativeToolingSupport() else { return }
 
@@ -1247,7 +1242,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let alert = NSAlert()
             alert.messageText = "Open Remote Workspace"
-            alert.informativeText = "Select an SSH preset, enter the remote project path, and choose whether the terminal session should persist. Native project tools use an sshfs mount of the remote workspace."
+            alert.informativeText = "Select an SSH preset and enter the remote project path. Native project tools use an sshfs mount of the remote workspace."
 
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
             profiles.forEach { profile in
@@ -1256,12 +1251,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let pathField = NSTextField(string: "~")
             pathField.placeholderString = "/path/to/project"
-            let persistenceToggle = NSButton(
-                checkboxWithTitle: "Enable session persistence",
-                target: nil,
-                action: nil
-            )
-            persistenceToggle.state = .on
 
             let profileLabel = NSTextField(labelWithString: "SSH Preset")
             let pathLabel = NSTextField(labelWithString: "Remote Project Path")
@@ -1270,7 +1259,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 popup,
                 pathLabel,
                 pathField,
-                persistenceToggle,
             ])
             accessory.orientation = .vertical
             accessory.alignment = .leading
@@ -1307,7 +1295,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             openRemoteWorkspace(
                 target: target,
-                terminalMode: persistenceToggle.state == .on ? .persistent : .nonPersistent
+                terminalMode: terminalMode
             )
         } catch {
             ToastManager.shared.show(
@@ -1339,12 +1327,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let pathField = NSTextField(string: "~")
         pathField.placeholderString = "/path/to/project"
 
-        let persistenceToggle = NSButton(
-            checkboxWithTitle: "Enable session persistence",
-            target: nil,
-            action: nil
-        )
-        persistenceToggle.state = .on
+        let persistenceToggle = makePersistenceToggle()
+        let persistenceHelper = makePersistenceHelperLabel()
 
         let accessory = NSStackView(views: [
             hostLabel,
@@ -1356,6 +1340,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             pathLabel,
             pathField,
             persistenceToggle,
+            persistenceHelper,
         ])
         accessory.orientation = .vertical
         accessory.alignment = .leading
@@ -1366,6 +1351,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         userField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         portField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        persistenceHelper.preferredMaxLayoutWidth = 360
         alert.accessoryView = accessory
         alert.addButton(withTitle: "Open Workspace")
         alert.addButton(withTitle: "Cancel")
@@ -1410,6 +1396,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ),
             terminalMode: persistenceToggle.state == .on ? .persistent : .nonPersistent
         )
+    }
+
+    private func makePersistenceToggle() -> NSButton {
+        let toggle = NSButton(
+            checkboxWithTitle: "Enable session persistence",
+            target: nil,
+            action: nil
+        )
+        toggle.state = .on
+        toggle.toolTip = "Persistent workspaces use tmux-backed managed sessions. Unchecked starts a plain shell."
+        toggle.setAccessibilityLabel("Enable session persistence")
+        return toggle
+    }
+
+    private func makePersistenceHelperLabel() -> NSTextField {
+        let label = NSTextField(labelWithString: "Persistent workspaces use tmux-backed managed sessions. Unchecked starts a plain shell.")
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        return label
     }
 
     private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) {
@@ -1625,6 +1631,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var notificationToolbarButton: NSButton?
     private weak var notificationBadge: BadgeOverlayView?
 
+    private func startSessionFromSessionManager() {
+        sessionsPopover?.performClose(nil)
+        newTerminal()
+    }
+
     private func showSessionManager() {
         if let popover = sessionsPopover, popover.isShown {
             popover.performClose(nil)
@@ -1638,7 +1649,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = NSHostingController(
-            rootView: SessionManagerPopoverView(store: sessionStore)
+            rootView: SessionManagerPopoverView(
+                store: sessionStore,
+                onNewSession: { [weak self] in self?.startSessionFromSessionManager() }
+            )
                 .environment(GhosttyThemeProvider.shared)
         )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)

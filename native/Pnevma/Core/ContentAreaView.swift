@@ -26,6 +26,9 @@ final class ContentAreaView: NSView {
     /// Called when a terminal notification fires on a pane.
     var onTerminalNotification: (() -> Void)?
 
+    /// Supplies backend-managed sessions that can be attached to empty terminals.
+    var availableLiveSessionsProvider: (() -> [LiveSession])?
+
     // MARK: - Init
 
     private var themeObserver: NSObjectProtocol?
@@ -691,6 +694,19 @@ final class ContentAreaView: NSView {
 
     // MARK: - Pane Context Menu
 
+    private func terminalPaneController(for paneID: PaneID) -> (any TerminalPaneControlling)? {
+        paneViews[paneID] as? any TerminalPaneControlling
+    }
+
+    private func liveSessionsForContextMenu() -> [LiveSession] {
+        (availableLiveSessionsProvider?() ?? []).filter(\.isActive)
+    }
+
+    private func sessionMenuTitle(for session: LiveSession) -> String {
+        let pidSuffix = session.pid.map { " (PID \($0))" } ?? ""
+        return "\(session.name) - \(session.shortCwd)\(pidSuffix)"
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard let (paneID, _) = paneViews.first(where: { $0.value.frame.contains(point) }) else {
@@ -716,22 +732,55 @@ final class ContentAreaView: NSView {
         splitDownItem.representedObject = paneID
         menu.addItem(splitDownItem)
 
-        if let terminalPane = paneViews[paneID] as? TerminalPaneView, terminalPane.hasActiveProcess {
+        if let terminalPane = terminalPaneController(for: paneID) {
             menu.addItem(.separator())
-            for agent in [AgentKind.claude, .codex] {
-                let item = NSMenuItem(
-                    title: "Launch \(agent.label)",
-                    action: #selector(contextMenuLaunchAgent(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = self
-                item.representedObject = ["paneID": paneID, "agent": agent] as [String: Any]
-                if let original = NSImage(named: agent.logoAsset),
-                   let image = original.copy() as? NSImage {
-                    image.size = NSSize(width: 14, height: 14)
-                    item.image = image
+
+            if terminalPane.canLoadExistingSessions {
+                let loadItem = NSMenuItem(title: "Load Session", action: nil, keyEquivalent: "")
+                let loadSubmenu = NSMenu()
+                let sessions = liveSessionsForContextMenu()
+
+                if sessions.isEmpty {
+                    let emptyItem = NSMenuItem(title: "No Active Sessions", action: nil, keyEquivalent: "")
+                    emptyItem.isEnabled = false
+                    loadSubmenu.addItem(emptyItem)
+                } else {
+                    for session in sessions {
+                        let item = NSMenuItem(
+                            title: sessionMenuTitle(for: session),
+                            action: #selector(contextMenuLoadSession(_:)),
+                            keyEquivalent: ""
+                        )
+                        item.target = self
+                        item.representedObject = [
+                            "paneID": paneID,
+                            "sessionID": session.id,
+                            "cwd": session.cwd,
+                        ] as [String: Any]
+                        loadSubmenu.addItem(item)
+                    }
                 }
-                menu.addItem(item)
+
+                loadItem.submenu = loadSubmenu
+                menu.addItem(loadItem)
+            }
+
+            if terminalPane.hasActiveProcess {
+                for agent in [AgentKind.claude, .codex] {
+                    let item = NSMenuItem(
+                        title: "Launch \(agent.label)",
+                        action: #selector(contextMenuLaunchAgent(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = ["paneID": paneID, "agent": agent] as [String: Any]
+                    if let original = NSImage(named: agent.logoAsset),
+                       let image = original.copy() as? NSImage {
+                        image.size = NSSize(width: 14, height: 14)
+                        item.image = image
+                    }
+                    menu.addItem(item)
+                }
             }
         }
 
@@ -805,11 +854,26 @@ final class ContentAreaView: NSView {
         replacePane(paneID, with: newPane)
     }
 
+    @objc private func contextMenuLoadSession(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: Any],
+              let paneID = info["paneID"] as? PaneID,
+              let sessionID = info["sessionID"] as? String
+        else {
+            return
+        }
+
+        let workingDirectory = info["cwd"] as? String
+        terminalPaneController(for: paneID)?.loadSession(
+            sessionID: sessionID,
+            workingDirectory: workingDirectory
+        )
+    }
+
     @objc private func contextMenuLaunchAgent(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? [String: Any],
               let paneID = info["paneID"] as? PaneID,
               let agent = info["agent"] as? AgentKind,
-              let terminalPane = paneViews[paneID] as? TerminalPaneView else { return }
+              let terminalPane = terminalPaneController(for: paneID) else { return }
         terminalPane.launchAgent(agent)
     }
 }

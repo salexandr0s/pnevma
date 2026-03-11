@@ -60,6 +60,17 @@ protocol PanePersistenceObservable: AnyObject {
     var onPersistedStateChange: ((PersistedPane) -> Void)? { get set }
 }
 
+@MainActor
+protocol TerminalPaneControlling: PaneContent {
+    var canLoadExistingSessions: Bool { get }
+    func loadSession(sessionID: String, workingDirectory: String?)
+    func launchAgent(_ agent: AgentKind)
+}
+
+extension TerminalPaneControlling {
+    var canLoadExistingSessions: Bool { !hasActiveProcess }
+}
+
 /// Default implementations for PaneContent.
 extension PaneContent {
     func activate() {}
@@ -150,6 +161,21 @@ extension RestoredPaneContainer: PanePersistenceObservable {
                 )
             }
         }
+    }
+}
+
+extension RestoredPaneContainer: TerminalPaneControlling {
+    var canLoadExistingSessions: Bool {
+        (wrapped as? any TerminalPaneControlling)?.canLoadExistingSessions ?? false
+    }
+
+    func loadSession(sessionID: String, workingDirectory: String?) {
+        (wrapped as? any TerminalPaneControlling)?
+            .loadSession(sessionID: sessionID, workingDirectory: workingDirectory)
+    }
+
+    func launchAgent(_ agent: AgentKind) {
+        (wrapped as? any TerminalPaneControlling)?.launchAgent(agent)
     }
 }
 
@@ -660,7 +686,7 @@ private struct ProjectOpenFailureEventPayload: Decodable {
 }
 
 /// Wraps TerminalHostView to conform to PaneContent.
-final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
+final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, TerminalPaneControlling {
     private static let maxManagedSessionProjectNotReadyRetries = 5
     private static let managedSessionRetryDelayNanos: UInt64 = 250_000_000
 
@@ -682,6 +708,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     private var recoveryOptions: [SessionRecoveryOption] = []
     private var awaitingProjectActivation = false
     private var projectNotReadyRetryCount = 0
+    private var isPaneActive = false
     private let activationHub: ActiveWorkspaceActivationHub
     var onPersistedStateChange: ((PersistedPane) -> Void)?
 
@@ -744,6 +771,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        syncHostViewFocus()
+    }
+
     override func becomeFirstResponder() -> Bool {
         guard let hostView else {
             return super.becomeFirstResponder()
@@ -752,6 +784,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
     }
 
     func activate() {
+        isPaneActive = true
         if hostView == nil, currentSessionID == nil, !launchMetadata.shouldAutoStart {
             launchMetadata = TerminalLaunchMetadata(
                 launchMode: launchMetadata.launchMode,
@@ -762,13 +795,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             loadOrRestoreSession()
             return
         }
-        if let hostView {
-            window?.makeFirstResponder(hostView)
-            hostView.setPaneFocused(true)
-        }
+        syncHostViewFocus()
     }
 
     func deactivate() {
+        isPaneActive = false
         if let hostView {
             if window?.firstResponder === hostView {
                 window?.makeFirstResponder(nil)
@@ -857,6 +888,18 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             return remoteTarget.remoteShellCommand
         }
         return AppRuntimeSettings.shared.normalizedDefaultShell
+    }
+
+    private func resolvedManagedSessionMetadata() -> TerminalLaunchMetadata {
+        if let workspace = PaneFactory.activeWorkspaceProvider?() {
+            return workspace.defaultTerminalMetadata(startBehavior: .immediate)
+        }
+
+        return TerminalLaunchMetadata(
+            launchMode: .managedSession,
+            startBehavior: .immediate,
+            remoteTarget: launchMetadata.remoteTarget
+        )
     }
 
     private func retryAfterProjectActivation() {
@@ -1098,6 +1141,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         }
         replaceContent(with: hostView)
         self.hostView = hostView
+        syncHostViewFocus()
         hostView.ensureSurfaceCreated()
     }
 
@@ -1168,13 +1212,14 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         }
         replaceContent(with: hostView)
         self.hostView = hostView
+        syncHostViewFocus()
         hostView.ensureSurfaceCreated()
     }
 
     private func showArchivedTerminal(_ binding: SessionBindingDescriptor) async {
         let title = "Session Ended"
         let message = "This terminal session is no longer live."
-        let detail = "Restored scrollback is available below. Use a recovery action to restart or reattach the backend session."
+        let detail = "A cleaned transcript snapshot is shown below. Use a recovery action to restart or replace the dead session."
         showState(
             title: title,
             message: message,
@@ -1305,6 +1350,20 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
         }
     }
 
+    func loadSession(sessionID: String, workingDirectory: String? = nil) {
+        guard canLoadExistingSessions else { return }
+
+        loadTask?.cancel()
+        currentSessionID = sessionID
+        if let workingDirectory {
+            currentWorkingDirectory = workingDirectory
+        }
+        launchMetadata = resolvedManagedSessionMetadata()
+        recoveryOptions = []
+        notifyPersistedStateChanged()
+        loadOrRestoreSession()
+    }
+
     func launchAgent(_ agent: AgentKind) {
         removeAgentLauncher()
         let surface = hostView?.terminalSurface
@@ -1327,6 +1386,13 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable {
             view.topAnchor.constraint(equalTo: topAnchor),
             view.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+    }
+
+    private func syncHostViewFocus() {
+        guard let hostView else { return }
+        hostView.setPaneFocused(isPaneActive)
+        guard isPaneActive, window?.firstResponder !== hostView else { return }
+        window?.makeFirstResponder(hostView)
     }
 
     private func showState(
@@ -1366,6 +1432,210 @@ private struct TerminalStateAction: Identifiable {
     let perform: () -> Void
 }
 
+struct TerminalArchivedScrollbackPresentation: Equatable {
+    let text: String
+    let didNormalizeOutput: Bool
+    let omittedRepeatedLineCount: Int
+    let omittedBlankLineCount: Int
+
+    var hasReadableContent: Bool { !text.isEmpty }
+
+    var note: String? {
+        var parts: [String] = []
+        if didNormalizeOutput {
+            parts.append("Terminal control sequences were removed for readability.")
+        }
+        if omittedRepeatedLineCount > 0 {
+            parts.append(
+                "\(omittedRepeatedLineCount) repeated line\(omittedRepeatedLineCount == 1 ? "" : "s") omitted."
+            )
+        }
+        if omittedBlankLineCount > 0 {
+            parts.append(
+                "\(omittedBlankLineCount) blank line\(omittedBlankLineCount == 1 ? "" : "s") collapsed."
+            )
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}
+
+enum TerminalArchivedScrollbackFormatter {
+    static func presentation(for raw: String) -> TerminalArchivedScrollbackPresentation {
+        let normalized = renderVisibleText(from: raw)
+        let collapsed = collapseNoise(in: normalized.text)
+        return TerminalArchivedScrollbackPresentation(
+            text: collapsed.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            didNormalizeOutput: normalized.didNormalizeOutput,
+            omittedRepeatedLineCount: collapsed.omittedRepeatedLineCount,
+            omittedBlankLineCount: collapsed.omittedBlankLineCount
+        )
+    }
+
+    private struct RenderedText {
+        let text: String
+        let didNormalizeOutput: Bool
+    }
+
+    private struct CollapsedText {
+        let text: String
+        let omittedRepeatedLineCount: Int
+        let omittedBlankLineCount: Int
+    }
+
+    private static func renderVisibleText(from raw: String) -> RenderedText {
+        let scalars = Array(raw.unicodeScalars)
+        var index = 0
+        var lines: [String] = []
+        var currentLine = ""
+        var didNormalizeOutput = false
+
+        while index < scalars.count {
+            let scalar = scalars[index]
+            switch scalar.value {
+            case 0x1B:
+                didNormalizeOutput = true
+                index = consumeEscapeSequence(in: scalars, from: index)
+            case 0x0D:
+                if index + 1 < scalars.count, scalars[index + 1].value == 0x0A {
+                    lines.append(currentLine)
+                    currentLine.removeAll(keepingCapacity: true)
+                    index += 2
+                } else {
+                    didNormalizeOutput = true
+                    currentLine.removeAll(keepingCapacity: true)
+                    index += 1
+                }
+            case 0x0A:
+                lines.append(currentLine)
+                currentLine.removeAll(keepingCapacity: true)
+                index += 1
+            case 0x08, 0x7F:
+                didNormalizeOutput = true
+                if !currentLine.isEmpty {
+                    currentLine.removeLast()
+                }
+                index += 1
+            case 0x09:
+                currentLine.append("\t")
+                index += 1
+            default:
+                if CharacterSet.controlCharacters.contains(scalar) {
+                    didNormalizeOutput = true
+                } else {
+                    currentLine.unicodeScalars.append(scalar)
+                }
+                index += 1
+            }
+        }
+
+        if !currentLine.isEmpty || !lines.isEmpty {
+            lines.append(currentLine)
+        }
+
+        return RenderedText(text: lines.joined(separator: "\n"), didNormalizeOutput: didNormalizeOutput)
+    }
+
+    private static func consumeEscapeSequence(in scalars: [UnicodeScalar], from escapeIndex: Int) -> Int {
+        let nextIndex = escapeIndex + 1
+        guard nextIndex < scalars.count else { return nextIndex }
+
+        switch scalars[nextIndex].value {
+        case 0x5B:
+            var index = nextIndex + 1
+            while index < scalars.count {
+                if (0x40...0x7E).contains(scalars[index].value) {
+                    return index + 1
+                }
+                index += 1
+            }
+            return index
+        case 0x5D, 0x50, 0x58, 0x5E, 0x5F:
+            var index = nextIndex + 1
+            while index < scalars.count {
+                if scalars[index].value == 0x07 {
+                    return index + 1
+                }
+                if scalars[index].value == 0x1B,
+                   index + 1 < scalars.count,
+                   scalars[index + 1].value == 0x5C {
+                    return index + 2
+                }
+                index += 1
+            }
+            return index
+        case 0x28, 0x29, 0x2A, 0x2B, 0x2D, 0x2E, 0x2F:
+            return min(nextIndex + 2, scalars.count)
+        default:
+            return nextIndex + 1
+        }
+    }
+
+    private static func collapseNoise(in text: String) -> CollapsedText {
+        let inputLines = text.components(separatedBy: "\n")
+        var outputLines: [String] = []
+        var previousVisibleLine: String?
+        var repeatedCount = 0
+        var omittedRepeatedLineCount = 0
+        var blankRunCount = 0
+        var omittedBlankLineCount = 0
+
+        func flushRepeatedLines() {
+            guard repeatedCount > 0 else { return }
+            outputLines.append(
+                "... \(repeatedCount) repeated line\(repeatedCount == 1 ? "" : "s") omitted"
+            )
+            omittedRepeatedLineCount += repeatedCount
+            repeatedCount = 0
+        }
+
+        for rawLine in inputLines {
+            let line = rawLine.replacingOccurrences(
+                of: #"\s+$"#,
+                with: "",
+                options: .regularExpression
+            )
+            let isBlank = line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+            if isBlank {
+                flushRepeatedLines()
+                blankRunCount += 1
+                if blankRunCount == 1 {
+                    outputLines.append("")
+                } else {
+                    omittedBlankLineCount += 1
+                }
+                previousVisibleLine = nil
+                continue
+            }
+
+            blankRunCount = 0
+            if line == previousVisibleLine {
+                repeatedCount += 1
+                continue
+            }
+
+            flushRepeatedLines()
+            outputLines.append(line)
+            previousVisibleLine = line
+        }
+
+        flushRepeatedLines()
+
+        while outputLines.first?.isEmpty == true {
+            outputLines.removeFirst()
+        }
+        while outputLines.last?.isEmpty == true {
+            outputLines.removeLast()
+        }
+
+        return CollapsedText(
+            text: outputLines.joined(separator: "\n"),
+            omittedRepeatedLineCount: omittedRepeatedLineCount,
+            omittedBlankLineCount: omittedBlankLineCount
+        )
+    }
+}
+
 private struct TerminalStateView: View {
     let title: String
     let message: String
@@ -1382,41 +1652,65 @@ private struct TerminalStateView: View {
                lower.contains("running") || lower.contains("waiting")
     }
 
+    private var archivedScrollback: TerminalArchivedScrollbackPresentation? {
+        guard let scrollback, !scrollback.isEmpty else { return nil }
+        return TerminalArchivedScrollbackFormatter.presentation(for: scrollback)
+    }
+
     private var hasScrollback: Bool {
-        if let scrollback, !scrollback.isEmpty { return true }
-        return false
+        archivedScrollback != nil
     }
 
     var body: some View {
         let theme = GhosttyThemeProvider.shared
-        ZStack {
-            Color(nsColor: theme.backgroundColor).ignoresSafeArea()
+        return GeometryReader { proxy in
+            ZStack {
+                Color(nsColor: theme.backgroundColor).ignoresSafeArea()
 
-            if hasScrollback {
-                // Left-aligned scrollable layout for error states with logs
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        stateContent(centered: false)
-                        stateActions
-                        stateScrollback
+                if hasScrollback {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+
+                            VStack(alignment: .leading, spacing: 18) {
+                                stateStatusCard
+                                stateActionsCard
+                                stateScrollbackCard
+                            }
+                            .frame(maxWidth: 760)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 28)
+
+                            Spacer(minLength: 0)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: proxy.size.height)
+                        .accessibilityIdentifier("terminalState.archived")
                     }
-                    .padding(24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else {
-                // Centered layout for loading/waiting states
-                VStack(spacing: 0) {
-                    Spacer()
-                    VStack(spacing: 18) {
-                        stateContent(centered: true)
-                        stateActions
+                else {
+                    VStack(spacing: 0) {
+                        Spacer()
+                        VStack(spacing: 18) {
+                            stateContent(centered: true)
+                            stateActionsBody
+                        }
+                        .frame(maxWidth: 520)
+                        Spacer()
+                        Spacer()
                     }
-                    .frame(maxWidth: 520)
-                    Spacer()
-                    Spacer()
                 }
             }
         }
+    }
+
+    private var stateStatusCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            stateContent(centered: false)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
     }
 
     @ViewBuilder
@@ -1442,34 +1736,109 @@ private struct TerminalStateView: View {
     }
 
     @ViewBuilder
-    private var stateActions: some View {
+    private var stateActionsCard: some View {
         if !actions.isEmpty {
-            HStack(spacing: 10) {
-                ForEach(actions) { action in
-                    Button(action.label, action: action.perform)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!action.enabled)
-                }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Recovery Actions")
+                    .font(.headline)
+                stateActionsBody
             }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(cardBackground)
         }
     }
 
     @ViewBuilder
-    private var stateScrollback: some View {
-        if let scrollback, !scrollback.isEmpty {
-            ScrollView(.horizontal) {
-                Text(scrollback)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.black.opacity(0.82))
-                    )
-                    .foregroundStyle(Color.white.opacity(0.9))
+    private var stateActionsBody: some View {
+        if !actions.isEmpty {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    stateActionButtons
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    stateActionButtons
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private var stateActionButtons: some View {
+        ForEach(actions) { action in
+            Button(action.label, action: action.perform)
+                .buttonStyle(.borderedProminent)
+                .disabled(!action.enabled)
+                .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private var stateScrollbackCard: some View {
+        if let archivedScrollback {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recovered Transcript")
+                            .font(.headline)
+                        if let note = archivedScrollback.note {
+                            Text(note)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if archivedScrollback.hasReadableContent {
+                        Button("Copy Transcript") {
+                            copyTranscriptToPasteboard(archivedScrollback.text)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
+                if archivedScrollback.hasReadableContent {
+                    ScrollView(.horizontal) {
+                        Text(archivedScrollback.text)
+                            .font(.system(.body, design: .monospaced))
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    Text("No readable transcript could be recovered from the archived terminal bytes.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(transcriptBackground)
+        }
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color.primary.opacity(0.05))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private var transcriptBackground: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color.black.opacity(0.26))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private func copyTranscriptToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
