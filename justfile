@@ -154,6 +154,24 @@ test-all: rust-test xcode-test
     ./scripts/ipc-e2e-recovery.sh
     @echo "All tests passed"
 
+workflow-check:
+    @echo "Running GitHub workflow parity checks..."
+    ./scripts/run-gitleaks.sh --working-tree
+    @if ! command -v shellcheck >/dev/null 2>&1; then \
+      echo "ERROR: shellcheck not found. Install with: brew install shellcheck"; exit 1; \
+    fi
+    shellcheck scripts/*.sh
+    @if ! command -v actionlint >/dev/null 2>&1; then \
+      echo "ERROR: actionlint not found. Install with: brew install actionlint"; exit 1; \
+    fi
+    actionlint
+    ./scripts/install-zig-ci.sh --verify-only
+    just check
+    @echo "Workflow parity checks passed"
+
+ci-local: workflow-check
+    @echo "CI-local checks passed"
+
 # Clean all build artifacts
 clean:
     cargo clean

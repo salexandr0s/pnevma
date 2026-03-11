@@ -5,6 +5,19 @@ use std::sync::{OnceLock, RwLock};
 
 const REDACTED: &str = "[REDACTED]";
 const STREAM_REDACTION_TAIL_BYTES: usize = 4096;
+const PEM_PRIVATE_KEY_LABELS: &[&str] = &[
+    "RSA PRIVATE KEY",
+    "EC PRIVATE KEY",
+    "DSA PRIVATE KEY",
+    "OPENSSH PRIVATE KEY",
+    "ENCRYPTED PRIVATE KEY",
+    "PRIVATE KEY",
+];
+const PEM_BEGIN_PREFIX: &str = "-----BEGIN ";
+const PEM_END_PREFIX: &str = "-----END ";
+const PEM_MARKER_SUFFIX: &str = "-----";
+const PEM_KIND_REGEX_FRAGMENT: &str = "(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?";
+const PEM_REGEX_SUFFIX: &str = "PRIVATE KEY-----";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RedactionConfig {
@@ -137,9 +150,12 @@ fn redaction_slack_token_regex() -> &'static Regex {
 fn redaction_pem_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
-        ).expect("PEM redaction regex must compile")
+        let pattern = format!(
+            "(?s){}.*?{}",
+            pem_private_key_regex(true),
+            pem_private_key_regex(false)
+        );
+        Regex::new(&pattern).expect("PEM redaction regex must compile")
     })
 }
 
@@ -149,7 +165,7 @@ fn redaction_pem_regex() -> &'static Regex {
 fn redaction_pem_open_header_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----")
+        Regex::new(&pem_private_key_regex(true))
             .expect("PEM open-header redaction regex must compile")
     })
 }
@@ -391,6 +407,34 @@ fn minimum_partial_match_bytes(literal: &str) -> usize {
     }
 }
 
+fn pem_marker(label: &str, begin: bool) -> String {
+    let prefix = if begin {
+        PEM_BEGIN_PREFIX
+    } else {
+        PEM_END_PREFIX
+    };
+    format!("{prefix}{label}{PEM_MARKER_SUFFIX}")
+}
+
+fn pem_private_key_regex(begin: bool) -> String {
+    let prefix = if begin {
+        PEM_BEGIN_PREFIX
+    } else {
+        PEM_END_PREFIX
+    };
+    format!("{prefix}{PEM_KIND_REGEX_FRAGMENT}{PEM_REGEX_SUFFIX}")
+}
+
+#[cfg(test)]
+fn pem_block(label: &str, body: &str) -> String {
+    format!(
+        "{}\n{}\n{}",
+        pem_marker(label, true),
+        body,
+        pem_marker(label, false)
+    )
+}
+
 fn partial_literal_start(
     input: &str,
     literal: &str,
@@ -423,37 +467,15 @@ fn partial_literal_start(
 /// block is one where a BEGIN header has been seen but the matching END footer
 /// has not yet arrived — meaning the body may be split across stream chunks.
 fn open_pem_block_start(input: &str) -> Option<usize> {
-    const BEGIN_MARKERS: &[(&str, &str)] = &[
-        (
-            "-----BEGIN RSA PRIVATE KEY-----",
-            "-----END RSA PRIVATE KEY-----",
-        ),
-        (
-            "-----BEGIN EC PRIVATE KEY-----",
-            "-----END EC PRIVATE KEY-----",
-        ),
-        (
-            "-----BEGIN DSA PRIVATE KEY-----",
-            "-----END DSA PRIVATE KEY-----",
-        ),
-        (
-            "-----BEGIN OPENSSH PRIVATE KEY-----",
-            "-----END OPENSSH PRIVATE KEY-----",
-        ),
-        (
-            "-----BEGIN ENCRYPTED PRIVATE KEY-----",
-            "-----END ENCRYPTED PRIVATE KEY-----",
-        ),
-        ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"),
-    ];
-
     let mut earliest: Option<usize> = None;
-    for (begin, end) in BEGIN_MARKERS {
-        if let Some(begin_pos) = input.find(begin) {
+    for label in PEM_PRIVATE_KEY_LABELS {
+        let begin = pem_marker(label, true);
+        let end = pem_marker(label, false);
+        if let Some(begin_pos) = input.find(&begin) {
             // Only consider it open if the matching END is not yet present
             // anywhere after the BEGIN.
             let after_begin = &input[begin_pos..];
-            if !after_begin.contains(end) {
+            if !after_begin.contains(&end) {
                 earliest = Some(earliest.map_or(begin_pos, |e: usize| e.min(begin_pos)));
             }
         }
@@ -462,15 +484,7 @@ fn open_pem_block_start(input: &str) -> Option<usize> {
 }
 
 fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
-    const PEM_PREFIX_MARKERS: &[&str] = &[
-        "-----BEGIN ",
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----BEGIN EC PRIVATE KEY-----",
-        "-----BEGIN DSA PRIVATE KEY-----",
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
-        "-----BEGIN PRIVATE KEY-----",
-    ];
+    const PEM_PREFIX_MARKERS: &[&str] = &[PEM_BEGIN_PREFIX];
 
     let mut retain_start = None;
 
@@ -484,6 +498,19 @@ fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
     for marker in PEM_PREFIX_MARKERS {
         let candidate =
             partial_literal_start(input, marker, false, minimum_partial_match_bytes(marker));
+        if let Some(start) = candidate {
+            retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
+        }
+    }
+
+    for label in PEM_PRIVATE_KEY_LABELS {
+        let begin_marker = pem_marker(label, true);
+        let candidate = partial_literal_start(
+            input,
+            &begin_marker,
+            false,
+            minimum_partial_match_bytes(&begin_marker),
+        );
         if let Some(start) = candidate {
             retain_start = Some(retain_start.map_or(start, |current: usize| current.min(start)));
         }
@@ -591,35 +618,47 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn provider_token(prefix: &str) -> String {
+        format!("{prefix}{}", "abcdefghijklmnopqrstuvwxyz1234567890")
+    }
+
+    fn quoted_assignment(name: &str, value: &str) -> String {
+        format!(r#"{name}="{value}""#)
+    }
+
     #[test]
     fn redacts_provider_token_standalone() {
-        let input = "token sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
-        let output = redact_text(input, &[]);
+        let token = provider_token("sk-proj-");
+        let input = format!("token {token}");
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("sk-proj-"));
         assert!(output.contains(REDACTED));
     }
 
     #[test]
     fn redacts_anthropic_token_standalone() {
-        let input = "token sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890";
-        let output = redact_text(input, &[]);
+        let token = provider_token("sk-ant-api03-");
+        let input = format!("token {token}");
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("sk-ant-api03-"));
         assert!(output.contains(REDACTED));
     }
 
     #[test]
     fn redacts_provider_env_assignment() {
-        let input = r#"OPENAI_API_KEY="sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890""#;
-        let output = redact_text(input, &[]);
+        let token = provider_token("sk-ant-api03-");
+        let input = quoted_assignment("OPENAI_API_KEY", &token);
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("sk-ant-api03-"));
         assert_eq!(output, "OPENAI_API_KEY=[REDACTED]");
     }
 
     #[test]
     fn redacts_json_string_values_and_sensitive_keys() {
+        let message_token = provider_token("sk-proj-");
         let output = redact_json_value(
             serde_json::json!({
-                "message": "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+                "message": format!("OPENAI_API_KEY={message_token}"),
                 "token": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123456789",
             }),
             &[],
@@ -632,13 +671,14 @@ mod tests {
     #[test]
     fn stream_buffer_redacts_provider_token_split_across_chunks() {
         let mut buffer = StreamRedactionBuffer::new();
+        let token = provider_token("sk-proj-");
 
         let first = buffer
-            .push_chunk("prefix sk-pr", &[])
+            .push_chunk(&format!("prefix {}", &token[..5]), &[])
             .expect("safe prefix should flush");
         assert_eq!(first, "prefix ");
         let second = buffer
-            .push_chunk("oj-abcdefghijklmnopqrstuvwxyz1234567890 suffix", &[])
+            .push_chunk(&format!("{} suffix", &token[5..]), &[])
             .expect("provider token should flush once complete");
         assert_eq!(second, "[REDACTED] suffix");
     }
@@ -646,12 +686,13 @@ mod tests {
     #[test]
     fn stream_buffer_redacts_env_assignment_split_across_chunks() {
         let mut buffer = StreamRedactionBuffer::new();
+        let token = provider_token("sk-ant-api03-");
 
         assert!(buffer
-            .push_chunk(r#"OPENAI_API_KEY="sk-ant-api03-abcd"#, &[])
+            .push_chunk(&format!(r#"OPENAI_API_KEY="{}"#, &token[..4]), &[])
             .is_none());
         let second = buffer
-            .push_chunk(r#"efghijklmnopqrstuvwxyz1234567890" done"#, &[])
+            .push_chunk(&format!(r#"{}" done"#, &token[4..]), &[])
             .expect("env assignment should flush once complete");
         assert_eq!(second, "OPENAI_API_KEY=[REDACTED] done");
     }
@@ -715,8 +756,14 @@ mod tests {
 
     #[test]
     fn redacts_full_pem_private_key() {
-        let input = "before\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nfake+base64+key+data+here==\n-----END PRIVATE KEY-----\nafter";
-        let output = redact_text(input, &[]);
+        let input = format!(
+            "before\n{}\nafter",
+            pem_block(
+                "PRIVATE KEY",
+                "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nfake+base64+key+data+here=="
+            )
+        );
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("MIIEvQIBADANBg"));
         assert!(!output.contains("fake+base64"));
         assert!(output.contains(REDACTED));
@@ -726,32 +773,44 @@ mod tests {
 
     #[test]
     fn redacts_rsa_private_key() {
-        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRiMLAHudeSA/x3hB2f+2NRkJLA\nfake+rsa+key+data==\n-----END RSA PRIVATE KEY-----";
-        let output = redact_text(input, &[]);
+        let input = pem_block(
+            "RSA PRIVATE KEY",
+            "MIIBogIBAAJBALRiMLAHudeSA/x3hB2f+2NRkJLA\nfake+rsa+key+data==",
+        );
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("MIIBogIBAAJBALR"));
         assert_eq!(output, REDACTED);
     }
 
     #[test]
     fn redacts_ec_private_key() {
-        let input = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIBkg2yBFhx8bioZERSOldqSeGXnMC8RD\nfake+ec+key==\n-----END EC PRIVATE KEY-----";
-        let output = redact_text(input, &[]);
+        let input = pem_block(
+            "EC PRIVATE KEY",
+            "MHQCAQEEIBkg2yBFhx8bioZERSOldqSeGXnMC8RD\nfake+ec+key==",
+        );
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("MHQCAQEEIBkg"));
         assert_eq!(output, REDACTED);
     }
 
     #[test]
     fn redacts_openssh_private_key() {
-        let input = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\nfake+openssh+key==\n-----END OPENSSH PRIVATE KEY-----";
-        let output = redact_text(input, &[]);
+        let input = pem_block(
+            "OPENSSH PRIVATE KEY",
+            "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\nfake+openssh+key==",
+        );
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("b3BlbnNzaC1rZXk"));
         assert_eq!(output, REDACTED);
     }
 
     #[test]
     fn redacts_encrypted_private_key() {
-        let input = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG9w0BBQ0wQTApBgkqhkiG9w0BBQwwHAQI\nfake+encrypted+key==\n-----END ENCRYPTED PRIVATE KEY-----";
-        let output = redact_text(input, &[]);
+        let input = pem_block(
+            "ENCRYPTED PRIVATE KEY",
+            "MIIFHDBOBgkqhkiG9w0BBQ0wQTApBgkqhkiG9w0BBQwwHAQI\nfake+encrypted+key==",
+        );
+        let output = redact_text(&input, &[]);
         assert!(!output.contains("MIIFHDBOBgkqhk"));
         assert_eq!(output, REDACTED);
     }
@@ -759,16 +818,18 @@ mod tests {
     #[test]
     fn stream_buffer_redacts_pem_key_split_across_chunks() {
         let mut buffer = StreamRedactionBuffer::new();
-        let pem_start = "some output\n-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJ";
-        let pem_end = "BALRiMLAHudeSAfake+rsa+data==\n-----END RSA PRIVATE KEY-----\ndone";
+        let begin_marker = pem_marker("RSA PRIVATE KEY", true);
+        let end_marker = pem_marker("RSA PRIVATE KEY", false);
+        let pem_start = format!("some output\n{begin_marker}\nMIIBogIBAAJ");
+        let pem_end = format!("BALRiMLAHudeSAfake+rsa+data==\n{end_marker}\ndone");
 
         // First chunk contains the BEGIN marker; the buffer may flush the safe
         // prefix before it or hold the whole chunk — either way the key body
         // must not appear unredacted in the combined output.
-        let first = buffer.push_chunk(pem_start, &[]);
+        let first = buffer.push_chunk(&pem_start, &[]);
 
         // Second chunk completes the PEM block
-        let second = buffer.push_chunk(pem_end, &[]);
+        let second = buffer.push_chunk(&pem_end, &[]);
         let remainder = buffer.finish(&[]);
 
         // Combine all output
@@ -864,7 +925,7 @@ mod tests {
     #[test]
     fn redacts_generic_key_value_pairs() {
         let inputs = [
-            r#"api_key = "sk-test-1234567890abcdef""#,
+            r#"api_key = "integration-demo-value-abcdef0123456789""#,
             r#"secret = "my-super-secret-value""#,
             "password=hunter2",
         ];
