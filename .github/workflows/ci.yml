@@ -136,7 +136,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install native build tools
-        run: brew install just xcodegen
+        run: brew install just
+
+      - name: Install pinned XcodeGen
+        run: ./scripts/install-xcodegen-ci.sh
 
       - name: Install pinned Zig
         run: ./scripts/install-zig-ci.sh
