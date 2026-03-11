@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredAgent {
     pub name: String,
-    pub description: Option<String>,
     pub provider: String,
     pub model: String,
     pub role: String,
@@ -19,7 +18,6 @@ pub struct DiscoveredAgent {
 #[derive(Debug, Deserialize)]
 struct ClaudeCodeFrontmatter {
     name: Option<String>,
-    description: Option<String>,
     model: Option<String>,
     tools: Option<Vec<String>>,
 }
@@ -105,7 +103,6 @@ fn parse_claude_code_agent(path: &Path) -> Result<DiscoveredAgent, String> {
 
     Ok(DiscoveredAgent {
         name,
-        description: fm.description,
         provider: "anthropic".to_string(),
         model,
         role,
@@ -150,10 +147,7 @@ pub fn discover_codex_agents(config_path: &Path) -> Vec<DiscoveredAgent> {
             None => continue,
         };
 
-        let description = agent_table
-            .get("description")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let has_description = agent_table.get("description").is_some();
 
         // Try to load referenced config file
         let mut model = String::new();
@@ -219,17 +213,16 @@ pub fn discover_codex_agents(config_path: &Path) -> Vec<DiscoveredAgent> {
             _ => "build",
         };
 
-        // Skip built-in roles with no config_file
+        // Skip built-in roles with no config_file and no description
         if (name == "default" || name == "worker")
             && agent_table.get("config_file").is_none()
-            && description.is_none()
+            && !has_description
         {
             continue;
         }
 
         agents.push(DiscoveredAgent {
             name: name.clone(),
-            description,
             provider: provider.to_string(),
             model,
             role: role.to_string(),

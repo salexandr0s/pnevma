@@ -109,12 +109,10 @@ async fn sync_discovered_project_agents(state: &AppState) -> Result<(), String> 
                 tracing::warn!(error = %e, "failed to update discovered project agent");
             }
         } else {
-            // Check for name collision with user-created agent
-            if let Ok(Some(by_name)) = db.get_agent_profile_by_name(&project_id, &agent.name).await
-            {
-                if by_name.source == "user" {
-                    continue;
-                }
+            // Check for name collision — skip if any existing record has that name
+            // (could be user-created, or a soft-deleted discovered agent)
+            if let Ok(Some(_)) = db.get_agent_profile_by_name(&project_id, &agent.name).await {
+                continue;
             }
 
             let row = pnevma_db::AgentProfileRow {

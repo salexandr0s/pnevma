@@ -123,14 +123,13 @@ async fn sync_discovered_global_agents(state: &AppState) -> Result<(), String> {
                 tracing::warn!(error = %e, "failed to update discovered global agent");
             }
         } else {
-            // Check for name collision with user-created agent
-            if let Ok(Some(by_name)) = global_db
+            // Check for name collision — skip if any existing record has that name
+            // (could be user-created, or a soft-deleted discovered agent)
+            if let Ok(Some(_)) = global_db
                 .get_global_agent_profile_by_name(&agent.name)
                 .await
             {
-                if by_name.source == "user" {
-                    continue;
-                }
+                continue;
             }
 
             // Insert new
