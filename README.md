@@ -30,7 +30,7 @@ Pnevma is designed for developers who want the speed of coding agents without lo
 ## Features
 
 - Native macOS app built with Swift/AppKit and backed by a Rust workspace
-- Embedded Ghostty terminal for managed local terminal sessions
+- Embedded [Ghostty](https://ghostty.org) terminal for managed local terminal sessions
 - Persistent sessions with scrollback, replay, and restore support
 - Task orchestration with status tracking, dispatch controls, and event history
 - Provider-neutral agent adapters with built-in support for Claude Code and Codex
@@ -62,7 +62,7 @@ Pnevma is a native macOS application with a thin Swift/AppKit frontend and a Rus
 - `crates/pnevma-bridge`: the C FFI bridge compiled into `libpnevma_bridge.a`
 - Rust workspace crates: task orchestration, session supervision, git/worktree management, agent adapters, context compilation, database access, SSH utilities, command routing, remote access, and redaction
 - `SQLite + event log`: persisted task, session, review, and audit data
-- `Ghostty`: embedded terminal runtime compiled as an xcframework
+- [`Ghostty`](https://ghostty.org): embedded terminal runtime compiled as an xcframework
 
 High-level flow:
 
@@ -166,6 +166,10 @@ developer, operator, and release guides.
 - Agents run with the current user account's filesystem and network permissions
 - Remote access is optional and disabled unless configured
 - Sensitive output paths are protected by redaction middleware
+
+## Acknowledgments
+
+Pnevma's terminal is powered by [Ghostty](https://ghostty.org), the fast, feature-rich terminal emulator created by [Mitchell Hashimoto](https://github.com/mitchellh). Ghostty is compiled from source using Zig and embedded as an xcframework, giving Pnevma a native GPU-accelerated terminal without reinventing terminal emulation. Ghostty's quality is a big part of what makes Pnevma feel right.
 
 ## License
 

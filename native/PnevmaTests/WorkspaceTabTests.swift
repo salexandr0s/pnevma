@@ -298,6 +298,7 @@ final class WorkspaceTabTests: XCTestCase {
         workspace.addTab(title: "Tab 2")
         workspace.addTab(title: "Tab 3")
         workspace.switchToTab(1)
+        workspace.rightInspectorSection = .review
 
         let snapshot = workspace.snapshot()
         let restored = Workspace(snapshot: snapshot)
@@ -305,6 +306,7 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(restored.tabs.count, 3)
         XCTAssertEqual(restored.activeTabIndex, 1)
         XCTAssertEqual(restored.tabs[1].title, "Tab 2")
+        XCTAssertEqual(restored.rightInspectorSection, .review)
     }
 
     func testSnapshotRoundTripPreservesPersistedPanes() {
@@ -345,13 +347,15 @@ final class WorkspaceTabTests: XCTestCase {
             activeTabIndex: nil,
             layoutData: layoutData,
             customColor: nil,
-            isPinned: false
+            isPinned: false,
+            rightInspectorSection: nil
         )
 
         let restored = Workspace(snapshot: legacySnapshot)
         XCTAssertEqual(restored.tabs.count, 1)
         XCTAssertEqual(restored.activeTabIndex, 0)
         XCTAssertEqual(restored.name, "Legacy")
+        XCTAssertEqual(restored.rightInspectorSection, .files)
     }
 
     // MARK: - PaneLayoutEngine.reset

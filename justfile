@@ -94,12 +94,14 @@ xcodegen-check: xcodegen
 xcode-build: xcodegen rust-build
     @echo "Building native macOS app..."
     mkdir -p {{native_log_dir}}
+    rm -rf {{xcode_derived_data}}
     {{clean_log}} --log {{native_log_dir}}/xcode-build.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build
     @echo "Native app built"
 
 xcode-build-release: xcodegen rust-build-release
     @echo "Building native macOS app (release)..."
     mkdir -p {{native_log_dir}}
+    rm -rf {{xcode_derived_data}}
     {{clean_log}} --log {{native_log_dir}}/xcode-build-release.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build
     @echo "Native app built (release)"
 

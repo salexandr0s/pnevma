@@ -1705,6 +1705,7 @@ pub async fn route_method(
                     query,
                     limit,
                     path: None,
+                    recursive: None,
                 }),
                 state,
             )
@@ -1717,14 +1718,36 @@ pub async fn route_method(
             let query = parse_optional_string_param(params, "query");
             let limit = parse_optional_i64_param(params, "limit").map(|v| v.max(1) as usize);
             let path = parse_optional_string_param(params, "path");
+            let recursive = parse_optional_bool_param(params, "recursive");
             let items = commands::list_project_file_tree(
-                Some(commands::ListProjectFilesInput { query, limit, path }),
+                Some(commands::ListProjectFilesInput {
+                    query,
+                    limit,
+                    path,
+                    recursive,
+                }),
                 state,
             )
             .await
             .map_err(|e| ("internal_error".to_string(), e))?;
             serde_json::to_value(items)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace.changes" => {
+            let items = commands::list_workspace_changes(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(items)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace.change.diff" => {
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let diff =
+                commands::get_workspace_change_diff(commands::ProjectFilePathInput { path }, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(diff).map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "workspace.file.open" => {
             let path = parse_string_param(params, "path")

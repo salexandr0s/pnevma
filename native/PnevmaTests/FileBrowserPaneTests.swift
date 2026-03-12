@@ -28,12 +28,19 @@ private struct MockTreeResponse {
 private actor MockFileBrowserCommandBus: CommandCalling {
     private var treeResponsesByPath: [String: [MockTreeResponse]]
     private let previewJSONByPath: [String: String]
+    private let treeSearchJSONByQuery: [String: String]
     private var methodHistory: [String] = []
     private var treeRequestPaths: [String?] = []
+    private var treeSearchQueries: [String] = []
 
-    init(treeResponsesByPath: [String: [MockTreeResponse]], previewJSONByPath: [String: String]) {
+    init(
+        treeResponsesByPath: [String: [MockTreeResponse]],
+        previewJSONByPath: [String: String],
+        treeSearchJSONByQuery: [String: String] = [:]
+    ) {
         self.treeResponsesByPath = treeResponsesByPath
         self.previewJSONByPath = previewJSONByPath
+        self.treeSearchJSONByQuery = treeSearchJSONByQuery
     }
 
     func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
@@ -43,6 +50,16 @@ private actor MockFileBrowserCommandBus: CommandCalling {
         case "workspace.files.tree":
             let json = try encodeParams(params)
             let path = json["path"] as? String
+            let query = json["query"] as? String
+
+            if let query, !query.isEmpty {
+                treeSearchQueries.append(query)
+                guard let response = treeSearchJSONByQuery[query] else {
+                    throw NSError(domain: "MockFileBrowserCommandBus", code: 4)
+                }
+                return try decode(response)
+            }
+
             treeRequestPaths.append(path)
 
             let responseKey = path ?? ""
@@ -80,6 +97,10 @@ private actor MockFileBrowserCommandBus: CommandCalling {
 
     func requestedTreePaths() -> [String?] {
         treeRequestPaths
+    }
+
+    func requestedTreeSearchQueries() -> [String] {
+        treeSearchQueries
     }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
@@ -282,5 +303,117 @@ final class FileBrowserPaneTests: XCTestCase {
 
         XCTAssertEqual(viewModel.rootNodes.map(\.path), ["fresh.rs"])
         XCTAssertTrue(viewModel.isProjectOpen)
+    }
+
+    func testSearchBuildsFilteredTreeAcrossCollapsedDirectories() async throws {
+        let bus = MockFileBrowserCommandBus(
+            treeResponsesByPath: [
+                "": [
+                    MockTreeResponse(
+                        json: #"""
+                        [
+                          {
+                            "id": "docs",
+                            "name": "docs",
+                            "path": "docs",
+                            "is_directory": true,
+                            "children": null,
+                            "size": null
+                          },
+                          {
+                            "id": "src",
+                            "name": "src",
+                            "path": "src",
+                            "is_directory": true,
+                            "children": null,
+                            "size": null
+                          },
+                          {
+                            "id": "tests",
+                            "name": "tests",
+                            "path": "tests",
+                            "is_directory": true,
+                            "children": null,
+                            "size": null
+                          }
+                        ]
+                        """#
+                    )
+                ]
+            ],
+            previewJSONByPath: [:],
+            treeSearchJSONByQuery: [
+                "lib": #"""
+                [
+                  {
+                    "id": "docs",
+                    "name": "docs",
+                    "path": "docs",
+                    "is_directory": true,
+                    "children": [
+                      {
+                        "id": "docs/library-guide.md",
+                        "name": "library-guide.md",
+                        "path": "docs/library-guide.md",
+                        "is_directory": false,
+                        "children": null,
+                        "size": 12
+                      }
+                    ],
+                    "size": null
+                  },
+                  {
+                    "id": "src",
+                    "name": "src",
+                    "path": "src",
+                    "is_directory": true,
+                    "children": [
+                      {
+                        "id": "src/lib.rs",
+                        "name": "lib.rs",
+                        "path": "src/lib.rs",
+                        "is_directory": false,
+                        "children": null,
+                        "size": 18
+                      }
+                    ],
+                    "size": null
+                  }
+                ]
+                """#
+            ]
+        )
+        let activationHub = ActiveWorkspaceActivationHub()
+        let viewModel = FileBrowserViewModel(
+            commandBus: bus,
+            activationHub: activationHub,
+            searchDebounceNanoseconds: 1_000_000
+        )
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        try await waitUntil {
+            viewModel.rootNodes.map(\.path) == ["docs", "src", "tests"]
+        }
+
+        viewModel.searchQuery = "lib"
+        viewModel.searchQueryDidChange()
+
+        try await waitUntil {
+            !viewModel.isSearching && viewModel.visibleRootNodes.map(\.path) == ["docs", "src"]
+        }
+
+        XCTAssertEqual(viewModel.visibleRootNodes.first?.children?.map(\.path), ["docs/library-guide.md"])
+        XCTAssertEqual(viewModel.visibleRootNodes.last?.children?.map(\.path), ["src/lib.rs"])
+
+        viewModel.clearSearch()
+
+        XCTAssertEqual(viewModel.visibleRootNodes.map(\.path), ["docs", "src", "tests"])
+        XCTAssertFalse(viewModel.hasActiveSearch)
+
+        let methods = await bus.methods()
+        let treeSearchQueries = await bus.requestedTreeSearchQueries()
+        XCTAssertEqual(methods, ["workspace.files.tree", "workspace.files.tree"])
+        XCTAssertEqual(treeSearchQueries, ["lib"])
     }
 }

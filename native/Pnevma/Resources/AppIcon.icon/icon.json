@@ -16,8 +16,8 @@
     {
       "layers" : [
         {
-          "image-name" : "Pnevma Logo (1).png",
-          "name" : "Pnevma Logo (1)",
+          "image-name" : "pnevma-logo.png",
+          "name" : "pnevma-logo",
           "position" : {
             "scale" : 0.5,
             "translation-in-points" : [

@@ -470,64 +470,54 @@ struct ProviderUsagePopoverView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Usage")
-                    .font(.headline)
-                Spacer()
-                if store.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Button {
-                    Task { await store.refresh(force: true) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Refresh usage provider data")
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            ProviderUsagePopoverHeader(
+                overview: store.overview,
+                snapshots: store.providerSnapshots,
+                isLoading: store.isLoading,
+                onRefresh: { Task { await store.refresh(force: true) } }
+            )
+            .padding(DesignTokens.Spacing.md)
 
             Divider()
 
             Group {
                 if let errorMessage = store.errorMessage, store.providerSnapshots.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "chart.bar.xaxis")
-                            .font(.system(size: 28))
-                            .foregroundStyle(.secondary.opacity(0.5))
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(24)
+                    ContentUnavailableView(
+                        "Provider Usage Unavailable",
+                        systemImage: "chart.bar.xaxis",
+                        description: Text(errorMessage)
+                    )
+                    .padding(DesignTokens.Spacing.lg)
                 } else {
                     ScrollView {
-                        VStack(spacing: 12) {
+                        VStack(spacing: DesignTokens.Spacing.md) {
+                            if let errorMessage = store.errorMessage {
+                                ProviderUsageInlineNotice(title: "Refresh issue", message: errorMessage)
+                            }
+
                             ForEach(store.providerSnapshots) { snapshot in
                                 ProviderUsageCard(snapshot: snapshot, compact: true)
                             }
                         }
-                        .padding(16)
+                        .padding(DesignTokens.Spacing.md)
                     }
                 }
             }
-            .frame(minHeight: 260)
+            .frame(minHeight: 320)
 
             Divider()
 
-            Button(action: { onOpenDashboard?() }) {
-                Text("Open Usage Dashboard")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+            HStack {
+                Button(action: { onOpenDashboard?() }) {
+                    Text("Open Dashboard")
+                }
+                .buttonStyle(.borderless)
+                Spacer()
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, DesignTokens.Spacing.md)
+            .padding(.vertical, DesignTokens.Spacing.md)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .task {
             await store.activate()
         }
@@ -674,116 +664,297 @@ private struct ProviderUsageCard: View {
     let compact: Bool
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(snapshot.displayName)
-                            .font(.headline)
-                        HStack(spacing: 8) {
-                            ProviderUsageTag(text: snapshot.source.uppercased())
-                            ProviderStatusPill(status: snapshot.status)
-                        }
+        let brand = ProviderBrand(provider: snapshot.provider)
+
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
+            HStack(alignment: .top, spacing: DesignTokens.Spacing.sm) {
+                ProviderLogoMark(brand: brand)
+
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                    Text(snapshot.displayName)
+                        .font(.headline)
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        ProviderUsageTag(text: snapshot.source.uppercased(), accent: brand.accent)
+                        ProviderStatusPill(status: snapshot.status)
                     }
-                    Spacer()
+                }
+
+                Spacer(minLength: DesignTokens.Spacing.sm)
+
+                VStack(alignment: .trailing, spacing: DesignTokens.Spacing.xs) {
                     if let planLabel = snapshot.planLabel {
                         Text(planLabel)
-                            .font(.caption)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                }
-
-                if let accountEmail = snapshot.accountEmail {
-                    ProviderDetailRow(label: "Account", value: accountEmail)
-                }
-
-                if let sessionWindow = snapshot.sessionWindow {
-                    ProviderWindowRow(window: sessionWindow)
-                }
-
-                if let weeklyWindow = snapshot.weeklyWindow {
-                    ProviderWindowRow(window: weeklyWindow)
-                }
-
-                if !compact {
-                    ForEach(snapshot.modelWindows) { window in
-                        ProviderWindowRow(window: window)
-                    }
-                } else if let modelWindow = snapshot.modelWindows.first {
-                    ProviderWindowRow(window: modelWindow)
-                }
-
-                if let credit = snapshot.credit {
-                    ProviderDetailRow(
-                        label: credit.label,
-                        value: credit.isUnlimited
-                            ? "Unlimited"
-                            : (credit.balanceDisplay ?? "Available")
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
                     Text("Local 30-day usage")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 12) {
-                        ProviderDetailRow(label: "Requests", value: providerFormatTokens(snapshot.localUsage.requests))
-                        ProviderDetailRow(label: "Input", value: providerFormatCompactTokens(snapshot.localUsage.inputTokens))
-                        ProviderDetailRow(label: "Output", value: providerFormatCompactTokens(snapshot.localUsage.outputTokens))
-                    }
-                    if let topModel = snapshot.localUsage.topModel {
-                        ProviderDetailRow(label: "Top model", value: topModel)
-                    }
-                    if let peakDay = snapshot.localUsage.peakDay {
-                        ProviderDetailRow(
-                            label: "Peak day",
-                            value: "\(providerFormatDateLabel(peakDay)) • \(providerFormatCompactTokens(snapshot.localUsage.peakDayTokens)) tok"
-                        )
-                    }
-                }
-
-                if let statusMessage = snapshot.statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(snapshot.status == "error" ? .red : .secondary)
-                }
-                if let repairHint = snapshot.repairHint {
-                    Text(repairHint)
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
+
+            if let accountEmail = snapshot.accountEmail {
+                ProviderDetailRow(label: "Account", value: accountEmail)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: DesignTokens.Spacing.sm),
+                    GridItem(.flexible(), spacing: DesignTokens.Spacing.sm),
+                    GridItem(.flexible(), spacing: DesignTokens.Spacing.sm)
+                ],
+                spacing: DesignTokens.Spacing.sm
+            ) {
+                ProviderUsageMetricTile(title: "Requests", value: providerFormatTokens(snapshot.localUsage.requests), accent: brand.accent)
+                ProviderUsageMetricTile(title: "Input", value: providerFormatCompactTokens(snapshot.localUsage.inputTokens), accent: brand.accent)
+                ProviderUsageMetricTile(title: "Output", value: providerFormatCompactTokens(snapshot.localUsage.outputTokens), accent: brand.accent)
+            }
+
+            if let sessionWindow = snapshot.sessionWindow {
+                ProviderWindowRow(window: sessionWindow, accent: brand.accent)
+            }
+
+            if let weeklyWindow = snapshot.weeklyWindow {
+                ProviderWindowRow(window: weeklyWindow, accent: brand.accent)
+            }
+
+            if !compact {
+                ForEach(snapshot.modelWindows) { window in
+                    ProviderWindowRow(window: window, accent: brand.accent)
+                }
+            } else if let modelWindow = snapshot.modelWindows.first {
+                ProviderWindowRow(window: modelWindow, accent: brand.accent)
+            }
+
+            if let credit = snapshot.credit {
+                ProviderDetailRow(
+                    label: credit.label,
+                    value: credit.isUnlimited
+                        ? "Unlimited"
+                        : (credit.balanceDisplay ?? "Available")
+                )
+            }
+
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                if let topModel = snapshot.localUsage.topModel {
+                    ProviderDetailRow(label: "Top model", value: topModel)
+                }
+                if let peakDay = snapshot.localUsage.peakDay {
+                    ProviderDetailRow(
+                        label: "Peak day",
+                        value: "\(providerFormatDateLabel(peakDay)) • \(providerFormatCompactTokens(snapshot.localUsage.peakDayTokens)) tok"
+                    )
+                }
+                ProviderDetailRow(
+                    label: "Total tokens",
+                    value: providerFormatCompactTokens(snapshot.localUsage.totalTokens)
+                )
+            }
+
+            if let statusMessage = snapshot.statusMessage {
+                ProviderUsageCallout(
+                    title: statusTitle,
+                    message: statusMessage,
+                    accent: snapshot.status == "error" ? .red : .orange
+                )
+            }
+            if let repairHint = snapshot.repairHint {
+                ProviderUsageCallout(title: "Suggested fix", message: repairHint, accent: brand.accent)
+            }
+            if let warning = snapshot.dashboardExtras?.warning {
+                ProviderUsageCallout(title: "Provider note", message: warning, accent: brand.accent)
+            }
         }
+        .padding(DesignTokens.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18)
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                }
+        )
+    }
+
+    private var statusTitle: String {
+        if snapshot.status == "error" {
+            return "Connection issue"
+        }
+        if snapshot.statusMessage?.localizedCaseInsensitiveContains("cached live") == true {
+            return "Using cached live data"
+        }
+        if snapshot.source == "local" {
+            return "Using fallback data"
+        }
+        return "Live quota unavailable"
+    }
+}
+
+private struct ProviderUsageCompactCard: View {
+    let snapshot: ProviderUsageProviderSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+            HStack(alignment: .top, spacing: DesignTokens.Spacing.sm) {
+                ProviderUsageCompactMark(title: snapshot.displayName)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        Text(snapshot.displayName)
+                            .font(.headline)
+                        ProviderUsageCompactStatus(status: snapshot.status)
+                    }
+
+                    Text(metaLine)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: DesignTokens.Spacing.sm)
+
+                if let planLabel = snapshot.planLabel {
+                    Text(planLabel)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
+                }
+            }
+
+            HStack(spacing: DesignTokens.Spacing.md) {
+                ProviderUsageCompactMetric(
+                    title: "Requests",
+                    value: providerFormatTokens(snapshot.localUsage.requests)
+                )
+                ProviderUsageCompactMetric(
+                    title: "Tokens",
+                    value: providerFormatCompactTokens(snapshot.localUsage.totalTokens)
+                )
+                if let creditLine {
+                    ProviderUsageCompactMetric(
+                        title: creditTitle,
+                        value: creditLine
+                    )
+                }
+            }
+
+            if let quotaSummary {
+                Text(quotaSummary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let detailLine {
+                Text(detailLine)
+                    .font(.subheadline)
+                    .foregroundStyle(detailTone)
+                    .lineLimit(2)
+            }
+        }
+        .padding(DesignTokens.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        }
+    }
+
+    private var metaLine: String {
+        var parts = [snapshot.source.uppercased()]
+        if let accountEmail = snapshot.accountEmail, !accountEmail.isEmpty {
+            parts.append(accountEmail)
+        } else if let topModel = snapshot.localUsage.topModel, !topModel.isEmpty {
+            parts.append(topModel)
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private var quotaSummary: String? {
+        let window = snapshot.sessionWindow ?? snapshot.weeklyWindow ?? snapshot.modelWindows.first
+        guard let window else { return nil }
+
+        var parts = [window.label]
+        if let percentUsed = window.percentUsed {
+            parts.append("\(percentUsed.formatted(.number.precision(.fractionLength(0))))% used")
+        } else if let percentRemaining = window.percentRemaining {
+            parts.append("\(percentRemaining.formatted(.number.precision(.fractionLength(0))))% left")
+        }
+        if let resetAt = window.resetAt {
+            parts.append("resets \(formatProviderReset(resetAt))")
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private var detailLine: String? {
+        snapshot.statusMessage
+            ?? snapshot.dashboardExtras?.warning
+            ?? snapshot.repairHint
+    }
+
+    private var detailTone: Color {
+        switch snapshot.status {
+        case "error":
+            return .red
+        case "warning":
+            return .orange
+        default:
+            return .secondary
+        }
+    }
+
+    private var creditTitle: String {
+        snapshot.credit?.label ?? "Credit"
+    }
+
+    private var creditLine: String? {
+        guard let credit = snapshot.credit else { return nil }
+        if credit.isUnlimited {
+            return "Unlimited"
+        }
+        return credit.balanceDisplay ?? "Available"
     }
 }
 
 private struct ProviderWindowRow: View {
     let window: ProviderQuotaWindow
+    let accent: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
             HStack {
                 Text(window.label)
                     .font(.subheadline)
                 Spacer()
                 if let percentUsed = window.percentUsed {
                     Text("\(percentUsed, specifier: "%.0f")% used")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
-            ProgressView(value: normalizedProgress)
-                .progressViewStyle(.linear)
+            if let normalizedProgress {
+                ProgressView(value: normalizedProgress)
+                    .progressViewStyle(.linear)
+                    .tint(accent)
+            } else {
+                Text("Usage unavailable")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             if let resetAt = window.resetAt {
-                    Text("Resets \(formatProviderReset(resetAt))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                Text("Resets \(formatProviderReset(resetAt))")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var normalizedProgress: Double {
-        guard let percentUsed = window.percentUsed else { return 0 }
+    private var normalizedProgress: Double? {
+        guard let percentUsed = window.percentUsed else { return nil }
         return min(max(percentUsed / 100.0, 0), 1)
     }
 }
@@ -793,19 +964,27 @@ private struct ProviderUsageInlineNotice: View {
     let message: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: DesignTokens.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
+                .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.subheadline)
+                    .bold()
                 Text(message)
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.08)))
+        .padding(DesignTokens.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        }
     }
 }
 
@@ -819,22 +998,33 @@ private func formatProviderReset(_ raw: String) -> String {
 
 private struct ProviderUsageTag: View {
     let text: String
+    let accent: Color
 
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Capsule().fill(Color.secondary.opacity(0.18)))
+            .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor).opacity(0.14)))
     }
 }
 
 private struct ProviderStatusPill: View {
     let status: String
 
+    private var symbolName: String {
+        switch status {
+        case "ok": return "checkmark.circle.fill"
+        case "warning": return "exclamationmark.triangle.fill"
+        case "error": return "xmark.octagon.fill"
+        default: return "circle.fill"
+        }
+    }
+
     private var color: Color {
         switch status {
-        case "ok": return .green
+        case "ok": return .secondary
         case "warning": return .orange
         case "error": return .red
         default: return .secondary
@@ -842,12 +1032,12 @@ private struct ProviderStatusPill: View {
     }
 
     var body: some View {
-        Text(status.capitalized)
-            .font(.caption2.weight(.semibold))
+        Label(status.capitalized, systemImage: symbolName)
+            .font(.caption.bold())
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Capsule().fill(color.opacity(0.12)))
+            .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor).opacity(0.14)))
     }
 }
 
@@ -858,11 +1048,249 @@ private struct ProviderDetailRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(value)
-                .font(.caption)
+                .font(.subheadline)
+        }
+    }
+}
+
+private struct ProviderUsagePopoverHeader: View {
+    let overview: ProviderUsageOverview?
+    let snapshots: [ProviderUsageProviderSnapshot]
+    let isLoading: Bool
+    let onRefresh: () -> Void
+
+    private var totalRequests: Int {
+        snapshots.reduce(0) { $0 + $1.localUsage.requests }
+    }
+
+    private var totalTokens: Int {
+        snapshots.reduce(0) { $0 + $1.localUsage.totalTokens }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: DesignTokens.Spacing.md) {
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                Text("Provider Usage")
+                    .font(.headline)
+                    .bold()
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: DesignTokens.Spacing.sm)
+
+            Button(action: onRefresh) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(minWidth: 16)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .accessibilityLabel("Refresh usage provider data")
+        }
+    }
+
+    private var subtitle: String {
+        var parts = ["\(providerFormatTokens(snapshots.count)) providers"]
+        if totalRequests > 0 {
+            parts.append("\(providerFormatTokens(totalRequests)) requests")
+        }
+        if totalTokens > 0 {
+            parts.append("\(providerFormatCompactTokens(totalTokens)) tokens")
+        }
+        if let generatedAt = overview?.generatedAt {
+            parts.append("updated \(formatProviderReset(generatedAt))")
+        }
+        return parts.joined(separator: " • ")
+    }
+}
+
+private struct ProviderUsageCompactMetric: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+            Text(value)
+                .font(.subheadline)
+                .bold()
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ProviderUsageMetricTile: View {
+    let title: String
+    let value: String
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+            Text(value)
+                .font(.headline)
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, DesignTokens.Spacing.sm)
+        .padding(.vertical, DesignTokens.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        }
+    }
+}
+
+private struct ProviderUsageCompactMark: View {
+    let title: String
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.16))
+                .frame(width: 30, height: 30)
+            Text(String(title.prefix(1)).uppercased())
+                .font(.subheadline)
+                .bold()
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ProviderUsageCompactStatus: View {
+    let status: String
+
+    private var symbolName: String {
+        switch status {
+        case "ok": return "checkmark.circle.fill"
+        case "warning": return "exclamationmark.triangle.fill"
+        case "error": return "xmark.octagon.fill"
+        default: return "circle.fill"
+        }
+    }
+
+    private var tone: Color {
+        switch status {
+        case "warning":
+            return .orange
+        case "error":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    var body: some View {
+        Image(systemName: symbolName)
+            .font(.caption)
+            .foregroundStyle(tone)
+            .accessibilityLabel(status.capitalized)
+    }
+}
+
+private struct ProviderUsageCallout: View {
+    let title: String
+    let message: String
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+            Label(title, systemImage: "info.circle.fill")
+                .font(.subheadline)
+                .bold()
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(DesignTokens.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        }
+    }
+}
+
+private struct ProviderLogoMark: View {
+    let brand: ProviderBrand
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .frame(width: 42, height: 42)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                }
+
+            if let assetName = brand.logoAssetName {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
+                    .accessibilityHidden(true)
+            } else {
+                Text(brand.monogram)
+                    .font(.subheadline)
+                    .bold()
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ProviderBrand {
+    let provider: String
+
+    var logoAssetName: String? {
+        switch provider {
+        case "codex": return "openai-logo"
+        case "claude": return "anthropic-logo"
+        default: return nil
+        }
+    }
+
+    var accent: Color {
+        switch provider {
+        case "codex":
+            return Color(red: 0.30, green: 0.75, blue: 0.45)
+        case "claude":
+            return Color(red: 0.85, green: 0.55, blue: 0.35)
+        default:
+            return .accentColor
+        }
+    }
+
+    var monogram: String {
+        switch provider {
+        case "codex": return "C"
+        case "claude": return "A"
+        default: return String(provider.prefix(1)).uppercased()
         }
     }
 }

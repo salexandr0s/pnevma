@@ -167,12 +167,18 @@ pub struct ListProjectFilesInput {
     pub query: Option<String>,
     pub limit: Option<usize>,
     pub path: Option<String>,
+    pub recursive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenFileTargetInput {
     pub path: String,
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectFilePathInput {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1263,11 +1269,98 @@ fn parse_porcelain_status_line(line: &str) -> Option<(String, String)> {
         return None;
     }
     let normalized = if let Some((_, to)) = path.split_once(" -> ") {
-        to.trim().to_string()
+        decode_git_status_path(to.trim())
     } else {
-        path.to_string()
+        decode_git_status_path(path)
     };
     Some((normalized, status))
+}
+
+fn parse_porcelain_status_z(output: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut parts = output.split('\0').filter(|part| !part.is_empty());
+
+    while let Some(part) = parts.next() {
+        if part.len() < 4 {
+            continue;
+        }
+
+        let status = part[..2].to_string();
+        let path = part[3..].to_string();
+        entries.push((path, status.clone()));
+
+        if status.contains('R') || status.contains('C') {
+            let _ = parts.next();
+        }
+    }
+
+    entries
+}
+
+fn decode_git_status_path(path: &str) -> String {
+    if !(path.starts_with('"') && path.ends_with('"') && path.len() >= 2) {
+        return path.to_string();
+    }
+
+    let inner = &path[1..path.len() - 1];
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut encoded = [0; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+            continue;
+        }
+
+        let Some(escaped) = chars.next() else {
+            break;
+        };
+        match escaped {
+            '"' => bytes.push(b'"'),
+            '\\' => bytes.push(b'\\'),
+            'n' => bytes.push(b'\n'),
+            'r' => bytes.push(b'\r'),
+            't' => bytes.push(b'\t'),
+            '0'..='7' => {
+                let mut octal = String::from(escaped);
+                for _ in 0..2 {
+                    if let Some(next) = chars.next_if(|c| matches!(c, '0'..='7')) {
+                        octal.push(next);
+                    } else {
+                        break;
+                    }
+                }
+                if let Ok(value) = u8::from_str_radix(&octal, 8) {
+                    bytes.push(value);
+                }
+            }
+            other => {
+                let mut encoded = [0; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut encoded).as_bytes());
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+fn parse_patch_file_header_path(line: &str) -> Option<String> {
+    let raw_path = line
+        .strip_prefix("--- ")
+        .or_else(|| line.strip_prefix("+++ "))?
+        .split('\t')
+        .next()?
+        .trim();
+    if raw_path == "/dev/null" {
+        return None;
+    }
+    Some(
+        decode_git_status_path(raw_path)
+            .trim_start_matches("a/")
+            .trim_start_matches("b/")
+            .to_string(),
+    )
 }
 
 fn parse_diff_patch(patch: &str) -> Vec<DiffFileView> {
@@ -1285,16 +1378,20 @@ fn parse_diff_patch(patch: &str) -> Vec<DiffFileView> {
             if let Some(file) = current_file.take() {
                 files.push(file);
             }
-            let path = line
-                .split_whitespace()
-                .nth(2)
-                .map(|v| v.trim_start_matches("a/").to_string())
-                .unwrap_or_else(|| "unknown".to_string());
             current_file = Some(DiffFileView {
-                path,
+                path: "unknown".to_string(),
                 hunks: Vec::new(),
             });
             continue;
+        }
+
+        if current_hunk.is_none() {
+            if let Some(path) = parse_patch_file_header_path(line) {
+                if let Some(file) = current_file.as_mut() {
+                    file.path = path;
+                }
+                continue;
+            }
         }
 
         if line.starts_with("@@") {

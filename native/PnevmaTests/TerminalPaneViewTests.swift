@@ -301,4 +301,96 @@ final class TerminalPaneViewTests: XCTestCase {
 
         XCTAssertTrue(window.firstResponder === hostView)
     }
+
+    func testPlainTypingDismissesAgentLauncher() throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "a",
+            charactersIgnoringModifiers: "a",
+            isARepeat: false,
+            keyCode: 0
+        ))
+
+        XCTAssertTrue(TerminalPaneView.shouldDismissAgentLauncher(for: event))
+    }
+
+    func testCommandDSplitShortcutDoesNotDismissAgentLauncher() throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "d",
+            charactersIgnoringModifiers: "d",
+            isARepeat: false,
+            keyCode: 2
+        ))
+
+        XCTAssertFalse(TerminalPaneView.shouldDismissAgentLauncher(for: event))
+    }
+
+    func testShiftCommandDSplitShortcutDoesNotDismissAgentLauncher() throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .shift],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "D",
+            charactersIgnoringModifiers: "d",
+            isARepeat: false,
+            keyCode: 2
+        ))
+
+        XCTAssertFalse(TerminalPaneView.shouldDismissAgentLauncher(for: event))
+    }
+
+    func testSplitKeepsAgentLauncherVisibleInOriginalAndNewPane() {
+        let firstPane = TerminalPaneView(
+            workingDirectory: "/tmp/project-a",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: ActiveWorkspaceActivationHub()
+        )
+        let secondPane = TerminalPaneView(
+            workingDirectory: "/tmp/project-b",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: ActiveWorkspaceActivationHub()
+        )
+        defer {
+            firstPane.dispose()
+            secondPane.dispose()
+        }
+
+        let contentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 800, height: 600),
+            rootPaneView: firstPane
+        )
+
+        firstPane.installAgentLauncherForTesting()
+        secondPane.installAgentLauncherForTesting()
+
+        XCTAssertTrue(firstPane.hasAgentLauncherOverlay)
+        XCTAssertTrue(secondPane.hasAgentLauncherOverlay)
+        XCTAssertNotNil(contentArea.splitActivePane(direction: .horizontal, newPaneView: secondPane))
+        XCTAssertTrue(firstPane.hasAgentLauncherOverlay)
+        XCTAssertTrue(secondPane.hasAgentLauncherOverlay)
+    }
 }

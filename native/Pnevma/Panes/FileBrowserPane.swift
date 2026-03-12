@@ -15,6 +15,9 @@ struct FileNode: Identifiable, Codable {
 
 private struct FileTreeParams: Encodable {
     let path: String?
+    let query: String?
+    let limit: Int?
+    let recursive: Bool?
 }
 
 // MARK: - FileBrowserView
@@ -59,6 +62,8 @@ struct FileBrowserView: View {
                 }
                 .padding(12)
 
+                fileSearchBar
+
                 Divider()
 
                 if let waitingMessage = viewModel.projectStatusMessage {
@@ -83,7 +88,21 @@ struct FileBrowserView: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if viewModel.rootNodes.isEmpty {
+                } else if viewModel.isSearching && viewModel.visibleRootNodes.isEmpty {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Searching files...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if viewModel.hasActiveSearch && viewModel.visibleRootNodes.isEmpty {
+                    EmptyStateView(
+                        icon: "magnifyingglass",
+                        title: "No matching files",
+                        message: "Try a different file name or path"
+                    )
+                } else if viewModel.visibleRootNodes.isEmpty {
                     EmptyStateView(
                         icon: "folder",
                         title: "No files found",
@@ -234,6 +253,37 @@ struct FileBrowserView: View {
         .padding(.vertical, 6)
     }
 
+    private var fileSearchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search files...", text: $viewModel.searchQuery)
+                .textFieldStyle(.plain)
+                .onChange(of: viewModel.searchQuery) {
+                    viewModel.searchQueryDidChange()
+                }
+                .onSubmit {
+                    viewModel.searchQueryDidChange(immediate: true)
+                }
+
+            if viewModel.isSearching {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            if viewModel.hasActiveSearch {
+                Button("Clear search", systemImage: "xmark.circle.fill", action: clearSearch)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+    }
+
     // MARK: File Selection with Dirty Guard
 
     private func handleFileSelect(_ node: FileNode) {
@@ -243,6 +293,10 @@ struct FileBrowserView: View {
         } else {
             viewModel.select(node)
         }
+    }
+
+    private func clearSearch() {
+        viewModel.clearSearch()
     }
 }
 
@@ -255,7 +309,7 @@ private struct FileTreeList: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(viewModel.rootNodes) { node in
+                ForEach(viewModel.visibleRootNodes) { node in
                     FileTreeRow(node: node, depth: 0, viewModel: viewModel, onSelect: onSelect)
                 }
             }
@@ -273,7 +327,7 @@ private struct FileTreeRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                if node.isDirectory {
+                if node.isDirectory && !viewModel.hasActiveSearch {
                     Button(action: { viewModel.toggleDirectory(node) }) {
                         Image(systemName: viewModel.isExpanded(node.path) ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
@@ -281,6 +335,12 @@ private struct FileTreeRow: View {
                             .frame(width: 12, height: 12)
                     }
                     .buttonStyle(.plain)
+                } else if node.isDirectory {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12, height: 12)
+                        .accessibilityHidden(true)
                 } else {
                     Color.clear
                         .frame(width: 12, height: 12)
@@ -313,7 +373,7 @@ private struct FileTreeRow: View {
             .contentShape(Rectangle())
             .accessibilityAddTraits(.isButton)
             .onTapGesture(count: 2) {
-                if node.isDirectory {
+                if node.isDirectory && !viewModel.hasActiveSearch {
                     viewModel.toggleDirectory(node)
                 }
             }
@@ -321,7 +381,7 @@ private struct FileTreeRow: View {
                 onSelect(node)
             }
 
-            if node.isDirectory && viewModel.isExpanded(node.path) {
+            if node.isDirectory && viewModel.shouldShowChildren(for: node) {
                 if let children = node.children {
                     if children.isEmpty {
                         Text("Empty")
@@ -379,6 +439,7 @@ private struct FileTreeRow: View {
 @Observable @MainActor
 final class FileBrowserViewModel {
     var rootNodes: [FileNode] = []
+    var searchQuery = ""
     var expandedPaths: Set<String> = []
     var selectedPath: String?
     private(set) var selectedFilePath: String?
@@ -394,12 +455,16 @@ final class FileBrowserViewModel {
     private(set) var projectStatusMessage: String?
     private(set) var isLoadingRoot = false
     private(set) var isLoadingPreview = false
+    private(set) var isSearching = false
     private(set) var loadingDirectories: Set<String> = []
+    private(set) var searchResults: [FileNode] = []
 
     @ObservationIgnored
     private let commandBus: (any CommandCalling)?
     @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
+    @ObservationIgnored
+    private let searchDebounceNanoseconds: UInt64
     @ObservationIgnored
     private var activationObserverID: UUID?
     @ObservationIgnored
@@ -414,13 +479,19 @@ final class FileBrowserViewModel {
     private var previewLoadTask: Task<Void, Never>?
     @ObservationIgnored
     private var directoryLoadTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private var searchLoadToken: UInt64 = 0
+    @ObservationIgnored
+    private var searchLoadTask: Task<Void, Never>?
 
     init(
         commandBus: (any CommandCalling)? = CommandBus.shared,
-        activationHub: ActiveWorkspaceActivationHub = .shared
+        activationHub: ActiveWorkspaceActivationHub = .shared,
+        searchDebounceNanoseconds: UInt64 = 250_000_000
     ) {
         self.commandBus = commandBus
         self.activationHub = activationHub
+        self.searchDebounceNanoseconds = searchDebounceNanoseconds
         activationObserverID = activationHub.addObserver { [weak self] state in
             Task { @MainActor [weak self] in
                 self?.handleActivationState(state)
@@ -441,6 +512,9 @@ final class FileBrowserViewModel {
     func refresh() {
         clearContentState()
         loadRoot()
+        if hasActiveSearch {
+            searchQueryDidChange(immediate: true)
+        }
     }
 
     func select(_ node: FileNode) {
@@ -460,6 +534,20 @@ final class FileBrowserViewModel {
 
         selectedFilePath = node.path
         loadPreview(path: node.path)
+    }
+
+    func clearSelection() {
+        previewLoadTask?.cancel()
+        previewLoadToken &+= 1
+        selectedPath = nil
+        selectedFilePath = nil
+        previewContent = nil
+        originalContent = nil
+        editableContent = ""
+        isBinary = false
+        isTruncated = false
+        isLoadingPreview = false
+        actionError = nil
     }
 
     func toggleDirectory(_ node: FileNode) {
@@ -488,6 +576,101 @@ final class FileBrowserViewModel {
 
     func isLoadingDirectory(_ path: String) -> Bool {
         loadingDirectories.contains(path)
+    }
+
+    var hasActiveSearch: Bool {
+        !trimmedSearchQuery.isEmpty
+    }
+
+    var visibleRootNodes: [FileNode] {
+        hasActiveSearch ? searchResults : rootNodes
+    }
+
+    func shouldShowChildren(for node: FileNode) -> Bool {
+        guard node.isDirectory else { return false }
+        return hasActiveSearch || isExpanded(node.path)
+    }
+
+    func searchQueryDidChange(immediate: Bool = false) {
+        searchLoadTask?.cancel()
+        searchLoadTask = nil
+        searchLoadToken &+= 1
+
+        guard hasActiveSearch else {
+            isSearching = false
+            searchResults = []
+            return
+        }
+
+        guard let bus = commandBus else {
+            actionError = "Backend connection unavailable"
+            scheduleDismissActionError()
+            isSearching = false
+            searchResults = []
+            return
+        }
+
+        guard isProjectOpen else {
+            isSearching = false
+            searchResults = []
+            return
+        }
+
+        let query = trimmedSearchQuery
+        let generation = activationGeneration
+        let loadToken = searchLoadToken
+        isSearching = true
+
+        searchLoadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.activationGeneration == generation && self.searchLoadToken == loadToken {
+                    self.isSearching = false
+                }
+            }
+
+            if !immediate {
+                try? await Task.sleep(nanoseconds: self.searchDebounceNanoseconds)
+            }
+
+            guard !Task.isCancelled else { return }
+
+            do {
+                let matches: [FileNode] = try await bus.call(
+                    method: "workspace.files.tree",
+                    params: FileTreeParams(
+                        path: nil,
+                        query: query,
+                        limit: 5_000,
+                        recursive: true
+                    )
+                )
+                guard self.activationGeneration == generation,
+                      self.searchLoadToken == loadToken,
+                      self.trimmedSearchQuery == query else {
+                    return
+                }
+                self.searchResults = matches
+                self.actionError = nil
+            } catch {
+                guard self.activationGeneration == generation,
+                      self.searchLoadToken == loadToken,
+                      self.trimmedSearchQuery == query else {
+                    return
+                }
+                self.searchResults = []
+                self.handleLoadFailure(error)
+            }
+        }
+    }
+
+    func clearSearch() {
+        searchQuery = ""
+        searchLoadTask?.cancel()
+        searchLoadTask = nil
+        searchLoadToken &+= 1
+        isSearching = false
+        searchResults = []
     }
 
     func saveFile(onComplete: (() -> Void)? = nil) {
@@ -600,7 +783,7 @@ final class FileBrowserViewModel {
             do {
                 let children: [FileNode] = try await bus.call(
                     method: "workspace.files.tree",
-                    params: FileTreeParams(path: path)
+                    params: FileTreeParams(path: path, query: nil, limit: nil, recursive: nil)
                 )
                 guard self.activationGeneration == generation else {
                     return
@@ -696,6 +879,9 @@ final class FileBrowserViewModel {
             projectStatusMessage = nil
             clearContentState()
             loadRoot()
+            if hasActiveSearch {
+                searchQueryDidChange(immediate: true)
+            }
         case .failed(_, _, let message):
             isProjectOpen = false
             projectStatusMessage = nil
@@ -722,12 +908,16 @@ final class FileBrowserViewModel {
         activationGeneration &+= 1
         rootLoadToken &+= 1
         previewLoadToken &+= 1
+        searchLoadToken &+= 1
 
         rootLoadTask?.cancel()
         rootLoadTask = nil
 
         previewLoadTask?.cancel()
         previewLoadTask = nil
+
+        searchLoadTask?.cancel()
+        searchLoadTask = nil
 
         for task in directoryLoadTasks.values {
             task.cancel()
@@ -736,11 +926,13 @@ final class FileBrowserViewModel {
 
         isLoadingRoot = false
         isLoadingPreview = false
+        isSearching = false
         loadingDirectories.removeAll()
     }
 
     private func clearContentState() {
         rootNodes = []
+        searchResults = []
         expandedPaths = []
         selectedPath = nil
         selectedFilePath = nil
@@ -750,6 +942,10 @@ final class FileBrowserViewModel {
         isBinary = false
         isTruncated = false
         isSaving = false
+    }
+
+    private var trimmedSearchQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func children(for path: String) -> [FileNode]? {

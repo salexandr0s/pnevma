@@ -1863,8 +1863,8 @@ fn normalize_relative_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn sort_file_tree_nodes(nodes: &mut [FileTreeNodeView]) {
-    nodes.sort_by(|a, b| match (a.is_directory, b.is_directory) {
+fn compare_file_tree_nodes(a: &FileTreeNodeView, b: &FileTreeNodeView) -> std::cmp::Ordering {
+    match (a.is_directory, b.is_directory) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
         _ => a
@@ -1872,7 +1872,11 @@ fn sort_file_tree_nodes(nodes: &mut [FileTreeNodeView]) {
             .to_ascii_lowercase()
             .cmp(&b.name.to_ascii_lowercase())
             .then_with(|| a.name.cmp(&b.name)),
-    });
+    }
+}
+
+fn sort_file_tree_nodes(nodes: &mut [FileTreeNodeView]) {
+    nodes.sort_by(compare_file_tree_nodes);
 }
 
 fn resolve_project_tree_directory(
@@ -2008,6 +2012,176 @@ fn list_project_directory_entries(
     Ok(nodes)
 }
 
+struct ProjectTreeSearchCandidate {
+    node: FileTreeNodeView,
+    child_dir: Option<PathBuf>,
+    logical_path: PathBuf,
+}
+
+fn project_tree_search_candidate_for_path(
+    entry_path: &Path,
+    logical_parent: Option<&Path>,
+    root_dir: &Path,
+) -> Option<ProjectTreeSearchCandidate> {
+    let name = entry_path.file_name()?.to_string_lossy().to_string();
+    let logical_path = logical_parent
+        .map(|parent| parent.join(&name))
+        .unwrap_or_else(|| PathBuf::from(&name));
+    let path = normalize_relative_path(&logical_path);
+    let metadata = std::fs::symlink_metadata(entry_path).ok()?;
+    let file_type = metadata.file_type();
+
+    if file_type.is_symlink() {
+        let canonical_target = entry_path.canonicalize().ok()?;
+        if !canonical_target.starts_with(root_dir) {
+            return None;
+        }
+        let target_metadata = std::fs::metadata(&canonical_target).ok()?;
+        if target_metadata.is_dir() {
+            return Some(ProjectTreeSearchCandidate {
+                node: FileTreeNodeView {
+                    id: path.clone(),
+                    name,
+                    path,
+                    is_directory: true,
+                    children: None,
+                    size: None,
+                },
+                child_dir: Some(canonical_target),
+                logical_path,
+            });
+        }
+        if target_metadata.is_file() {
+            return Some(ProjectTreeSearchCandidate {
+                node: FileTreeNodeView {
+                    id: path.clone(),
+                    name,
+                    path,
+                    is_directory: false,
+                    children: None,
+                    size: i64::try_from(target_metadata.len()).ok(),
+                },
+                child_dir: None,
+                logical_path,
+            });
+        }
+        return None;
+    }
+
+    if metadata.is_dir() {
+        let canonical_dir = entry_path.canonicalize().ok()?;
+        if !canonical_dir.starts_with(root_dir) {
+            return None;
+        }
+        return Some(ProjectTreeSearchCandidate {
+            node: FileTreeNodeView {
+                id: path.clone(),
+                name,
+                path,
+                is_directory: true,
+                children: None,
+                size: None,
+            },
+            child_dir: Some(canonical_dir),
+            logical_path,
+        });
+    }
+
+    if metadata.is_file() {
+        return Some(ProjectTreeSearchCandidate {
+            node: FileTreeNodeView {
+                id: path.clone(),
+                name,
+                path,
+                is_directory: false,
+                children: None,
+                size: i64::try_from(metadata.len()).ok(),
+            },
+            child_dir: None,
+            logical_path,
+        });
+    }
+
+    None
+}
+
+fn search_project_directory_entries(
+    current_dir: &Path,
+    logical_parent: Option<&Path>,
+    root_dir: &Path,
+    query: &str,
+    remaining_matches: &mut usize,
+    visited_dirs: &mut std::collections::HashSet<PathBuf>,
+) -> Result<Vec<FileTreeNodeView>, String> {
+    if query.is_empty() || *remaining_matches == 0 {
+        return Ok(Vec::new());
+    }
+
+    let entries = std::fs::read_dir(current_dir)
+        .map_err(|e| format!("failed to read {}: {e}", current_dir.display()))?;
+    let mut candidates = Vec::new();
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let entry_path = entry.path();
+        if let Some(candidate) =
+            project_tree_search_candidate_for_path(&entry_path, logical_parent, root_dir)
+        {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates.sort_by(|left, right| compare_file_tree_nodes(&left.node, &right.node));
+    let mut nodes = Vec::new();
+
+    for candidate in candidates {
+        if *remaining_matches == 0 {
+            break;
+        }
+
+        let mut node = candidate.node;
+        let matches_self = node.name.to_ascii_lowercase().contains(query)
+            || node.path.to_ascii_lowercase().contains(query);
+
+        if node.is_directory {
+            let children = if let Some(directory_path) = candidate.child_dir {
+                if visited_dirs.insert(directory_path.clone()) {
+                    let children = search_project_directory_entries(
+                        &directory_path,
+                        Some(&candidate.logical_path),
+                        root_dir,
+                        query,
+                        remaining_matches,
+                        visited_dirs,
+                    )?;
+                    visited_dirs.remove(&directory_path);
+                    children
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            if matches_self || !children.is_empty() {
+                node.children = Some(children);
+                nodes.push(node);
+                if matches_self && *remaining_matches > 0 {
+                    *remaining_matches -= 1;
+                }
+            }
+        } else if matches_self {
+            nodes.push(node);
+            *remaining_matches -= 1;
+        }
+    }
+
+    sort_file_tree_nodes(&mut nodes);
+    Ok(nodes)
+}
+
 fn filter_project_file_tree(
     mut nodes: Vec<FileTreeNodeView>,
     query: &str,
@@ -2099,11 +2273,109 @@ pub async fn list_project_files(
     Ok(files)
 }
 
+pub async fn list_workspace_changes(state: &AppState) -> Result<Vec<ProjectFileView>, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        ctx.project_path.clone()
+    };
+
+    let porcelain = git_output(&project_path, &["status", "--porcelain", "-z", "-uall"]).await?;
+    let mut files = parse_porcelain_status_z(&porcelain)
+        .into_iter()
+        .map(|(path, status)| {
+            let staged = status.chars().next().is_some_and(|c| c != ' ' && c != '?');
+            let modified = status.chars().nth(1).is_some_and(|c| c != ' ' && c != '?');
+            let conflicted = status.contains('U');
+            let untracked = status.starts_with("??");
+            ProjectFileView {
+                path,
+                status,
+                modified,
+                staged,
+                conflicted,
+                untracked,
+            }
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+pub async fn get_workspace_change_diff(
+    input: ProjectFilePathInput,
+    state: &AppState,
+) -> Result<Option<DiffFileView>, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        ctx.project_path.clone()
+    };
+
+    let rel = input.path.trim().trim_start_matches('/');
+    ensure_safe_path_input(rel, "file path")?;
+    if rel.is_empty() {
+        return Err("invalid path".to_string());
+    }
+
+    let changes = list_workspace_changes(state).await?;
+    let file = changes
+        .iter()
+        .find(|item| item.path == rel)
+        .ok_or_else(|| format!("changed file not found: {}", input.path))?;
+
+    let mut patch_chunks = Vec::new();
+    if file.staged {
+        let patch = git_output(
+            &project_path,
+            &["diff", "--cached", "--no-ext-diff", "--", rel],
+        )
+        .await?;
+        if !patch.trim().is_empty() {
+            patch_chunks.push(patch);
+        }
+    }
+    if file.modified || file.conflicted {
+        let patch = git_output(&project_path, &["diff", "--no-ext-diff", "--", rel]).await?;
+        if !patch.trim().is_empty() {
+            patch_chunks.push(patch);
+        }
+    }
+    if file.untracked {
+        let patch = git_diff_no_index_output(&project_path, rel).await?;
+        if !patch.trim().is_empty() {
+            patch_chunks.push(patch);
+        }
+    }
+
+    let patch = patch_chunks.join("\n");
+    if patch.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let mut files = parse_diff_patch(&patch);
+    if files.is_empty() {
+        return Ok(None);
+    }
+
+    let mut merged = files.remove(0);
+    for extra in files {
+        if extra.path == merged.path {
+            merged.hunks.extend(extra.hunks);
+        }
+    }
+    Ok(Some(merged))
+}
+
 pub async fn list_project_file_tree(
     input: Option<ListProjectFilesInput>,
     state: &AppState,
 ) -> Result<Vec<FileTreeNodeView>, String> {
-    let (project_path, query, limit, requested_path) = {
+    let (project_path, query, limit, requested_path, recursive) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
@@ -2118,17 +2390,41 @@ pub async fn list_project_file_tree(
                 .to_ascii_lowercase(),
             input.as_ref().and_then(|value| value.limit),
             input.as_ref().and_then(|value| value.path.clone()),
+            input
+                .as_ref()
+                .and_then(|value| value.recursive)
+                .unwrap_or(false),
         )
     };
 
     tokio::task::spawn_blocking(move || {
         let (root_dir, current_dir) =
             resolve_project_tree_directory(&project_path, requested_path.as_deref())?;
-        let mut nodes = list_project_directory_entries(&current_dir, &root_dir)?;
-        nodes = filter_project_file_tree(nodes, &query);
-        if let Some(limit) = limit {
-            nodes.truncate(limit.clamp(1, 10_000));
-        }
+        let nodes = if recursive && !query.is_empty() {
+            let mut remaining_matches = limit.unwrap_or(10_000).clamp(1, 10_000);
+            let mut visited_dirs =
+                std::collections::HashSet::from([current_dir.canonicalize().map_err(|e| {
+                    format!(
+                        "failed to canonicalize search root {}: {e}",
+                        current_dir.display()
+                    )
+                })?]);
+            search_project_directory_entries(
+                &current_dir,
+                requested_path.as_deref().map(Path::new),
+                &root_dir,
+                &query,
+                &mut remaining_matches,
+                &mut visited_dirs,
+            )?
+        } else {
+            let mut nodes = list_project_directory_entries(&current_dir, &root_dir)?;
+            nodes = filter_project_file_tree(nodes, &query);
+            if let Some(limit) = limit {
+                nodes.truncate(limit.clamp(1, 10_000));
+            }
+            nodes
+        };
         Ok(nodes)
     })
     .await
@@ -2239,6 +2535,21 @@ pub async fn open_file_target(
         launched_editor,
         is_binary: false,
     })
+}
+
+async fn git_diff_no_index_output(project_path: &Path, rel_path: &str) -> Result<String, String> {
+    let out = TokioCommand::new("git")
+        .args(["diff", "--no-index", "--", "/dev/null", rel_path])
+        .current_dir(project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if out.status.success() || out.status.code() == Some(1) {
+        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+
+    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
 }
 
 pub async fn write_file_target(
@@ -4631,6 +4942,7 @@ mod tests {
     use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::ffi::OsString;
+    use std::process::Command;
     use std::sync::OnceLock;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -5628,6 +5940,7 @@ enable_entropy_guard = false
                 query: None,
                 limit: None,
                 path: Some("src".to_string()),
+                recursive: None,
             }),
             &state,
         )
@@ -5671,6 +5984,7 @@ enable_entropy_guard = false
                 query: None,
                 limit: None,
                 path: Some("src".to_string()),
+                recursive: None,
             }),
             &state,
         )
@@ -5694,6 +6008,188 @@ enable_entropy_guard = false
 
         assert_eq!(opened.path, "src/lib.rs");
         assert!(opened.content.contains("preview"));
+    }
+
+    #[tokio::test]
+    async fn list_project_file_tree_recursive_query_finds_ignored_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join(".gitignore"), "AGENTS.md\n").unwrap();
+        std::fs::write(project_root.join("AGENTS.md"), "ignored but visible\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-search-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(
+            Some(ListProjectFilesInput {
+                query: Some("agents.md".to_string()),
+                limit: None,
+                path: None,
+                recursive: Some(true),
+            }),
+            &state,
+        )
+        .await
+        .expect("recursive file tree search should load");
+
+        assert_eq!(nodes.len(), 1);
+        let agents = nodes.first().expect("AGENTS.md should be returned");
+        assert_eq!(agents.path, "AGENTS.md");
+        assert!(!agents.is_directory);
+    }
+
+    #[tokio::test]
+    async fn list_project_file_tree_recursive_query_limit_is_deterministic() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("beta-match.txt"), "beta\n").unwrap();
+        std::fs::write(project_root.join("alpha-match.txt"), "alpha\n").unwrap();
+        std::fs::write(project_root.join("gamma-match.txt"), "gamma\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-search-limit-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(
+            Some(ListProjectFilesInput {
+                query: Some("match".to_string()),
+                limit: Some(1),
+                path: None,
+                recursive: Some(true),
+            }),
+            &state,
+        )
+        .await
+        .expect("recursive limited file tree search should load");
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].path, "alpha-match.txt");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_project_file_tree_recursive_query_preserves_symlink_alias_paths() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("docs")).unwrap();
+        std::fs::write(project_root.join("docs/AGENTS.md"), "nested file\n").unwrap();
+        symlink("docs", project_root.join("alias")).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-search-alias-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(
+            Some(ListProjectFilesInput {
+                query: Some("agents.md".to_string()),
+                limit: None,
+                path: None,
+                recursive: Some(true),
+            }),
+            &state,
+        )
+        .await
+        .expect("recursive file tree search should preserve alias paths");
+
+        let alias = nodes
+            .iter()
+            .find(|node| node.path == "alias")
+            .expect("alias directory should be returned");
+        let alias_children = alias
+            .children
+            .as_ref()
+            .expect("alias should include matching children");
+        assert!(alias_children
+            .iter()
+            .any(|node| node.path == "alias/AGENTS.md"));
+        assert!(
+            !alias_children
+                .iter()
+                .any(|node| node.path == "docs/AGENTS.md"),
+            "alias subtree should not leak canonical child paths"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_project_file_tree_recursive_query_skips_symlink_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("docs")).unwrap();
+        std::fs::write(project_root.join("docs/AGENTS.md"), "nested file\n").unwrap();
+        symlink(".", project_root.join("docs/loop")).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "tree-search-cycle-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let nodes = list_project_file_tree(
+            Some(ListProjectFilesInput {
+                query: Some("agents.md".to_string()),
+                limit: None,
+                path: None,
+                recursive: Some(true),
+            }),
+            &state,
+        )
+        .await
+        .expect("recursive file tree search should skip cycles");
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].path, "docs");
+        let children = nodes[0]
+            .children
+            .as_ref()
+            .expect("matching directory should include children");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].path, "docs/AGENTS.md");
     }
 
     #[tokio::test]
@@ -5731,6 +6227,351 @@ enable_entropy_guard = false
         assert_eq!(opened.path, "assets/icon.bin");
         assert_eq!(opened.content, "[Binary file preview unavailable]");
         assert!(!opened.truncated);
+    }
+
+    #[tokio::test]
+    async fn list_workspace_changes_returns_only_dirty_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn clean() {}\n").unwrap();
+        run_git(&project_root, &["add", "src/lib.rs"]);
+        run_git(&project_root, &["commit", "-m", "initial"]);
+
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn dirty() {}\n").unwrap();
+        std::fs::write(project_root.join("notes.txt"), "draft\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-changes-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let changes = list_workspace_changes(&state)
+            .await
+            .expect("workspace changes should load");
+
+        assert_eq!(changes.len(), 2);
+        assert!(changes
+            .iter()
+            .any(|item| item.path == "src/lib.rs" && item.modified));
+        assert!(changes
+            .iter()
+            .any(|item| item.path == "notes.txt" && item.untracked));
+    }
+
+    #[tokio::test]
+    async fn list_workspace_changes_includes_dirty_files_beyond_project_file_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        for index in 0..=5_000 {
+            let file_name = format!("file-{index:04}.txt");
+            std::fs::write(project_root.join(file_name), "clean\n").unwrap();
+        }
+        std::fs::write(project_root.join("zzzz-dirty.txt"), "before\n").unwrap();
+        run_git(&project_root, &["add", "."]);
+        run_git(&project_root, &["commit", "-m", "initial"]);
+
+        std::fs::write(project_root.join("zzzz-dirty.txt"), "after\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-changes-large-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let changes = list_workspace_changes(&state)
+            .await
+            .expect("workspace changes should load");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "zzzz-dirty.txt");
+        assert!(changes[0].modified);
+    }
+
+    #[tokio::test]
+    async fn list_workspace_changes_expands_untracked_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join("newdir/subdir")).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        std::fs::write(project_root.join("newdir/a.txt"), "a\n").unwrap();
+        std::fs::write(project_root.join("newdir/subdir/b.txt"), "b\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-changes-untracked-dir-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let changes = list_workspace_changes(&state)
+            .await
+            .expect("workspace changes should enumerate untracked files");
+
+        assert_eq!(changes.len(), 2);
+        assert!(changes
+            .iter()
+            .any(|item| item.path == "newdir/a.txt" && item.untracked));
+        assert!(changes
+            .iter()
+            .any(|item| item.path == "newdir/subdir/b.txt" && item.untracked));
+        assert!(!changes.iter().any(|item| item.path == "newdir/"));
+    }
+
+    #[tokio::test]
+    async fn workspace_changes_and_diff_support_paths_with_spaces() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        std::fs::write(project_root.join("hello world.txt"), "before\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-changes-spaces-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let changes = list_workspace_changes(&state)
+            .await
+            .expect("workspace changes should load quoted paths");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "hello world.txt");
+        assert!(changes[0].untracked);
+
+        let diff = get_workspace_change_diff(
+            ProjectFilePathInput {
+                path: "hello world.txt".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("workspace diff should load quoted paths")
+        .expect("modified file should have diff");
+
+        assert_eq!(diff.path, "hello world.txt");
+        assert!(diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line == "+before"));
+    }
+
+    #[tokio::test]
+    async fn list_workspace_changes_tracks_renamed_paths_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        std::fs::write(project_root.join("old.txt"), "before\n").unwrap();
+        run_git(&project_root, &["add", "old.txt"]);
+        run_git(&project_root, &["commit", "-m", "initial"]);
+        run_git(&project_root, &["mv", "old.txt", "renamed file.txt"]);
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-changes-rename-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let changes = list_workspace_changes(&state)
+            .await
+            .expect("workspace changes should load rename entries");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "renamed file.txt");
+        assert!(changes[0].staged);
+    }
+
+    #[tokio::test]
+    async fn workspace_change_diff_preserves_hunk_lines_starting_with_header_markers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        std::fs::write(project_root.join("marker.txt"), "-- heading\n").unwrap();
+        run_git(&project_root, &["add", "marker.txt"]);
+        run_git(&project_root, &["commit", "-m", "initial"]);
+        std::fs::write(project_root.join("marker.txt"), "++ heading\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-change-diff-marker-lines-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let diff = get_workspace_change_diff(
+            ProjectFilePathInput {
+                path: "marker.txt".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("workspace diff should preserve header-like hunk lines")
+        .expect("untracked file should have diff");
+
+        let lines = diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(diff.path, "marker.txt");
+        assert!(lines.iter().any(|line| line == "+++ heading"));
+        assert!(lines.iter().any(|line| line == "--- heading"));
+    }
+
+    #[tokio::test]
+    async fn get_workspace_change_diff_returns_untracked_file_patch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        run_git(&project_root, &["init"]);
+        run_git(
+            &project_root,
+            &["config", "user.email", "tests@example.com"],
+        );
+        run_git(&project_root, &["config", "user.name", "Pnevma Tests"]);
+
+        std::fs::write(project_root.join("draft.txt"), "hello\nworld\n").unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "workspace-change-diff-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+        let diff = get_workspace_change_diff(
+            ProjectFilePathInput {
+                path: "draft.txt".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("workspace change diff should load")
+        .expect("untracked file should produce a diff");
+
+        assert_eq!(diff.path, "draft.txt");
+        assert!(diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line == "+hello"));
+        assert!(diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line == "+world"));
     }
 
     #[tokio::test]
@@ -5945,5 +6786,14 @@ enable_entropy_guard = false
         assert!(artifact_path.exists());
         assert_eq!(db.list_artifacts(&project_id).await.unwrap().len(), 1);
         assert!(data_root.exists());
+    }
+
+    fn run_git(project_root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(project_root)
+            .status()
+            .expect("git command should start");
+        assert!(status.success(), "git {:?} should succeed", args);
     }
 }

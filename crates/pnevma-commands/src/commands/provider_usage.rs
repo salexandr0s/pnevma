@@ -4,7 +4,7 @@ use pnevma_core::config::UsageProviderConfig;
 use pnevma_session::resolve_binary;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex as StdMutex, OnceLock};
@@ -14,6 +14,8 @@ const PROVIDER_USAGE_KEYCHAIN_SERVICE: &str = "com.pnevma.usage-providers";
 const CODEX_MANUAL_COOKIE_ACCOUNT: &str = "codex-manual-cookie";
 const CLAUDE_MANUAL_COOKIE_ACCOUNT: &str = "claude-manual-cookie";
 const PROVIDER_CACHE_TTL_SECS: i64 = 120;
+const CLAUDE_LIVE_FALLBACK_TTL_SECS: i64 = 21_600;
+const CODEX_RATE_LIMITS_GRACE_MS: u64 = 2_500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderUsageOverviewInput {
@@ -137,6 +139,8 @@ struct ProviderProbeOutput {
     source: String,
     account_email: Option<String>,
     plan_label: Option<String>,
+    status_message: Option<String>,
+    repair_hint: Option<String>,
     session_window: Option<ProviderQuotaWindowView>,
     weekly_window: Option<ProviderQuotaWindowView>,
     model_windows: Vec<ProviderQuotaWindowView>,
@@ -162,10 +166,14 @@ pub async fn get_provider_usage_overview(
         if let Some(snapshot) = codex_cached {
             Ok(snapshot)
         } else {
-            let snapshot =
+            let snapshot = finalize_provider_snapshot(
+                "codex",
+                &codex_key,
+                now,
                 probe_provider_snapshot("codex", &config.usage_providers.codex, local_usage_days)
-                    .await;
-            if snapshot.status != "error" || snapshot.local_usage.total_tokens > 0 {
+                    .await,
+            );
+            if snapshot.status == "ok" {
                 cache_snapshot(&codex_key, snapshot.clone());
             }
             Ok::<_, String>(snapshot)
@@ -175,10 +183,14 @@ pub async fn get_provider_usage_overview(
         if let Some(snapshot) = claude_cached {
             Ok(snapshot)
         } else {
-            let snapshot =
+            let snapshot = finalize_provider_snapshot(
+                "claude",
+                &claude_key,
+                now,
                 probe_provider_snapshot("claude", &config.usage_providers.claude, local_usage_days)
-                    .await;
-            if snapshot.status != "error" || snapshot.local_usage.total_tokens > 0 {
+                    .await,
+            );
+            if snapshot.status == "ok" {
                 cache_snapshot(&claude_key, snapshot.clone());
             }
             Ok::<_, String>(snapshot)
@@ -265,9 +277,13 @@ async fn probe_provider_snapshot(
         Ok(output) => ProviderUsageSnapshotView {
             provider: provider.to_string(),
             display_name,
-            status: "ok".to_string(),
-            status_message: None,
-            repair_hint: None,
+            status: if output.status_message.is_some() {
+                "warning".to_string()
+            } else {
+                "ok".to_string()
+            },
+            status_message: output.status_message,
+            repair_hint: output.repair_hint,
             source: output.source,
             account_email: output.account_email,
             plan_label: output.plan_label,
@@ -314,6 +330,11 @@ fn repair_hint_for_provider(provider: &str, message: &str) -> String {
     if lower.contains("401") || lower.contains("403") || lower.contains("unauthorized") {
         return format!("Refresh the {provider} credentials and try again.");
     }
+    if lower.contains("429") || lower.contains("rate limit") {
+        return format!(
+            "The {provider} live usage endpoint is rate-limiting requests. Pnevma will retry later."
+        );
+    }
     if lower.contains("timeout") {
         return format!("The {provider} probe timed out. Open the CLI once, then retry.");
     }
@@ -326,48 +347,72 @@ async fn probe_codex(config: &UsageProviderConfig) -> Result<ProviderProbeOutput
     }
 
     let output = probe_codex_cli_rpc().await?;
-    let account_email = extract_string_at_paths(
-        &output.account,
-        &[
-            &["email"],
-            &["account", "email"],
-            &["user", "email"],
-            &["profile", "email"],
-        ],
-    );
-    let plan_label = extract_string_at_paths(
-        &output.account,
-        &[
-            &["plan"],
-            &["planType"],
-            &["plan", "name"],
-            &["billing", "plan"],
-            &["subscription", "plan"],
-            &["account", "planType"],
-            &["account", "plan"],
-        ],
-    );
-    let mut windows = output
+    let account_email = output.account.as_ref().and_then(|account| {
+        extract_string_at_paths(
+            account,
+            &[
+                &["email"],
+                &["account", "email"],
+                &["user", "email"],
+                &["profile", "email"],
+            ],
+        )
+    });
+    let plan_label = output.account.as_ref().and_then(|account| {
+        extract_string_at_paths(
+            account,
+            &[
+                &["plan"],
+                &["planType"],
+                &["plan", "name"],
+                &["billing", "plan"],
+                &["subscription", "plan"],
+                &["account", "planType"],
+                &["account", "plan"],
+            ],
+        )
+    });
+    let codex_usage = output
         .rate_limits
         .as_ref()
-        .map(collect_windows)
+        .map(normalize_codex_rate_limits)
         .unwrap_or_default();
-    let session_window =
-        take_matching_window(&mut windows, &["5h", "five_hour", "session", "primary"]);
-    let weekly_window =
-        take_matching_window(&mut windows, &["weekly", "seven_day", "week", "secondary"]);
-    let credit = output
-        .rate_limits
-        .as_ref()
-        .and_then(|value| extract_credit_view(value, "Credits"));
+    if account_email.is_none()
+        && plan_label.is_none()
+        && codex_usage.session_window.is_none()
+        && codex_usage.weekly_window.is_none()
+        && codex_usage.model_windows.is_empty()
+        && codex_usage.credit.is_none()
+    {
+        if let Some(message) = output.error_message {
+            return Err(message);
+        }
+        return Err("Codex CLI RPC returned no account or quota data".to_string());
+    }
+
+    let status_message = if codex_usage.has_quota_data() {
+        None
+    } else {
+        Some("Codex CLI returned account details but no live quota snapshot.".to_string())
+    };
+    let repair_hint = if status_message.is_some() {
+        Some(
+            "Pnevma is showing local Codex session usage until the CLI returns live rate limits."
+                .to_string(),
+        )
+    } else {
+        None
+    };
     Ok(ProviderProbeOutput {
         source: "cli-rpc".to_string(),
         account_email,
-        plan_label,
-        session_window,
-        weekly_window,
-        model_windows: windows,
-        credit,
+        plan_label: plan_label.or(codex_usage.plan_label),
+        status_message,
+        repair_hint,
+        session_window: codex_usage.session_window,
+        weekly_window: codex_usage.weekly_window,
+        model_windows: codex_usage.model_windows,
+        credit: codex_usage.credit,
     })
 }
 
@@ -383,27 +428,70 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
                 if let Some(message) = refine_claude_auth_message(&error).await {
                     return Err(message);
                 }
+                let auth_status = probe_claude_auth_status().await.ok();
+                let refined_error = refine_claude_probe_error(&error);
+                if is_transient_claude_live_error(&refined_error) {
+                    return Ok(ProviderProbeOutput {
+                        source: "oauth".to_string(),
+                        account_email: auth_status.as_ref().and_then(|status| status.email.clone()),
+                        plan_label: auth_status.as_ref().and_then(|status| {
+                            status
+                                .subscription_type
+                                .as_ref()
+                                .map(|value| humanize_plan_label(value))
+                        }),
+                        status_message: Some(refined_error),
+                        repair_hint: Some(
+                            "Pnevma will retry Claude live usage after the OAuth endpoint stops rate-limiting requests."
+                                .to_string(),
+                        ),
+                        session_window: None,
+                        weekly_window: None,
+                        model_windows: vec![],
+                        credit: None,
+                    });
+                }
+                return Err(refined_error);
             }
         }
     }
 
-    Err(
-        "Claude OAuth usage is unavailable; only local usage data is currently available."
-            .to_string(),
-    )
+    Err("Claude source is configured for an unsupported live usage mode.".to_string())
 }
 
+#[derive(Debug)]
 struct CodexCliRpcOutput {
-    account: Value,
+    account: Option<Value>,
     rate_limits: Option<Value>,
+    error_message: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct CodexQuotaData {
+    plan_label: Option<String>,
+    session_window: Option<ProviderQuotaWindowView>,
+    weekly_window: Option<ProviderQuotaWindowView>,
+    model_windows: Vec<ProviderQuotaWindowView>,
+    credit: Option<ProviderCreditView>,
+}
+
+impl CodexQuotaData {
+    fn has_quota_data(&self) -> bool {
+        self.session_window.is_some()
+            || self.weekly_window.is_some()
+            || !self.model_windows.is_empty()
+            || self.credit.is_some()
+    }
 }
 
 async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
-    let mut child = TokioCommand::new(resolve_binary("codex"))
-        .args(["-s", "read-only", "-a", "untrusted", "app-server"])
+    let mut command = provider_probe_command(resolve_binary("codex"));
+    command
+        .args(["app-server", "--listen", "stdio://"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to launch codex CLI: {e}"))?;
 
@@ -422,11 +510,13 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
             "id": 1,
             "method": "initialize",
             "params": {
-                "clientInfo": { "name": "pnevma", "version": env!("CARGO_PKG_VERSION") }
+                "clientInfo": { "name": "pnevma", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": {}
             }
         }),
-        json!({"jsonrpc": "2.0", "id": 2, "method": "account/read", "params": {}}),
-        json!({"jsonrpc": "2.0", "id": 3, "method": "account/rateLimits/read", "params": {}}),
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "account/read", "params": {"refreshToken": false}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "account/rateLimits/read", "params": Value::Null}),
     ];
 
     for request in requests {
@@ -439,14 +529,27 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
             .await
             .map_err(|e| format!("failed to finalize codex RPC request: {e}"))?;
     }
-    drop(stdin);
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("failed to flush codex RPC request stream: {e}"))?;
 
     let mut reader = BufReader::new(stdout).lines();
     let mut responses: HashMap<i64, Value> = HashMap::new();
+    let mut rate_limit_notification: Option<Value> = None;
     let read_result = timeout(Duration::from_secs(8), async {
         loop {
-            let next_line = if responses.contains_key(&2) && !responses.contains_key(&3) {
-                match timeout(Duration::from_millis(750), reader.next_line()).await {
+            let next_line = if responses.contains_key(&2)
+                && !responses.contains_key(&3)
+                && !responses.contains_key(&-3)
+                && rate_limit_notification.is_none()
+            {
+                match timeout(
+                    Duration::from_millis(CODEX_RATE_LIMITS_GRACE_MS),
+                    reader.next_line(),
+                )
+                .await
+                {
                     Ok(result) => result.map_err(|e| e.to_string())?,
                     Err(_) => break Ok::<(), String>(()),
                 }
@@ -463,15 +566,35 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
             if let Some(id) = value.get("id").and_then(|value| value.as_i64()) {
                 if let Some(result) = value.get("result") {
                     responses.insert(id, result.clone());
+                } else if let Some(message) = value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(|message| message.as_str())
+                {
+                    responses.insert(-id, Value::String(message.to_string()));
+                }
+            } else if value.get("method").and_then(|value| value.as_str())
+                == Some("account/rateLimits/updated")
+            {
+                if let Some(snapshot) = value
+                    .get("params")
+                    .and_then(|params| params.get("rateLimits"))
+                {
+                    rate_limit_notification = Some(json!({ "rateLimits": snapshot }));
                 }
             }
-            if responses.contains_key(&2) && responses.contains_key(&3) {
+            if responses.contains_key(&2)
+                && (responses.contains_key(&3)
+                    || responses.contains_key(&-3)
+                    || rate_limit_notification.is_some())
+            {
                 break Ok(());
             }
         }
     })
     .await;
 
+    drop(stdin);
     let _ = child.kill().await;
     let _ = child.wait().await;
 
@@ -481,11 +604,75 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
         Err(_) => return Err("codex CLI RPC probe timed out".to_string()),
     }
 
+    if let std::collections::hash_map::Entry::Vacant(e) = responses.entry(3) {
+        if let Some(rate_limits) = rate_limit_notification {
+            e.insert(rate_limits);
+        }
+    }
+
     codex_cli_output_from_responses(responses)
 }
 
 async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
     let token = read_claude_oauth_token().await?;
+    let value = fetch_claude_usage_value(&token).await?;
+    let auth_status = probe_claude_auth_status().await.ok();
+
+    let account_email = extract_string_at_paths(
+        &value,
+        &[&["email"], &["user", "email"], &["account", "email"]],
+    )
+    .or_else(|| auth_status.as_ref().and_then(|status| status.email.clone()));
+    let plan_label = extract_string_at_paths(
+        &value,
+        &[&["rate_limit_tier"], &["plan"], &["subscriptionType"]],
+    )
+    .or_else(|| {
+        auth_status.as_ref().and_then(|status| {
+            status
+                .subscription_type
+                .as_ref()
+                .map(|value| humanize_plan_label(value))
+        })
+    });
+    let session_window = extract_named_window(&value, "five_hour", "Current session")
+        .or_else(|| extract_named_window(&value, "current_session", "Current session"));
+    let weekly_window = extract_named_window(&value, "seven_day", "All models")
+        .or_else(|| extract_named_window(&value, "current_week", "All models"));
+    let mut model_windows = Vec::new();
+    if let Some(window) = extract_named_window(&value, "seven_day_sonnet", "Sonnet only") {
+        model_windows.push(window);
+    }
+    if let Some(window) = extract_named_window(&value, "seven_day_opus", "Opus only") {
+        model_windows.push(window);
+    }
+    let credit = extract_extra_usage_credit(&value);
+    Ok(ProviderProbeOutput {
+        source: "oauth".to_string(),
+        account_email,
+        plan_label,
+        status_message: None,
+        repair_hint: None,
+        session_window,
+        weekly_window,
+        model_windows,
+        credit,
+    })
+}
+
+async fn fetch_claude_usage_value(token: &str) -> Result<Value, String> {
+    match fetch_claude_usage_value_via_reqwest(token).await {
+        Ok(value) => Ok(value),
+        Err(reqwest_error) => match fetch_claude_usage_value_via_curl(token).await {
+            Ok(value) => Ok(value),
+            Err(curl_error) => Err(format!(
+                "Claude OAuth usage fetch failed via reqwest ({reqwest_error}) and curl ({curl_error})"
+            )),
+        },
+    }
+}
+
+async fn fetch_claude_usage_value_via_reqwest(token: &str) -> Result<Value, String> {
     let mut headers = HeaderMap::new();
     let auth = HeaderValue::from_str(&format!("Bearer {token}"))
         .map_err(|_| "invalid Claude OAuth token".to_string())?;
@@ -504,46 +691,56 @@ async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
         .headers(headers)
         .send()
         .await
-        .map_err(|e| format!("Claude OAuth request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "Claude OAuth request failed with {}",
-            response.status()
-        ));
+        return Err(format!("request failed with {}", response.status()));
     }
 
-    let value: Value = response
+    response
         .json()
         .await
-        .map_err(|e| format!("failed to decode Claude OAuth response: {e}"))?;
+        .map_err(|e| format!("failed to decode response: {e}"))
+}
 
-    let account_email = extract_string_at_paths(
-        &value,
-        &[&["email"], &["user", "email"], &["account", "email"]],
-    );
-    let plan_label = extract_string_at_paths(&value, &[&["rate_limit_tier"], &["plan"]]);
-    let session_window = extract_named_window(&value, "five_hour", "Current Session")
-        .or_else(|| extract_named_window(&value, "current_session", "Current Session"));
-    let weekly_window = extract_named_window(&value, "seven_day", "Current Week")
-        .or_else(|| extract_named_window(&value, "current_week", "Current Week"));
-    let mut model_windows = Vec::new();
-    if let Some(window) = extract_named_window(&value, "seven_day_sonnet", "Weekly Sonnet") {
-        model_windows.push(window);
+async fn fetch_claude_usage_value_via_curl(token: &str) -> Result<Value, String> {
+    let mut command = provider_probe_command(resolve_binary("curl"));
+    let output = command
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--connect-timeout",
+            "8",
+            "--max-time",
+            "12",
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            "-H",
+            "anthropic-beta: oauth-2025-04-20",
+            "https://api.anthropic.com/api/oauth/usage",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("failed to launch curl: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("curl exited with {}", output.status)
+        };
+        return Err(detail);
     }
-    if let Some(window) = extract_named_window(&value, "seven_day_opus", "Weekly Opus") {
-        model_windows.push(window);
-    }
-    let credit = extract_extra_usage_credit(&value);
-    Ok(ProviderProbeOutput {
-        source: "oauth".to_string(),
-        account_email,
-        plan_label,
-        session_window,
-        weekly_window,
-        model_windows,
-        credit,
-    })
+
+    serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|e| format!("failed to decode curl response: {e}"))
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -552,6 +749,9 @@ struct ClaudeAuthStatusResponse {
     logged_in: bool,
     #[serde(rename = "authMethod")]
     auth_method: Option<String>,
+    email: Option<String>,
+    #[serde(rename = "subscriptionType")]
+    subscription_type: Option<String>,
 }
 
 async fn refine_claude_auth_message(error: &str) -> Option<String> {
@@ -567,8 +767,27 @@ async fn refine_claude_auth_message(error: &str) -> Option<String> {
     }
 }
 
+fn refine_claude_probe_error(error: &str) -> String {
+    if is_transient_claude_live_error(error) {
+        return "Claude OAuth usage endpoint is rate-limiting requests right now.".to_string();
+    }
+    error.to_string()
+}
+
+fn is_transient_claude_live_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limiting")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("connection reset")
+}
+
 async fn probe_claude_auth_status() -> Result<ClaudeAuthStatusResponse, String> {
-    let output = TokioCommand::new(resolve_binary("claude"))
+    let mut command = provider_probe_command(resolve_binary("claude"));
+    let output = command
         .args(["auth", "status"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -616,16 +835,173 @@ fn extract_named_window(root: &Value, key: &str, label: &str) -> Option<Provider
     Some(window_from_value(label, value))
 }
 
+fn normalize_codex_rate_limits(value: &Value) -> CodexQuotaData {
+    let fallback = value
+        .get("rateLimits")
+        .or_else(|| value.get("rate_limits"))
+        .unwrap_or(value);
+    let fallback_snapshot = fallback
+        .is_object()
+        .then_some(fallback)
+        .and_then(extract_codex_snapshot);
+    let buckets = value
+        .get("rateLimitsByLimitId")
+        .or_else(|| value.get("rate_limits_by_limit_id"))
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(limit_id, snapshot)| {
+                    extract_codex_snapshot(snapshot).map(|snapshot| (limit_id.clone(), snapshot))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let preferred = buckets
+        .iter()
+        .find(|(limit_id, _)| limit_id == "codex")
+        .or_else(|| buckets.first())
+        .map(|(_, snapshot)| snapshot)
+        .or(fallback_snapshot.as_ref())
+        .cloned();
+
+    let mut data = CodexQuotaData {
+        plan_label: preferred
+            .as_ref()
+            .and_then(|snapshot| snapshot.plan_label.clone()),
+        session_window: preferred.as_ref().and_then(|snapshot| {
+            snapshot
+                .primary
+                .as_ref()
+                .map(|window| codex_window_view("Current session", window))
+        }),
+        weekly_window: preferred.as_ref().and_then(|snapshot| {
+            snapshot
+                .secondary
+                .as_ref()
+                .map(|window| codex_window_view("Current week", window))
+        }),
+        model_windows: Vec::new(),
+        credit: preferred
+            .as_ref()
+            .and_then(|snapshot| snapshot.credit.clone()),
+    };
+
+    for (limit_id, snapshot) in buckets {
+        let is_preferred = preferred
+            .as_ref()
+            .map(|selected| {
+                snapshot.limit_id == selected.limit_id && snapshot.limit_name == selected.limit_name
+            })
+            .unwrap_or(false);
+        if is_preferred {
+            continue;
+        }
+        if let Some(primary) = snapshot.primary.as_ref() {
+            data.model_windows.push(codex_window_view(
+                &snapshot.window_label(limit_id.as_str()),
+                primary,
+            ));
+        }
+    }
+
+    if data.session_window.is_none()
+        && data.weekly_window.is_none()
+        && data.model_windows.is_empty()
+        && data.credit.is_none()
+    {
+        let mut windows = collect_windows(fallback);
+        data.session_window =
+            take_matching_window(&mut windows, &["5h", "five_hour", "session", "primary"]);
+        data.weekly_window =
+            take_matching_window(&mut windows, &["weekly", "seven_day", "week", "secondary"]);
+        data.model_windows = windows;
+        data.credit = extract_credit_view(fallback, "Credits");
+    }
+
+    data
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexRateLimitSnapshot {
+    limit_id: Option<String>,
+    limit_name: Option<String>,
+    plan_label: Option<String>,
+    primary: Option<CodexWindow>,
+    secondary: Option<CodexWindow>,
+    credit: Option<ProviderCreditView>,
+}
+
+impl CodexRateLimitSnapshot {
+    fn window_label(&self, fallback: &str) -> String {
+        self.limit_name
+            .clone()
+            .or_else(|| self.limit_id.clone())
+            .unwrap_or_else(|| humanize_window_label(fallback))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CodexWindow {
+    used_percent: f64,
+    reset_at: Option<DateTime<Utc>>,
+}
+
+fn extract_codex_snapshot(value: &Value) -> Option<CodexRateLimitSnapshot> {
+    let primary = value.get("primary").and_then(extract_codex_window);
+    let secondary = value.get("secondary").and_then(extract_codex_window);
+    let credit = extract_credit_view(value, "Credits");
+    if primary.is_none() && secondary.is_none() && credit.is_none() {
+        return None;
+    }
+    Some(CodexRateLimitSnapshot {
+        limit_id: extract_string_at_paths(value, &[&["limitId"], &["limit_id"]]),
+        limit_name: extract_string_at_paths(value, &[&["limitName"], &["limit_name"]]),
+        plan_label: extract_string_at_paths(value, &[&["planType"], &["plan_type"]])
+            .map(|value| humanize_plan_label(&value)),
+        primary,
+        secondary,
+        credit,
+    })
+}
+
+fn extract_codex_window(value: &Value) -> Option<CodexWindow> {
+    let used_percent = extract_percent_used(value)?;
+    Some(CodexWindow {
+        used_percent,
+        reset_at: extract_reset_at(value),
+    })
+}
+
+fn codex_window_view(label: &str, window: &CodexWindow) -> ProviderQuotaWindowView {
+    ProviderQuotaWindowView {
+        label: label.to_string(),
+        percent_used: Some(window.used_percent),
+        percent_remaining: Some((100.0 - window.used_percent).clamp(0.0, 100.0)),
+        reset_at: window.reset_at,
+    }
+}
+
 fn codex_cli_output_from_responses(
     mut responses: HashMap<i64, Value>,
 ) -> Result<CodexCliRpcOutput, String> {
-    let account = responses
-        .remove(&2)
-        .ok_or_else(|| "codex account/read returned no result".to_string())?;
+    let account = responses.remove(&2);
     let rate_limits = responses.remove(&3);
+    let error_message = responses
+        .remove(&-2)
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .or_else(|| {
+            responses
+                .remove(&-3)
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        });
+    if account.is_none() && rate_limits.is_none() && error_message.is_none() {
+        return Err("codex CLI RPC returned no account or quota data".to_string());
+    }
     Ok(CodexCliRpcOutput {
         account,
         rate_limits,
+        error_message,
     })
 }
 
@@ -737,7 +1113,7 @@ fn extract_credit_view(value: &Value, label: &str) -> Option<ProviderCreditView>
 
 fn extract_extra_usage_credit(value: &Value) -> Option<ProviderCreditView> {
     let extra = value.get("extra_usage")?;
-    let balance_display = extract_f64_at_paths(
+    let currency_spend = extract_f64_at_paths(
         extra,
         &[
             &["spend"],
@@ -745,10 +1121,20 @@ fn extract_extra_usage_credit(value: &Value) -> Option<ProviderCreditView> {
             &["cost_usd"],
             &["current_spend_usd"],
         ],
-    )
-    .map(|amount| format!("${amount:.2}"));
-    let limit = extract_f64_at_paths(extra, &[&["limit"], &["limit_usd"], &["spend_limit_usd"]])
-        .map(|amount| format!(" / ${amount:.2}"));
+    );
+    let currency_limit =
+        extract_f64_at_paths(extra, &[&["limit"], &["limit_usd"], &["spend_limit_usd"]]);
+    let balance_display = if let Some(spend) = currency_spend {
+        Some(format!("${spend:.2}"))
+    } else {
+        extract_f64_at_paths(extra, &[&["used_credits"]]).map(format_usage_amount)
+    };
+    let limit = if let Some(limit) = currency_limit {
+        Some(format!(" / ${limit:.2}"))
+    } else {
+        extract_f64_at_paths(extra, &[&["monthly_limit"]])
+            .map(|limit| format!(" / {}", format_usage_amount(limit)))
+    };
     Some(ProviderCreditView {
         label: "Extra usage".to_string(),
         balance_display: match (balance_display, limit) {
@@ -765,10 +1151,12 @@ fn extract_percent_used(value: &Value) -> Option<f64> {
         value,
         &[
             &["used_percent"],
+            &["usedPercent"],
             &["percent_used"],
             &["usage_percent"],
             &["percentage"],
             &["percent"],
+            &["utilization"],
         ],
     )
     .or_else(|| {
@@ -789,6 +1177,7 @@ fn extract_reset_at(value: &Value) -> Option<DateTime<Utc>> {
         &["reset_at"][..],
         &["resets_at"][..],
         &["resetAt"][..],
+        &["resetsAt"][..],
         &["window_reset_at"][..],
     ] {
         if let Some(raw) = extract_string_at_paths(value, &[path]) {
@@ -796,7 +1185,7 @@ fn extract_reset_at(value: &Value) -> Option<DateTime<Utc>> {
                 return Some(parsed.with_timezone(&Utc));
             }
             if let Ok(ts) = raw.parse::<i64>() {
-                if let Some(dt) = Utc.timestamp_opt(ts, 0).single() {
+                if let Some(dt) = parse_unix_timestamp(ts) {
                     return Some(dt);
                 }
             }
@@ -804,10 +1193,42 @@ fn extract_reset_at(value: &Value) -> Option<DateTime<Utc>> {
     }
 
     if let Some(ts) = extract_i64_at_paths(value, &[&["reset_time"], &["reset_timestamp"]]) {
-        return Utc.timestamp_opt(ts, 0).single();
+        return parse_unix_timestamp(ts);
     }
 
     None
+}
+
+fn parse_unix_timestamp(ts: i64) -> Option<DateTime<Utc>> {
+    if ts.abs() >= 1_000_000_000_000 {
+        let seconds = ts.div_euclid(1_000);
+        let nanos = (ts.rem_euclid(1_000) as u32) * 1_000_000;
+        return Utc.timestamp_opt(seconds, nanos).single();
+    }
+    Utc.timestamp_opt(ts, 0).single()
+}
+
+fn humanize_plan_label(value: &str) -> String {
+    value
+        .split(['_', '-', ' '])
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_usage_amount(value: f64) -> String {
+    if value.fract().abs() < f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.2}")
+    }
 }
 
 fn extract_string_at_paths(value: &Value, paths: &[&[&str]]) -> Option<String> {
@@ -879,6 +1300,40 @@ fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
         current = current.get(*segment)?;
     }
     Some(current)
+}
+
+fn provider_probe_command(program: PathBuf) -> TokioCommand {
+    let mut command = TokioCommand::new(program);
+    command.env("PATH", provider_probe_path());
+    command
+}
+
+fn provider_probe_path() -> String {
+    compose_provider_probe_path(std::env::var_os("PATH"))
+}
+
+fn compose_provider_probe_path(current_path: Option<std::ffi::OsString>) -> String {
+    let mut segments = vec![
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+        "/usr/bin".to_string(),
+        "/bin".to_string(),
+        "/usr/sbin".to_string(),
+        "/sbin".to_string(),
+    ];
+    if let Some(current_path) = current_path {
+        segments.extend(std::env::split_paths(&current_path).filter_map(|path| {
+            let text = path.to_string_lossy().trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }));
+    }
+
+    let mut seen = HashSet::new();
+    segments
+        .into_iter()
+        .filter(|segment| seen.insert(segment.clone()))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 async fn read_claude_oauth_token() -> Result<String, String> {
@@ -1076,12 +1531,20 @@ fn cached_snapshot(
     if force_refresh {
         return None;
     }
+    cached_snapshot_with_max_age(key, now, PROVIDER_CACHE_TTL_SECS)
+}
+
+fn cached_snapshot_with_max_age(
+    key: &str,
+    now: DateTime<Utc>,
+    max_age_seconds: i64,
+) -> Option<ProviderUsageSnapshotView> {
     let cache = PROVIDER_USAGE_CACHE
         .get_or_init(|| StdMutex::new(ProviderUsageCache::default()))
         .lock()
         .ok()?;
     let cached = cache.snapshots.get(key)?;
-    if (now - cached.cached_at).num_seconds() > PROVIDER_CACHE_TTL_SECS {
+    if (now - cached.cached_at).num_seconds() > max_age_seconds {
         return None;
     }
     Some(cached.snapshot.clone())
@@ -1102,6 +1565,61 @@ fn cache_snapshot(key: &str, snapshot: ProviderUsageSnapshotView) {
     }
 }
 
+fn finalize_provider_snapshot(
+    provider: &str,
+    cache_key: &str,
+    now: DateTime<Utc>,
+    snapshot: ProviderUsageSnapshotView,
+) -> ProviderUsageSnapshotView {
+    let cached_live = cached_snapshot_with_max_age(cache_key, now, CLAUDE_LIVE_FALLBACK_TTL_SECS);
+    fallback_snapshot_from_cached_live(provider, snapshot, cached_live)
+}
+
+fn fallback_snapshot_from_cached_live(
+    provider: &str,
+    current: ProviderUsageSnapshotView,
+    cached_live: Option<ProviderUsageSnapshotView>,
+) -> ProviderUsageSnapshotView {
+    if provider != "claude" || current.status == "ok" {
+        return current;
+    }
+    let Some(message) = current.status_message.as_deref() else {
+        return current;
+    };
+    if !is_transient_claude_live_error(message) {
+        return current;
+    }
+    let Some(cached_live) = cached_live else {
+        return current;
+    };
+    if cached_live.source == "local"
+        || (cached_live.session_window.is_none()
+            && cached_live.weekly_window.is_none()
+            && cached_live.model_windows.is_empty()
+            && cached_live.credit.is_none())
+    {
+        return current;
+    }
+
+    let current_account_email = current.account_email.clone();
+    let current_plan_label = current.plan_label.clone();
+    let current_local_usage = current.local_usage.clone();
+    let mut fallback = cached_live;
+    fallback.status = "warning".to_string();
+    fallback.status_message = Some(
+        "Showing cached live Claude usage while the OAuth usage endpoint is rate-limiting requests."
+            .to_string(),
+    );
+    fallback.repair_hint = Some(
+        "Pnevma will retry Claude live usage automatically after the rate limit clears."
+            .to_string(),
+    );
+    fallback.local_usage = current_local_usage;
+    fallback.account_email = current_account_email.or(fallback.account_email);
+    fallback.plan_label = current_plan_label.or(fallback.plan_label);
+    fallback
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1110,6 +1628,12 @@ mod tests {
     fn percent_used_from_remaining_fields_is_supported() {
         let value = json!({"remaining_percent": 82.5});
         assert_eq!(extract_percent_used(&value), Some(17.5));
+    }
+
+    #[test]
+    fn percent_used_from_utilization_is_supported() {
+        let value = json!({"utilization": 97.0});
+        assert_eq!(extract_percent_used(&value), Some(97.0));
     }
 
     #[test]
@@ -1139,7 +1663,98 @@ mod tests {
     }
 
     #[test]
-    fn codex_cli_output_requires_account_but_not_rate_limits() {
+    fn window_from_value_extracts_camel_case_reset_at_in_millis() {
+        let value = json!({"usedPercent": 50.0, "resetsAt": 1_741_658_800_123_i64});
+        let window = window_from_value("Test", &value);
+        assert_eq!(window.percent_remaining, Some(50.0));
+        assert!(window.reset_at.is_some());
+    }
+
+    #[test]
+    fn normalize_codex_rate_limits_supports_modern_snapshot_shape() {
+        let value = json!({
+            "rateLimits": {
+                "planType": "pro",
+                "primary": { "usedPercent": 12, "resetsAt": 1_741_658_800_i64 },
+                "secondary": { "usedPercent": 97, "resetsAt": 1_741_700_000_i64 },
+                "credits": { "balance": "12.50", "unlimited": false, "hasCredits": true }
+            }
+        });
+
+        let output = normalize_codex_rate_limits(&value);
+        assert_eq!(output.plan_label.as_deref(), Some("Pro"));
+        assert_eq!(
+            output
+                .session_window
+                .as_ref()
+                .and_then(|window| window.percent_used),
+            Some(12.0)
+        );
+        assert_eq!(
+            output
+                .weekly_window
+                .as_ref()
+                .and_then(|window| window.percent_used),
+            Some(97.0)
+        );
+        assert_eq!(
+            output
+                .credit
+                .as_ref()
+                .and_then(|credit| credit.balance_display.as_deref()),
+            Some("12.50")
+        );
+    }
+
+    #[test]
+    fn normalize_codex_rate_limits_supports_multi_bucket_shape() {
+        let value = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "limitName": "Codex",
+                    "primary": { "usedPercent": 18, "resetsAt": 1_741_658_800_i64 }
+                },
+                "gpt5": {
+                    "limitId": "gpt5",
+                    "limitName": "GPT-5",
+                    "primary": { "usedPercent": 22, "resetsAt": 1_741_658_900_i64 }
+                }
+            }
+        });
+
+        let output = normalize_codex_rate_limits(&value);
+        assert_eq!(
+            output
+                .session_window
+                .as_ref()
+                .and_then(|window| window.percent_used),
+            Some(18.0)
+        );
+        assert_eq!(output.model_windows.len(), 1);
+        assert_eq!(output.model_windows[0].label, "GPT-5");
+    }
+
+    #[test]
+    fn extract_extra_usage_credit_supports_credit_shapes() {
+        let value = json!({
+            "extra_usage": {
+                "used_credits": 12.0,
+                "monthly_limit": 36000
+            }
+        });
+
+        let credit = extract_extra_usage_credit(&value).expect("extra usage credit");
+        assert_eq!(credit.balance_display.as_deref(), Some("12 / 36000"));
+    }
+
+    #[test]
+    fn humanize_plan_label_normalizes_snake_case() {
+        assert_eq!(humanize_plan_label("max_plan"), "Max Plan");
+    }
+
+    #[test]
+    fn codex_cli_output_accepts_account_without_rate_limits() {
         let mut responses = HashMap::new();
         responses.insert(
             2,
@@ -1152,10 +1767,79 @@ mod tests {
         );
 
         let output = codex_cli_output_from_responses(responses).expect("codex output");
+        let account = output.account.expect("account payload");
         assert!(output.rate_limits.is_none());
         assert_eq!(
-            extract_string_at_paths(&output.account, &[&["account", "planType"]]),
+            extract_string_at_paths(&account, &[&["account", "planType"]]),
             Some("pro".to_string())
+        );
+    }
+
+    #[test]
+    fn codex_cli_output_accepts_rate_limits_without_account() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            3,
+            json!({
+                "five_hour": {
+                    "used_percent": 18.0
+                }
+            }),
+        );
+
+        let output = codex_cli_output_from_responses(responses).expect("codex output");
+        assert!(output.account.is_none());
+        assert_eq!(
+            output
+                .rate_limits
+                .as_ref()
+                .and_then(|value| extract_percent_used(&value["five_hour"])),
+            Some(18.0)
+        );
+    }
+
+    #[test]
+    fn codex_cli_output_rejects_completely_empty_response() {
+        let error = codex_cli_output_from_responses(HashMap::new()).expect_err("missing payload");
+        assert_eq!(error, "codex CLI RPC returned no account or quota data");
+    }
+
+    #[test]
+    fn codex_cli_output_surfaces_rpc_error_message() {
+        let mut responses = HashMap::new();
+        responses.insert(-2, Value::String("authentication required".to_string()));
+
+        let output = codex_cli_output_from_responses(responses).expect("codex output");
+        assert_eq!(
+            output.error_message.as_deref(),
+            Some("authentication required")
+        );
+        assert!(output.account.is_none());
+        assert!(output.rate_limits.is_none());
+    }
+
+    #[test]
+    fn compose_provider_probe_path_prepends_common_cli_dirs_once() {
+        let path = compose_provider_probe_path(Some(std::ffi::OsString::from(
+            "/usr/bin:/custom/bin:/opt/homebrew/bin",
+        )));
+
+        let segments: Vec<_> = path.split(':').collect();
+        assert_eq!(segments.first().copied(), Some("/opt/homebrew/bin"));
+        assert!(segments.contains(&"/custom/bin"));
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|segment| **segment == "/opt/homebrew/bin")
+                .count(),
+            1
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|segment| **segment == "/usr/bin")
+                .count(),
+            1
         );
     }
 
@@ -1181,6 +1865,126 @@ mod tests {
         assert_eq!(
             extract_claude_oauth_token(&value),
             Some("test-token".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_claude_auth_status_response_reads_subscription_type() {
+        let status: ClaudeAuthStatusResponse = serde_json::from_str(
+            r#"{"loggedIn":true,"authMethod":"claude.ai","email":"user@example.com","subscriptionType":"max"}"#,
+        )
+        .expect("claude auth status");
+
+        assert_eq!(status.email.as_deref(), Some("user@example.com"));
+        assert_eq!(status.subscription_type.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn refine_claude_probe_error_simplifies_rate_limit_failures() {
+        let error = refine_claude_probe_error(
+            "Claude OAuth usage fetch failed via reqwest (request failed with 429 Too Many Requests)",
+        );
+
+        assert_eq!(
+            error,
+            "Claude OAuth usage endpoint is rate-limiting requests right now."
+        );
+    }
+
+    #[test]
+    fn fallback_snapshot_from_cached_live_reuses_live_claude_windows_on_transient_failure() {
+        let cached = ProviderUsageSnapshotView {
+            provider: "claude".to_string(),
+            display_name: "Claude".to_string(),
+            status: "ok".to_string(),
+            status_message: None,
+            repair_hint: None,
+            source: "oauth".to_string(),
+            account_email: Some("user@example.com".to_string()),
+            plan_label: Some("Max".to_string()),
+            last_refreshed_at: Utc.timestamp_opt(1_741_658_800, 0).single().unwrap(),
+            session_window: Some(ProviderQuotaWindowView {
+                label: "Current session".to_string(),
+                percent_used: Some(6.0),
+                percent_remaining: Some(94.0),
+                reset_at: None,
+            }),
+            weekly_window: Some(ProviderQuotaWindowView {
+                label: "All models".to_string(),
+                percent_used: Some(97.0),
+                percent_remaining: Some(3.0),
+                reset_at: None,
+            }),
+            model_windows: vec![ProviderQuotaWindowView {
+                label: "Sonnet only".to_string(),
+                percent_used: Some(25.0),
+                percent_remaining: Some(75.0),
+                reset_at: None,
+            }],
+            credit: None,
+            local_usage: ProviderLocalUsageSummaryView {
+                requests: 1,
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                top_model: Some("claude-opus-4-6".to_string()),
+                peak_day: Some("2026-03-07".to_string()),
+                peak_day_tokens: 30,
+            },
+            dashboard_extras: None,
+        };
+        let current = ProviderUsageSnapshotView {
+            provider: "claude".to_string(),
+            display_name: "Claude".to_string(),
+            status: "warning".to_string(),
+            status_message: Some(
+                "Claude OAuth usage endpoint is rate-limiting requests right now.".to_string(),
+            ),
+            repair_hint: Some("retry later".to_string()),
+            source: "oauth".to_string(),
+            account_email: Some("user@example.com".to_string()),
+            plan_label: Some("Max".to_string()),
+            last_refreshed_at: Utc.timestamp_opt(1_741_659_000, 0).single().unwrap(),
+            session_window: None,
+            weekly_window: None,
+            model_windows: vec![],
+            credit: None,
+            local_usage: ProviderLocalUsageSummaryView {
+                requests: 9,
+                input_tokens: 90,
+                output_tokens: 180,
+                total_tokens: 270,
+                top_model: Some("claude-sonnet".to_string()),
+                peak_day: Some("2026-03-09".to_string()),
+                peak_day_tokens: 270,
+            },
+            dashboard_extras: None,
+        };
+
+        let fallback = fallback_snapshot_from_cached_live("claude", current, Some(cached));
+        assert_eq!(fallback.status, "warning");
+        assert_eq!(fallback.source, "oauth");
+        assert_eq!(
+            fallback
+                .session_window
+                .as_ref()
+                .and_then(|window| window.percent_used),
+            Some(6.0)
+        );
+        assert_eq!(
+            fallback
+                .weekly_window
+                .as_ref()
+                .and_then(|window| window.percent_used),
+            Some(97.0)
+        );
+        assert_eq!(fallback.model_windows.len(), 1);
+        assert_eq!(fallback.local_usage.requests, 9);
+        assert_eq!(
+            fallback.status_message.as_deref(),
+            Some(
+                "Showing cached live Claude usage while the OAuth usage endpoint is rate-limiting requests."
+            )
         );
     }
 }

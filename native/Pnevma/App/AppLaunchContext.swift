@@ -40,4 +40,14 @@ enum AppLaunchContext {
     static var initialWorkspaceName: String {
         isUITesting ? "UI Test Workspace" : "Terminal"
     }
+
+    static var uiTestProjectPath: String? {
+        guard isUITesting else { return nil }
+        guard let value = ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_PROJECT_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
 }

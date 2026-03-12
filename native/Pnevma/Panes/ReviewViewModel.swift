@@ -23,18 +23,26 @@ final class ReviewViewModel {
             reviewPack = nil
             criteria = []
             notes = ""
+            diffFiles = []
+            selectedDiffFilePath = nil
+            diffError = nil
             actionError = nil
             if let id = selectedTaskID {
                 loadReviewPack(taskId: id)
+                loadReviewDiff(taskId: id)
             }
         }
     }
     var reviewPack: ReviewPack?
     var criteria: [AcceptanceCriterion] = []
     var notes: String = ""
+    var diffFiles: [DiffFile] = []
+    var selectedDiffFilePath: String?
     var isLoadingPack: Bool = false
+    var isLoadingDiff: Bool = false
     var isActing: Bool = false
     var actionError: String?
+    var diffError: String?
     private var viewState: ViewState = .waiting("Open a project to load reviews.")
 
     var allCriteriaMet: Bool {
@@ -44,6 +52,11 @@ final class ReviewViewModel {
     var selectedTaskTitle: String? {
         guard let id = selectedTaskID else { return nil }
         return reviewTasks.first { $0.id == id }?.title
+    }
+
+    var selectedDiffFile: DiffFile? {
+        guard let path = selectedDiffFilePath else { return nil }
+        return diffFiles.first { $0.path == path }
     }
 
     var statusMessage: String? {
@@ -66,6 +79,14 @@ final class ReviewViewModel {
     private var activationObserverID: UUID?
     @ObservationIgnored
     private var loadTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var activationGeneration: UInt64 = 0
+    @ObservationIgnored
+    private var tasksLoadToken: UInt64 = 0
+    @ObservationIgnored
+    private var packLoadToken: UInt64 = 0
+    @ObservationIgnored
+    private var diffLoadToken: UInt64 = 0
 
     init(
         commandBus: (any CommandCalling)? = CommandBus.shared,
@@ -105,7 +126,7 @@ final class ReviewViewModel {
         handleActivationState(activationHub.currentState)
     }
 
-    func load() {
+    func load(reloadSelectionDetail: Bool = false) {
         guard let bus = commandBus else {
             viewState = .failed("Review loading is unavailable because the command bus is not configured.")
             return
@@ -114,6 +135,9 @@ final class ReviewViewModel {
             viewState = .loading("Loading review tasks...")
         }
         loadTask?.cancel()
+        tasksLoadToken &+= 1
+        let loadToken = tasksLoadToken
+        let generation = activationGeneration
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -121,19 +145,47 @@ final class ReviewViewModel {
                     method: "task.list",
                     params: TaskListParams(status: "Review")
                 )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      self.activationGeneration == generation,
+                      self.tasksLoadToken == loadToken else { return }
                 let mapped = tasks
                     .filter { $0.status == "Review" }
                     .map { ReviewTaskItem(id: $0.id, title: $0.title, costUsd: $0.costUsd) }
-                self.finishLoading(mapped)
+                self.finishLoading(mapped, reloadSelectionDetail: reloadSelectionDetail)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      self.activationGeneration == generation,
+                      self.tasksLoadToken == loadToken else { return }
                 self.handleLoadFailure(error)
             }
         }
     }
 
+    func refresh() {
+        load(reloadSelectionDetail: true)
+    }
+
+    func clearSelection() {
+        packTask?.cancel()
+        packTask = nil
+        diffTask?.cancel()
+        diffTask = nil
+        packLoadToken &+= 1
+        diffLoadToken &+= 1
+        isLoadingPack = false
+        isLoadingDiff = false
+        selectedTaskID = nil
+        reviewPack = nil
+        criteria = []
+        notes = ""
+        diffFiles = []
+        selectedDiffFilePath = nil
+        diffError = nil
+        actionError = nil
+    }
+
     private var packTask: Task<Void, Never>?
+    private var diffTask: Task<Void, Never>?
 
     func loadReviewPack(taskId: String) {
         guard let bus = commandBus else {
@@ -142,6 +194,9 @@ final class ReviewViewModel {
             return
         }
         packTask?.cancel()
+        packLoadToken &+= 1
+        let loadToken = packLoadToken
+        let generation = activationGeneration
         isLoadingPack = true
         packTask = Task { [weak self] in
             guard let self else { return }
@@ -150,7 +205,9 @@ final class ReviewViewModel {
                     method: "review.get_pack",
                     params: ReviewGetPackParams(taskId: taskId)
                 )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      self.activationGeneration == generation,
+                      self.packLoadToken == loadToken else { return }
                 // Only apply if the user hasn't navigated away.
                 guard self.selectedTaskID == taskId else { return }
                 self.reviewPack = pack
@@ -160,10 +217,51 @@ final class ReviewViewModel {
                 self.notes = pack.reviewerNotes ?? ""
                 self.isLoadingPack = false
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      self.activationGeneration == generation,
+                      self.packLoadToken == loadToken else { return }
                 guard self.selectedTaskID == taskId else { return }
                 self.isLoadingPack = false
                 self.actionError = error.localizedDescription
+            }
+        }
+    }
+
+    func loadReviewDiff(taskId: String) {
+        guard let bus = commandBus else {
+            isLoadingDiff = false
+            diffError = "Backend connection unavailable"
+            return
+        }
+        diffTask?.cancel()
+        diffLoadToken &+= 1
+        let loadToken = diffLoadToken
+        let generation = activationGeneration
+        isLoadingDiff = true
+        diffError = nil
+        diffTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response: TaskDiffResponse? = try await bus.call(
+                    method: "review.diff",
+                    params: ReviewGetPackParams(taskId: taskId)
+                )
+                guard !Task.isCancelled,
+                      self.activationGeneration == generation,
+                      self.diffLoadToken == loadToken else { return }
+                guard self.selectedTaskID == taskId else { return }
+                self.diffFiles = response?.files ?? []
+                self.selectedDiffFilePath = self.diffFiles.first?.path
+                self.isLoadingDiff = false
+            } catch {
+                guard !Task.isCancelled,
+                      self.activationGeneration == generation,
+                      self.diffLoadToken == loadToken else { return }
+                guard self.selectedTaskID == taskId else { return }
+                self.diffFiles = []
+                self.selectedDiffFilePath = nil
+                self.isLoadingDiff = false
+                self.diffError = error.localizedDescription
             }
         }
     }
@@ -215,21 +313,23 @@ final class ReviewViewModel {
     // MARK: - Activation state
 
     private func handleActivationState(_ state: ActiveWorkspaceActivationState) {
+        invalidatePendingLoads()
+
         switch state {
         case .idle:
+            clearContentState()
             viewState = .waiting("Waiting for project activation...")
         case .opening:
+            clearContentState()
             viewState = .waiting("Waiting for project activation...")
         case .open:
+            clearContentState()
             load()
         case .failed(_, _, let message):
+            clearContentState()
             viewState = .failed(message)
         case .closed:
-            loadTask?.cancel()
-            packTask?.cancel()
-            reviewTasks = []
-            reviewPack = nil
-            selectedTaskID = nil
+            clearContentState()
             viewState = .waiting("Open a project to load reviews.")
         }
     }
@@ -239,12 +339,16 @@ final class ReviewViewModel {
         load()
     }
 
-    private func finishLoading(_ tasks: [ReviewTaskItem]) {
+    private func finishLoading(_ tasks: [ReviewTaskItem], reloadSelectionDetail: Bool) {
         reviewTasks = tasks
         viewState = .ready
-        // Clear stale selection if the selected task is no longer in the review list.
+        // Preserve local checklist/notes edits for the current selection on background refreshes.
+        // Only clear the selection if the task truly disappeared from the list.
         if let id = selectedTaskID, !tasks.contains(where: { $0.id == id }) {
             selectedTaskID = nil
+        } else if reloadSelectionDetail, let id = selectedTaskID {
+            loadReviewPack(taskId: id)
+            loadReviewDiff(taskId: id)
         }
     }
 
@@ -254,5 +358,32 @@ final class ReviewViewModel {
             return
         }
         viewState = .failed(error.localizedDescription)
+    }
+
+    private func invalidatePendingLoads() {
+        activationGeneration &+= 1
+        tasksLoadToken &+= 1
+        packLoadToken &+= 1
+        diffLoadToken &+= 1
+        loadTask?.cancel()
+        loadTask = nil
+        packTask?.cancel()
+        packTask = nil
+        diffTask?.cancel()
+        diffTask = nil
+        isLoadingPack = false
+        isLoadingDiff = false
+    }
+
+    private func clearContentState() {
+        reviewTasks = []
+        reviewPack = nil
+        criteria = []
+        notes = ""
+        diffFiles = []
+        selectedDiffFilePath = nil
+        actionError = nil
+        diffError = nil
+        selectedTaskID = nil
     }
 }

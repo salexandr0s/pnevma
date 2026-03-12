@@ -4,15 +4,7 @@ import XCTest
 final class NativeContractDecodingTests: XCTestCase {
     private let decoder = PnevmaJSON.decoder()
 
-    func testSearchAndWorkflowContractsDecodeRepresentativePayloads() throws {
-        let searchResults = try decoder.decode(
-            [SearchResult].self,
-            from: Data(
-                #"[{"id":"result-1","source":"file","title":"lib.rs","snippet":"pub fn tree() {}","path":"src/lib.rs","task_id":null,"session_id":null,"timestamp":"2026-03-08T00:00:00Z"}]"#.utf8
-            )
-        )
-        XCTAssertEqual(searchResults.first?.filePath, "src/lib.rs")
-
+    func testWorkflowContractsDecodeRepresentativePayloads() throws {
         let workflowDefs = try decoder.decode(
             [WorkflowDefItem].self,
             from: Data(

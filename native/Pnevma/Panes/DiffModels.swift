@@ -28,6 +28,11 @@ struct DiffHunk: Identifiable, Decodable {
 
     private enum CodingKeys: String, CodingKey { case header, lines }
 
+    init(header: String, lines: [DiffLine]) {
+        self.header = header
+        self.lines = lines
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         header = try container.decode(String.self, forKey: .header)
@@ -59,7 +64,7 @@ struct DiffLine: Identifiable {
     }
 }
 
-enum DiffLineType {
+enum DiffLineType: String {
     case context, addition, deletion
 }
 

@@ -92,6 +92,23 @@ final class ProviderUsageStoreTests: XCTestCase {
         XCTAssertTrue(methods.contains("usage.providers.settings.get"))
     }
 
+    func testProviderUsageStoreDoesNotForceRefreshOnReactivationWhenWarningDataExists() async throws {
+        let bus = MockProviderUsageCommandBus()
+        let bridgeHub = BridgeEventHub()
+        let store = ProviderUsageStore(commandBus: bus, bridgeEventHub: bridgeHub)
+
+        await store.activate()
+        try await waitUntil {
+            store.providerSnapshots.count == 2
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await store.activate()
+
+        let forceRefreshes = await bus.forceRefreshes()
+        XCTAssertEqual(forceRefreshes, [false, false])
+    }
+
     func testProviderUsageSettingsViewModelStoresGeneralSettings() async throws {
         let bus = MockProviderUsageCommandBus()
         let viewModel = ProviderUsageSettingsViewModel(commandBus: bus)

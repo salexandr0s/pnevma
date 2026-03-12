@@ -14,6 +14,12 @@
 .agents/
 .claude/
 
+# Xcode user-specific data
+**/xcuserdata/
+
+# Claude Code skill lockfile
+skills-lock.json
+
 # Internal planning & session docs (keep local, not in public repo)
 buildplan-v1.md
 buildplan-v2.md

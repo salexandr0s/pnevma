@@ -13,6 +13,43 @@ final class SessionPersistence {
         let workspaces: [Workspace.Snapshot]
         let activeWorkspaceID: UUID?
         let sidebarVisible: Bool
+        let rightInspectorVisible: Bool
+        let rightInspectorWidth: Double?
+
+        init(
+            windowFrame: CodableRect?,
+            workspaces: [Workspace.Snapshot],
+            activeWorkspaceID: UUID?,
+            sidebarVisible: Bool,
+            rightInspectorVisible: Bool = true,
+            rightInspectorWidth: Double? = nil
+        ) {
+            self.windowFrame = windowFrame
+            self.workspaces = workspaces
+            self.activeWorkspaceID = activeWorkspaceID
+            self.sidebarVisible = sidebarVisible
+            self.rightInspectorVisible = rightInspectorVisible
+            self.rightInspectorWidth = rightInspectorWidth
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case windowFrame
+            case workspaces
+            case activeWorkspaceID
+            case sidebarVisible
+            case rightInspectorVisible
+            case rightInspectorWidth
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            windowFrame = try container.decodeIfPresent(CodableRect.self, forKey: .windowFrame)
+            workspaces = try container.decode([Workspace.Snapshot].self, forKey: .workspaces)
+            activeWorkspaceID = try container.decodeIfPresent(UUID.self, forKey: .activeWorkspaceID)
+            sidebarVisible = try container.decode(Bool.self, forKey: .sidebarVisible)
+            rightInspectorVisible = try container.decodeIfPresent(Bool.self, forKey: .rightInspectorVisible) ?? true
+            rightInspectorWidth = try container.decodeIfPresent(Double.self, forKey: .rightInspectorWidth)
+        }
     }
 
     struct CodableRect: Codable {

@@ -9,9 +9,9 @@ final class SidebarToolItemTests: XCTestCase {
         let tools = sidebarTools(for: workspace).map(\.id)
 
         XCTAssertTrue(tools.contains("harness"))
-        XCTAssertEqual(tools.firstIndex(of: "ssh"), 5)
-        XCTAssertEqual(tools.firstIndex(of: "harness"), 6)
-        XCTAssertEqual(tools.firstIndex(of: "replay"), 7)
+        XCTAssertEqual(tools.firstIndex(of: "ssh"), 4)
+        XCTAssertEqual(tools.firstIndex(of: "harness"), 5)
+        XCTAssertEqual(tools.firstIndex(of: "replay"), 6)
     }
 
     func testTerminalWorkspaceSidebarIncludesHarnessConfig() {
@@ -36,9 +36,7 @@ final class SidebarToolItemTests: XCTestCase {
             "harness": .tab,
             "replay": .tab,
             "browser": .pane,
-            "search": .pane,
             "review": .tab,
-            "merge": .pane,
             "diff": .tab,
             "analytics": .tab,
             "brief": .tab,
@@ -57,6 +55,6 @@ final class SidebarToolItemTests: XCTestCase {
     func testSidebarToolDefinitionLookupByPaneTypeUsesSidebarMappings() {
         XCTAssertEqual(sidebarToolDefinition(id: "files")?.paneType, "file_browser")
         XCTAssertEqual(sidebarToolDefinition(id: "brief")?.paneType, "daily_brief")
-        XCTAssertEqual(sidebarToolDefinition(paneType: "merge_queue")?.id, "merge")
+        XCTAssertNil(sidebarToolDefinition(paneType: "merge_queue"), "merge_queue moved to right inspector")
     }
 }

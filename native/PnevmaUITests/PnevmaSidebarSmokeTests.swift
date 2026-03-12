@@ -44,4 +44,13 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
         requireExists(settingsWindow)
         requireExists(settingsWindow.staticTexts["Auto-save workspace on quit"])
     }
+
+    func testOpenWorkspaceDialogShowsVisibleActionsImmediately() {
+        identifiedElement("sidebar.addWorkspace").click()
+
+        requireHittable(identifiedElement("openWorkspace.local"))
+        requireHittable(identifiedElement("openWorkspace.remote"))
+        requireHittable(identifiedElement("openWorkspace.cancel"))
+        requireHittable(identifiedElement("openWorkspace.persistenceToggle"))
+    }
 }

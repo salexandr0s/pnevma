@@ -369,7 +369,7 @@ final class UsageViewModel {
         case failed(String)
     }
 
-    var segment: UsageSegment = .overview
+    var segment: UsageSegment = .providers
     var scope: UsageScope = .project
     var trendMetric: UsageTrendMetric = .cost
     var explorerMode: UsageExplorerMode = .sessions

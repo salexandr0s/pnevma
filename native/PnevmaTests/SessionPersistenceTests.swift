@@ -30,7 +30,9 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: SessionPersistence.CodableRect(NSRect(x: 100, y: 200, width: 1400, height: 900)),
             workspaces: [],
             activeWorkspaceID: nil,
-            sidebarVisible: true
+            sidebarVisible: true,
+            rightInspectorVisible: true,
+            rightInspectorWidth: 340
         )
         persistence.save(state: state)
 
@@ -39,6 +41,8 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restored?.windowFrame?.x, 100)
         XCTAssertEqual(restored?.windowFrame?.width, 1400)
         XCTAssertEqual(restored?.sidebarVisible, true)
+        XCTAssertEqual(restored?.rightInspectorVisible, true)
+        XCTAssertEqual(restored?.rightInspectorWidth, 340)
     }
 
     func testMarkDirtyAndSaveIfDirtyTriggersSave() {
@@ -47,7 +51,9 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: nil,
             workspaces: [],
             activeWorkspaceID: nil,
-            sidebarVisible: false
+            sidebarVisible: false,
+            rightInspectorVisible: false,
+            rightInspectorWidth: 300
         )
 
         persistence.stateProvider = {
@@ -82,7 +88,9 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: nil,
             workspaces: [],
             activeWorkspaceID: nil,
-            sidebarVisible: true
+            sidebarVisible: true,
+            rightInspectorVisible: true,
+            rightInspectorWidth: nil
         )
         persistence.save(state: state)
 
@@ -95,12 +103,34 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: nil,
             workspaces: [],
             activeWorkspaceID: nil,
-            sidebarVisible: true
+            sidebarVisible: true,
+            rightInspectorVisible: true,
+            rightInspectorWidth: nil
         )
         persistence.save(state: state)
 
         XCTAssertNil(persistence.restore(ifEnabled: false))
         XCTAssertNotNil(persistence.restore(ifEnabled: true))
+    }
+
+    func testRestoreDefaultsRightInspectorFieldsForLegacySessions() throws {
+        let legacyJSON = #"""
+        {
+          "windowFrame": null,
+          "workspaces": [],
+          "activeWorkspaceID": null,
+          "sidebarVisible": false
+        }
+        """#
+
+        let decoded = try JSONDecoder().decode(
+            SessionPersistence.SessionState.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        XCTAssertFalse(decoded.sidebarVisible)
+        XCTAssertTrue(decoded.rightInspectorVisible)
+        XCTAssertNil(decoded.rightInspectorWidth)
     }
 
     func testSaveAndRestorePreservesWorkspaceSnapshots() {
@@ -109,7 +139,9 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: SessionPersistence.CodableRect(NSRect(x: 10, y: 20, width: 900, height: 700)),
             workspaces: [workspace.snapshot()],
             activeWorkspaceID: workspace.id,
-            sidebarVisible: false
+            sidebarVisible: false,
+            rightInspectorVisible: true,
+            rightInspectorWidth: 360
         )
 
         persistence.save(state: state)
@@ -119,6 +151,8 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restored?.workspaces.first?.name, "Persisted")
         XCTAssertEqual(restored?.activeWorkspaceID, workspace.id)
         XCTAssertEqual(restored?.sidebarVisible, false)
+        XCTAssertEqual(restored?.rightInspectorVisible, true)
+        XCTAssertEqual(restored?.rightInspectorWidth, 360)
     }
 
     func testSaveWritesSessionFileWith0600Permissions() throws {
@@ -126,7 +160,9 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: nil,
             workspaces: [],
             activeWorkspaceID: nil,
-            sidebarVisible: true
+            sidebarVisible: true,
+            rightInspectorVisible: false,
+            rightInspectorWidth: 320
         )
 
         persistence.save(state: state)
@@ -159,7 +195,9 @@ final class SessionPersistenceTests: XCTestCase {
             windowFrame: nil,
             workspaces: [],
             activeWorkspaceID: nil,
-            sidebarVisible: false
+            sidebarVisible: false,
+            rightInspectorVisible: true,
+            rightInspectorWidth: 340
         )
         var saveCount = 0
         persistence.stateProvider = {
