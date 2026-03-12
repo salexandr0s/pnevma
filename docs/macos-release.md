@@ -218,9 +218,17 @@ comparison.
 **Blocked: full in-app self-update.** The app does not download or install
 updates itself. This requires a hosted feed/appcast, Sparkle integration, and
 matching security gate updates. The implementation is Sparkle-ready (update
-logic is isolated behind the `ReleaseVersionChecking` protocol), but Sparkle is
+checks, semantic version comparison, release-page handoff), but the release
+process intentionally stops at discovery and operator-directed download. Update
+logic is isolated behind the `ReleaseVersionChecking` protocol, but Sparkle is
 not added in this release. Distribution remains manual:
 
 1. build the native app,
 2. sign, notarize, and staple it,
 3. publish the notarized DMG, checksum, and release notes on GitHub.
+
+## See also
+
+- [Implementation Status](./implementation-status.md)
+- [Hardening Exit Criteria](./hardening-exit-criteria.md)
+- [macOS Website Release Plan](./macos-website-release-plan.md)

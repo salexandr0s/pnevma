@@ -123,7 +123,8 @@ target = "main"
 naming = "task/{{id}}-{{slug}}"
 ```
 
-See [docs/pnevma-toml-reference.md](docs/pnevma-toml-reference.md) for the full configuration reference.
+See the [`pnevma.toml` reference](docs/pnevma-toml-reference.md) for the full
+configuration schema.
 
 ## Development
 
@@ -141,13 +142,23 @@ just release
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md): bootstrap, local setup, and first project flow
-- [Architecture Overview](docs/architecture-overview.md): backend boundaries, FFI flow, and persistence model
-- [pnevma.toml Reference](docs/pnevma-toml-reference.md): project configuration schema
-- [Security Deployment](docs/security-deployment.md): remote access and credential handling
-- [macOS Release Runbook](docs/macos-release.md): signing, notarization, and release steps
-- [Hardening Exit Criteria](docs/hardening-exit-criteria.md): merge policy during release hardening
-- [Implementation Status](docs/implementation-status.md): current repo status and priorities
+Start with the [documentation index](docs/README.md) for the current set of
+developer, operator, and release guides.
+
+- [Getting Started](docs/getting-started.md): bootstrap, local setup, and first
+  project flow
+- [Architecture Overview](docs/architecture-overview.md): backend boundaries,
+  FFI flow, and persistence model
+- [`pnevma.toml` Reference](docs/pnevma-toml-reference.md): project
+  configuration schema
+- [Security Deployment Guide](docs/security-deployment.md): remote access and
+  credential handling
+- [macOS Release Runbook](docs/macos-release.md): signing, notarization, and
+  release steps
+- [Hardening Exit Criteria](docs/hardening-exit-criteria.md): merge policy
+  during release hardening
+- [Implementation Status](docs/implementation-status.md): current repo status
+  and priorities
 
 ## Security Model
 
