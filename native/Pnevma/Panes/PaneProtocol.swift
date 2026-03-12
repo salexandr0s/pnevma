@@ -856,7 +856,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
-        hostView?.requestCloseDecision(completion) ?? completion(false)
+        completion(hasActiveProcess)
     }
 
     private var initialStateTitle: String {
