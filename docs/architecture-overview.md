@@ -56,3 +56,9 @@ The Xcode project is generated from `native/project.yml` using XcodeGen (`just x
 - Control socket permissions (`0600`) and optional password mode.
 - Remote server TLS with self-signed cert; fingerprint logged at startup.
 - Rate limiting and CORS on all remote HTTP/WS endpoints.
+
+## See also
+
+- [Getting Started](./getting-started.md)
+- [`pnevma.toml` Reference](./pnevma-toml-reference.md)
+- [Security Deployment Guide](./security-deployment.md)

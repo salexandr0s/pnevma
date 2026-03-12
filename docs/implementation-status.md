@@ -36,3 +36,9 @@ Primary remaining work:
 - [`hardening-exit-criteria.md`](./hardening-exit-criteria.md) for merge policy while hardening is active
 - [`design/remediation-master-plan.md`](./design/remediation-master-plan.md) for the remaining security/test/CI backlog
 - [`definition-of-done.md`](./definition-of-done.md) for quality gates on individual changes
+
+## See also
+
+- [Documentation Index](./README.md)
+- [Getting Started](./getting-started.md)
+- [macOS Release Runbook](./macos-release.md)

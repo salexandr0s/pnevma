@@ -61,3 +61,9 @@ just xcode-test
 ```
 
 The `just` targets invoke the repo-pinned rustup toolchain directly, so local builds stay aligned with CI and the native linker sees a consistent Rust stdlib. `just ghostty-smoke` is the required terminal-runtime gate; placeholder rendering does not satisfy it.
+
+## See also
+
+- [Architecture Overview](./architecture-overview.md)
+- [`pnevma.toml` Reference](./pnevma-toml-reference.md)
+- [Implementation Status](./implementation-status.md)

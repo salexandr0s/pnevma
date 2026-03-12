@@ -125,3 +125,9 @@ Pnevma now fails startup when:
 - Verify Keychain entries with `security find-generic-password -s com.pnevma.remote-access -a shared-password -w`.
 - Issue a token, make one authenticated request, revoke the token, and verify the logs contain `subject` and `token_id` but not the raw token or password.
 - Use `scripts/manual-security-tests.md` to validate remote auth, rate limits, allowlists, and password-file hardening before external rollout.
+
+## See also
+
+- [`pnevma.toml` Reference](./pnevma-toml-reference.md)
+- [Remote Access Guide](./remote-access.md)
+- [macOS Release Runbook](./macos-release.md)

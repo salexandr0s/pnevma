@@ -136,3 +136,9 @@ User-level config currently supports:
 - Socket password lookup order is: `PNEVMA_SOCKET_PASSWORD`, Keychain item `com.pnevma.control-plane/shared-password`, then `socket_password_file`.
 - Password files must be regular files owned by the current user and not readable by group or others (`0600` or stricter on Unix).
 - Leaving `remote.allowed_origins` empty keeps the server on its default localhost-compatible CORS fallback.
+
+## See also
+
+- [Getting Started](./getting-started.md)
+- [Security Deployment Guide](./security-deployment.md)
+- [Remote Access Guide](./remote-access.md)
