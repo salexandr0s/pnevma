@@ -109,6 +109,31 @@ struct WorkspacePaneLocation: Equatable {
     let paneID: PaneID
 }
 
+enum RightInspectorSection: String, Codable, CaseIterable {
+    case files
+    case changes
+    case review
+    case mergeQueue
+
+    var title: String {
+        switch self {
+        case .files: return "Files"
+        case .changes: return "Changes"
+        case .review: return "Review"
+        case .mergeQueue: return "Merge"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .files: return "folder"
+        case .changes: return "point.3.connected.trianglepath.dotted"
+        case .review: return "checklist"
+        case .mergeQueue: return "arrow.triangle.merge"
+        }
+    }
+}
+
 /// A single tab within a workspace. Each tab has its own pane layout.
 final class WorkspaceTab: Identifiable {
     let id: UUID
@@ -202,6 +227,7 @@ final class Workspace: Identifiable {
     var isPinned: Bool = false
     var gitDirty: Bool = false
     var activationFailureMessage: String?
+    var rightInspectorSection: RightInspectorSection = .files
 
     /// Tabs within this workspace.
     var tabs: [WorkspaceTab]
@@ -458,6 +484,7 @@ extension Workspace {
         let layoutData: Data?
         var customColor: String?
         var isPinned: Bool?
+        var rightInspectorSection: RightInspectorSection?
     }
 
     func snapshot() -> Snapshot {
@@ -473,7 +500,8 @@ extension Workspace {
             activeTabIndex: activeTabIndex,
             layoutData: nil,
             customColor: customColor,
-            isPinned: isPinned
+            isPinned: isPinned,
+            rightInspectorSection: rightInspectorSection
         )
     }
 
@@ -521,5 +549,6 @@ extension Workspace {
         }
         self.customColor = snapshot.customColor
         self.isPinned = snapshot.isPinned ?? false
+        self.rightInspectorSection = snapshot.rightInspectorSection ?? .files
     }
 }

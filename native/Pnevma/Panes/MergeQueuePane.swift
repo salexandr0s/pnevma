@@ -17,82 +17,6 @@ struct MergeQueueItem: Identifiable, Decodable {
     var taskId: String { taskID }
 }
 
-// MARK: - MergeQueueView
-
-struct MergeQueueView: View {
-    @State private var viewModel = MergeQueueViewModel()
-    @State private var showMergeAlert = false
-    @State private var itemToMerge: MergeQueueItem? = nil
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Merge Queue")
-                    .font(.headline)
-                Spacer()
-                Button("Refresh") { viewModel.load() }
-                    .buttonStyle(.bordered)
-                    .keyboardShortcut("r", modifiers: .command)
-            }
-            .padding(12)
-
-            Divider()
-
-            Group {
-                if let statusMessage = viewModel.statusMessage {
-                    VStack(spacing: 8) {
-                        if viewModel.isLoadingState {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        EmptyStateView(
-                            icon: "arrow.triangle.merge",
-                            title: statusMessage
-                        )
-                    }
-                } else if viewModel.items.isEmpty {
-                    EmptyStateView(
-                        icon: "arrow.triangle.merge",
-                        title: "Merge Queue Empty",
-                        message: "No branches queued for merge"
-                    )
-                } else {
-                    List {
-                        ForEach(viewModel.items) { item in
-                            MergeQueueRow(
-                                item: item,
-                                onMerge: {
-                                    itemToMerge = item
-                                    showMergeAlert = true
-                                },
-                                onMoveUp: { viewModel.reorder(taskId: item.taskId, direction: "up") },
-                                onMoveDown: { viewModel.reorder(taskId: item.taskId, direction: "down") }
-                            )
-                            .accessibilityElement(children: .combine)
-                        }
-                    }
-                    .listStyle(.plain)
-                }
-            }
-        }
-        .overlay(alignment: .bottom) {
-            ErrorBanner(message: viewModel.actionError)
-        }
-        .alert("Merge Branch?", isPresented: $showMergeAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Merge", role: .destructive) {
-                if let item = itemToMerge {
-                    viewModel.merge(item)
-                }
-            }
-        } message: {
-            Text("This will merge the branch into the target.")
-        }
-        .accessibilityIdentifier("pane.mergeQueue")
-        .task { await viewModel.activate() }
-    }
-}
-
 // MARK: - MergeQueueRow
 
 struct MergeQueueRow: View {
@@ -358,18 +282,3 @@ final class MergeQueueViewModel {
     }
 }
 
-// MARK: - NSView Wrapper
-
-final class MergeQueuePaneView: NSView, PaneContent {
-    let paneID = PaneID()
-    let paneType = "merge_queue"
-    let shouldPersist = true
-    var title: String { "Merge Queue" }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        _ = addSwiftUISubview(MergeQueueView())
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-}

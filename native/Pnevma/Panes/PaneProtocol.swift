@@ -274,16 +274,8 @@ enum PaneFactory {
         paneTuple(ReviewPaneView(frame: .zero))
     }
 
-    static func makeMergeQueue() -> (PaneID, NSView & PaneContent) {
-        paneTuple(MergeQueuePaneView(frame: .zero))
-    }
-
     static func makeDiff() -> (PaneID, NSView & PaneContent) {
         paneTuple(DiffPaneView(frame: .zero))
-    }
-
-    static func makeSearch() -> (PaneID, NSView & PaneContent) {
-        paneTuple(SearchPaneView(frame: .zero))
     }
 
     static func makeAnalytics() -> (PaneID, NSView & PaneContent) {
@@ -344,12 +336,8 @@ enum PaneFactory {
             inner = WorkflowPaneView(frame: .zero)
         case "review":
             inner = ReviewPaneView(frame: .zero)
-        case "merge_queue":
-            inner = MergeQueuePaneView(frame: .zero)
         case "diff":
             inner = DiffPaneView(frame: .zero)
-        case "search":
-            inner = SearchPaneView(frame: .zero)
         case "analytics":
             inner = UsagePaneView(frame: .zero)
         case "settings":
@@ -390,9 +378,7 @@ enum PaneFactory {
         case "ssh":           return makeSshManager()
         case "workflow":      return makeWorkflow()
         case "review":        return makeReview()
-        case "merge_queue":   return makeMergeQueue()
         case "diff":          return makeDiff()
-        case "search":        return makeSearch()
         case "analytics":     return makeAnalytics()
         case "settings":      return makeSettings()
         case "notifications": return makeNotifications()
@@ -422,9 +408,7 @@ enum PaneFactory {
                 "ssh",
                 "replay",
                 "browser",
-                "search",
                 "review",
-                "merge_queue",
                 "diff",
                 "analytics",
                 "daily_brief",
@@ -912,7 +896,16 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         if let remoteTarget = launchMetadata.remoteTarget {
             return remoteTarget.remoteShellCommand
         }
-        return AppRuntimeSettings.shared.normalizedDefaultShell
+        return localInteractiveShellCommand
+    }
+
+    private var localInteractiveShellCommand: String {
+        let shellPath = AppRuntimeSettings.shared.normalizedDefaultShell?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedShell = (shellPath?.isEmpty == false)
+            ? shellPath!
+            : (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
+        return "\(resolvedShell) -i"
     }
 
     private func resolvedManagedSessionMetadata() -> TerminalLaunchMetadata {
@@ -1361,6 +1354,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         agentLauncherKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.agentLauncherView != nil,
                   self.window?.firstResponder === self.hostView else { return event }
+            if !Self.shouldDismissAgentLauncher(for: event) {
+                return event
+            }
             self.removeAgentLauncher()
             return event
         }
@@ -1394,6 +1390,21 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         let surface = hostView?.terminalSurface
         surface?.sendText(agent.command)
         surface?.sendReturn()
+    }
+
+    static func shouldDismissAgentLauncher(for event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return !modifiers.contains(.command)
+            && !modifiers.contains(.control)
+            && !modifiers.contains(.option)
+    }
+
+    var hasAgentLauncherOverlay: Bool {
+        agentLauncherView != nil
+    }
+
+    func installAgentLauncherForTesting() {
+        installAgentLauncher()
     }
 
     private func replaceContent(with view: NSView) {
@@ -1905,6 +1916,8 @@ private struct AgentLauncherOverlay: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("terminal.agentLauncher.overlay")
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(.ultraThinMaterial)
@@ -1937,5 +1950,7 @@ private struct AgentLogoButton: View {
         .contentShape(Rectangle())
         .onHover { hovering in isHovered = hovering }
         .help("Launch \(agent.label)")
+        .accessibilityLabel("Launch \(agent.label)")
+        .accessibilityIdentifier("terminal.agentLauncher.\(agent.rawValue)")
     }
 }

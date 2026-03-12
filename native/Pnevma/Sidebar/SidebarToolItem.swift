@@ -97,25 +97,11 @@ private let allSidebarTools: [SidebarToolItem] = [
         defaultPresentation: .pane
     ),
     SidebarToolItem(
-        id: "search",
-        title: "Search",
-        icon: "magnifyingglass",
-        paneType: "search",
-        defaultPresentation: .pane
-    ),
-    SidebarToolItem(
         id: "review",
         title: "Review",
         icon: "eye",
         paneType: "review",
         defaultPresentation: .tab
-    ),
-    SidebarToolItem(
-        id: "merge",
-        title: "Merge Queue",
-        icon: "arrow.triangle.merge",
-        paneType: "merge_queue",
-        defaultPresentation: .pane
     ),
     SidebarToolItem(
         id: "diff",
@@ -167,15 +153,10 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "tasks",
             "workflow",
             "notifications",
-            "files",
             "ssh",
             "harness",
             "replay",
             "browser",
-            "search",
-            "review",
-            "merge",
-            "diff",
             "analytics",
             "brief",
             "rules",
