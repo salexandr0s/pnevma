@@ -834,7 +834,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         if let activationObserverID {
             activationHub.removeObserver(activationObserverID)
         }
-        hostView?.terminalSurface?.requestClose()
+        hostView?.closeSurfaceSilently()
     }
 
     var workingDirectory: String? { currentWorkingDirectory }

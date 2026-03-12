@@ -129,6 +129,19 @@ final class TerminalHostView: NSView, NSTextInputClient {
         )
     }
 
+    func closeSurfaceSilently() {
+        guard terminalSurface != nil else { return }
+        onTerminalClose = nil
+        onSurfaceReady = nil
+        onTerminalResize = nil
+        onDesktopNotification = nil
+        onTitleChanged = nil
+        onPwdChanged = nil
+        onBell = nil
+        closeCoordinator.suppressNextSurfaceClose()
+        terminalSurface?.requestClose()
+    }
+
     // MARK: - NSView Lifecycle
 
     override func viewDidMoveToWindow() {
@@ -231,6 +244,11 @@ final class TerminalHostView: NSView, NSTextInputClient {
     // MARK: - Keyboard Events
 
     override func keyDown(with event: NSEvent) {
+        if Self.shouldDeferKeyEquivalentToAppKit(event),
+           NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+            return
+        }
+
         // interpretKeyEvents FIRST. This drives NSTextInputClient for IME, dead keys,
         // and key equivalents. Raw key events still go to ghostty for non-printable keys.
         #if canImport(GhosttyKit)
@@ -653,6 +671,14 @@ final class TerminalHostView: NSView, NSTextInputClient {
         buttonNumber == 2
     }
 
+    static func shouldDeferKeyEquivalentToAppKit(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.modifierFlags.contains(.command) else {
+            return false
+        }
+        return event.charactersIgnoringModifiers?.lowercased() == "w"
+    }
+
     private func extractText(_ string: Any) -> String? {
         (string as? NSAttributedString)?.string ?? (string as? String)
     }
@@ -667,16 +693,25 @@ final class TerminalHostView: NSView, NSTextInputClient {
 @MainActor
 final class TerminalCloseCoordinator {
     private var pendingCloseDecision: ((Bool) -> Void)?
+    private var suppressNextClose = false
 
     func requestClose(using closeRequest: () -> Void, completion: @escaping (Bool) -> Void) {
         pendingCloseDecision = completion
         closeRequest()
     }
 
+    func suppressNextSurfaceClose() {
+        suppressNextClose = true
+    }
+
     func handleSurfaceClose(
         processAlive: Bool,
         onTerminalClose: ((Bool) -> Void)?
     ) {
+        if suppressNextClose {
+            suppressNextClose = false
+            return
+        }
         if let pendingCloseDecision {
             self.pendingCloseDecision = nil
             pendingCloseDecision(processAlive)

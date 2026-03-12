@@ -44,6 +44,40 @@ final class TerminalHostViewTests: XCTestCase {
         XCTAssertFalse(TerminalHostView.shouldTreatAsMiddleMouseButton(3))
     }
 
+    func testCommandWDefersToAppKitShortcutHandling() throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "w",
+            charactersIgnoringModifiers: "w",
+            isARepeat: false,
+            keyCode: 13
+        ))
+
+        XCTAssertTrue(TerminalHostView.shouldDeferKeyEquivalentToAppKit(event))
+    }
+
+    func testPlainWDoesNotDeferToAppKitShortcutHandling() throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "w",
+            charactersIgnoringModifiers: "w",
+            isARepeat: false,
+            keyCode: 13
+        ))
+
+        XCTAssertFalse(TerminalHostView.shouldDeferKeyEquivalentToAppKit(event))
+    }
+
     func testFlagsChangedDoesNotReadCharactersFromModifierOnlyEvent() throws {
         let source = try XCTUnwrap(CGEventSource(stateID: .hidSystemState))
         let cgEvent = try XCTUnwrap(CGEvent(source: source))
@@ -122,5 +156,23 @@ final class TerminalHostViewTests: XCTestCase {
         }
 
         XCTAssertEqual(terminalCloseSignal, true)
+    }
+
+    func testCloseCoordinatorSuppressesNextSurfaceCloseForSilentPaneDisposal() {
+        let coordinator = TerminalCloseCoordinator()
+        var terminalCloseSignal: Bool?
+
+        coordinator.suppressNextSurfaceClose()
+        coordinator.handleSurfaceClose(processAlive: true) { processAlive in
+            terminalCloseSignal = processAlive
+        }
+
+        XCTAssertNil(terminalCloseSignal)
+
+        coordinator.handleSurfaceClose(processAlive: false) { processAlive in
+            terminalCloseSignal = processAlive
+        }
+
+        XCTAssertEqual(terminalCloseSignal, false)
     }
 }
