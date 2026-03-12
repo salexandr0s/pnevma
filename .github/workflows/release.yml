@@ -136,14 +136,6 @@ jobs:
       - name: Check signed app entitlements
         run: APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh | tee release-evidence/app-entitlements-check.txt
 
-      - name: Notarize app
-        env:
-          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-notarize.sh | tee release-evidence/app-notarize.txt
-
-      - name: Staple and verify
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-staple-verify.sh | tee release-evidence/app-staple-verify.txt
-
       - name: Package signed DMG
         run: |
           APP_PATH="$APP_PATH" \
