@@ -371,13 +371,6 @@
 			path = Panes;
 			sourceTree = "<group>";
 		};
-		1FED2D0A4F02AC37C3A7FCB5 /* Inspector */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Inspector;
-			sourceTree = "<group>";
-		};
 		3E641921799B1A7EC7293323 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
@@ -440,7 +433,6 @@
 				1EA06238672B6DE8F5FD3450 /* Bridge */,
 				B1DAB0346C4A52FB5F0E1569 /* Chrome */,
 				8B7404900B8C5E0A806E5915 /* Core */,
-				1FED2D0A4F02AC37C3A7FCB5 /* Inspector */,
 				1EA819F1B0B8556B8197BC79 /* Panes */,
 				85579D09763F3EE2D803E7A8 /* Resources */,
 				3E641921799B1A7EC7293323 /* Shared */,
