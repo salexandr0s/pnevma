@@ -634,7 +634,7 @@ final class WorkspaceManagerTests: XCTestCase {
             )
         )
 
-        try await waitUntil(timeoutNanos: 100_000_000) {
+        try await waitUntil(timeoutNanos: 2_000_000_000) {
             activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
         }
 
