@@ -476,7 +476,9 @@ struct ProviderUsagePopoverView: View {
                 isLoading: store.isLoading,
                 onRefresh: { Task { await store.refresh(force: true) } }
             )
-            .padding(DesignTokens.Spacing.md)
+            .padding(.horizontal, DesignTokens.Spacing.md)
+            .padding(.top, DesignTokens.Spacing.md)
+            .padding(.bottom, DesignTokens.Spacing.sm)
 
             Divider()
 
@@ -515,7 +517,7 @@ struct ProviderUsagePopoverView: View {
                 Spacer()
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.md)
+            .padding(.vertical, DesignTokens.Spacing.sm + DesignTokens.Spacing.md)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .task {

@@ -30,6 +30,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tabBarView: TabBarView?
     private var statusBar: StatusBar?
     private var sidebarHostView: NSView?
+    private var sidebarContentView: NSView?
+    private var sidebarTopToTitlebar: NSLayoutConstraint?
+    private var sidebarTopToToolbarSep: NSLayoutConstraint?
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var rightInspectorHostView: NSView?
     private var rightInspectorWidthConstraint: NSLayoutConstraint?
@@ -439,13 +442,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let sidebarBacking = ThemedSidebarBackingView()
         sidebarBacking.addSubview(sidebarHost)
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
+
+        let topToTitlebar = sidebarHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor)
+        topToTitlebar.isActive = true
+        self.sidebarTopToTitlebar = topToTitlebar
+
         NSLayoutConstraint.activate([
             sidebarHost.leadingAnchor.constraint(equalTo: sidebarBacking.leadingAnchor),
             sidebarHost.trailingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
-            sidebarHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor),
             sidebarHost.bottomAnchor.constraint(equalTo: sidebarBacking.bottomAnchor),
         ])
         self.sidebarHostView = sidebarBacking
+        self.sidebarContentView = sidebarHost
 
         let rightInspectorView = RightInspectorView(
             workspaceManager: mgr,
@@ -1496,6 +1504,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.level = .modalPanel
@@ -1806,32 +1815,40 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         headerRow.alignment = .top
         headerRow.spacing = 12
 
+        let inset: CGFloat = 16
+        let panelWidth = width + inset * 2
+        let innerWidth = width
+
+        let choiceCard = makeAlertCard(
+            width: innerWidth,
+            views: [
+                makeOpenWorkspaceChoiceRow(
+                    symbolName: "folder",
+                    title: "Local workspace",
+                    description: "Open a project directory on this Mac."
+                ),
+                makeOpenWorkspaceChoiceRow(
+                    symbolName: "network",
+                    title: "Remote workspace",
+                    description: "Connect with an SSH preset and a remote project path."
+                ),
+            ]
+        )
+        let persistenceCard = makePersistenceAccessory(toggle: toggle, width: innerWidth)
+        let actionRow = makeOpenWorkspaceActionRow(width: innerWidth)
+
         let contentStack = NSStackView(views: [
             headerRow,
-            makeAlertCard(
-                width: width,
-                views: [
-                    makeOpenWorkspaceChoiceRow(
-                        symbolName: "folder",
-                        title: "Local workspace",
-                        description: "Open a project directory on this Mac."
-                    ),
-                    makeOpenWorkspaceChoiceRow(
-                        symbolName: "network",
-                        title: "Remote workspace",
-                        description: "Connect with an SSH preset and a remote project path."
-                    ),
-                ]
-            ),
-            makePersistenceAccessory(toggle: toggle, width: width),
-            makeOpenWorkspaceActionRow(width: width),
+            choiceCard,
+            persistenceCard,
+            actionRow,
         ])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 12
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: width + 32, height: 1))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: 1))
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         container.setAccessibilityElement(true)
@@ -1840,13 +1857,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSLayoutConstraint.activate([
             contentStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
-            contentStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
-            contentStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
-            contentStack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -18),
+            contentStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
+            contentStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
+            contentStack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -inset),
         ])
 
         container.layoutSubtreeIfNeeded()
-        container.frame.size = NSSize(width: width + 32, height: container.fittingSize.height)
+        container.frame.size = NSSize(width: panelWidth, height: container.fittingSize.height)
         return container
     }
 
@@ -1880,15 +1897,47 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         title: String,
         identifier: String,
         keyEquivalent: String = ""
-    ) -> NSButton {
-        let button = NSButton(title: title, target: self, action: #selector(handleOpenWorkspaceDialogAction(_:)))
+    ) -> NSView {
+        let isDefault = keyEquivalent == "\r"
+
+        let button = NSButton(title: "", target: self, action: #selector(handleOpenWorkspaceDialogAction(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(identifier)
-        button.controlSize = .large
-        button.bezelStyle = .rounded
+        button.isBordered = false
         button.keyEquivalent = keyEquivalent
         button.keyEquivalentModifierMask = []
         button.setAccessibilityIdentifier("openWorkspace.\(identifier)")
-        return button
+        button.translatesAutoresizingMaskIntoConstraints = false
+
+        let textColor: NSColor = .white.withAlphaComponent(isDefault ? 1.0 : 0.85)
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: textColor,
+            .font: NSFont.systemFont(ofSize: 13, weight: isDefault ? .semibold : .regular),
+        ])
+
+        let pill = NSView()
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = 6
+        pill.layer?.backgroundColor = isDefault
+            ? NSColor.controlAccentColor.cgColor
+            : NSColor.white.withAlphaComponent(0.10).cgColor
+        pill.translatesAutoresizingMaskIntoConstraints = false
+
+        let wrapper = NSView()
+        wrapper.addSubview(pill)
+        wrapper.addSubview(button)
+        wrapper.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            pill.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            pill.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            pill.topAnchor.constraint(equalTo: wrapper.topAnchor),
+            pill.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+            button.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            button.topAnchor.constraint(equalTo: wrapper.topAnchor),
+            button.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+            wrapper.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        return wrapper
     }
 
     private func makePersistenceAccessory(
@@ -1978,6 +2027,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         container.layer?.borderColor = NSColor.separatorColor.cgColor
         container.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         container.addSubview(contentStack)
+
+        // Explicit width constraint survives NSStackView setting
+        // translatesAutoresizingMaskIntoConstraints = false on arranged subviews.
+        container.widthAnchor.constraint(equalToConstant: width).isActive = true
 
         NSLayoutConstraint.activate([
             contentStack.topAnchor.constraint(equalTo: container.topAnchor, constant: DesignTokens.Spacing.md),
@@ -2331,7 +2384,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await ProviderUsageStore.shared.activate() }
 
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 430, height: 420)
+        popover.contentSize = NSSize(width: 430, height: 440)
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = NSHostingController(
@@ -2565,6 +2618,14 @@ final class HoverTintButton: NSButton {
 extension AppDelegate: NSWindowDelegate {
     public func windowDidEnterFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = true
+
+        // Drop sidebar content below the toolbar separator so it aligns with tab bars
+        if sidebarTopToToolbarSep == nil, let sidebarContent = sidebarContentView, let toolbarSep = toolbarSeparator {
+            sidebarTopToToolbarSep = sidebarContent.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor)
+        }
+        sidebarTopToTitlebar?.isActive = false
+        sidebarTopToToolbarSep?.isActive = true
+
         // Traffic lights are hidden in fullscreen — pull sidebar toggle to the left edge and shrink 10%
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = DesignTokens.Motion.normal
@@ -2577,6 +2638,11 @@ extension AppDelegate: NSWindowDelegate {
 
     public func windowDidExitFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = false
+
+        // Restore sidebar to fill titlebar area
+        sidebarTopToToolbarSep?.isActive = false
+        sidebarTopToTitlebar?.isActive = true
+
         // Traffic lights reappear — restore gap and size
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = DesignTokens.Motion.normal
