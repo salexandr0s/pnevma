@@ -1923,11 +1923,12 @@ async fn validate_task_dependencies(
     Ok(())
 }
 
-async fn refresh_dependency_states(
+async fn refresh_dependency_states_inner(
     db: &Db,
     project_id: Uuid,
     emitter: Option<&Arc<dyn EventEmitter>>,
     state: &AppState,
+    extra_completed: &[Uuid],
 ) -> Result<(), String> {
     let mut rows = db
         .list_tasks(&project_id.to_string())
@@ -1955,6 +1956,7 @@ async fn refresh_dependency_states(
         .iter()
         .filter(|row| row.status == "Done")
         .filter_map(|row| Uuid::parse_str(&row.id).ok())
+        .chain(extra_completed.iter().copied())
         .collect::<HashSet<_>>();
 
     for row in rows {
@@ -1964,6 +1966,10 @@ async fn refresh_dependency_states(
         let mut task = task_row_to_contract(&row)?;
         let prev = task.status.clone();
         task.refresh_blocked_status(&completed);
+        if prev == TaskStatus::Blocked && task.status == TaskStatus::Planned {
+            task.status = TaskStatus::Ready;
+            task.updated_at = Utc::now();
+        }
         if task.status == prev {
             continue;
         }
@@ -1989,6 +1995,37 @@ async fn refresh_dependency_states(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn refresh_dependency_states(
+    db: &Db,
+    project_id: Uuid,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+    state: &AppState,
+) -> Result<(), String> {
+    refresh_dependency_states_with_extra_completed(db, project_id, emitter, state, &HashSet::new())
+        .await
+}
+
+pub(crate) async fn refresh_dependency_states_with_extra_completed(
+    db: &Db,
+    project_id: Uuid,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+    state: &AppState,
+    extra_completed: &HashSet<Uuid>,
+) -> Result<(), String> {
+    let extra = extra_completed.iter().copied().collect::<Vec<_>>();
+    refresh_dependency_states_inner(db, project_id, emitter, state, &extra).await
+}
+
+pub(crate) async fn refresh_dependency_states_after_completion(
+    db: &Db,
+    project_id: Uuid,
+    completed_task_id: Uuid,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+    state: &AppState,
+) -> Result<(), String> {
+    refresh_dependency_states_inner(db, project_id, emitter, state, &[completed_task_id]).await
 }
 
 fn required_arg(args: &HashMap<String, String>, key: &str) -> Result<String, String> {
@@ -2233,24 +2270,72 @@ pub(crate) async fn create_notification_row(
         .to_string();
     let id = Uuid::new_v4().to_string();
     let created_at = Utc::now();
-    db.create_notification(&NotificationRow {
-        id: id.clone(),
+    let mut task_id_str = task_id.map(|value| value.to_string());
+    let mut session_id_str = session_id.map(|value| value.to_string());
+    let row_id = id.clone();
+
+    let build_row = |task_id: &Option<String>, session_id: &Option<String>| NotificationRow {
+        id: row_id.clone(),
         project_id: project_id.to_string(),
-        task_id: task_id.map(|value| value.to_string()),
-        session_id: session_id.map(|value| value.to_string()),
+        task_id: task_id.clone(),
+        session_id: session_id.clone(),
         title: safe_title.clone(),
         body: safe_body.clone(),
         level: normalized_level.clone(),
         unread: true,
         created_at,
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    };
+
+    let mut persist_error = None;
+    for attempt in 0..3 {
+        match db
+            .create_notification(&build_row(&task_id_str, &session_id_str))
+            .await
+        {
+            Ok(()) => {
+                persist_error = None;
+                break;
+            }
+            Err(error) => {
+                let err_text = error.to_string();
+                if attempt < 2
+                    && (err_text.contains("database is locked")
+                        || err_text.contains("database busy"))
+                {
+                    tokio::time::sleep(Duration::from_millis((attempt + 1) as u64 * 50)).await;
+                    continue;
+                }
+                persist_error = Some(err_text);
+                break;
+            }
+        }
+    }
+
+    if let Some(error) = persist_error.take() {
+        let can_drop_links = task_id_str.is_some() || session_id_str.is_some();
+        if can_drop_links && (error.contains("FOREIGN KEY") || error.contains("constraint failed"))
+        {
+            tracing::warn!(
+                project_id = %project_id,
+                task_id = ?task_id_str,
+                session_id = ?session_id_str,
+                %error,
+                "notification insert failed with linked ids; retrying without linkage"
+            );
+            task_id_str = None;
+            session_id_str = None;
+            db.create_notification(&build_row(&task_id_str, &session_id_str))
+                .await
+                .map_err(|e| e.to_string())?;
+        } else {
+            return Err(error);
+        }
+    }
 
     let out = NotificationView {
         id: id.clone(),
-        task_id: task_id.map(|value| value.to_string()),
-        session_id: session_id.map(|value| value.to_string()),
+        task_id: task_id_str.clone(),
+        session_id: session_id_str.clone(),
         title: safe_title,
         body: safe_body,
         level: normalized_level.clone(),
@@ -2274,6 +2359,99 @@ pub(crate) async fn create_notification_row(
     .await;
     emitter.emit("notification_created", json!(out.clone()));
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn notify_task_status_transition(
+    db: &Db,
+    emitter: &Arc<dyn EventEmitter>,
+    project_id: Uuid,
+    task_id: Uuid,
+    task_title: &str,
+    from: &TaskStatus,
+    to: &TaskStatus,
+    detail: Option<&str>,
+) {
+    if from == to {
+        return;
+    }
+
+    let (title, body, level) = match to {
+        TaskStatus::Review => (
+            "Task ready for review",
+            format!("{task_title} is ready for review."),
+            "info",
+        ),
+        TaskStatus::Failed => (
+            "Task failed",
+            detail
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| format!("{task_title} failed: {value}"))
+                .unwrap_or_else(|| format!("{task_title} failed.")),
+            "warning",
+        ),
+        _ => return,
+    };
+
+    let _ = create_notification_row(
+        db,
+        emitter,
+        project_id,
+        Some(task_id),
+        None,
+        title,
+        &body,
+        Some(level),
+        "task_status",
+        &[],
+    )
+    .await;
+}
+
+pub(crate) async fn notify_merge_queue_blocked(
+    db: &Db,
+    emitter: &Arc<dyn EventEmitter>,
+    project_id: Uuid,
+    task_id: Uuid,
+    task_title: &str,
+    reason: &str,
+) {
+    let _ = create_notification_row(
+        db,
+        emitter,
+        project_id,
+        Some(task_id),
+        None,
+        "Merge blocked",
+        &format!("{task_title} could not be merged: {reason}"),
+        Some("warning"),
+        "merge_queue",
+        &[],
+    )
+    .await;
+}
+
+pub(crate) async fn notify_merge_completed(
+    db: &Db,
+    emitter: &Arc<dyn EventEmitter>,
+    project_id: Uuid,
+    task_id: Uuid,
+    task_title: &str,
+    target_branch: &str,
+) {
+    let _ = create_notification_row(
+        db,
+        emitter,
+        project_id,
+        Some(task_id),
+        None,
+        "Merge completed",
+        &format!("{task_title} merged into {target_branch}."),
+        Some("info"),
+        "merge_queue",
+        &[],
+    )
+    .await;
 }
 
 async fn store_keychain_secret(service: &str, account: &str, value: &str) -> Result<(), String> {
@@ -2333,7 +2511,7 @@ pub(crate) async fn resolve_secret_env(
     Ok((env, values))
 }
 
-async fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = TokioCommand::new("git")
         .args(args)
         .current_dir(dir)
@@ -2344,6 +2522,177 @@ async fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+async fn git_output_with_config(
+    dir: &Path,
+    config: &[(&str, &str)],
+    args: &[&str],
+) -> Result<String, String> {
+    let mut cmd = TokioCommand::new("git");
+    for (key, value) in config {
+        cmd.arg("-c").arg(format!("{key}={value}"));
+    }
+    let out = cmd
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+async fn git_path_is_tracked(dir: &Path, rel_path: &str) -> Result<bool, String> {
+    let out = TokioCommand::new("git")
+        .args(["ls-files", "--error-unmatch", "--", rel_path])
+        .current_dir(dir)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("did not match any file") {
+        return Ok(false);
+    }
+    Ok(false)
+}
+
+async fn restore_or_remove_git_path(dir: &Path, rel_path: &str) -> Result<(), String> {
+    if git_path_is_tracked(dir, rel_path).await? {
+        let _ = git_output(
+            dir,
+            &[
+                "restore",
+                "--staged",
+                "--worktree",
+                "--source=HEAD",
+                "--",
+                rel_path,
+            ],
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let abs_path = dir.join(rel_path);
+    match tokio::fs::metadata(&abs_path).await {
+        Ok(metadata) if metadata.is_dir() => {
+            tokio::fs::remove_dir_all(&abs_path)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(_) => {
+            tokio::fs::remove_file(&abs_path)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+    Ok(())
+}
+
+async fn git_clean_paths(dir: &Path, rel_paths: &[&str]) -> Result<(), String> {
+    if rel_paths.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec!["clean", "-fd", "--"];
+    args.extend(rel_paths.iter().copied());
+    let _ = git_output(dir, &args).await?;
+    Ok(())
+}
+
+pub(crate) async fn branch_ahead_count(dir: &Path, target_branch: &str) -> Result<u64, String> {
+    let raw = git_output(
+        dir,
+        &["rev-list", "--count", &format!("{target_branch}..HEAD")],
+    )
+    .await?;
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|e| format!("parse branch ahead count: {e}"))
+}
+
+pub(crate) async fn git_ref_exists(dir: &Path, ref_name: &str) -> Result<bool, String> {
+    let out = TokioCommand::new("git")
+        .args(["show-ref", "--verify", "--quiet", ref_name])
+        .current_dir(dir)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(out.status.success())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TaskCommitResult {
+    pub commit_sha: String,
+    pub commit_message: String,
+}
+
+pub(crate) async fn prepare_task_branch_for_review(
+    worktree_path: &Path,
+    task_id: Uuid,
+    task_title: &str,
+    target_branch: &str,
+) -> Result<TaskCommitResult, String> {
+    for rel_path in [
+        "CLAUDE.md",
+        ".pnevma/claude-context-state.json",
+        ".pnevma/task-context.md",
+        ".pnevma/task-context.manifest.json",
+        ".pnevma/data",
+        ".pnevma/run",
+    ] {
+        restore_or_remove_git_path(worktree_path, rel_path).await?;
+    }
+    git_clean_paths(worktree_path, &["CLAUDE.md", ".pnevma"]).await?;
+
+    let pending = git_output(worktree_path, &["status", "--porcelain"]).await?;
+    let sanitized_title = task_title
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("task");
+    let short_task_id = task_id.to_string();
+    let commit_message = format!("task({}): {sanitized_title}", &short_task_id[..8]);
+
+    if !pending.trim().is_empty() {
+        let _ = git_output(worktree_path, &["add", "-A", "--", "."]).await?;
+        let staged = git_output(worktree_path, &["status", "--porcelain"]).await?;
+        if !staged.trim().is_empty() {
+            git_output_with_config(
+                worktree_path,
+                &[("user.name", "Pnevma"), ("user.email", "pnevma@localhost")],
+                &["commit", "--no-gpg-sign", "-m", &commit_message],
+            )
+            .await?;
+        }
+    }
+
+    let remaining = git_output(worktree_path, &["status", "--porcelain"]).await?;
+    if !remaining.trim().is_empty() {
+        return Err("agent left uncommitted changes after sanitize/commit".to_string());
+    }
+
+    let ahead_count = branch_ahead_count(worktree_path, target_branch).await?;
+    if ahead_count == 0 {
+        return Err("agent produced no mergeable repository changes".to_string());
+    }
+
+    let commit_sha = git_output(worktree_path, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
+    Ok(TaskCommitResult {
+        commit_sha,
+        commit_message,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2603,13 +2952,17 @@ pub(crate) async fn generate_review_pack(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "task worktree missing".to_string())?;
-    let worktree_path = PathBuf::from(&worktree.path);
 
+    let branch_range = format!("{target_branch}...{branch}");
     let diff = redact_text(
-        &git_output(&worktree_path, &["diff", "--", "."]).await?,
+        &git_output(project_path, &["diff", &branch_range, "--", "."]).await?,
         secrets,
     );
-    let changed_files_raw = git_output(&worktree_path, &["diff", "--name-only", "--", "."]).await?;
+    let changed_files_raw = git_output(
+        project_path,
+        &["diff", "--name-only", &branch_range, "--", "."],
+    )
+    .await?;
     let changed_files = changed_files_raw
         .lines()
         .map(str::trim)
@@ -2746,9 +3099,79 @@ pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
 }
 
 /// Check if all tasks in a workflow instance are terminal and update the instance status.
-pub(crate) async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str) {
+async fn update_workflow_instance_status_and_notify(
+    db: &pnevma_db::Db,
+    workflow_id: &str,
+    workflow_name: &str,
+    project_id: Uuid,
+    old_status: &str,
+    new_status: &str,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+) {
+    if old_status == new_status {
+        return;
+    }
+
+    let _ = db
+        .update_workflow_instance_status(workflow_id, new_status)
+        .await;
+    append_event(
+        db,
+        project_id,
+        None,
+        None,
+        "workflow",
+        "WorkflowStatusChanged",
+        json!({
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "from": old_status,
+            "to": new_status
+        }),
+    )
+    .await;
+
+    if let Some(emitter) = emitter {
+        emitter.emit(
+            "workflow_updated",
+            json!({
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name,
+                "status": new_status
+            }),
+        );
+        let (title, level) = match new_status {
+            "Completed" => ("Workflow completed", "info"),
+            "Failed" => ("Workflow failed", "warning"),
+            _ => return,
+        };
+        let _ = create_notification_row(
+            db,
+            emitter,
+            project_id,
+            None,
+            None,
+            title,
+            &format!("{workflow_name} is now {new_status}."),
+            Some(level),
+            "workflow",
+            &[],
+        )
+        .await;
+    }
+}
+
+pub(crate) async fn check_workflow_completion(
+    db: &pnevma_db::Db,
+    task_id: &str,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+) {
     let wt = match db.find_workflow_by_task(task_id).await {
         Ok(Some(wt)) => wt,
+        _ => return,
+    };
+    let instance = match db.get_workflow_instance(&wt.workflow_id).await {
+        Ok(Some(instance)) => instance,
         _ => return,
     };
 
@@ -2759,6 +3182,8 @@ pub(crate) async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str)
 
     let mut all_terminal = true;
     let mut any_failed = false;
+    let mut any_active = false;
+    let mut only_failed_or_blocked = true;
 
     for wt_row in &tasks {
         match db.get_task(&wt_row.task_id).await {
@@ -2768,21 +3193,49 @@ pub(crate) async fn check_workflow_completion(db: &pnevma_db::Db, task_id: &str)
                     any_failed = true;
                 }
                 "Looped" => {} // terminal but not a failure — loop iteration was triggered
+                "Blocked" => {
+                    all_terminal = false;
+                }
+                "Ready" | "InProgress" | "Review" => {
+                    all_terminal = false;
+                    any_active = true;
+                    only_failed_or_blocked = false;
+                }
                 _ => {
                     all_terminal = false;
+                    only_failed_or_blocked = false;
                 }
             },
             _ => {
                 all_terminal = false;
+                only_failed_or_blocked = false;
             }
         }
     }
 
     if all_terminal {
         let new_status = if any_failed { "Failed" } else { "Completed" };
-        let _ = db
-            .update_workflow_instance_status(&wt.workflow_id, new_status)
-            .await;
+        update_workflow_instance_status_and_notify(
+            db,
+            &wt.workflow_id,
+            &instance.workflow_name,
+            Uuid::parse_str(&instance.project_id).unwrap_or_default(),
+            &instance.status,
+            new_status,
+            emitter,
+        )
+        .await;
+    } else if any_failed && !any_active && only_failed_or_blocked {
+        update_workflow_instance_status_and_notify(
+            db,
+            &wt.workflow_id,
+            &instance.workflow_name,
+            Uuid::parse_str(&instance.project_id).unwrap_or_default(),
+            &instance.status,
+            "Failed",
+            emitter,
+        )
+        .await;
     }
 }
 
@@ -3269,13 +3722,14 @@ pub(crate) fn load_workflow_hooks(project_path: &Path) -> WorkflowHooks {
     }
 }
 
-pub(crate) async fn cleanup_task_worktree(
+async fn cleanup_task_worktree_inner(
     db: &Db,
     git: &Arc<GitService>,
     project_id: Uuid,
     task_id: Uuid,
     emitter: Option<&Arc<dyn EventEmitter>>,
     project_path: Option<&Path>,
+    delete_branch: bool,
 ) -> Result<(), String> {
     let task_id_str = task_id.to_string();
     if let Some(worktree) = db
@@ -3302,10 +3756,79 @@ pub(crate) async fn cleanup_task_worktree(
             }
         }
 
-        if let Err(err) = git
-            .cleanup_persisted_worktree(task_id, &worktree.path, Some(&worktree.branch), false)
+        let mut cleanup_error = git
+            .cleanup_persisted_worktree(
+                task_id,
+                &worktree.path,
+                Some(&worktree.branch),
+                delete_branch,
+            )
             .await
-        {
+            .err()
+            .map(|err| err.to_string());
+
+        let mut branch_removed = false;
+        if delete_branch {
+            if let Some(pp) = project_path {
+                let _ = git_output(pp, &["worktree", "prune", "--expire", "now"]).await;
+                let branch_ref = format!("refs/heads/{}", worktree.branch);
+                let branch_exists = match git_ref_exists(pp, &branch_ref).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        cleanup_error = Some(match cleanup_error.take() {
+                            Some(existing) => {
+                                format!("{existing}; branch existence check failed: {err}")
+                            }
+                            None => format!("branch existence check failed: {err}"),
+                        });
+                        true
+                    }
+                };
+                if branch_exists {
+                    match git_output(pp, &["branch", "-D", &worktree.branch]).await {
+                        Ok(_) => branch_removed = true,
+                        Err(err) => {
+                            match git_output(
+                                pp,
+                                &[
+                                    "update-ref",
+                                    "-d",
+                                    &format!("refs/heads/{}", worktree.branch),
+                                ],
+                            )
+                            .await
+                            {
+                                Ok(_) => branch_removed = true,
+                                Err(update_ref_err) => {
+                                    cleanup_error = Some(match cleanup_error {
+                                        Some(existing) => format!(
+                                            "{existing}; branch cleanup failed: {err}; update-ref cleanup failed: {update_ref_err}"
+                                        ),
+                                        None => format!(
+                                            "branch cleanup failed: {err}; update-ref cleanup failed: {update_ref_err}"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    branch_removed = true;
+                }
+
+                if branch_removed && git_ref_exists(pp, &branch_ref).await.unwrap_or(true) {
+                    branch_removed = false;
+                    cleanup_error = Some(match cleanup_error {
+                        Some(existing) => {
+                            format!("{existing}; branch still exists after cleanup")
+                        }
+                        None => "branch still exists after cleanup".to_string(),
+                    });
+                }
+            }
+        }
+
+        if let Some(err) = cleanup_error.as_ref() {
             append_event(
                 db,
                 project_id,
@@ -3313,7 +3836,7 @@ pub(crate) async fn cleanup_task_worktree(
                 None,
                 "git",
                 "WorktreeCleanupFailed",
-                json!({"task_id": task_id_str, "error": err.to_string(), "path": worktree.path}),
+                json!({"task_id": task_id_str, "error": err, "path": worktree.path}),
             )
             .await;
         } else {
@@ -3324,13 +3847,35 @@ pub(crate) async fn cleanup_task_worktree(
                 None,
                 "git",
                 "WorktreeRemoved",
-                json!({"task_id": task_id_str, "path": worktree.path}),
+                json!({
+                    "task_id": task_id_str,
+                    "path": worktree.path,
+                    "branch": worktree.branch,
+                    "delete_branch": delete_branch
+                }),
             )
             .await;
+            if branch_removed {
+                append_event(
+                    db,
+                    project_id,
+                    Some(task_id),
+                    None,
+                    "git",
+                    "BranchRemoved",
+                    json!({"task_id": task_id_str, "branch": worktree.branch}),
+                )
+                .await;
+            }
         }
         db.remove_worktree_by_task(&task_id_str)
             .await
             .map_err(|e| e.to_string())?;
+        if delete_branch {
+            if let Some(err) = cleanup_error {
+                return Err(err);
+            }
+        }
     }
 
     if let Some(mut row) = db.get_task(&task_id_str).await.map_err(|e| e.to_string())? {
@@ -3353,6 +3898,28 @@ pub(crate) async fn cleanup_task_worktree(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn cleanup_task_worktree(
+    db: &Db,
+    git: &Arc<GitService>,
+    project_id: Uuid,
+    task_id: Uuid,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+    project_path: Option<&Path>,
+) -> Result<(), String> {
+    cleanup_task_worktree_inner(db, git, project_id, task_id, emitter, project_path, false).await
+}
+
+pub(crate) async fn cleanup_task_worktree_and_branch(
+    db: &Db,
+    git: &Arc<GitService>,
+    project_id: Uuid,
+    task_id: Uuid,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+    project_path: Option<&Path>,
+) -> Result<(), String> {
+    cleanup_task_worktree_inner(db, git, project_id, task_id, emitter, project_path, true).await
 }
 
 pub(crate) async fn append_event(
@@ -3814,6 +4381,45 @@ fn spawn_session_bridge(
 #[cfg(test)]
 mod redaction_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    struct RecordingEmitter {
+        events: Mutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    impl RecordingEmitter {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl EventEmitter for RecordingEmitter {
+        fn emit(&self, event: &str, payload: serde_json::Value) {
+            self.events
+                .lock()
+                .expect("recording emitter lock poisoned")
+                .push((event.to_string(), payload));
+        }
+    }
+
+    async fn open_test_db() -> Db {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory sqlite");
+        let db = Db::from_pool_and_path(pool, PathBuf::from(":memory:"));
+        db.migrate().await.expect("migrate");
+        db
+    }
+
+    async fn git(dir: &Path, args: &[&str]) -> String {
+        git_output(dir, args).await.expect("git command")
+    }
 
     // ── redact_text ───────────────────────────────────────────────────────────
 
@@ -4219,5 +4825,152 @@ mod redaction_tests {
         assert!(payload.get("project_id").is_none());
         assert!(payload.get("branch").is_none());
         assert!(payload.get("worktree_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn prepare_task_branch_for_review_commits_changes_and_removes_transients() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo = tempdir.path();
+        tokio::fs::write(repo.join("README.md"), "# test\n")
+            .await
+            .expect("seed readme");
+        git(repo, &["init", "-b", "main"]).await;
+        git(repo, &["add", "README.md"]).await;
+        git_output_with_config(
+            repo,
+            &[
+                ("user.name", "Tester"),
+                ("user.email", "tester@example.com"),
+            ],
+            &["commit", "-m", "initial"],
+        )
+        .await
+        .expect("initial commit");
+        git(repo, &["checkout", "-b", "pnevma/test-task"]).await;
+
+        tokio::fs::write(repo.join("README.md"), "# updated\n")
+            .await
+            .expect("update readme");
+        tokio::fs::create_dir_all(repo.join(".pnevma/data"))
+            .await
+            .expect("create pnevma data");
+        tokio::fs::write(repo.join(".pnevma/task-context.md"), "context")
+            .await
+            .expect("write task context");
+        tokio::fs::write(repo.join("CLAUDE.md"), "generated context")
+            .await
+            .expect("write claude");
+
+        let task_id = Uuid::new_v4();
+        let result = prepare_task_branch_for_review(repo, task_id, "Update readme", "main")
+            .await
+            .expect("prepare branch");
+
+        assert!(
+            !repo.join("CLAUDE.md").exists(),
+            "generated CLAUDE.md should be removed"
+        );
+        assert!(
+            !repo.join(".pnevma/task-context.md").exists(),
+            "task context should be removed from review branch"
+        );
+        assert!(
+            !repo.join(".pnevma/data").exists(),
+            "pnevma runtime data should be removed from review branch"
+        );
+        assert!(
+            git(repo, &["status", "--porcelain"])
+                .await
+                .trim()
+                .is_empty(),
+            "review branch should be clean after auto-commit"
+        );
+        assert_eq!(
+            git(repo, &["rev-list", "--count", "main..HEAD"])
+                .await
+                .trim(),
+            "1"
+        );
+        assert!(result
+            .commit_message
+            .starts_with(&format!("task({}):", &task_id.to_string()[..8])));
+        assert!(
+            !result.commit_sha.trim().is_empty(),
+            "auto-commit should produce a commit sha"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_completion_creates_terminal_notification() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(&project_id.to_string(), "test", "/tmp/test", None, None)
+            .await
+            .expect("seed project");
+
+        let workflow_id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db.create_workflow_instance(&WorkflowInstanceRow {
+            id: workflow_id.clone(),
+            project_id: project_id.to_string(),
+            workflow_name: "release".to_string(),
+            description: Some("Release workflow".to_string()),
+            status: "Running".to_string(),
+            created_at: now,
+            updated_at: now,
+            params_json: None,
+            stage_results_json: None,
+            expanded_steps_json: None,
+        })
+        .await
+        .expect("create workflow instance");
+
+        let task_id = Uuid::new_v4().to_string();
+        db.create_task(&TaskRow {
+            id: task_id.clone(),
+            project_id: project_id.to_string(),
+            title: "Ship release".to_string(),
+            goal: "merge".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "medium".to_string(),
+            status: "Done".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("create task");
+        db.add_workflow_task(&workflow_id, 0, 0, &task_id)
+            .await
+            .expect("link task");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(RecordingEmitter::new());
+        check_workflow_completion(&db, &task_id, Some(&emitter)).await;
+
+        let instance = db
+            .get_workflow_instance(&workflow_id)
+            .await
+            .expect("workflow lookup")
+            .expect("workflow exists");
+        assert_eq!(instance.status, "Completed");
+
+        let notifications = db
+            .list_notifications(&project_id.to_string(), false)
+            .await
+            .expect("list notifications");
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].title, "Workflow completed");
     }
 }

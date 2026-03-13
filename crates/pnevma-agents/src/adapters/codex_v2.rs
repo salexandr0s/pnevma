@@ -1,7 +1,6 @@
 use crate::error::AgentError;
 use crate::model::{
-    AgentAdapter, AgentConfig, AgentEvent, AgentHandle, AgentStatus, CostRecord, DynamicToolDef,
-    TaskPayload,
+    AgentAdapter, AgentConfig, AgentEvent, AgentHandle, AgentStatus, CostRecord, TaskPayload,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,6 +21,123 @@ struct JsonRpcRequest {
     method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<serde_json::Value>,
+}
+
+const RPC_INITIALIZE: &str = "initialize";
+const RPC_INITIALIZED: &str = "initialized";
+const RPC_THREAD_START: &str = "thread/start";
+const RPC_TURN_START: &str = "turn/start";
+const RPC_TURN_INTERRUPT: &str = "turn/interrupt";
+const RPC_THREAD_ARCHIVE: &str = "thread/archive";
+
+fn build_rpc_request(id: u64, method: &str, params: Option<serde_json::Value>) -> JsonRpcRequest {
+    JsonRpcRequest {
+        jsonrpc: "2.0",
+        id,
+        method: method.to_string(),
+        params,
+    }
+}
+
+fn build_initialize_params() -> serde_json::Value {
+    serde_json::json!({
+        "clientInfo": { "name": "pnevma", "version": env!("CARGO_PKG_VERSION") },
+        "capabilities": {}
+    })
+}
+
+fn build_thread_start_params(config: &AgentConfig) -> serde_json::Value {
+    let sandbox = if config.auto_approve {
+        "danger-full-access"
+    } else {
+        "workspace-write"
+    };
+
+    serde_json::json!({
+        "cwd": config.working_dir,
+        "approvalPolicy": "never",
+        "sandbox": sandbox,
+        "experimentalRawEvents": false,
+        "persistExtendedHistory": false,
+    })
+}
+
+fn build_turn_start_params(thread_id: &str, prompt: String) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "input": [
+            {
+                "type": "text",
+                "text": prompt,
+                "text_elements": [],
+            }
+        ],
+    })
+}
+
+fn build_thread_archive_params(thread_id: &str) -> serde_json::Value {
+    serde_json::json!({ "threadId": thread_id })
+}
+
+fn build_turn_interrupt_params(thread_id: &str, turn_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "turnId": turn_id,
+    })
+}
+
+fn extract_thread_id(result: &serde_json::Value) -> Option<String> {
+    result
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(|id| id.as_str())
+        .map(|id| id.to_string())
+        .or_else(|| {
+            result
+                .get("thread_id")
+                .and_then(|id| id.as_str())
+                .map(|id| id.to_string())
+        })
+}
+
+fn extract_turn_id(result: &serde_json::Value) -> Option<String> {
+    result
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(|id| id.as_str())
+        .map(|id| id.to_string())
+        .or_else(|| {
+            result
+                .get("turn_id")
+                .and_then(|id| id.as_str())
+                .map(|id| id.to_string())
+        })
+}
+
+fn turn_status_string(turn: &serde_json::Value) -> Option<String> {
+    match turn.get("status")? {
+        serde_json::Value::String(status) => Some(status.clone()),
+        serde_json::Value::Object(status) => status
+            .get("type")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        _ => None,
+    }
+}
+
+fn serialize_rpc_notification_line(
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> Result<Vec<u8>, AgentError> {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params.unwrap_or(serde_json::Value::Null),
+    });
+    let mut line =
+        serde_json::to_string(&request).map_err(|e| AgentError::Protocol(e.to_string()))?;
+    line.push('\n');
+    Ok(line.into_bytes())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -124,12 +240,7 @@ impl CodexV2Adapter {
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, AgentError> {
         let id = next_id.fetch_add(1, Ordering::Relaxed);
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0",
-            id,
-            method: method.to_string(),
-            params,
-        };
+        let request = build_rpc_request(id, method, params);
         let mut line =
             serde_json::to_string(&request).map_err(|e| AgentError::Protocol(e.to_string()))?;
         line.push('\n');
@@ -155,6 +266,17 @@ impl CodexV2Adapter {
         }
 
         Ok(response.result.unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn rpc_notify(
+        stdin_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), AgentError> {
+        stdin_tx
+            .send(serialize_rpc_notification_line(method, params)?)
+            .await
+            .map_err(|_| AgentError::Protocol("stdin channel closed".into()))
     }
 }
 
@@ -244,47 +366,34 @@ impl AgentAdapter for CodexV2Adapter {
             stdin_task,
         };
 
-        // Build tool list for thread.start
-        let tools_param: Vec<serde_json::Value> = config
-            .dynamic_tools
-            .iter()
-            .map(|t: &DynamicToolDef| {
-                serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters_schema,
-                })
-            })
-            .collect();
-
-        let mut params = serde_json::json!({});
-        if !tools_param.is_empty() {
-            params["tools"] = serde_json::Value::Array(tools_param);
-        }
-        if let Some(ref tid) = config.thread_id {
-            params["thread_id"] = serde_json::Value::String(tid.clone());
-        }
+        let initialize_result = Self::rpc_call(
+            &stdin_tx,
+            &conn.next_id,
+            &pending,
+            RPC_INITIALIZE,
+            Some(build_initialize_params()),
+        )
+        .await?;
+        let _ = initialize_result;
+        Self::rpc_notify(&stdin_tx, RPC_INITIALIZED, None).await?;
 
         let result = Self::rpc_call(
             &stdin_tx,
             &conn.next_id,
             &pending,
-            "thread.start",
-            Some(params),
+            RPC_THREAD_START,
+            Some(build_thread_start_params(&config)),
         )
         .await?;
-        let thread_id = result
-            .get("thread_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let thread_id = extract_thread_id(&result).ok_or_else(|| {
+            AgentError::Protocol("thread/start response missing thread id".into())
+        })?;
 
-        *conn.thread_id.write().await = thread_id.clone();
+        *conn.thread_id.write().await = Some(thread_id.clone());
 
-        if let Some(ref tid) = thread_id {
-            let _ = event_tx.send(AgentEvent::ThreadStarted {
-                thread_id: tid.clone(),
-            });
-        }
+        let _ = event_tx.send(AgentEvent::ThreadStarted {
+            thread_id: thread_id.clone(),
+        });
 
         self.connections.write().await.insert(id, conn);
 
@@ -294,7 +403,7 @@ impl AgentAdapter for CodexV2Adapter {
             id,
             provider: "codex-v2".to_string(),
             task_id: Uuid::nil(),
-            thread_id,
+            thread_id: Some(thread_id),
             turn_id: None,
         })
     }
@@ -335,34 +444,25 @@ impl AgentAdapter for CodexV2Adapter {
                 .join("\n"),
         );
 
-        let params = serde_json::json!({
-            "thread_id": thread_id,
-            "message": prompt,
-        });
-
         let result = Self::rpc_call(
             &conn.stdin_tx,
             &conn.next_id,
             &conn.pending,
-            "turn.start",
-            Some(params),
+            RPC_TURN_START,
+            Some(build_turn_start_params(&thread_id, prompt)),
         )
         .await?;
 
-        let turn_id = result
-            .get("turn_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let turn_id = extract_turn_id(&result)
+            .ok_or_else(|| AgentError::Protocol("turn/start response missing turn id".into()))?;
 
-        *conn.turn_id.write().await = turn_id.clone();
+        *conn.turn_id.write().await = Some(turn_id.clone());
 
-        if let Some(ref tid) = turn_id {
-            if let Some(tx) = self.channels.read().await.get(&handle.id) {
-                let _ = tx.send(AgentEvent::TurnStarted {
-                    turn_id: tid.clone(),
-                    thread_id: thread_id.clone(),
-                });
-            }
+        if let Some(tx) = self.channels.read().await.get(&handle.id) {
+            let _ = tx.send(AgentEvent::TurnStarted {
+                turn_id,
+                thread_id: thread_id.clone(),
+            });
         }
 
         Ok(())
@@ -387,17 +487,12 @@ impl AgentAdapter for CodexV2Adapter {
             .clone()
             .ok_or_else(|| AgentError::Protocol("no turn_id".into()))?;
 
-        let params = serde_json::json!({
-            "thread_id": thread_id,
-            "turn_id": turn_id,
-        });
-
         Self::rpc_call(
             &conn.stdin_tx,
             &conn.next_id,
             &conn.pending,
-            "turn.interrupt",
-            Some(params),
+            RPC_TURN_INTERRUPT,
+            Some(build_turn_interrupt_params(&thread_id, &turn_id)),
         )
         .await?;
 
@@ -411,14 +506,14 @@ impl AgentAdapter for CodexV2Adapter {
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         let mut conns = self.connections.write().await;
         if let Some(conn) = conns.remove(&handle.id) {
-            // Try graceful thread.shutdown
+            // Try graceful thread/archive
             if let Some(tid) = conn.thread_id.read().await.clone() {
                 let _ = Self::rpc_call(
                     &conn.stdin_tx,
                     &conn.next_id,
                     &conn.pending,
-                    "thread.shutdown",
-                    Some(serde_json::json!({"thread_id": tid})),
+                    RPC_THREAD_ARCHIVE,
+                    Some(build_thread_archive_params(&tid)),
                 )
                 .await;
             }
@@ -500,6 +595,83 @@ impl AgentAdapter for CodexV2Adapter {
 fn map_notification(notif: &JsonRpcNotification) -> Option<AgentEvent> {
     let params = notif.params.as_ref()?;
     match notif.method.as_str() {
+        "thread/started" => Some(AgentEvent::ThreadStarted {
+            thread_id: params.get("thread")?.get("id")?.as_str()?.to_string(),
+        }),
+        "turn/started" => Some(AgentEvent::TurnStarted {
+            turn_id: params.get("turn")?.get("id")?.as_str()?.to_string(),
+            thread_id: params.get("threadId")?.as_str()?.to_string(),
+        }),
+        "turn/completed" => {
+            let turn = params.get("turn")?;
+            let turn_id = turn.get("id")?.as_str()?.to_string();
+            let thread_id = params.get("threadId")?.as_str()?.to_string();
+            let finish_reason = turn_status_string(turn).unwrap_or_else(|| "completed".to_string());
+            if finish_reason == "failed" {
+                let error = turn
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| {
+                        turn.get("error")
+                            .and_then(|value| value.get("message"))
+                            .and_then(|value| value.as_str())
+                    })
+                    .unwrap_or("codex turn failed")
+                    .to_string();
+                return Some(AgentEvent::Error(error));
+            }
+            Some(AgentEvent::TurnCompleted {
+                turn_id,
+                thread_id,
+                finish_reason,
+            })
+        }
+        "item/agentMessage/delta" => Some(AgentEvent::OutputChunk(
+            params.get("delta")?.as_str()?.to_string(),
+        )),
+        "thread/tokenUsage/updated" => Some(AgentEvent::UsageUpdate {
+            tokens_in: params
+                .get("tokenUsage")?
+                .get("total")?
+                .get("inputTokens")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            tokens_out: params
+                .get("tokenUsage")?
+                .get("total")?
+                .get("outputTokens")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            cost_usd: 0.0,
+        }),
+        "codex/event/agent_message_delta" | "codex/event/agent_message_content_delta" => Some(
+            AgentEvent::OutputChunk(params.get("msg")?.get("delta")?.as_str()?.to_string()),
+        ),
+        "codex/event/token_count" => Some(AgentEvent::UsageUpdate {
+            tokens_in: params
+                .get("msg")?
+                .get("info")?
+                .get("total_token_usage")?
+                .get("input_tokens")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            tokens_out: params
+                .get("msg")?
+                .get("info")?
+                .get("total_token_usage")?
+                .get("output_tokens")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            cost_usd: 0.0,
+        }),
+        "codex/event/task_complete" => Some(AgentEvent::Complete {
+            summary: params
+                .get("msg")
+                .and_then(|msg| msg.get("last_agent_message"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex v2 run completed")
+                .to_string(),
+        }),
         "turn.completed" => Some(AgentEvent::TurnCompleted {
             turn_id: params.get("turn_id")?.as_str()?.to_string(),
             thread_id: params.get("thread_id")?.as_str()?.to_string(),
@@ -538,10 +710,14 @@ fn map_notification(notif: &JsonRpcNotification) -> Option<AgentEvent> {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0),
         }),
-        "error" => {
-            let msg = params.get("message")?.as_str()?.to_string();
-            Some(AgentEvent::Error(msg))
-        }
+        "error" => Some(AgentEvent::Error(
+            params
+                .get("message")
+                .and_then(|value| value.as_str())
+                .or_else(|| params.get("error").and_then(|value| value.as_str()))
+                .unwrap_or("codex app-server error")
+                .to_string(),
+        )),
         "complete" | "thread.completed" => {
             let summary = params
                 .get("summary")
@@ -582,6 +758,7 @@ fn map_notification(notif: &JsonRpcNotification) -> Option<AgentEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DynamicToolDef;
 
     fn make_config() -> AgentConfig {
         AgentConfig {
@@ -718,5 +895,148 @@ mod tests {
             matches!(event, AgentEvent::DynamicToolCall { ref call_id, ref tool_name, .. }
                 if call_id == "c1" && tool_name == "my_tool")
         );
+    }
+
+    #[test]
+    fn rpc_method_names_match_current_codex_protocol() {
+        assert_eq!(RPC_INITIALIZE, "initialize");
+        assert_eq!(RPC_INITIALIZED, "initialized");
+        assert_eq!(RPC_THREAD_START, "thread/start");
+        assert_eq!(RPC_TURN_START, "turn/start");
+        assert_eq!(RPC_TURN_INTERRUPT, "turn/interrupt");
+        assert_eq!(RPC_THREAD_ARCHIVE, "thread/archive");
+    }
+
+    #[test]
+    fn initialize_handshake_serializes_current_protocol_messages() {
+        let request = build_rpc_request(7, RPC_INITIALIZE, Some(build_initialize_params()));
+        let request_json = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(request_json["method"], RPC_INITIALIZE);
+        assert_eq!(request_json["params"]["clientInfo"]["name"], "pnevma");
+        assert_eq!(
+            request_json["params"]["clientInfo"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            request_json["params"]["capabilities"],
+            serde_json::json!({})
+        );
+
+        let notification = serialize_rpc_notification_line(RPC_INITIALIZED, None)
+            .expect("serialize initialized notification");
+        let notification_json: serde_json::Value =
+            serde_json::from_slice(&notification).expect("parse initialized notification");
+        assert_eq!(notification_json["method"], RPC_INITIALIZED);
+        assert_eq!(notification_json["params"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn thread_start_and_archive_payloads_use_current_protocol_shape() {
+        let mut config = make_config();
+        config.thread_id = Some("thread_existing".to_string());
+        config.dynamic_tools = vec![DynamicToolDef {
+            name: "review_pack".to_string(),
+            description: "Generate a review pack".to_string(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" }
+                }
+            }),
+        }];
+
+        let thread_start = build_thread_start_params(&config);
+        assert_eq!(thread_start["cwd"], "/tmp");
+        assert_eq!(thread_start["approvalPolicy"], "never");
+        assert_eq!(thread_start["sandbox"], "workspace-write");
+        assert_eq!(thread_start["experimentalRawEvents"], false);
+        assert_eq!(thread_start["persistExtendedHistory"], false);
+
+        let archive_request = build_rpc_request(
+            11,
+            RPC_THREAD_ARCHIVE,
+            Some(build_thread_archive_params("thread_existing")),
+        );
+        let archive_json = serde_json::to_value(&archive_request).expect("serialize archive");
+        assert_eq!(archive_json["method"], RPC_THREAD_ARCHIVE);
+        assert_eq!(archive_json["params"]["threadId"], "thread_existing");
+    }
+
+    #[test]
+    fn turn_start_payload_uses_current_protocol_shape() {
+        let params = build_turn_start_params("thread_123", "hello".to_string());
+        assert_eq!(params["threadId"], "thread_123");
+        assert_eq!(params["input"][0]["type"], "text");
+        assert_eq!(params["input"][0]["text"], "hello");
+        assert_eq!(params["input"][0]["text_elements"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn extract_ids_from_current_protocol_responses() {
+        let thread_result = serde_json::json!({
+            "thread": { "id": "thread_123" }
+        });
+        let turn_result = serde_json::json!({
+            "turn": { "id": "turn_456" }
+        });
+
+        assert_eq!(
+            extract_thread_id(&thread_result).as_deref(),
+            Some("thread_123")
+        );
+        assert_eq!(extract_turn_id(&turn_result).as_deref(), Some("turn_456"));
+    }
+
+    #[test]
+    fn map_current_protocol_notifications() {
+        let delta = JsonRpcNotification {
+            method: "item/agentMessage/delta".to_string(),
+            params: Some(serde_json::json!({
+                "threadId": "th_1",
+                "turnId": "tu_1",
+                "itemId": "msg_1",
+                "delta": "OK",
+            })),
+        };
+        assert!(matches!(
+            map_notification(&delta),
+            Some(AgentEvent::OutputChunk(ref chunk)) if chunk == "OK"
+        ));
+
+        let usage = JsonRpcNotification {
+            method: "thread/tokenUsage/updated".to_string(),
+            params: Some(serde_json::json!({
+                "threadId": "th_1",
+                "turnId": "tu_1",
+                "tokenUsage": {
+                    "total": {
+                        "inputTokens": 10,
+                        "outputTokens": 2,
+                        "cachedInputTokens": 0,
+                        "reasoningOutputTokens": 0,
+                        "totalTokens": 12
+                    }
+                }
+            })),
+        };
+        assert!(matches!(
+            map_notification(&usage),
+            Some(AgentEvent::UsageUpdate {
+                tokens_in: 10,
+                tokens_out: 2,
+                ..
+            })
+        ));
+
+        let complete = JsonRpcNotification {
+            method: "codex/event/task_complete".to_string(),
+            params: Some(serde_json::json!({
+                "msg": { "last_agent_message": "done" }
+            })),
+        };
+        assert!(matches!(
+            map_notification(&complete),
+            Some(AgentEvent::Complete { ref summary }) if summary == "done"
+        ));
     }
 }

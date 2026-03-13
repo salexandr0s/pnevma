@@ -75,6 +75,9 @@ impl Db {
         sqlx::query("PRAGMA journal_mode=WAL;")
             .execute(&pool)
             .await?;
+        sqlx::query("PRAGMA busy_timeout = 5000;")
+            .execute(&pool)
+            .await?;
 
         let db = Self {
             pool,
@@ -1318,26 +1321,44 @@ impl Db {
     }
 
     pub async fn upsert_review(&self, row: &ReviewRow) -> Result<(), DbError> {
-        sqlx::query(
+        let updated = sqlx::query(
             r#"
-            INSERT INTO reviews (id, task_id, status, review_pack_path, reviewer_notes, approved_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(task_id) DO UPDATE SET
-              id = excluded.id,
-              status = excluded.status,
-              review_pack_path = excluded.review_pack_path,
-              reviewer_notes = excluded.reviewer_notes,
-              approved_at = excluded.approved_at
+            UPDATE reviews
+            SET
+              id = ?1,
+              status = ?2,
+              review_pack_path = ?3,
+              reviewer_notes = ?4,
+              approved_at = ?5
+            WHERE task_id = ?6
             "#,
         )
         .bind(&row.id)
-        .bind(&row.task_id)
         .bind(&row.status)
         .bind(&row.review_pack_path)
         .bind(&row.reviewer_notes)
         .bind(row.approved_at)
+        .bind(&row.task_id)
         .execute(&self.pool)
         .await?;
+
+        if updated.rows_affected() == 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO reviews (id, task_id, status, review_pack_path, reviewer_notes, approved_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+            )
+            .bind(&row.id)
+            .bind(&row.task_id)
+            .bind(&row.status)
+            .bind(&row.review_pack_path)
+            .bind(&row.reviewer_notes)
+            .bind(row.approved_at)
+            .execute(&self.pool)
+            .await?;
+        }
+
         Ok(())
     }
 
@@ -2668,8 +2689,9 @@ impl Db {
 mod tests {
     use super::*;
     use crate::models::{
-        ContextRuleUsageRow, FeedbackRow, NotificationRow, OnboardingStateRow, RuleRow, SessionRow,
-        TaskRow, TelemetryEventRow, WorkflowInstanceRow, WorktreeRow,
+        AutomationRunRow, ContextRuleUsageRow, CostRow, FeedbackRow, NotificationRow,
+        OnboardingStateRow, ReviewRow, RuleRow, SessionRow, TaskRow, TelemetryEventRow,
+        WorkflowInstanceRow, WorktreeRow,
     };
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -2765,6 +2787,175 @@ mod tests {
         db.delete_task(&task.id).await.expect("delete task");
         let gone = db.get_task(&task.id).await.expect("get deleted task");
         assert!(gone.is_none());
+    }
+
+    #[tokio::test]
+    async fn upsert_review_reuses_existing_task_row_without_unique_constraint() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let task = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id,
+            title: "Review me".to_string(),
+            goal: "Generate review pack".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "medium".to_string(),
+            status: "Review".to_string(),
+            branch: Some("feat/review".to_string()),
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&task).await.expect("create task");
+
+        let first = ReviewRow {
+            id: Uuid::new_v4().to_string(),
+            task_id: task.id.clone(),
+            status: "Ready".to_string(),
+            review_pack_path: "/tmp/review-pack-1.json".to_string(),
+            reviewer_notes: None,
+            approved_at: None,
+        };
+        db.upsert_review(&first).await.expect("insert review");
+
+        let second = ReviewRow {
+            id: Uuid::new_v4().to_string(),
+            task_id: task.id.clone(),
+            status: "Approved".to_string(),
+            review_pack_path: "/tmp/review-pack-2.json".to_string(),
+            reviewer_notes: Some("looks good".to_string()),
+            approved_at: Some(Utc::now()),
+        };
+        db.upsert_review(&second).await.expect("update review");
+
+        let loaded = db
+            .get_review_by_task(&task.id)
+            .await
+            .expect("load review")
+            .expect("review exists");
+        assert_eq!(loaded.id, second.id);
+        assert_eq!(loaded.status, "Approved");
+        assert_eq!(loaded.review_pack_path, "/tmp/review-pack-2.json");
+        assert_eq!(loaded.reviewer_notes.as_deref(), Some("looks good"));
+    }
+
+    #[tokio::test]
+    async fn append_cost_accepts_automation_run_foreign_key() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let task = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            title: "Track cost".to_string(),
+            goal: "Persist usage".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "medium".to_string(),
+            status: "InProgress".to_string(),
+            branch: Some("feat/cost".to_string()),
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&task).await.expect("create task");
+
+        let session = SessionRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "agent".to_string(),
+            r#type: Some("agent".to_string()),
+            status: "running".to_string(),
+            pid: Some(42),
+            cwd: "/tmp".to_string(),
+            command: "claude".to_string(),
+            branch: None,
+            worktree_id: None,
+            started_at: now,
+            last_heartbeat: now,
+        };
+        db.upsert_session(&session).await.expect("create session");
+
+        let run = AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            task_id: task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "manual".to_string(),
+            provider: "claude-code".to_string(),
+            model: None,
+            status: "running".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: None,
+            duration_seconds: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            summary: None,
+            error_message: None,
+            created_at: now,
+        };
+        db.create_automation_run(&run)
+            .await
+            .expect("create automation run");
+
+        let cost = CostRow {
+            id: Uuid::new_v4().to_string(),
+            agent_run_id: Some(run.id.clone()),
+            task_id: task.id.clone(),
+            session_id: session.id.clone(),
+            provider: "claude-code".to_string(),
+            model: None,
+            tokens_in: 12,
+            tokens_out: 34,
+            estimated_usd: 0.56,
+            tracked: true,
+            timestamp: now,
+        };
+        db.append_cost(&cost).await.expect("append cost");
+
+        let loaded = sqlx::query_as::<_, CostRow>(
+            r#"
+            SELECT id, agent_run_id, task_id, session_id, provider, model,
+                   tokens_in, tokens_out, estimated_usd, tracked, timestamp
+            FROM costs
+            WHERE task_id = ?1
+            "#,
+        )
+        .bind(&task.id)
+        .fetch_all(&db.pool)
+        .await
+        .expect("list costs");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].agent_run_id.as_deref(), Some(run.id.as_str()));
+        assert_eq!(loaded[0].estimated_usd, 0.56);
     }
 
     #[tokio::test]

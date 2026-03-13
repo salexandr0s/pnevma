@@ -79,12 +79,16 @@ impl GitService {
             return Err(e);
         }
 
+        let canonical_path = tokio::fs::canonicalize(&path).await.map_err(|e| {
+            GitError::Command(format!("worktree path unavailable after create: {e}"))
+        })?;
+
         // Update placeholder with real data
         let lease = WorktreeLease {
             id: Uuid::new_v4(),
             task_id,
             branch,
-            path: path.to_string_lossy().to_string(),
+            path: canonical_path.to_string_lossy().to_string(),
             started_at: Utc::now(),
             last_active: Utc::now(),
             status: LeaseStatus::Active,
@@ -121,12 +125,21 @@ impl GitService {
     ) -> Result<(), GitError> {
         self.leases.lock().await.remove(&task_id);
 
+        let canonical_repo_root = self
+            .repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.repo_root.clone());
+        let canonical_worktree_root = self
+            .worktree_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.worktree_root.clone());
+
         // Validate path stays within expected directories
         let canonical_path = std::path::Path::new(path)
             .canonicalize()
             .map_err(|e| GitError::Command(format!("failed to canonicalize worktree path: {e}")))?;
-        let valid = canonical_path.starts_with(&self.worktree_root)
-            || canonical_path.starts_with(&self.repo_root);
+        let valid = canonical_path.starts_with(&canonical_worktree_root)
+            || canonical_path.starts_with(&canonical_repo_root);
         if !valid {
             return Err(GitError::Command(format!(
                 "worktree path {} is outside repo and worktree directories",
@@ -143,9 +156,18 @@ impl GitService {
                 return Err(err);
             }
         }
+        let _ = self.git(["worktree", "prune", "--expire", "now"]).await;
         if delete_branch {
             if let Some(branch) = branch {
-                self.git(["branch", "-D", branch]).await?;
+                if let Err(err) = self.git(["branch", "-D", branch]).await {
+                    self.git(["update-ref", "-d", &format!("refs/heads/{branch}")])
+                        .await
+                        .map_err(|fallback_err| {
+                            GitError::Command(format!(
+                                "{err}; update-ref cleanup failed: {fallback_err}"
+                            ))
+                        })?;
+                }
             }
         }
         Ok(())

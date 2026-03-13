@@ -758,7 +758,8 @@ pub async fn copy_workflow_to_global(id: String, state: &AppState) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event_emitter::NullEmitter;
+    use crate::commands::tasks::merge_queue_execute;
+    use crate::event_emitter::{EventEmitter, NullEmitter};
     use crate::state::{AppState, ProjectContext};
     use pnevma_agents::{AdapterRegistry, DispatchPool};
     use pnevma_core::config::{
@@ -766,13 +767,31 @@ mod tests {
         RedactionSection, RetentionSection,
     };
     use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection, TrackerSection};
-    use pnevma_db::Db;
+    use pnevma_db::{Db, MergeQueueRow, WorktreeRow};
     use pnevma_git::GitService;
     use pnevma_session::SessionSupervisor;
     use sqlx::sqlite::SqlitePoolOptions;
+    use std::path::Path;
+    use std::process::Command;
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use uuid::Uuid;
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git command");
+        if !out.status.success() {
+            panic!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
 
     async fn open_test_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -1184,6 +1203,220 @@ mod tests {
         let statuses: Vec<&str> = detail.steps.iter().map(|s| s.status.as_str()).collect();
         assert!(statuses.contains(&"Ready"));
         assert!(statuses.contains(&"Blocked"));
+    }
+
+    #[tokio::test]
+    async fn workflow_instance_fails_when_upstream_failed_and_only_blocked_dependents_remain() {
+        let (state, _pid, db) = make_state_with_project().await;
+
+        let yaml = "name: failing-chain\ndescription: Failure path\nsteps:\n  - title: Step 1\n    goal: fail first\n    priority: medium\n  - title: Step 2\n    goal: waits on step 1\n    priority: medium\n    depends_on: [0]\n";
+        create_workflow(
+            CreateWorkflowInput {
+                name: "failing-chain".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let dispatched = dispatch_workflow(
+            DispatchWorkflowInput {
+                workflow_name: "failing-chain".to_string(),
+                params: None,
+            },
+            &emitter,
+            &state,
+        )
+        .await
+        .expect("dispatch");
+
+        let first_task_id = dispatched.task_ids.first().expect("first task id").clone();
+        let mut first_task = db
+            .get_task(&first_task_id)
+            .await
+            .expect("task lookup")
+            .expect("task exists");
+        first_task.status = "Failed".to_string();
+        first_task.updated_at = Utc::now();
+        db.update_task(&first_task)
+            .await
+            .expect("update failed task");
+
+        crate::commands::check_workflow_completion(&db, &first_task_id, None).await;
+
+        let instance = db
+            .get_workflow_instance(&dispatched.id)
+            .await
+            .expect("workflow instance lookup")
+            .expect("workflow instance exists");
+        assert_eq!(instance.status, "Failed");
+    }
+
+    #[tokio::test]
+    async fn merge_completion_unblocks_dependents_and_deletes_branch() {
+        let (state, project_id, db) = make_state_with_project().await;
+        let project_path = {
+            let current = state.current.lock().await;
+            current
+                .as_ref()
+                .expect("project context")
+                .project_path
+                .clone()
+        };
+
+        std::fs::write(project_path.join("README.md"), "# workflow merge\n").expect("seed readme");
+        run_git(&project_path, &["init"]);
+        run_git(&project_path, &["config", "user.name", "Pnevma Tests"]);
+        run_git(
+            &project_path,
+            &["config", "user.email", "tests@pnevma.local"],
+        );
+        run_git(&project_path, &["checkout", "-b", "main"]);
+        run_git(&project_path, &["add", "README.md"]);
+        run_git(&project_path, &["commit", "-m", "initial"]);
+
+        let yaml = "name: merge-chain\ndescription: Merge progression\nsteps:\n  - title: Step 1\n    goal: produce change\n    priority: medium\n  - title: Step 2\n    goal: waits for merge\n    priority: medium\n    depends_on: [0]\n";
+        create_workflow(
+            CreateWorkflowInput {
+                name: "merge-chain".to_string(),
+                description: None,
+                definition_yaml: yaml.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("create workflow");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let dispatched = dispatch_workflow(
+            DispatchWorkflowInput {
+                workflow_name: "merge-chain".to_string(),
+                params: None,
+            },
+            &emitter,
+            &state,
+        )
+        .await
+        .expect("dispatch workflow");
+
+        let first_task_id = dispatched.task_ids[0].clone();
+        let second_task_id = dispatched.task_ids[1].clone();
+        let first_task_uuid = Uuid::parse_str(&first_task_id).expect("task uuid");
+
+        let git = {
+            let current = state.current.lock().await;
+            current.as_ref().expect("project context").git.clone()
+        };
+        let lease = git
+            .create_worktree(first_task_uuid, "main", "step-1")
+            .await
+            .expect("create worktree");
+
+        std::fs::write(Path::new(&lease.path).join("step1.txt"), "done\n")
+            .expect("write worktree file");
+        run_git(Path::new(&lease.path), &["add", "step1.txt"]);
+        run_git(
+            Path::new(&lease.path),
+            &[
+                "-c",
+                "user.name=Pnevma Tests",
+                "-c",
+                "user.email=tests@pnevma.local",
+                "commit",
+                "-m",
+                "task output",
+            ],
+        );
+
+        db.upsert_worktree(&WorktreeRow {
+            id: lease.id.to_string(),
+            project_id: project_id.to_string(),
+            task_id: first_task_id.clone(),
+            path: lease.path.clone(),
+            branch: lease.branch.clone(),
+            lease_status: "Active".to_string(),
+            lease_started: lease.started_at,
+            last_active: lease.last_active,
+        })
+        .await
+        .expect("upsert worktree");
+
+        let mut first_task = db
+            .get_task(&first_task_id)
+            .await
+            .expect("get first task")
+            .expect("first task exists");
+        first_task.branch = Some(lease.branch.clone());
+        first_task.worktree_id = Some(lease.id.to_string());
+        first_task.status = "Review".to_string();
+        first_task.updated_at = Utc::now();
+        db.update_task(&first_task)
+            .await
+            .expect("update first task");
+
+        db.upsert_merge_queue_item(&MergeQueueRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: first_task_id.clone(),
+            status: "Queued".to_string(),
+            blocked_reason: None,
+            approved_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+        })
+        .await
+        .expect("queue merge");
+
+        merge_queue_execute(first_task_id.clone(), &emitter, &state)
+            .await
+            .expect("merge executes");
+
+        let merged_first = db
+            .get_task(&first_task_id)
+            .await
+            .expect("get merged task")
+            .expect("merged task exists");
+        assert_eq!(merged_first.status, "Done");
+        assert!(merged_first.branch.is_none());
+        assert!(merged_first.worktree_id.is_none());
+
+        let second = db
+            .get_task(&second_task_id)
+            .await
+            .expect("get dependent task")
+            .expect("dependent task exists");
+        assert_eq!(second.status, "Ready");
+
+        let instance = db
+            .get_workflow_instance(&dispatched.id)
+            .await
+            .expect("workflow instance lookup")
+            .expect("workflow instance exists");
+        assert_eq!(instance.status, "Running");
+
+        assert!(db
+            .find_worktree_by_task(&first_task_id)
+            .await
+            .expect("worktree lookup")
+            .is_none());
+        assert!(
+            run_git(&project_path, &["branch", "--list", &lease.branch]).is_empty(),
+            "merged task branch should be deleted"
+        );
+
+        let notifications = db
+            .list_notifications(&project_id.to_string(), false)
+            .await
+            .expect("list notifications");
+        assert!(
+            notifications
+                .iter()
+                .any(|row| row.title == "Merge completed"),
+            "merge completion should create a notification"
+        );
     }
 
     #[tokio::test]

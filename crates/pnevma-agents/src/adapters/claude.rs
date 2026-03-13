@@ -30,6 +30,37 @@ impl ClaudeCodeAdapter {
     }
 }
 
+fn requires_verbose_stream_json(cfg: &AgentConfig) -> bool {
+    cfg.output_format == "stream-json"
+}
+
+fn build_cli_args(cfg: &AgentConfig, prompt: String) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-p".into(), prompt];
+    args.extend(["--output-format".into(), cfg.output_format.clone()]);
+
+    if requires_verbose_stream_json(cfg) {
+        args.push("--verbose".into());
+    }
+
+    if cfg.auto_approve {
+        warn!("auto_approve is enabled — using --allowedTools whitelist instead of --dangerously-skip-permissions");
+        let allowed_tools = auto_approve_allowed_tools(cfg);
+        args.extend(["--allowedTools".into(), allowed_tools.join(",")]);
+    }
+
+    if let Some(ref model) = cfg.model {
+        args.extend(["--model".into(), model.clone()]);
+    }
+
+    args
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ClaudeContextState {
+    existed: bool,
+    original_content: Option<String>,
+}
+
 fn auto_approve_allowed_tools(cfg: &AgentConfig) -> Vec<String> {
     let mut allowed_tools = vec![
         "Edit".to_string(),
@@ -97,19 +128,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             }
         }
 
-        // Build CLI arguments.
-        let mut args: Vec<String> = vec!["-p".into(), prompt];
-        args.extend(["--output-format".into(), cfg.output_format.clone()]);
-
-        if cfg.auto_approve {
-            warn!("auto_approve is enabled — using --allowedTools whitelist instead of --dangerously-skip-permissions");
-            let allowed_tools = auto_approve_allowed_tools(&cfg);
-            args.extend(["--allowedTools".into(), allowed_tools.join(",")]);
-        }
-
-        if let Some(ref model) = cfg.model {
-            args.extend(["--model".into(), model.clone()]);
-        }
+        let args = build_cli_args(&cfg, prompt);
 
         debug!(
             handle = %handle.id,
@@ -125,6 +144,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 .env_clear()
                 .envs(crate::env::build_agent_environment(&cfg.env))
                 .args(&args)
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .pre_exec(|| {
@@ -539,14 +559,31 @@ async fn inject_context_file(context_file: &str, working_dir: &str) -> Result<()
     let sanitized = sanitize_prompt_field(&context_content);
 
     let claude_md_path = PathBuf::from(working_dir).join("CLAUDE.md");
-    let existing = tokio::fs::read_to_string(&claude_md_path)
+    let existing = tokio::fs::read_to_string(&claude_md_path).await.ok();
+    let state_dir = PathBuf::from(working_dir).join(".pnevma");
+    tokio::fs::create_dir_all(&state_dir)
         .await
-        .unwrap_or_default();
+        .map_err(|e| format!("create Claude context state dir: {e}"))?;
+    let state_path = state_dir.join("claude-context-state.json");
+    let state = ClaudeContextState {
+        existed: existing.is_some(),
+        original_content: existing.clone(),
+    };
+    tokio::fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&state)
+            .map_err(|e| format!("serialize Claude context state: {e}"))?,
+    )
+    .await
+    .map_err(|e| format!("write Claude context state: {e}"))?;
 
-    let merged = if existing.is_empty() {
+    let merged = if existing.as_deref().unwrap_or_default().is_empty() {
         sanitized
     } else {
-        format!("{existing}\n\n---\n\n# Task Context (auto-injected by pnevma)\n\n{sanitized}")
+        format!(
+            "{}\n\n---\n\n# Task Context (auto-injected by pnevma)\n\n{sanitized}",
+            existing.unwrap_or_default()
+        )
     };
 
     tokio::fs::write(&claude_md_path, merged)
@@ -765,5 +802,25 @@ mod tests {
         assert!(allowed.contains(&"Bash(npm exec *)".to_string()));
         assert!(allowed.contains(&"Bash(npx)".to_string()));
         assert!(allowed.contains(&"Bash(npx *)".to_string()));
+    }
+
+    #[test]
+    fn build_cli_args_adds_verbose_for_stream_json_print_mode() {
+        let cfg = test_agent_config(false);
+        let args = build_cli_args(&cfg, "hello".to_string());
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["--output-format", "stream-json"]));
+        assert!(args.iter().any(|arg| arg == "--verbose"));
+    }
+
+    #[test]
+    fn build_cli_args_preserves_model_override() {
+        let mut cfg = test_agent_config(false);
+        cfg.model = Some("claude-sonnet-4-6".to_string());
+        let args = build_cli_args(&cfg, "hello".to_string());
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["--model", "claude-sonnet-4-6"]));
     }
 }

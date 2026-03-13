@@ -5,10 +5,11 @@ use crate::commands::{
     check_workflow_completion, cleanup_task_worktree, create_notification_row,
     current_redaction_secrets, emit_enriched_task_event, emit_task_updated, generate_review_pack,
     is_terminal_task_status, load_active_scope_texts, load_recent_knowledge_summaries, load_texts,
-    load_workflow_hooks, normalize_redaction_secrets, osc_level, osc_title, parse_osc_attention,
-    parse_status, redact_json_value, redact_text, resolve_secret_env,
-    run_acceptance_checks_for_task, session_row_to_event_payload, slugify_with_fallback,
-    status_to_str, task_contract_to_row, task_row_to_contract, StreamRedactor,
+    load_workflow_hooks, normalize_redaction_secrets, notify_task_status_transition, osc_level,
+    osc_title, parse_osc_attention, parse_status, prepare_task_branch_for_review,
+    redact_json_value, redact_text, resolve_secret_env, run_acceptance_checks_for_task,
+    session_row_to_event_payload, slugify_with_fallback, status_to_str, task_contract_to_row,
+    task_row_to_contract, StreamRedactor,
 };
 use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
 // Helpers in commands/tasks.rs (pub(crate))
@@ -26,7 +27,9 @@ use pnevma_context::{
     DiscoveryConfig, FileDiscovery,
 };
 use pnevma_core::{ProjectConfig, TaskContract, TaskStatus};
-use pnevma_db::{ContextRuleUsageRow, CostRow, Db, PaneRow, SessionRow, TaskRow, WorktreeRow};
+use pnevma_db::{
+    AutomationRunRow, ContextRuleUsageRow, CostRow, Db, PaneRow, SessionRow, TaskRow, WorktreeRow,
+};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -116,6 +119,178 @@ pub struct AgentRunOutcome {
     pub failed: bool,
     pub last_summary: Option<String>,
     pub final_status: TaskStatus,
+}
+
+fn dispatch_origin_str(origin: DispatchOrigin) -> &'static str {
+    match origin {
+        DispatchOrigin::Manual => "manual",
+        DispatchOrigin::AutoDispatch => "auto_dispatch",
+        DispatchOrigin::Workflow => "workflow",
+    }
+}
+
+pub async fn create_automation_run_record(
+    prepared: &PreparedRun,
+    run_id: Uuid,
+    attempt: u32,
+) -> Result<String, RunnerError> {
+    let now = Utc::now();
+    let db_row_id = Uuid::new_v4().to_string();
+    let run_row = AutomationRunRow {
+        id: db_row_id.clone(),
+        project_id: prepared.project_id.to_string(),
+        task_id: prepared.task.id.to_string(),
+        run_id: run_id.to_string(),
+        origin: dispatch_origin_str(prepared.origin).to_string(),
+        provider: prepared.provider.clone(),
+        model: prepared.model.clone(),
+        status: "running".to_string(),
+        attempt: attempt as i64,
+        started_at: now,
+        finished_at: None,
+        duration_seconds: None,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: 0.0,
+        summary: None,
+        error_message: None,
+        created_at: now,
+    };
+    prepared
+        .db
+        .create_automation_run(&run_row)
+        .await
+        .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    if let Ok(mut guard) = prepared.db_run_id_holder.lock() {
+        guard.replace(db_row_id.clone());
+    }
+    Ok(db_row_id)
+}
+
+async fn finalize_automation_run_record(
+    db: &Db,
+    db_run_id_holder: &Arc<std::sync::Mutex<Option<String>>>,
+    update: AutomationRunFinalization<'_>,
+) {
+    let Some(db_run_id) = db_run_id_holder.lock().ok().and_then(|guard| guard.clone()) else {
+        return;
+    };
+
+    let finished_at = Utc::now();
+    let duration_seconds = db
+        .get_automation_run(&db_run_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| {
+            finished_at
+                .signed_duration_since(row.started_at)
+                .num_milliseconds() as f64
+                / 1000.0
+        });
+
+    let _ = db
+        .update_automation_run_usage(
+            &db_run_id,
+            update.tokens_in,
+            update.tokens_out,
+            update.cost_usd,
+            update.summary,
+        )
+        .await;
+    let _ = db
+        .update_automation_run_status(
+            &db_run_id,
+            update.status,
+            Some(finished_at),
+            duration_seconds,
+            update.error_message,
+        )
+        .await;
+}
+
+struct AutomationRunFinalization<'a> {
+    status: &'a str,
+    tokens_in: i64,
+    tokens_out: i64,
+    cost_usd: f64,
+    summary: Option<&'a str>,
+    error_message: Option<&'a str>,
+}
+
+async fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+async fn branch_ahead_count(worktree_path: &Path, target_branch: &str) -> Result<u64, String> {
+    git_stdout(
+        worktree_path,
+        &["rev-list", "--count", &format!("{target_branch}..HEAD")],
+    )
+    .await?
+    .trim()
+    .parse::<u64>()
+    .map_err(|e| format!("parse ahead count: {e}"))
+}
+
+async fn prepare_merge_ready_worktree(
+    worktree_path: &Path,
+    target_branch: &str,
+    task: &TaskContract,
+) -> Result<Option<crate::commands::TaskCommitResult>, String> {
+    let commit_result = if task.branch.is_some() {
+        Some(
+            prepare_task_branch_for_review(worktree_path, task.id, &task.title, target_branch)
+                .await?,
+        )
+    } else {
+        None
+    };
+
+    let has_uncommitted = !git_stdout(worktree_path, &["status", "--porcelain"])
+        .await?
+        .trim()
+        .is_empty();
+    if has_uncommitted {
+        return Err("agent left uncommitted changes after sanitize/commit".to_string());
+    }
+
+    let ahead_count = branch_ahead_count(worktree_path, target_branch).await?;
+    if ahead_count == 0 {
+        return Err("agent produced no mergeable repository changes".to_string());
+    }
+    Ok(commit_result)
+}
+
+async fn upsert_agent_session_status(
+    db: &Db,
+    project_id: Uuid,
+    session_id: Uuid,
+    status: &str,
+) -> Result<(), String> {
+    let existing = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|session| session.id == session_id.to_string());
+
+    let Some(mut row) = existing else {
+        return Ok(());
+    };
+
+    row.status = status.to_string();
+    row.last_heartbeat = Utc::now();
+    db.upsert_session(&row).await.map_err(|e| e.to_string())
 }
 
 /// Phase 1 – resolve all context, acquire permit, create worktree, transition to InProgress.
@@ -232,11 +407,15 @@ pub async fn prepare(
             .create_worktree(task_id_uuid, &config.branches.target, &slug)
             .await
             .map_err(|e| RunnerError::Internal(e.to_string()))?;
+        let canonical_worktree = tokio::fs::canonicalize(&lease.path)
+            .await
+            .map_err(|e| RunnerError::Internal(format!("worktree path unavailable: {e}")))?;
+        let canonical_worktree_str = canonical_worktree.to_string_lossy().to_string();
         let worktree_row = WorktreeRow {
             id: lease.id.to_string(),
             project_id: project_id.to_string(),
             task_id: task_id.clone(),
-            path: lease.path.clone(),
+            path: canonical_worktree_str.clone(),
             branch: lease.branch.clone(),
             lease_status: "Active".to_string(),
             lease_started: lease.started_at,
@@ -245,7 +424,7 @@ pub async fn prepare(
         db.upsert_worktree(&worktree_row)
             .await
             .map_err(|e| RunnerError::Internal(e.to_string()))?;
-        working_dir = lease.path.clone();
+        working_dir = canonical_worktree_str;
         task.branch = Some(lease.branch.clone());
         task.worktree = Some(worktree_row.id.clone());
 
@@ -768,28 +947,45 @@ async fn handle_send_failure(
     let failed_summary = redact_text(&error, &prepared.secret_values);
 
     if let Ok(Some(mut row)) = prepared.db.get_task(&running.task_id.to_string()).await {
+        let prev_status = parse_status(&row.status);
         row.status = status_to_str(&TaskStatus::Failed).to_string();
         row.handoff_summary = Some(failed_summary.clone());
         row.updated_at = Utc::now();
         let _ = prepared.db.update_task(&row).await;
+        notify_task_status_transition(
+            &prepared.db,
+            &prepared.emitter,
+            prepared.project_id,
+            running.task_id,
+            &row.title,
+            &prev_status,
+            &TaskStatus::Failed,
+            Some(&failed_summary),
+        )
+        .await;
         emit_enriched_task_event(&prepared.emitter, &prepared.db, &row.id).await;
     }
 
-    let failed_session_row = SessionRow {
-        id: running.handle.id.to_string(),
-        project_id: prepared.project_id.to_string(),
-        name: format!("agent-{}", prepared.task.title),
-        r#type: Some("agent".to_string()),
-        status: "failed".to_string(),
-        pid: None,
-        cwd: prepared.working_dir.clone(),
-        command: prepared.provider.clone(),
-        branch: prepared.task.branch.clone(),
-        worktree_id: prepared.task.worktree.clone(),
-        started_at: Utc::now(),
-        last_heartbeat: Utc::now(),
-    };
-    let _ = prepared.db.upsert_session(&failed_session_row).await;
+    let _ = upsert_agent_session_status(
+        &prepared.db,
+        prepared.project_id,
+        running.handle.id,
+        "failed",
+    )
+    .await;
+    finalize_automation_run_record(
+        &prepared.db,
+        &prepared.db_run_id_holder,
+        AutomationRunFinalization {
+            status: "failed",
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            summary: Some(&failed_summary),
+            error_message: Some(&failed_summary),
+        },
+    )
+    .await;
 
     let _ = cleanup_task_worktree(
         &prepared.db,
@@ -813,6 +1009,73 @@ async fn handle_send_failure(
     .await;
 
     error
+}
+
+pub async fn handle_start_failure(prepared: &PreparedRun, error: &str) {
+    drop(
+        prepared
+            .permit_holder
+            .lock()
+            .expect("permit lock poisoned")
+            .take(),
+    );
+
+    let failed_summary = redact_text(error, &prepared.secret_values);
+
+    if let Ok(Some(mut row)) = prepared.db.get_task(&prepared.task.id.to_string()).await {
+        let prev_status = parse_status(&row.status);
+        row.status = status_to_str(&TaskStatus::Failed).to_string();
+        row.handoff_summary = Some(failed_summary.clone());
+        row.updated_at = Utc::now();
+        let _ = prepared.db.update_task(&row).await;
+        notify_task_status_transition(
+            &prepared.db,
+            &prepared.emitter,
+            prepared.project_id,
+            prepared.task.id,
+            &row.title,
+            &prev_status,
+            &TaskStatus::Failed,
+            Some(&failed_summary),
+        )
+        .await;
+        emit_enriched_task_event(&prepared.emitter, &prepared.db, &row.id).await;
+    }
+
+    finalize_automation_run_record(
+        &prepared.db,
+        &prepared.db_run_id_holder,
+        AutomationRunFinalization {
+            status: "failed",
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            summary: Some(&failed_summary),
+            error_message: Some(&failed_summary),
+        },
+    )
+    .await;
+
+    let _ = cleanup_task_worktree(
+        &prepared.db,
+        &prepared.git,
+        prepared.project_id,
+        prepared.task.id,
+        Some(&prepared.emitter),
+        Some(&prepared.project_path),
+    )
+    .await;
+
+    append_event(
+        &prepared.db,
+        prepared.project_id,
+        Some(prepared.task.id),
+        None,
+        "agent",
+        "AgentLaunchFailed",
+        json!({"error": failed_summary}),
+    )
+    .await;
 }
 
 struct RunEventLoopContext {
@@ -889,6 +1152,7 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
 
                 // Any received event counts as activity.
                 stall_detector.record_activity();
+                let _ = upsert_agent_session_status(&db, project_id, session_id, "running").await;
 
                 match event {
                     AgentEvent::OutputChunk(chunk) => {
@@ -950,10 +1214,14 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                     }
                     AgentEvent::UsageUpdate { tokens_in, tokens_out, cost_usd } => {
                         continuation.record_usage(tokens_in, tokens_out, cost_usd);
+                        let agent_run_id = db_run_id_holder
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.clone());
                         let _ = db
                             .append_cost(&CostRow {
                                 id: Uuid::new_v4().to_string(),
-                                agent_run_id: None,
+                                agent_run_id,
                                 task_id: task_id.to_string(),
                                 session_id: session_id_str.clone(),
                                 provider: provider.clone(),
@@ -1177,51 +1445,111 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
             if is_until_complete {
                 next_status = TaskStatus::Done;
             } else if let Ok(task_contract) = task_row_to_contract(&row) {
-                match run_acceptance_checks_for_task(&db, project_id, &project_path, &task_contract)
+                match prepare_merge_ready_worktree(&worktree_path, &target_branch, &task_contract)
                     .await
                 {
-                    Ok((check_run, check_results, all_automated_passed)) => {
-                        if all_automated_passed {
-                            let current_secrets =
-                                current_redaction_secrets(&redaction_secrets).await;
-                            let cost = db
-                                .task_cost_total(&task_id.to_string())
-                                .await
-                                .unwrap_or(0.0);
-                            if generate_review_pack(
-                                &db,
-                                project_id,
-                                &project_path,
-                                &target_branch,
-                                &task_contract,
-                                &check_run,
-                                &check_results,
-                                cost,
-                                last_summary.as_deref(),
-                                &current_secrets,
-                            )
-                            .await
-                            .is_ok()
-                            {
-                                next_status = TaskStatus::Review;
-                            }
-                        }
-                    }
                     Err(err) => {
                         let current_secrets = current_redaction_secrets(&redaction_secrets).await;
+                        let safe_error = redact_text(&err, &current_secrets);
+                        row.handoff_summary = Some(safe_error.clone());
+                        last_summary = Some(safe_error.clone());
+                        next_status = TaskStatus::Failed;
+                        failed = true;
                         append_event(
                             &db,
                             project_id,
                             Some(task_id),
                             None,
-                            "core",
-                            "AcceptanceCheckRunFailed",
+                            "git",
+                            "AgentOutputNotMergeReady",
                             json!({
                                 "task_id": task_id,
-                                "error": redact_text(&err, &current_secrets)
+                                "error": safe_error
                             }),
                         )
                         .await;
+                    }
+                    Ok(commit_result) => {
+                        append_event(
+                        &db,
+                        project_id,
+                        Some(task_id),
+                        None,
+                        "git",
+                        "AgentChangesCommitted",
+                        json!({
+                            "task_id": task_id,
+                            "branch": branch.clone(),
+                            "commit_sha": commit_result.as_ref().map(|result| result.commit_sha.clone()),
+                            "commit_message": commit_result.as_ref().map(|result| result.commit_message.clone()),
+                        }),
+                    )
+                    .await;
+                        match run_acceptance_checks_for_task(
+                            &db,
+                            project_id,
+                            &project_path,
+                            &task_contract,
+                        )
+                        .await
+                        {
+                            Ok((check_run, check_results, all_automated_passed)) => {
+                                if all_automated_passed {
+                                    let current_secrets =
+                                        current_redaction_secrets(&redaction_secrets).await;
+                                    let cost = db
+                                        .task_cost_total(&task_id.to_string())
+                                        .await
+                                        .unwrap_or(0.0);
+                                    next_status = TaskStatus::Review;
+                                    if let Err(err) = generate_review_pack(
+                                        &db,
+                                        project_id,
+                                        &project_path,
+                                        &target_branch,
+                                        &task_contract,
+                                        &check_run,
+                                        &check_results,
+                                        cost,
+                                        last_summary.as_deref(),
+                                        &current_secrets,
+                                    )
+                                    .await
+                                    {
+                                        append_event(
+                                            &db,
+                                            project_id,
+                                            Some(task_id),
+                                            None,
+                                            "review",
+                                            "ReviewPackGenerationFailed",
+                                            json!({
+                                                "task_id": task_id,
+                                                "error": redact_text(&err, &current_secrets)
+                                            }),
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                let current_secrets =
+                                    current_redaction_secrets(&redaction_secrets).await;
+                                append_event(
+                                    &db,
+                                    project_id,
+                                    Some(task_id),
+                                    None,
+                                    "core",
+                                    "AcceptanceCheckRunFailed",
+                                    json!({
+                                        "task_id": task_id,
+                                        "error": redact_text(&err, &current_secrets)
+                                    }),
+                                )
+                                .await;
+                            }
+                        }
                     }
                 }
             }
@@ -1262,6 +1590,17 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         row.status = status_to_str(&next_status).to_string();
         row.updated_at = Utc::now();
         let _ = db.update_task(&row).await;
+        notify_task_status_transition(
+            &db,
+            &emitter,
+            project_id,
+            task_id,
+            &row.title,
+            &prev_status,
+            &next_status,
+            row.handoff_summary.as_deref(),
+        )
+        .await;
         if is_terminal_task_status(&next_status) {
             let loop_triggered = check_loop_trigger(
                 &db,
@@ -1276,7 +1615,7 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                 false
             });
             if !loop_triggered {
-                check_workflow_completion(&db, &row.id).await;
+                check_workflow_completion(&db, &row.id, Some(&emitter)).await;
             }
             // Note: Loop tasks are created as Ready when their pre-loop deps
             // are satisfied (see create_loop_iteration). The auto_dispatch
@@ -1340,6 +1679,9 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         emit_enriched_task_event(&emitter, &db, &row.id).await;
     }
 
+    let session_status = if failed { "failed" } else { "completed" };
+    let _ = upsert_agent_session_status(&db, project_id, session_id, session_status).await;
+
     // Run after_run hooks when not failed. Non-fatal — log errors only.
     if !failed {
         if let Some(cmds) = &hooks.after_run {
@@ -1392,18 +1734,23 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         }
     }
 
-    // Update automation_run usage if we have a DB run ID (set by coordinator).
-    if let Some(db_run_id) = db_run_id_holder.lock().ok().and_then(|guard| guard.clone()) {
-        let _ = db
-            .update_automation_run_usage(
-                &db_run_id,
-                continuation.accumulated_tokens_in as i64,
-                continuation.accumulated_tokens_out as i64,
-                continuation.accumulated_cost_usd,
-                last_summary.as_deref(),
-            )
-            .await;
-    }
+    finalize_automation_run_record(
+        &db,
+        &db_run_id_holder,
+        AutomationRunFinalization {
+            status: if failed { "failed" } else { "completed" },
+            tokens_in: continuation.accumulated_tokens_in as i64,
+            tokens_out: continuation.accumulated_tokens_out as i64,
+            cost_usd: continuation.accumulated_cost_usd,
+            summary: last_summary.as_deref(),
+            error_message: if failed {
+                last_summary.as_deref()
+            } else {
+                None
+            },
+        },
+    )
+    .await;
 
     emitter.emit(
         "pool_updated",

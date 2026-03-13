@@ -328,10 +328,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         sender.reply(toApplicationShouldTerminate: false)
                     }
                 ) {
-                    sender.reply(toApplicationShouldTerminate: true)
+                    Task { @MainActor [weak self] in
+                        await self?.workspaceManager?.prepareForShutdown()
+                        sender.reply(toApplicationShouldTerminate: true)
+                    }
                 }
             } else {
-                sender.reply(toApplicationShouldTerminate: true)
+                Task { @MainActor [weak self] in
+                    await self?.workspaceManager?.prepareForShutdown()
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
             }
         }
         return .terminateLater

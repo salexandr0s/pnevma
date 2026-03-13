@@ -50,6 +50,171 @@ async fn abort_project_runtime(state: &AppState) {
     }
 }
 
+fn process_alive(pid: libc::pid_t) -> bool {
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return true;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    )
+}
+
+async fn terminate_helper_pid(pid: i64) {
+    if pid <= 0 {
+        return;
+    }
+    let pid = pid as libc::pid_t;
+    let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+    for _ in 0..10 {
+        if !process_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+}
+
+async fn kill_tmux_session_for_row(project_path: &Path, session_id: &str) -> Result<(), String> {
+    let name = tmux_name_from_session_id(session_id);
+    let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
+    tokio::fs::create_dir_all(&tmux_tmpdir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let out = TokioCommand::new(pnevma_session::resolve_binary("tmux"))
+        .env("TMUX_TMPDIR", &tmux_tmpdir)
+        .args(["kill-session", "-t", &name])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("can't find session") {
+        return Ok(());
+    }
+    Err(stderr.trim().to_string())
+}
+
+async fn terminate_project_owned_helpers(project_path: &Path) {
+    let out = match TokioCommand::new("ps")
+        .args(["axo", "pid=,command="])
+        .output()
+        .await
+    {
+        Ok(out) => out,
+        Err(error) => {
+            tracing::warn!(path = %project_path.display(), %error, "failed to inspect helper processes during project shutdown");
+            return;
+        }
+    };
+    if !out.status.success() {
+        return;
+    }
+
+    let needle = project_path.to_string_lossy();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.contains(needle.as_ref()) {
+            continue;
+        }
+        if !trimmed.contains("tmux") && !trimmed.contains("script ") {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let Some(pid_str) = parts.next() else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<i64>() else {
+            continue;
+        };
+        terminate_helper_pid(pid).await;
+    }
+}
+
+async fn shutdown_project_sessions(
+    db: &Db,
+    sessions: &SessionSupervisor,
+    project_id: Uuid,
+    project_path: &Path,
+) {
+    for meta in sessions.list().await {
+        if !matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting) {
+            continue;
+        }
+        if let Some(pid) = meta.pid {
+            terminate_helper_pid(i64::from(pid)).await;
+        }
+        match sessions.kill_session_backend(meta.id).await {
+            Ok(_) => {
+                let _ = sessions.mark_exit(meta.id, None).await;
+            }
+            Err(error) => {
+                tracing::debug!(session_id = %meta.id, %error, "live session shutdown fell back to direct tmux cleanup");
+                let _ = kill_tmux_session_for_row(project_path, &meta.id.to_string()).await;
+            }
+        }
+    }
+
+    let persisted_rows = match db.list_sessions(&project_id.to_string()).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(project_id = %project_id, %error, "failed to list persisted sessions during project shutdown");
+            return;
+        }
+    };
+
+    for mut row in persisted_rows {
+        let is_live = matches!(row.status.as_str(), "running" | "waiting");
+        if !is_live {
+            continue;
+        }
+
+        if let Some(pid) = row.pid {
+            terminate_helper_pid(pid).await;
+        }
+
+        if let Ok(session_id) = Uuid::parse_str(&row.id) {
+            match sessions.kill_session_backend(session_id).await {
+                Ok(_) => {
+                    let _ = sessions.mark_exit(session_id, None).await;
+                }
+                Err(error) => {
+                    tracing::debug!(session_id = %row.id, %error, "session supervisor backend cleanup fell back to direct tmux cleanup");
+                    let _ = kill_tmux_session_for_row(project_path, &row.id).await;
+                }
+            }
+        } else {
+            let _ = kill_tmux_session_for_row(project_path, &row.id).await;
+        }
+
+        row.status = "complete".to_string();
+        row.pid = None;
+        row.last_heartbeat = Utc::now();
+        if let Err(error) = db.upsert_session(&row).await {
+            tracing::warn!(session_id = %row.id, %error, "failed to persist terminal session row during project shutdown");
+        }
+    }
+
+    terminate_project_owned_helpers(project_path).await;
+
+    if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
+        for mut row in rows {
+            if !matches!(row.status.as_str(), "running" | "waiting") {
+                continue;
+            }
+            row.status = "complete".to_string();
+            row.pid = None;
+            row.last_heartbeat = Utc::now();
+            if let Err(error) = db.upsert_session(&row).await {
+                tracing::warn!(session_id = %row.id, %error, "failed to finalize lingering session row after helper sweep");
+            }
+        }
+    }
+}
+
 fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
     AppSettingsView {
         auto_save_workspace_on_quit: config.auto_save_workspace_on_quit,
@@ -457,7 +622,7 @@ pub async fn open_project(
 }
 
 pub async fn close_project(state: &AppState) -> Result<(), String> {
-    let (db, project_id) = {
+    let (db, project_id, project_path, sessions, coordinator, shutdown_tx) = {
         let current = state.current.lock().await;
         let Some(ctx) = current.as_ref() else {
             return {
@@ -466,7 +631,14 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
                 Ok(())
             };
         };
-        (ctx.db.clone(), ctx.project_id)
+        (
+            ctx.db.clone(),
+            ctx.project_id,
+            ctx.project_path.clone(),
+            ctx.sessions.clone(),
+            ctx.coordinator.clone(),
+            ctx.shutdown_tx.clone(),
+        )
     };
 
     append_event(
@@ -481,19 +653,19 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
     .await;
 
     // Signal the coordinator to shut down gracefully before aborting the runtime task.
-    {
-        let current = state.current.lock().await;
-        if let Some(ctx) = current.as_ref() {
-            let _ = ctx.shutdown_tx.send(true);
-        }
+    let _ = shutdown_tx.send(true);
+
+    if let Some(coordinator) = coordinator {
+        coordinator.shutdown_active_runs().await;
     }
+    abort_project_runtime(state).await;
+    shutdown_project_sessions(&db, &sessions, project_id, &project_path).await;
 
     {
         let mut current = state.current.lock().await;
         *current = None;
     }
     clear_project_redaction_secrets(project_id);
-    abort_project_runtime(state).await;
     pnevma_redaction::reset_runtime_redaction_config();
     stop_control_plane(state).await;
     Ok(())
@@ -5235,6 +5407,118 @@ enable_entropy_guard = false
             state.current_runtime.lock().await.is_none(),
             "close_project should clear the current runtime handle"
         );
+    }
+
+    #[tokio::test]
+    async fn close_project_marks_live_session_rows_complete() {
+        let project_root = tempdir().expect("temp project");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "test-project",
+            &project_root.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect("upsert project");
+        let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+        let state = make_state_with_project(
+            project_id,
+            project_root.path(),
+            db.clone(),
+            sessions.clone(),
+        )
+        .await;
+
+        let session_id = Uuid::new_v4();
+        let mut meta = make_session_metadata(
+            project_id,
+            session_id,
+            project_root.path(),
+            SessionStatus::Running,
+        );
+        meta.pid = None;
+        sessions.register_restored(meta.clone()).await;
+        db.upsert_session(&session_row_from_meta(&meta))
+            .await
+            .expect("persist session row");
+
+        close_project(&state).await.expect("close project");
+
+        let row = db
+            .list_sessions(&project_id.to_string())
+            .await
+            .expect("list sessions")
+            .into_iter()
+            .find(|row| row.id == session_id.to_string())
+            .expect("session row exists");
+        assert_eq!(row.status, "complete");
+        assert!(row.pid.is_none());
+    }
+
+    #[tokio::test]
+    async fn close_project_terminates_running_session_helpers_and_persists_complete_rows() {
+        let project_root = tempdir().expect("temp project");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "shutdown-test",
+            &project_root.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect("upsert project");
+
+        let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+        let session_id = Uuid::new_v4();
+        let mut child = TokioCommand::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn helper");
+        let helper_pid = child.id().expect("helper pid") as i64;
+        let mut meta = make_session_metadata(
+            project_id,
+            session_id,
+            project_root.path(),
+            SessionStatus::Running,
+        );
+        meta.pid = Some(helper_pid as u32);
+        sessions.register_restored(meta.clone()).await;
+        db.upsert_session(&session_row_from_meta(&meta))
+            .await
+            .expect("persist session");
+
+        let state =
+            make_state_with_project(project_id, project_root.path(), db.clone(), sessions).await;
+        close_project(&state).await.expect("close project");
+
+        let waited = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("helper should exit promptly")
+            .expect("wait on helper");
+        assert!(
+            !process_alive(helper_pid as libc::pid_t),
+            "helper pid should not survive project shutdown: {helper_pid}"
+        );
+        assert!(
+            !waited.success(),
+            "sleep helper should be terminated rather than exit cleanly"
+        );
+
+        let persisted = db
+            .list_sessions(&project_id.to_string())
+            .await
+            .expect("list sessions");
+        let row = persisted
+            .into_iter()
+            .find(|row| row.id == session_id.to_string())
+            .expect("session row");
+        assert_eq!(row.status, "complete");
+        assert_eq!(row.pid, None);
     }
 
     #[tokio::test]

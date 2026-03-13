@@ -1,11 +1,28 @@
-# Pnevma
+<p align="center">
+  <img src="assets/logo.png" width="128" />
+</p>
 
-![CI](https://github.com/salexandr0s/pnevma/actions/workflows/ci.yml/badge.svg)
-![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
-![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
-![Swift](https://img.shields.io/badge/swift-5.9-FA7343)
+<h1 align="center">Pnevma</h1>
 
-Pnevma is a native macOS workspace for running and supervising CLI coding agents on real software projects. It gives you one place to create tasks, launch agents such as Claude Code and Codex in managed terminal sessions, review what they changed, and decide when that work is ready to merge.
+<p align="center">
+  A native macOS workspace for running and supervising CLI coding agents on real software projects.
+</p>
+
+<p align="center">
+  <a href="https://pnevma.dev">pnevma.dev</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/salexandr0s/pnevma/actions/workflows/ci.yml"><img src="https://github.com/salexandr0s/pnevma/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://pnevma.dev"><img src="https://img.shields.io/badge/website-pnevma.dev-8B5CF6" alt="Website" /></a>
+  <img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue" alt="License" />
+  <img src="https://img.shields.io/badge/rust-2021_edition-orange" alt="Rust" />
+  <img src="https://img.shields.io/badge/swift-5.9-FA7343" alt="Swift" />
+</p>
+
+---
+
+Pnevma gives you one place to create tasks, launch agents such as Claude Code and Codex in managed terminal sessions, review what they changed, and decide when that work is ready to merge.
 
 ## Status
 
@@ -170,6 +187,12 @@ developer, operator, and release guides.
 ## Acknowledgments
 
 Pnevma's terminal is powered by [Ghostty](https://ghostty.org), the fast, feature-rich terminal emulator created by [Mitchell Hashimoto](https://github.com/mitchellh). Ghostty is compiled from source using Zig and embedded as an xcframework, giving Pnevma a native GPU-accelerated terminal without reinventing terminal emulation. Ghostty's quality is a big part of what makes Pnevma feel right.
+
+## Links
+
+- [Website](https://pnevma.dev)
+- [GitHub Repository](https://github.com/salexandr0s/pnevma)
+- [Documentation](docs/README.md)
 
 ## License
 

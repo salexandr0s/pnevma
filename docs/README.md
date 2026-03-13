@@ -20,6 +20,8 @@ documentation for Pnevma.
   bar that must be met before feature work resumes.
 - [macOS Release Runbook](./macos-release.md): signing, notarization, stapling,
   and packaged launch verification for the public macOS release.
+- [Manual Smoke Tests](./manual-smoke-tests.md): ordered v0.2.0 operator checks
+  for DMG install, project/task/session flows, DB verification, and cleanup.
 - [macOS Website Release Plan](./macos-website-release-plan.md): release
   sequencing, scope boundaries, and the execution plan for the website
   distribution path.

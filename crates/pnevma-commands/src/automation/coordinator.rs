@@ -4,8 +4,9 @@ use crate::automation::DispatchOrigin;
 use crate::commands;
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
-use pnevma_agents::{reconcile_claims, ReconciliationAction, ReconciliationClaim};
-use pnevma_db::AutomationRunRow;
+use pnevma_agents::{
+    reconcile_claims, AgentAdapter, AgentHandle, ReconciliationAction, ReconciliationClaim,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,6 +51,8 @@ pub struct TrackedRun {
     pub event_task: Option<JoinHandle<()>>,
     /// Primary key of the `automation_runs` DB row, used for status updates.
     pub db_run_id: Option<String>,
+    pub handle: Option<AgentHandle>,
+    pub adapter: Option<Arc<dyn AgentAdapter>>,
 }
 
 /// Retry queue entry.
@@ -153,6 +156,30 @@ impl AutomationCoordinator {
         for (_, tracked) in running.drain() {
             if let Some(handle) = tracked.event_task {
                 handle.abort();
+            }
+        }
+    }
+
+    pub async fn shutdown_active_runs(&self) {
+        let drained = {
+            let mut running = self.running.write().await;
+            running
+                .drain()
+                .map(|(_, tracked)| tracked)
+                .collect::<Vec<_>>()
+        };
+        self.claims.write().await.clear();
+
+        for tracked in drained {
+            if let (Some(adapter), Some(handle)) =
+                (tracked.adapter.as_ref(), tracked.handle.as_ref())
+            {
+                if let Err(err) = adapter.stop(handle).await {
+                    warn!(task_id = %tracked.task_id, error = %err, "failed to stop active agent run during shutdown");
+                }
+            }
+            if let Some(event_task) = tracked.event_task {
+                event_task.abort();
             }
         }
     }
@@ -301,7 +328,13 @@ impl AutomationCoordinator {
     }
 
     /// Register a manually dispatched run into the running set.
-    pub async fn register_manual_run(&self, task_id: Uuid, session_id: Uuid) {
+    pub async fn register_manual_run(
+        &self,
+        task_id: Uuid,
+        session_id: Uuid,
+        handle: AgentHandle,
+        adapter: Arc<dyn AgentAdapter>,
+    ) {
         let run_id = Uuid::new_v4();
         self.claims.write().await.insert(
             task_id,
@@ -324,6 +357,8 @@ impl AutomationCoordinator {
                 },
                 event_task: None,
                 db_run_id: None,
+                handle: Some(handle),
+                adapter: Some(adapter),
             },
         );
     }
@@ -350,6 +385,8 @@ impl AutomationCoordinator {
                 state: RunState::Preparing,
                 event_task: None,
                 db_run_id: None,
+                handle: None,
+                adapter: None,
             },
         );
 
@@ -361,8 +398,19 @@ impl AutomationCoordinator {
         )
         .await
         .map_err(|e| e.to_string())?;
+        let db_row_id = runner::create_automation_run_record(&prepared, run_id, attempt)
+            .await
+            .map_err(|e| e.to_string())?;
 
-        let mut running_agent = runner::start(&prepared).await.map_err(|e| e.to_string())?;
+        let mut running_agent = match runner::start(&prepared).await {
+            Ok(agent) => agent,
+            Err(e) => {
+                let error = e.to_string();
+                runner::handle_start_failure(&prepared, &error).await;
+                self.running.write().await.remove(&task_id);
+                return Err(error);
+            }
+        };
         let session_id = running_agent.session_id;
 
         // Take the event_task JoinHandle out of running_agent before borrowing it for send_payload.
@@ -382,46 +430,9 @@ impl AutomationCoordinator {
                     started_at: now,
                 };
                 tracked.event_task = Some(event_task_handle);
-            }
-        }
-
-        // Persist automation run record to DB
-        if let Some((db, project_id)) = {
-            let current = self.state.current.lock().await;
-            current.as_ref().map(|ctx| (ctx.db.clone(), ctx.project_id))
-        } {
-            let db_row_id = Uuid::new_v4().to_string();
-            let run_row = AutomationRunRow {
-                id: db_row_id.clone(),
-                project_id: project_id.to_string(),
-                task_id: task_id.to_string(),
-                run_id: run_id.to_string(),
-                origin: "auto_dispatch".to_string(),
-                provider: prepared.provider.clone(),
-                model: prepared.model.clone(),
-                status: "running".to_string(),
-                attempt: attempt as i64,
-                started_at: now,
-                finished_at: None,
-                duration_seconds: None,
-                tokens_in: 0,
-                tokens_out: 0,
-                cost_usd: 0.0,
-                summary: None,
-                error_message: None,
-                created_at: now,
-            };
-            if db.create_automation_run(&run_row).await.is_ok() {
-                // Write the DB row ID into the holder so the event loop can update usage later.
-                if let Ok(mut guard) = prepared.db_run_id_holder.lock() {
-                    guard.replace(db_row_id.clone());
-                }
-                // Store the DB row primary key on the TrackedRun so process_completions
-                // can update the correct row (WHERE id = ?1, not WHERE run_id = ?1).
-                let mut running_map = self.running.write().await;
-                if let Some(tracked) = running_map.get_mut(&task_id) {
-                    tracked.db_run_id = Some(db_row_id);
-                }
+                tracked.db_run_id = Some(db_row_id);
+                tracked.handle = Some(running_agent.handle.clone());
+                tracked.adapter = Some(Arc::clone(&prepared.adapter));
             }
         }
 
@@ -467,19 +478,14 @@ impl AutomationCoordinator {
         }
 
         for task_id in completed_ids {
-            let finished_at = Utc::now();
-
-            // Determine whether the task actually failed by querying its DB status.
-            let task_failed = {
+            let task_failed = self.is_task_terminal(task_id).await && {
                 let db_opt = {
                     let current = self.state.current.lock().await;
                     current.as_ref().map(|ctx| ctx.db.clone())
                 };
                 if let Some(db) = db_opt {
                     match db.get_task(&task_id.to_string()).await {
-                        Ok(Some(row)) => {
-                            matches!(row.status.as_str(), "Failed" | "Error")
-                        }
+                        Ok(Some(row)) => matches!(row.status.as_str(), "Failed" | "Error"),
                         _ => false,
                     }
                 } else {
@@ -501,22 +507,7 @@ impl AutomationCoordinator {
                 self.stats.write().await.total_completed += 1;
             }
 
-            // Update automation run record in DB using the row's primary key.
-            if let (Some(db_run_id), Some(db)) = (db_run_id_for_update, {
-                let current = self.state.current.lock().await;
-                current.as_ref().map(|ctx| ctx.db.clone())
-            }) {
-                let status_str = if task_failed { "failed" } else { "completed" };
-                let _ = db
-                    .update_automation_run_status(
-                        &db_run_id,
-                        status_str,
-                        Some(finished_at),
-                        None,
-                        None,
-                    )
-                    .await;
-            }
+            let _ = db_run_id_for_update;
         }
     }
 
@@ -810,17 +801,42 @@ impl AutomationCoordinator {
 
     /// Get active session IDs from the session supervisor.
     async fn get_active_session_ids(&self) -> Vec<Uuid> {
+        let mut active_ids = {
+            let running = self.running.read().await;
+            running
+                .values()
+                .filter_map(
+                    |tracked| match (&tracked.state, tracked.event_task.as_ref()) {
+                        (RunState::Running { session_id, .. }, Some(event_task))
+                            if !event_task.is_finished() =>
+                        {
+                            Some(*session_id)
+                        }
+                        _ => None,
+                    },
+                )
+                .collect::<std::collections::HashSet<_>>()
+        };
+
         let current = self.state.current.lock().await;
-        match current.as_ref() {
-            Some(ctx) => ctx
-                .sessions
-                .list()
-                .await
-                .into_iter()
-                .map(|s| s.id)
-                .collect(),
-            None => Vec::new(),
+        if let Some(ctx) = current.as_ref() {
+            for session in ctx.sessions.list().await {
+                active_ids.insert(session.id);
+            }
+            if let Ok(rows) = ctx.db.list_sessions(&ctx.project_id.to_string()).await {
+                active_ids.extend(rows.into_iter().filter_map(|row| {
+                    let is_live_agent =
+                        row.r#type.as_deref() == Some("agent") && row.status == "running";
+                    if is_live_agent {
+                        Uuid::parse_str(&row.id).ok()
+                    } else {
+                        None
+                    }
+                }));
+            }
         }
+
+        active_ids.into_iter().collect()
     }
 
     /// Mark a task as Failed in the database.
@@ -1033,6 +1049,160 @@ impl AutomationCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_emitter::NullEmitter;
+    use crate::state::ProjectContext;
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use pnevma_agents::{
+        AdapterRegistry, AgentAdapter, AgentConfig, AgentError, AgentEvent, AgentHandle,
+        CostRecord, DispatchPool, TaskPayload,
+    };
+    use pnevma_core::config::{
+        AgentsSection, AutomationSection, BranchesSection, PathSection, ProjectSection,
+        RedactionSection, RetentionSection,
+    };
+    use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection, TrackerSection};
+    use pnevma_db::{Db, SessionRow, TaskRow, WorktreeRow};
+    use pnevma_git::GitService;
+    use pnevma_session::SessionSupervisor;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    struct NoopAdapter;
+
+    #[async_trait]
+    impl AgentAdapter for NoopAdapter {
+        async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
+            Ok(AgentHandle {
+                id: Uuid::new_v4(),
+                provider: config.provider,
+                task_id: Uuid::new_v4(),
+                thread_id: None,
+                turn_id: None,
+            })
+        }
+
+        async fn send(&self, _handle: &AgentHandle, _input: TaskPayload) -> Result<(), AgentError> {
+            Ok(())
+        }
+
+        async fn interrupt(&self, _handle: &AgentHandle) -> Result<(), AgentError> {
+            Ok(())
+        }
+
+        async fn stop(&self, _handle: &AgentHandle) -> Result<(), AgentError> {
+            Ok(())
+        }
+
+        fn events(&self, _handle: &AgentHandle) -> tokio::sync::broadcast::Receiver<AgentEvent> {
+            let (_tx, rx) = tokio::sync::broadcast::channel(1);
+            rx
+        }
+
+        async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
+            Ok(CostRecord {
+                provider: "noop".to_string(),
+                model: None,
+                tokens_in: 0,
+                tokens_out: 0,
+                estimated_cost_usd: 0.0,
+                timestamp: Utc::now(),
+                task_id: handle.task_id,
+                session_id: handle.id,
+            })
+        }
+    }
+
+    fn make_manual_handle(session_id: Uuid) -> AgentHandle {
+        AgentHandle {
+            id: session_id,
+            provider: "noop".to_string(),
+            task_id: Uuid::new_v4(),
+            thread_id: None,
+            turn_id: None,
+        }
+    }
+
+    async fn open_test_db() -> Db {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory sqlite");
+        let db = Db::from_pool_and_path(pool, std::path::PathBuf::from(":memory:"));
+        db.migrate().await.expect("migrate");
+        db
+    }
+
+    fn make_project_config() -> ProjectConfig {
+        ProjectConfig {
+            project: ProjectSection {
+                name: "test-project".to_string(),
+                brief: String::new(),
+            },
+            agents: AgentsSection {
+                default_provider: "claude-code".to_string(),
+                max_concurrent: 1,
+                claude_code: None,
+                codex: None,
+            },
+            automation: AutomationSection::default(),
+            retention: RetentionSection::default(),
+            branches: BranchesSection {
+                target: "main".to_string(),
+                naming: "feat/{slug}".to_string(),
+            },
+            rules: PathSection::default(),
+            conventions: PathSection::default(),
+            remote: RemoteSection::default(),
+            tracker: TrackerSection::default(),
+            redaction: RedactionSection::default(),
+        }
+    }
+
+    async fn make_state_with_project() -> (Arc<AppState>, Db, Uuid, TempDir) {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let project_root = tempdir.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+
+        db.upsert_project(
+            &project_id.to_string(),
+            "test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .expect("seed project");
+
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let ctx = ProjectContext {
+            project_id,
+            project_path: project_root.clone(),
+            config: make_project_config(),
+            global_config: GlobalConfig::default(),
+            db: db.clone(),
+            sessions: SessionSupervisor::new(project_root.join(".pnevma/data")),
+            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
+            git: Arc::new(GitService::new(&project_root)),
+            adapters: AdapterRegistry::default(),
+            pool: DispatchPool::new(1),
+            tracker: None,
+            workflow_store: Arc::new(WorkflowStore::new(&project_root)),
+            coordinator: None,
+            shutdown_tx,
+        };
+
+        let state = Arc::new(AppState {
+            current: Mutex::new(Some(ctx)),
+            ..AppState::new(Arc::new(NullEmitter))
+        });
+
+        (state, db, project_id, tempdir)
+    }
 
     #[test]
     fn automation_snapshot_serializes() {
@@ -1119,7 +1289,14 @@ mod tests {
         let task_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
 
-        coord.register_manual_run(task_id, session_id).await;
+        coord
+            .register_manual_run(
+                task_id,
+                session_id,
+                make_manual_handle(session_id),
+                Arc::new(NoopAdapter),
+            )
+            .await;
 
         // Auto-dispatch claim should fail (task already tracked)
         assert!(!coord.try_claim(task_id, DispatchOrigin::AutoDispatch).await);
@@ -1147,11 +1324,68 @@ mod tests {
 
         // Register a manual run and check snapshot again
         let task_id = Uuid::new_v4();
-        coord.register_manual_run(task_id, Uuid::new_v4()).await;
+        let session_id = Uuid::new_v4();
+        coord
+            .register_manual_run(
+                task_id,
+                session_id,
+                make_manual_handle(session_id),
+                Arc::new(NoopAdapter),
+            )
+            .await;
 
         let snap = coord.snapshot().await;
         assert_eq!(snap.active_runs, 1);
         assert!(snap.running_task_ids.contains(&task_id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_active_session_ids_includes_locally_managed_agent_runs() {
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let state = Arc::new(AppState::default());
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = AutomationCoordinator::new(state, ws, shutdown_rx);
+
+        let task_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let event_task = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+
+        coord.running.write().await.insert(
+            task_id,
+            TrackedRun {
+                run_id: Uuid::new_v4(),
+                task_id,
+                origin: DispatchOrigin::AutoDispatch,
+                state: RunState::Running {
+                    session_id,
+                    started_at: Utc::now(),
+                },
+                event_task: Some(event_task),
+                db_run_id: None,
+                handle: None,
+                adapter: None,
+            },
+        );
+
+        let active_sessions = coord.get_active_session_ids().await;
+        assert!(
+            active_sessions.contains(&session_id),
+            "coordinator should treat locally managed auto-dispatch sessions as active"
+        );
+
+        let event_task = {
+            coord
+                .running
+                .write()
+                .await
+                .remove(&task_id)
+                .and_then(|tracked| tracked.event_task)
+        };
+        if let Some(handle) = event_task {
+            handle.abort();
+        }
     }
 
     #[tokio::test]
@@ -1184,6 +1418,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_active_session_ids_includes_running_agent_rows_from_db() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = AutomationCoordinator::new(state, ws, shutdown_rx);
+
+        let session_id = Uuid::new_v4();
+        db.upsert_session(&SessionRow {
+            id: session_id.to_string(),
+            project_id: project_id.to_string(),
+            name: "agent-test".to_string(),
+            r#type: Some("agent".to_string()),
+            status: "running".to_string(),
+            pid: None,
+            cwd: "/tmp".to_string(),
+            command: "claude-code".to_string(),
+            branch: None,
+            worktree_id: None,
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+        })
+        .await
+        .expect("seed session");
+
+        let active = coord.get_active_session_ids().await;
+        assert!(active.contains(&session_id));
+    }
+
+    #[tokio::test]
+    async fn reconcile_stale_keeps_workflow_agent_with_live_db_session() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = AutomationCoordinator::new(state.clone(), ws, shutdown_rx);
+
+        let task_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let now = Utc::now();
+        let project_path = {
+            let current = state.current.lock().await;
+            current
+                .as_ref()
+                .expect("project context")
+                .project_path
+                .clone()
+        };
+        let worktree_path = project_path
+            .join(".pnevma/worktrees")
+            .join(task_id.to_string());
+        std::fs::create_dir_all(&worktree_path).expect("worktree dir");
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "workflow step".to_string(),
+            goal: "keep worktree alive".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: Some(format!("pnevma/{task_id}/workflow-step")),
+            worktree_id: Some(task_id.to_string()),
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("task");
+        db.upsert_worktree(&WorktreeRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            task_id: task_id.to_string(),
+            path: worktree_path.to_string_lossy().to_string(),
+            branch: format!("pnevma/{task_id}/workflow-step"),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        })
+        .await
+        .expect("worktree");
+        db.upsert_session(&SessionRow {
+            id: session_id.to_string(),
+            project_id: project_id.to_string(),
+            name: "agent-workflow-step".to_string(),
+            r#type: Some("agent".to_string()),
+            status: "running".to_string(),
+            pid: None,
+            cwd: worktree_path.to_string_lossy().to_string(),
+            command: "claude-code".to_string(),
+            branch: Some(format!("pnevma/{task_id}/workflow-step")),
+            worktree_id: Some(task_id.to_string()),
+            started_at: now,
+            last_heartbeat: now,
+        })
+        .await
+        .expect("session");
+
+        coord.claims.write().await.insert(
+            task_id,
+            TaskClaim {
+                task_id,
+                origin: DispatchOrigin::AutoDispatch,
+                claimed_at: now,
+                run_id,
+            },
+        );
+        coord.running.write().await.insert(
+            task_id,
+            TrackedRun {
+                run_id,
+                task_id,
+                origin: DispatchOrigin::AutoDispatch,
+                state: RunState::Running {
+                    session_id,
+                    started_at: now,
+                },
+                event_task: Some(tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                })),
+                db_run_id: None,
+                handle: None,
+                adapter: None,
+            },
+        );
+
+        coord.reconcile_stale().await;
+
+        assert!(coord.claims.read().await.contains_key(&task_id));
+        assert!(db
+            .find_worktree_by_task(&task_id.to_string())
+            .await
+            .expect("worktree lookup")
+            .is_some());
+    }
+
+    #[tokio::test]
     async fn max_concurrent_blocks_new_dispatch_when_full() {
         // Set up a WorkflowStore with enabled: true and max_concurrent: 3
         let dir = tempfile::tempdir().unwrap();
@@ -1209,6 +1589,8 @@ mod tests {
                     state: RunState::Preparing,
                     event_task: None,
                     db_run_id: None,
+                    handle: None,
+                    adapter: None,
                 },
             );
         }

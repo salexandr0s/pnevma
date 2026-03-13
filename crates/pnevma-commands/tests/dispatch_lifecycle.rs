@@ -21,7 +21,7 @@ use pnevma_core::{
     },
     GlobalConfig, Priority, ProjectConfig, RemoteSection, TrackerSection,
 };
-use pnevma_db::{Db, TaskRow};
+use pnevma_db::{AutomationRunRow, Db, TaskRow};
 use pnevma_git::GitService;
 use pnevma_session::SessionSupervisor;
 use serde_json::Value;
@@ -118,7 +118,7 @@ impl AgentAdapter for StreamingFakeAdapter {
         Ok(handle)
     }
 
-    async fn send(&self, handle: &AgentHandle, _input: TaskPayload) -> Result<(), AgentError> {
+    async fn send(&self, handle: &AgentHandle, input: TaskPayload) -> Result<(), AgentError> {
         if let Some(message) = &self.send_error {
             return Err(AgentError::Spawn(message.clone()));
         }
@@ -137,6 +137,8 @@ impl AgentAdapter for StreamingFakeAdapter {
             let _ = tx.send(AgentEvent::OutputChunk(
                 "hello from fake adapter".to_string(),
             ));
+            let output_path = PathBuf::from(&input.worktree_path).join("fake-output.txt");
+            let _ = tokio::fs::write(&output_path, "hello from fake adapter\n").await;
             release_completion.notified().await;
             let _ = tx.send(AgentEvent::Complete {
                 summary: "fake adapter finished".to_string(),
@@ -179,6 +181,7 @@ impl AgentAdapter for StreamingFakeAdapter {
 
 struct TestHarness {
     task_id: String,
+    project_id: String,
     db: Db,
     state: AppState,
     emitter: Arc<RecordingEmitter>,
@@ -194,6 +197,31 @@ impl TestHarness {
         let project_root = tempdir.path().join("project");
         std::fs::create_dir_all(&project_root).expect("project root");
         std::fs::write(project_root.join("README.md"), "# test\n").expect("seed project");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&project_root)
+            .output()
+            .expect("init git repo");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Pnevma Tests"])
+            .current_dir(&project_root)
+            .output()
+            .expect("configure git user");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "tests@pnevma.local"])
+            .current_dir(&project_root)
+            .output()
+            .expect("configure git email");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&project_root)
+            .output()
+            .expect("stage readme");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&project_root)
+            .output()
+            .expect("commit readme");
 
         db.upsert_project(
             &project_id.to_string(),
@@ -243,11 +271,67 @@ impl TestHarness {
 
         Self {
             task_id,
+            project_id: project_id.to_string(),
             db,
             state,
             emitter,
             pool,
             _tempdir: tempdir,
+        }
+    }
+}
+
+async fn wait_for_manual_run(db: &Db, project_id: &str) -> AutomationRunRow {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let runs = db
+                .list_automation_runs(project_id, 10)
+                .await
+                .expect("list automation runs");
+            if let Some(run) = runs.into_iter().find(|run| run.origin == "manual") {
+                return run;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("manual automation run should appear")
+}
+
+async fn wait_for_manual_run_status(db: &Db, project_id: &str, status: &str) -> AutomationRunRow {
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let run = wait_for_manual_run(db, project_id).await;
+            let refreshed = db
+                .get_automation_run(&run.id)
+                .await
+                .expect("get automation run")
+                .expect("automation run exists");
+            if refreshed.status == status {
+                return refreshed;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+
+    match result {
+        Ok(run) => run,
+        Err(_) => {
+            let last_seen = db
+                .list_automation_runs(project_id, 10)
+                .await
+                .expect("list automation runs")
+                .into_iter()
+                .find(|run| run.origin == "manual")
+                .map(|run| {
+                    format!(
+                        "status={} summary={:?} error={:?}",
+                        run.status, run.summary, run.error_message
+                    )
+                })
+                .unwrap_or_else(|| "<missing>".to_string());
+            panic!("manual automation run should reach target status; last_seen={last_seen}");
         }
     }
 }
@@ -315,7 +399,7 @@ fn make_task(project_id: &str) -> TaskRow {
         updated_at: now,
         auto_dispatch: false,
         agent_profile_override: None,
-        execution_mode: Some("main".to_string()),
+        execution_mode: Some("worktree".to_string()),
         timeout_minutes: None,
         max_retries: None,
         loop_iteration: 0,
@@ -375,6 +459,26 @@ async fn dispatch_returns_before_completion_and_streams_output() {
     })
     .await
     .expect("dispatch permit should be released after completion");
+
+    let run = wait_for_manual_run_status(&harness.db, &harness.project_id, "completed").await;
+    assert_eq!(run.origin, "manual");
+    assert_eq!(run.status, "completed");
+    assert!(
+        run.finished_at.is_some(),
+        "completed run should have finished_at"
+    );
+    assert_eq!(run.summary.as_deref(), Some("fake adapter finished"));
+
+    let sessions = harness
+        .db
+        .list_sessions(&harness.project_id)
+        .await
+        .expect("list sessions");
+    let agent_session = sessions
+        .iter()
+        .find(|session| session.r#type.as_deref() == Some("agent"))
+        .expect("agent session exists");
+    assert_eq!(agent_session.status, "completed");
 }
 
 #[tokio::test]
@@ -410,4 +514,27 @@ async fn launch_failure_marks_task_failed_and_releases_permit() {
         task.handoff_summary.as_deref(),
         Some("spawn failed: simulated launch failure")
     );
+
+    let run = wait_for_manual_run_status(&harness.db, &harness.project_id, "failed").await;
+    assert_eq!(run.origin, "manual");
+    assert_eq!(run.status, "failed");
+    assert!(
+        run.finished_at.is_some(),
+        "failed run should have finished_at"
+    );
+    assert_eq!(
+        run.error_message.as_deref(),
+        Some("spawn failed: simulated launch failure")
+    );
+
+    let sessions = harness
+        .db
+        .list_sessions(&harness.project_id)
+        .await
+        .expect("list sessions");
+    let agent_session = sessions
+        .iter()
+        .find(|session| session.r#type.as_deref() == Some("agent"))
+        .expect("agent session exists");
+    assert_eq!(agent_session.status, "failed");
 }

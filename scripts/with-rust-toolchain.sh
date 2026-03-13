@@ -37,4 +37,17 @@ fi
 export CARGO_HOME="$cargo_home"
 export PATH="$CARGO_HOME/bin:$PATH"
 
+if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
+  if clang_bin="$(xcrun --find clang 2>/dev/null)"; then
+    export CC="${CC:-$clang_bin}"
+    export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="${CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER:-$clang_bin}"
+  fi
+  if clangxx_bin="$(xcrun --find clang++ 2>/dev/null)"; then
+    export CXX="${CXX:-$clangxx_bin}"
+  fi
+  if sdk_root="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)"; then
+    export SDKROOT="${SDKROOT:-$sdk_root}"
+  fi
+fi
+
 exec "$rustup_bin" run "$toolchain" "$@"

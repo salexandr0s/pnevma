@@ -16,6 +16,8 @@ xcode_project := "native/Pnevma.xcodeproj"
 xcode_destination := "'platform=macOS,arch=arm64'"
 rust_tool := "./scripts/with-rust-toolchain.sh"
 clean_log := "./scripts/assert-clean-command-log.sh"
+native_env_tool := "./scripts/prepare-native-build-env.sh"
+native_lock_tool := "./scripts/with-native-build-lock.sh"
 native_log_dir := "native/build/logs"
 xcode_derived_data := "native/DerivedData"
 ghostty_xcframework_target := env_var_or_default("GHOSTTY_XCFRAMEWORK_TARGET", "native")
@@ -93,27 +95,19 @@ xcodegen-check: xcodegen
 # Note: xcode-build depends on rust-build completing first
 xcode-build: xcodegen rust-build
     @echo "Building native macOS app..."
-    mkdir -p {{native_log_dir}}
-    rm -rf {{xcode_derived_data}}
-    {{clean_log}} --log {{native_log_dir}}/xcode-build.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build
+    {{native_lock_tool}} xcode-build zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-build.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build'
     @echo "Native app built"
 
 xcode-build-release: xcodegen rust-build-release
     @echo "Building native macOS app (release)..."
-    mkdir -p {{native_log_dir}}
-    rm -rf {{xcode_derived_data}}
-    {{clean_log}} --log {{native_log_dir}}/xcode-build-release.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build
+    {{native_lock_tool}} xcode-build-release zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-build-release.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build'
     @echo "Native app built (release)"
 
 xcode-test: xcodegen rust-build
-    rm -rf {{xcode_derived_data}}
-    rm -rf native/build/Debug
-    mkdir -p {{native_log_dir}}
-    {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test
+    {{native_lock_tool}} xcode-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && rm -rf native/build/Debug && {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test'
 
 xcode-ui-test: xcodegen rust-build
-    mkdir -p {{native_log_dir}}
-    {{clean_log}} --log {{native_log_dir}}/xcode-ui-test.log -- xcodebuild -project {{xcode_project}} -scheme PnevmaUITests -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test
+    {{native_lock_tool}} xcode-ui-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-ui-test.log -- xcodebuild -project {{xcode_project}} -scheme PnevmaUITests -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test'
 
 # SPM build path (alternative to xcodebuild)
 spm-build: rust-build

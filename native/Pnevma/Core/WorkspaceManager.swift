@@ -78,6 +78,16 @@ final class WorkspaceManager {
         projectPathResolver.cleanupAll(workspaces: workspaces)
     }
 
+    func prepareForShutdown() async {
+        if activeWorkspace?.kind == .project {
+            do {
+                let _: OkResponse = try await commandBus.call(method: "project.close", params: EmptyParams())
+            } catch {
+                Log.workspace.error("Failed to close backend project during shutdown: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     @discardableResult
     func createWorkspace(
         name: String,

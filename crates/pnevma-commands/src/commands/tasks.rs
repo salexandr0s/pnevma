@@ -574,18 +574,67 @@ pub async fn merge_queue_execute(
     )
     .await;
 
-    let dirty = git_output(&worktree_path, &["status", "--porcelain"]).await?;
+    let mut dirty = git_output(&worktree_path, &["status", "--porcelain"]).await?;
+    let mut repair_error: Option<String> = None;
+    if task_row.status == "Review" && task.branch.is_some() {
+        match prepare_task_branch_for_review(&worktree_path, task_uuid, &task.title, &target_branch)
+            .await
+        {
+            Ok(commit_result) => {
+                append_event(
+                    &db,
+                    project_id,
+                    Some(task_uuid),
+                    None,
+                    "git",
+                    "AgentChangesCommitted",
+                    json!({
+                        "task_id": task_id,
+                        "branch": task.branch.clone(),
+                        "commit_sha": commit_result.commit_sha,
+                        "commit_message": commit_result.commit_message,
+                        "source": "merge_queue_repair",
+                    }),
+                )
+                .await;
+                dirty = git_output(&worktree_path, &["status", "--porcelain"]).await?;
+            }
+            Err(error) => {
+                repair_error = Some(error.clone());
+                append_event(
+                    &db,
+                    project_id,
+                    Some(task_uuid),
+                    None,
+                    "git",
+                    "AgentOutputNotMergeReady",
+                    json!({
+                        "task_id": task_id,
+                        "error": error,
+                        "source": "merge_queue_repair",
+                    }),
+                )
+                .await;
+            }
+        }
+    }
     if !dirty.trim().is_empty() {
+        let reason = repair_error
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| format!("{value}; remaining dirty paths: {}", dirty.trim()))
+            .unwrap_or_else(|| "worktree has uncommitted changes".to_string());
         queue_item.status = "Blocked".to_string();
-        queue_item.blocked_reason = Some("worktree has uncommitted changes".to_string());
+        queue_item.blocked_reason = Some(reason.clone());
         db.upsert_merge_queue_item(&queue_item)
             .await
             .map_err(|e| e.to_string())?;
+        notify_merge_queue_blocked(&db, emitter, project_id, task_uuid, &task.title, &reason).await;
         emitter.emit(
             "merge_queue_updated",
             json!({"task_id": task_id, "status": "Blocked"}),
         );
-        return Err("merge blocked: worktree has uncommitted changes".to_string());
+        return Err(format!("merge blocked: {reason}"));
     }
 
     if let Err(err) = git_output(&worktree_path, &["rebase", &target_branch]).await {
@@ -600,6 +649,15 @@ pub async fn merge_queue_execute(
         db.upsert_merge_queue_item(&queue_item)
             .await
             .map_err(|e| e.to_string())?;
+        notify_merge_queue_blocked(
+            &db,
+            emitter,
+            project_id,
+            task_uuid,
+            &task.title,
+            &format!("rebasing onto '{target_branch}' produced conflicts"),
+        )
+        .await;
         emitter.emit(
             "merge_queue_updated",
             json!({"task_id": task_id, "status": "Blocked"}),
@@ -625,6 +683,15 @@ pub async fn merge_queue_execute(
         db.upsert_merge_queue_item(&queue_item)
             .await
             .map_err(|e| e.to_string())?;
+        notify_merge_queue_blocked(
+            &db,
+            emitter,
+            project_id,
+            task_uuid,
+            &task.title,
+            "automated checks failed after rebase",
+        )
+        .await;
         emitter.emit(
             "merge_queue_updated",
             json!({"task_id": task_id, "status": "Blocked"}),
@@ -654,7 +721,7 @@ pub async fn merge_queue_execute(
     task_row.status = "Done".to_string();
     task_row.updated_at = Utc::now();
     db.update_task(&task_row).await.map_err(|e| e.to_string())?;
-    cleanup_task_worktree(
+    cleanup_task_worktree_and_branch(
         &db,
         &git,
         project_id,
@@ -663,6 +730,21 @@ pub async fn merge_queue_execute(
         Some(&project_path),
     )
     .await?;
+    if git_ref_exists(&project_path, &format!("refs/heads/{}", worktree.branch)).await? {
+        return Err(format!(
+            "merged branch still exists after cleanup: {}",
+            worktree.branch
+        ));
+    }
+    super::refresh_dependency_states_after_completion(
+        &db,
+        project_id,
+        task_uuid,
+        Some(emitter),
+        state,
+    )
+    .await?;
+    check_workflow_completion(&db, &task_id, Some(emitter)).await;
 
     queue_item.status = "Merged".to_string();
     queue_item.completed_at = Some(Utc::now());
@@ -690,6 +772,15 @@ pub async fn merge_queue_execute(
         &global_config,
         "merge.completed",
         json!({"task_id": task_id, "target_branch": target_branch}),
+    )
+    .await;
+    notify_merge_completed(
+        &db,
+        emitter,
+        project_id,
+        task_uuid,
+        &task.title,
+        &target_branch,
     )
     .await;
     emit_enriched_task_event(emitter, &db, &task_id).await;
@@ -1251,6 +1342,17 @@ pub async fn update_task(
     )
     .await
     .map_err(|e| e.to_string())?;
+    notify_task_status_transition(
+        &db,
+        emitter,
+        project_id,
+        task.id,
+        &row.title,
+        &previous_status,
+        &task.status,
+        row.handoff_summary.as_deref(),
+    )
+    .await;
     refresh_dependency_states(&db, project_id, Some(emitter), state).await?;
     emit_task_updated(&db, project_id, task.id).await;
     emit_enriched_task_event(emitter, &db, &row.id).await;
@@ -1280,7 +1382,7 @@ pub async fn update_task(
             // Refresh deps to unblock/auto-dispatch newly created loop tasks
             refresh_dependency_states(&db, project_id, Some(emitter), state).await?;
         } else {
-            check_workflow_completion(&db, &row.id).await;
+            check_workflow_completion(&db, &row.id, Some(emitter)).await;
         }
     }
     task_row_to_view(row.clone(), db.task_cost_total(&row.id).await.ok())
@@ -1333,7 +1435,18 @@ pub async fn dispatch_task(
             Err(e) => return Err(e.to_string()),
         };
 
-    let running = runner::start(&prepared).await.map_err(|e| e.to_string())?;
+    let manual_run_id = Uuid::new_v4();
+    let _db_run_id = runner::create_automation_run_record(&prepared, manual_run_id, 1)
+        .await
+        .map_err(|e| e.to_string())?;
+    let running = match runner::start(&prepared).await {
+        Ok(running) => running,
+        Err(e) => {
+            let error = e.to_string();
+            runner::handle_start_failure(&prepared, &error).await;
+            return Err(error);
+        }
+    };
 
     // Register manual dispatch with coordinator if available
     {
@@ -1344,6 +1457,8 @@ pub async fn dispatch_task(
                     .register_manual_run(
                         Uuid::parse_str(&task_id).unwrap_or_default(),
                         running.session_id,
+                        running.handle.clone(),
+                        prepared.adapter.clone(),
                     )
                     .await;
             }
