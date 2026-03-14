@@ -50,7 +50,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandCenterWindowController: CommandCenterWindowController?
     private var contentAreaView: ContentAreaView?
     private var tabBarView: TabBarView?
-    private var statusBar: StatusBar?
+    private var titlebarStatusView: TitlebarStatusView?
+    private var toolDockHostView: NSView?
+    private var toolDockHeightConstraint: NSLayoutConstraint?
     private var sidebarHostView: NSView?
     private var sidebarContentView: NSView?
     private var sidebarTopToTitlebar: NSLayoutConstraint?
@@ -63,9 +65,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rightInspectorOverlayHostView: RightInspectorOverlayHostingView<AnyView>?
     private var browserDrawerOverlayBlockerView: BrowserDrawerOverlayBlockerView?
     private var browserDrawerOverlayHostView: BrowserDrawerOverlayHostingView<AnyView>?
+    private var toolDrawerOverlayBlockerView: ToolDrawerOverlayBlockerView?
+    private var toolDrawerOverlayHostView: ToolDrawerOverlayHostingView<AnyView>?
     private var uiTestReadinessView: UITestReadinessView?
     private var contentLeadingConstraint: NSLayoutConstraint?
-    private var statusLeadingConstraint: NSLayoutConstraint?
     private var tabBarLeadingConstraint: NSLayoutConstraint?
     private var contentTopToTabBar: NSLayoutConstraint?
     private var contentTopToSafeArea: NSLayoutConstraint?
@@ -92,11 +95,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let rightInspectorChromeState = RightInspectorChromeState()
     private let browserDrawerChromeState = BrowserDrawerChromeState()
     private let browserDrawerPresentationModel = BrowserDrawerPresentationModel()
+    private let toolDrawerChromeState = ToolDrawerChromeState()
+    private let toolDrawerContentModel = ToolDrawerContentModel()
     private var browserToolBridge: BrowserToolBridge?
     private var terminalOpenURLObserver: NSObjectProtocol?
     private var browserSessions: [UUID: BrowserWorkspaceSession] = [:]
     private var browserSessionPrewarmTask: Task<Void, Never>?
     private weak var browserDrawerPreviousFirstResponder: NSResponder?
+    private weak var toolDrawerPreviousFirstResponder: NSResponder?
     private lazy var rightInspectorFileBrowserViewModel = FileBrowserViewModel(
         commandBus: commandBus ?? CommandBus.shared
     )
@@ -118,6 +124,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtimeSettingsObserver: NSObjectProtocol?
     private var providerUsageStoreObserver: NSObjectProtocol?
     private var openWorkspaceModalSelection: OpenWorkspaceDestination?
+    private let toolDockState = ToolDockState()
+    private var isToolDockContentHovered = false
+    private var isToolDockEdgeHovered = false
+    private var isToolDockHovered: Bool { isToolDockContentHovered || isToolDockEdgeHovered }
+    private var toolDockCollapseWorkItem: DispatchWorkItem?
+    private var toolDockTriggerView: NSView?
     var updateCoordinator: AppUpdateCoordinator?
 
     private var activeWorkspaceSupportsRightInspector: Bool {
@@ -270,13 +282,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandBus.shared = activeCommandBus
         }
 
-        Task { [weak bridge] in
-            if let result = bridge?.call(method: "task.list", params: "{}") {
-                Log.bridge.info("Bridge test ok=\(result.ok) payload=\(result.payload)")
-            }
+        if !AppLaunchContext.uiTestLightweightMode {
+            TerminalSurface.initializeGhostty()
         }
-
-        TerminalSurface.initializeGhostty()
 
         if let fallbackCommandBus {
             workspaceManager = WorkspaceManager()
@@ -303,8 +311,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
             _ = NotificationsViewModel.shared // Initialize the singleton early
-            _ = ProviderUsageStore.shared
-            Task { await ProviderUsageStore.shared.activate() }
+            if !AppLaunchContext.uiTestLightweightMode {
+                _ = ProviderUsageStore.shared
+                Task { await ProviderUsageStore.shared.activate() }
+            }
             browserToolBridge = BrowserToolBridge(
                 sessionProvider: { [weak self] in
                     self?.workspaceManager?.activeWorkspace.flatMap { self?.browserSession(for: $0) }
@@ -323,10 +333,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if let workspace = self?.workspaceManager?.activeWorkspace {
                 workspace.ensureActiveTabHasDisplayableRootPane()
                 self?.contentAreaView?.setLayoutEngine(workspace.layoutEngine)
-                self?.statusBar?.updateBranch(workspace.gitBranch)
-                self?.statusBar?.updateAgents(workspace.activeAgents)
             }
             self?.updateTabBar()
+            self?.updateToolDockState()
             self?.persistence?.markDirty()
             // After workspace switch, rings were cleared by beginViewSwap — sync the count
             if let workspace = self?.workspaceManager?.activeWorkspace {
@@ -336,6 +345,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshBrowserDrawerOverlayRootView()
             if let workspace = self?.workspaceManager?.activeWorkspace {
                 self?.scheduleBrowserSessionPrewarm(for: workspace)
+                self?.titlebarStatusView?.updateBranch(workspace.gitBranch)
+                self?.titlebarStatusView?.updateAgents(workspace.activeAgents)
+            } else {
+                self?.titlebarStatusView?.updateBranch(nil)
+                self?.titlebarStatusView?.updateAgents(0)
             }
             self?.updateNotificationBadge()
         }
@@ -448,6 +462,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         persistence?.isPersistenceEnabled =
             !AppLaunchContext.isTesting && AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
         sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
+        refreshToolDockAutoHide(animated: true)
         if AppLaunchContext.shouldRunAutomaticUpdateChecks {
             updateCoordinator?.automaticCheck()
         }
@@ -489,9 +504,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         contentAreaView?.onActivePaneChanged = { [weak self] _ in
-            if let view = self?.contentAreaView?.activePaneView {
-                self?.statusBar?.updateActivePane(view.title)
-            }
             // Focusing a pane dismisses its notification ring, so reset the terminal count
             // based on how many rings are still active.
             if let self, let workspace = self.workspaceManager?.activeWorkspace {
@@ -500,6 +512,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.updateNotificationBadge()
                 self.updateTabBar()
             }
+            self?.updateToolDockState()
             self?.persistence?.markDirty()
         }
         contentAreaView?.onPanePersistenceChanged = { [weak self] in
@@ -522,15 +535,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 let newPane = self.makeRootPaneForActiveWorkspace()
                 self.contentAreaView?.setRootPane(newPane)
             }
+            self.updateToolDockState()
             self.persistence?.markDirty()
         }
 
-        // Status bar
-        statusBar = StatusBar()
-        statusBar?.onSessionsClicked = { [weak self] in self?.showSessionManager() }
-        statusBar?.onBrowserToggle = { [weak self] in self?.toggleBrowserDrawer() }
+        titlebarStatusView = TitlebarStatusView()
+        titlebarStatusView?.onSessionsClicked = { [weak self] in self?.showSessionManager() }
         if let sessionStore {
-            statusBar?.bindSessionStore(sessionStore)
+            titlebarStatusView?.bindSessionStore(sessionStore)
         }
 
         // Sidebar
@@ -540,11 +552,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let sidebarView = SidebarView(
             workspaceManager: workspaceManager,
-            onAddWorkspace: { [weak self] in self?.openWorkspace() },
-            onOpenSettings: { [weak self] in self?.openSettingsPane() },
-            onOpenTool: { [weak self] (toolID: String) in self?.openToolWithDefaultPresentation(toolID) },
-            onOpenToolAsTab: { [weak self] (toolID: String) in self?.openToolAsTab(toolID) },
-            onOpenToolAsPane: { [weak self] (toolID: String) in self?.openToolAsPane(toolID) }
+            onAddWorkspace: { [weak self] in self?.openWorkspace() }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
         let sidebarBacking = ThemedSidebarBackingView()
@@ -563,6 +571,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.sidebarHostView = sidebarBacking
         self.sidebarContentView = sidebarHost
+
+        let toolDockView = ToolDockBarView(
+            workspaceManager: workspaceManager,
+            dockState: toolDockState,
+            onOpenTool: { [weak self] (toolID: String) in self?.openToolWithDefaultPresentation(toolID) },
+            onOpenToolAsTab: { [weak self] (toolID: String) in self?.openToolAsTab(toolID) },
+            onOpenToolAsPane: { [weak self] (toolID: String) in self?.openToolAsPane(toolID) },
+            onHoverChanged: { [weak self] isHovering in self?.setToolDockContentHovering(isHovering) }
+        )
+        let toolDockHost = NSHostingView(rootView: toolDockView.environment(GhosttyThemeProvider.shared))
+        toolDockHost.setAccessibilityIdentifier("tool-dock.view")
+        toolDockHost.wantsLayer = true
+        toolDockHost.layer?.masksToBounds = true
+        self.toolDockHostView = toolDockHost
+
+        let trigger = BottomEdgeTracker()
+        trigger.onHoverChanged = { [weak self] isHovering in
+            self?.setToolDockEdgeHovering(isHovering)
+        }
+        self.toolDockTriggerView = trigger
 
         let rightInspectorView = RightInspectorView(
             workspaceManager: workspaceManager,
@@ -645,13 +673,40 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         browserDrawerHost.capturesPointerEvents = false
         self.browserDrawerOverlayHostView = browserDrawerHost
 
+        // Tool drawer overlay — generic drawer for non-browser tools
+        let toolDrawerBlocker = ToolDrawerOverlayBlockerView(frame: .zero)
+        toolDrawerBlocker.capturesPointerEvents = false
+        self.toolDrawerOverlayBlockerView = toolDrawerBlocker
+        let toolDrawerOverlay = ToolDrawerOverlayView(
+            chromeState: toolDrawerChromeState,
+            contentModel: toolDrawerContentModel,
+            onClose: { [weak self] () -> Void in self?.closeToolDrawer() },
+            onPinToPane: { [weak self] () -> Void in self?.pinToolDrawerToPane() },
+            onOpenAsTab: { [weak self] () -> Void in self?.openToolDrawerAsTab() },
+            onVisibilityChanged: { [weak self] isVisible in
+                self?.toolDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
+                self?.toolDrawerOverlayHostView?.capturesPointerEvents = isVisible
+            },
+            onHitRectChanged: { [weak self] rect in
+                self?.toolDrawerOverlayBlockerView?.overlayHitRect = rect
+                self?.toolDrawerOverlayHostView?.overlayHitRect = rect
+            }
+        )
+        let toolDrawerHost = ToolDrawerOverlayHostingView(
+            rootView: AnyView(toolDrawerOverlay.environment(GhosttyThemeProvider.shared))
+        )
+        toolDrawerHost.capturesPointerEvents = false
+        self.toolDrawerOverlayHostView = toolDrawerHost
+
         // Titlebar fill: themed background behind the transparent titlebar
         let titlebarFill = ThemedTitlebarFillView()
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(titlebarFill)
 
-        guard let contentArea = contentAreaView, let statusBarView = statusBar else {
-            Log.general.error("contentAreaView or statusBar not initialized")
+        guard let contentArea = contentAreaView,
+              let titlebarStatus = titlebarStatusView,
+              let toolDock = toolDockHostView else {
+            Log.general.error("contentAreaView, titlebarStatusView, or toolDockHostView not initialized")
             return
         }
 
@@ -708,6 +763,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             symbolConfig: titlebarSymbolConfig,
             hoverTintColor: .systemGreen
         )
+        addWorkspaceBtn.setAccessibilityIdentifier("titlebar.openWorkspace")
+
+        let settingsBtn = makeTitlebarButton(
+            symbolName: "gearshape",
+            accessibilityDescription: "Settings",
+            toolTip: "Settings",
+            action: #selector(openSettingsAction),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig
+        )
+        settingsBtn.setAccessibilityIdentifier("titlebar.settings")
 
         // Layout template button — positioned at the content area leading edge
         let templateBtn = makeTitlebarButton(
@@ -736,14 +802,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         pushBtn.action = #selector(titlebarPushAction)
         self.titlebarPushBtn = pushBtn
 
-        for view in [sidebarBacking, tabBar, contentArea, statusBarView, toolbarSep,
+        for view in [sidebarBacking, tabBar, contentArea, toolDock, toolbarSep,
                       rightInspectorBacking, rightInspectorResizer,
-                      sidebarToggleBtn, notificationsBtn, usageBtn, addWorkspaceBtn,
-                      templateBtn,
+                      sidebarToggleBtn, notificationsBtn, usageBtn, settingsBtn, addWorkspaceBtn,
+                      templateBtn, titlebarStatus,
                       openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             windowContent.addSubview(view)
         }
+        if let trigger = toolDockTriggerView {
+            trigger.translatesAutoresizingMaskIntoConstraints = false
+            windowContent.addSubview(trigger)
+        }
+
         rightInspectorOverlayBlocker.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(rightInspectorOverlayBlocker)
         rightInspectorOverlayHost.translatesAutoresizingMaskIntoConstraints = false
@@ -752,9 +823,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowContent.addSubview(browserDrawerBlocker)
         browserDrawerHost.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(browserDrawerHost)
+        toolDrawerBlocker.translatesAutoresizingMaskIntoConstraints = false
+        windowContent.addSubview(toolDrawerBlocker)
+        toolDrawerHost.translatesAutoresizingMaskIntoConstraints = false
+        windowContent.addSubview(toolDrawerHost)
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
-        let statusHeight = DesignTokens.Layout.statusBarHeight
+        let toolDockHeight = DesignTokens.Layout.toolDockHeight
         let tabBarHeight = DesignTokens.Layout.tabBarHeight
 
         let swc = sidebarBacking.widthAnchor.constraint(equalToConstant: sidebarWidth)
@@ -762,8 +837,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             equalToConstant: isRightInspectorPresented ? rightInspectorStoredWidth : 0
         )
         let clc = contentArea.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
-        let slc = statusBarView.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let tblc = tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
+        let toolDockHeightConstraint = toolDock.heightAnchor.constraint(equalToConstant: toolDockHeight)
 
         // Content area top: switches between below-tab-bar and directly below toolbar separator
         let topToTab = contentArea.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
@@ -775,8 +850,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarWidthConstraint = swc
         rightInspectorWidthConstraint = rightInspectorWidth
         contentLeadingConstraint = clc
-        statusLeadingConstraint = slc
         tabBarLeadingConstraint = tblc
+        self.toolDockHeightConstraint = toolDockHeightConstraint
         contentTopToTabBar = topToTab
         contentTopToSafeArea = topToSafe
 
@@ -810,12 +885,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             sidebarBacking.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
             sidebarBacking.topAnchor.constraint(equalTo: windowContent.topAnchor),
-            sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             swc,
 
             rightInspectorBacking.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
             rightInspectorBacking.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
-            rightInspectorBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             rightInspectorWidth,
 
             // Tab bar: flush below toolbar separator, tracks sidebar edge
@@ -826,18 +899,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             clc,
             contentArea.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
-            contentArea.bottomAnchor.constraint(equalTo: statusBarView.topAnchor),
+            contentArea.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
             contentArea.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
 
-            slc,
-            statusBarView.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
-            statusBarView.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
-            statusBarView.heightAnchor.constraint(equalToConstant: statusHeight),
+            sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+            rightInspectorBacking.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
+
+            toolDock.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            toolDock.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            toolDock.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+            toolDockHeightConstraint,
 
             rightInspectorResizer.leadingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor, constant: -DesignTokens.Layout.dividerHoverWidth),
             rightInspectorResizer.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor, constant: DesignTokens.Layout.dividerHoverWidth),
             rightInspectorResizer.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
-            rightInspectorResizer.bottomAnchor.constraint(equalTo: statusBarView.topAnchor),
+            rightInspectorResizer.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
 
             // Horizontal separator between titlebar and content (not over sidebar)
             toolbarSep.topAnchor.constraint(equalTo: titlebarFill.bottomAnchor),
@@ -851,7 +927,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarToggleHeight,
 
             notificationsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            notificationsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
+            notificationsBtn.trailingAnchor.constraint(equalTo: settingsBtn.leadingAnchor, constant: -4),
             notificationsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             notificationsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
@@ -859,6 +935,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             usageBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -4),
             usageBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             usageBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+
+            settingsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            settingsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
+            settingsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            settingsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
             addWorkspaceBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             addWorkspaceBtn.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor, constant: -12),
@@ -881,6 +962,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             templateBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             templateBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
+            titlebarStatus.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            titlebarStatus.leadingAnchor.constraint(greaterThanOrEqualTo: templateBtn.trailingAnchor, constant: 12),
+            titlebarStatus.trailingAnchor.constraint(lessThanOrEqualTo: openBtn.leadingAnchor, constant: -12),
+
             rightInspectorOverlayBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
             rightInspectorOverlayBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
             rightInspectorOverlayBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
@@ -900,7 +985,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             browserDrawerHost.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
             browserDrawerHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
             browserDrawerHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
+
+            toolDrawerBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
+            toolDrawerBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
+            toolDrawerBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
+            toolDrawerBlocker.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
+
+            toolDrawerHost.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
+            toolDrawerHost.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
+            toolDrawerHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
+            toolDrawerHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
         ])
+
+        if let trigger = toolDockTriggerView {
+            NSLayoutConstraint.activate([
+                trigger.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+                trigger.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+                trigger.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+                trigger.heightAnchor.constraint(equalToConstant: 10),
+            ])
+        }
         rightInspectorBacking.isHidden = !isRightInspectorPresented
         rightInspectorResizer.isHidden = !isRightInspectorPresented
         let isBrowserDrawerVisible = browserSession?.isDrawerVisible ?? false
@@ -914,10 +1018,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             scheduleBrowserSessionPrewarm(for: workspace)
         }
         updateUsageToolbarStatus()
+        titlebarStatus.updateBranch(workspaceManager.activeWorkspace?.gitBranch)
+        titlebarStatus.updateAgents(workspaceManager.activeWorkspace?.activeAgents ?? 0)
+        updateToolDockState()
+        refreshToolDockAutoHide(animated: false)
 
         // For terminal transparency (background-opacity < 1.0), the window must
         // be non-opaque so ghostty's Metal layer alpha reaches the desktop.
-        // The sidebar, status bar, and dividers all paint their own backgrounds.
+        // The sidebar, tool dock, and dividers all paint their own backgrounds.
         let theme = GhosttyThemeProvider.shared
         if theme.backgroundOpacity < 1.0 {
             win.isOpaque = false
@@ -2569,6 +2677,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleBrowserSessionPrewarm(for workspace: Workspace) {
+        guard !AppLaunchContext.uiTestLightweightMode else { return }
         browserSessionPrewarmTask?.cancel()
         let workspaceID = workspace.id
         browserSessionPrewarmTask = Task { @MainActor [weak self] in
@@ -2595,6 +2704,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             browserDrawerChromeState.drawerHitRect = .zero
             host.overlayHitRect = .zero
             browserDrawerOverlayBlockerView?.overlayHitRect = .zero
+            updateToolDockState()
             return
         }
 
@@ -2612,6 +2722,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             host.overlayHitRect = .zero
             browserDrawerOverlayBlockerView?.overlayHitRect = .zero
         }
+        updateToolDockState()
     }
 
     private func focusExistingBrowserPaneIfPresent() -> Bool {
@@ -2692,6 +2803,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         let session = browserSession(for: workspace)
 
+        // Close the generic tool drawer if it's open
+        if toolDrawerChromeState.isPresented {
+            closeToolDrawer()
+        }
+
         if focusExistingBrowserPaneIfPresent() {
             if let url {
                 session.navigate(to: url, revealInDrawer: false)
@@ -2734,6 +2850,118 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshBrowserDrawerOverlayRootView()
         DispatchQueue.main.async { [weak self] in
             self?.openToolAsTab("browser")
+        }
+    }
+
+    // MARK: - Generic tool drawer
+
+    private func openToolInDrawer(_ toolID: String) {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              let tool = sidebarTool(id: toolID, in: workspace) else { return }
+
+        // Close browser drawer if open
+        if let session = existingActiveBrowserSession(), session.isDrawerVisible {
+            session.hideDrawer()
+            refreshBrowserDrawerOverlayRootView()
+        }
+
+        // Same tool — toggle the drawer
+        if toolDrawerContentModel.activeToolID == toolID {
+            if toolDrawerChromeState.isPresented {
+                closeToolDrawer()
+            } else {
+                toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
+                toolDrawerChromeState.isPresented = true
+                toolDockState.activeToolID = toolID
+            }
+            return
+        }
+
+        // Different tool while drawer is already open — swap content instantly
+        let alreadyPresented = toolDrawerChromeState.isPresented
+
+        // Discard previous pane
+        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+
+        // Create a fresh pane for the new tool
+        guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
+              let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
+
+        if !alreadyPresented {
+            toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
+        }
+
+        // Swap content without animation when replacing
+        if alreadyPresented {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                toolDrawerContentModel.activeToolID = toolID
+                toolDrawerContentModel.activeToolTitle = tool.title
+                toolDrawerContentModel.activePaneView = paneView
+                toolDrawerContentModel.activePaneID = paneID
+                toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight(for: toolID)
+            }
+        } else {
+            toolDrawerContentModel.activeToolID = toolID
+            toolDrawerContentModel.activeToolTitle = tool.title
+            toolDrawerContentModel.activePaneView = paneView
+            toolDrawerContentModel.activePaneID = paneID
+            toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight(for: toolID)
+            toolDrawerChromeState.isPresented = true
+        }
+        toolDockState.activeToolID = toolID
+    }
+
+    private func closeToolDrawer() {
+        toolDrawerChromeState.isPresented = false
+        toolDrawerChromeState.drawerHitRect = .zero
+        toolDockState.activeToolID = nil
+        if let previous = toolDrawerPreviousFirstResponder {
+            window?.makeFirstResponder(previous)
+        } else if let pane = contentAreaView?.activePaneView {
+            window?.makeFirstResponder(pane)
+        }
+        toolDrawerPreviousFirstResponder = nil
+        // Defer cleanup so the dismiss animation can play
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, !self.toolDrawerChromeState.isPresented else { return }
+            self.toolDrawerContentModel.activePaneView?.removeFromSuperview()
+            self.toolDrawerContentModel.activePaneView = nil
+            self.toolDrawerContentModel.activePaneID = nil
+            self.toolDrawerContentModel.activeToolID = nil
+            self.toolDrawerContentModel.activeToolTitle = nil
+        }
+    }
+
+    private func pinToolDrawerToPane() {
+        guard let paneView = toolDrawerContentModel.activePaneView,
+              let toolID = toolDrawerContentModel.activeToolID else { return }
+        // Detach the pane view from the drawer before moving it
+        paneView.removeFromSuperview()
+        toolDrawerChromeState.isPresented = false
+        toolDockState.activeToolID = nil
+        toolDrawerContentModel.activePaneView = nil
+        toolDrawerContentModel.activePaneID = nil
+        toolDrawerContentModel.activeToolID = nil
+        toolDrawerContentModel.activeToolTitle = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.openToolAsPane(toolID)
+        }
+    }
+
+    private func openToolDrawerAsTab() {
+        guard let toolID = toolDrawerContentModel.activeToolID else { return }
+        // Detach the pane view from the drawer
+        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+        toolDrawerChromeState.isPresented = false
+        toolDockState.activeToolID = nil
+        toolDrawerContentModel.activePaneView = nil
+        toolDrawerContentModel.activePaneID = nil
+        toolDrawerContentModel.activeToolID = nil
+        toolDrawerContentModel.activeToolTitle = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.openToolAsTab(toolID)
         }
     }
 
@@ -2859,22 +3087,99 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    private func updateToolDockState() {
+        guard let workspace = workspaceManager?.activeWorkspace else {
+            toolDockState.activeToolID = nil
+            toolDockState.notificationBadgeCount = 0
+            return
+        }
+
+        if existingBrowserSession(for: workspace)?.isDrawerVisible == true,
+           sidebarTool(id: "browser", in: workspace) != nil {
+            toolDockState.activeToolID = "browser"
+        } else if let paneType = contentAreaView?.activePaneView?.paneType,
+                  let tool = sidebarToolDefinition(paneType: paneType),
+                  sidebarTool(id: tool.id, in: workspace) != nil {
+            toolDockState.activeToolID = tool.id
+        } else {
+            toolDockState.activeToolID = nil
+        }
+
+        toolDockState.notificationBadgeCount = workspace.unreadNotifications + workspace.terminalNotificationCount
+    }
+
+    private func setToolDockContentHovering(_ isHovering: Bool) {
+        isToolDockContentHovered = isHovering
+        evaluateToolDockHover()
+    }
+
+    private func setToolDockEdgeHovering(_ isHovering: Bool) {
+        isToolDockEdgeHovered = isHovering
+        evaluateToolDockHover()
+    }
+
+    private func evaluateToolDockHover() {
+        toolDockCollapseWorkItem?.cancel()
+
+        guard AppRuntimeSettings.shared.bottomToolBarAutoHide else {
+            setToolDockExpanded(true, animated: true)
+            return
+        }
+
+        if isToolDockHovered {
+            setToolDockExpanded(true, animated: true)
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard !self.isToolDockHovered, AppRuntimeSettings.shared.bottomToolBarAutoHide else { return }
+            self.setToolDockExpanded(false, animated: true)
+        }
+        toolDockCollapseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    }
+
+    private func refreshToolDockAutoHide(animated: Bool) {
+        toolDockCollapseWorkItem?.cancel()
+        let shouldExpand = !AppRuntimeSettings.shared.bottomToolBarAutoHide || isToolDockHovered
+        setToolDockExpanded(shouldExpand, animated: animated)
+    }
+
+    private func setToolDockExpanded(_ isExpanded: Bool, animated: Bool) {
+        guard let toolDockHeightConstraint else { return }
+        let targetHeight = isExpanded || !AppRuntimeSettings.shared.bottomToolBarAutoHide
+            ? DesignTokens.Layout.toolDockHeight
+            : DesignTokens.Layout.toolDockRevealHeight
+        guard toolDockHeightConstraint.constant != targetHeight else { return }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = DesignTokens.Motion.normal
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                toolDockHeightConstraint.animator().constant = targetHeight
+                window?.contentView?.layoutSubtreeIfNeeded()
+            }
+        } else {
+            toolDockHeightConstraint.constant = targetHeight
+            window?.contentView?.layoutSubtreeIfNeeded()
+        }
+    }
+
     private func openToolWithDefaultPresentation(_ toolID: String) {
+        if toolID == "settings" {
+            openSettingsPane()
+            return
+        }
         if toolID == "browser" {
+            // Close the generic tool drawer if it's open
+            if toolDrawerChromeState.isPresented {
+                closeToolDrawer()
+            }
             openBrowserInWorkspace(url: nil, source: .command)
             return
         }
-        guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else {
-            return
-        }
-        switch tool.defaultPresentation {
-        case .pane:
-            openToolAsPane(toolID)
-        case .tab:
-            openToolAsTab(toolID)
-        case .drawer:
-            openBrowserInWorkspace(url: nil, source: .command)
-        }
+        openToolInDrawer(toolID)
     }
 
     private func openPaneTypeWithDefaultPresentation(_ paneType: String) {
@@ -3250,8 +3555,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
             return
         }
-        guard let statusBar, let sessionStore else { return }
-        let button = statusBar.sessionsButton
+        guard let titlebarStatusView, let sessionStore else { return }
+        let button = titlebarStatusView.sessionsButton
 
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 380, height: 320)
@@ -3274,6 +3579,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         notificationBadge?.count = workspace.unreadNotifications + workspace.terminalNotificationCount
+        updateToolDockState()
     }
 
     private func updateUsageToolbarStatus() {
@@ -3516,47 +3822,6 @@ extension AppDelegate {
     }
 }
 
-// MARK: - HoverTintButton
-
-final class HoverTintButton: NSButton {
-    private let normalColor: NSColor
-    private let hoverColor: NSColor
-    private var trackingArea: NSTrackingArea?
-
-    init(frame: NSRect, normalColor: NSColor, hoverColor: NSColor) {
-        self.normalColor = normalColor
-        self.hoverColor = hoverColor
-        super.init(frame: frame)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError()
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let existing = trackingArea {
-            removeTrackingArea(existing)
-        }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        contentTintColor = hoverColor
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        contentTintColor = normalColor
-    }
-}
 
 // MARK: - NSWindowDelegate
 
@@ -3650,494 +3915,36 @@ extension AppDelegate {
     }
 }
 
-// MARK: - ThemedTitlebarFillView
+// MARK: - BottomEdgeTracker
 
-/// Covers the titlebar area with the ghostty theme background so the
-/// transparent titlebar matches the rest of the chrome instead of being clear.
-private final class ThemedTitlebarFillView: NSView {
-    private var themeObserver: NSObjectProtocol?
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.isOpaque = true
-        updateBackgroundColor()
-        themeObserver = NotificationCenter.default.addObserver(
-            forName: GhosttyThemeProvider.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.updateBackgroundColor()
-        }
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
-    override var isOpaque: Bool { true }
-
-    override func mouseUp(with event: NSEvent) {
-        if event.clickCount == 2 {
-            window?.toggleFullScreen(nil)
-        } else {
-            super.mouseUp(with: event)
-        }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let theme = GhosttyThemeProvider.shared
-        theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).setFill()
-        bounds.fill()
-    }
-
-    private func updateBackgroundColor() {
-        let theme = GhosttyThemeProvider.shared
-        layer?.backgroundColor = theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).cgColor
-        needsDisplay = true
-    }
-}
-
-// MARK: - ThemedSidebarBackingView
-
-/// Sidebar backing view that uses the ghostty theme background color
-/// instead of the system NSVisualEffectView blur, so the sidebar matches
-/// the terminal's color scheme.
-private final class ThemedSidebarBackingView: NSView {
-    private var themeObserver: NSObjectProtocol?
-    private let rightSeparator = NSView()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.isOpaque = true
-        layer?.masksToBounds = true
-
-        // Right-edge separator matching ghostty split dividers
-        rightSeparator.wantsLayer = true
-        rightSeparator.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(rightSeparator)
-        NSLayoutConstraint.activate([
-            rightSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
-            rightSeparator.topAnchor.constraint(equalTo: topAnchor),
-            rightSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
-            rightSeparator.widthAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
-        ])
-
-        updateBackgroundColor()
-        themeObserver = NotificationCenter.default.addObserver(
-            forName: GhosttyThemeProvider.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.updateBackgroundColor()
-        }
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
-    override var isOpaque: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
-        if offset == 0 {
-            bg.setFill()
-        } else {
-            bg.blended(withFraction: offset, of: .white)?.setFill() ?? bg.setFill()
-        }
-        bounds.fill()
-    }
-
-    private func updateBackgroundColor() {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
-        let resolved: NSColor
-        if offset == 0 {
-            resolved = bg
-        } else {
-            resolved = bg.blended(withFraction: offset, of: .white) ?? bg
-        }
-        layer?.backgroundColor = resolved.cgColor
-        rightSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
-        needsDisplay = true
-    }
-}
-
-private final class ThemedRightInspectorBackingView: NSView {
-    private var themeObserver: NSObjectProtocol?
-    private let leftSeparator = NSView()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.isOpaque = true
-        layer?.masksToBounds = true
-
-        leftSeparator.wantsLayer = true
-        leftSeparator.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(leftSeparator)
-        NSLayoutConstraint.activate([
-            leftSeparator.leadingAnchor.constraint(equalTo: leadingAnchor),
-            leftSeparator.topAnchor.constraint(equalTo: topAnchor),
-            leftSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
-            leftSeparator.widthAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
-        ])
-
-        updateBackgroundColor()
-        themeObserver = NotificationCenter.default.addObserver(
-            forName: GhosttyThemeProvider.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.updateBackgroundColor()
-        }
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
-    override var isOpaque: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        bg.setFill()
-        bounds.fill()
-    }
-
-    private func updateBackgroundColor() {
-        let theme = GhosttyThemeProvider.shared
-        layer?.backgroundColor = theme.backgroundColor.cgColor
-        leftSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
-        needsDisplay = true
-    }
-}
-
-private final class RightInspectorResizeHandleView: NSView {
-    var onResize: ((CGFloat) -> Void)?
-    private var trackingAreaRef: NSTrackingArea?
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-        setAccessibilityElement(true)
-        setAccessibilityLabel("Resize right inspector")
-        setAccessibilityHelp("Drag left or right to resize the project inspector.")
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
-    }
+/// Invisible view at the bottom window edge that reliably detects mouse hover
+/// via NSTrackingArea, bypassing the window resize handle that interferes with
+/// SwiftUI's .onHover on very small views in windowed mode.
+private final class BottomEdgeTracker: NSView {
+    var onHoverChanged: ((Bool) -> Void)?
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let trackingAreaRef {
-            removeTrackingArea(trackingAreaRef)
-        }
-        let trackingAreaRef = NSTrackingArea(
+        for area in trackingAreas { removeTrackingArea(area) }
+        guard !bounds.isEmpty else { return }
+        let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
             owner: self,
             userInfo: nil
         )
-        addTrackingArea(trackingAreaRef)
-        self.trackingAreaRef = trackingAreaRef
+        addTrackingArea(area)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil // pass through all clicks to views behind
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+        onHoverChanged?(true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.clear.cgColor
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        var lastX = event.locationInWindow.x
-        while let nextEvent = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            switch nextEvent.type {
-            case .leftMouseDragged:
-                let currentX = nextEvent.locationInWindow.x
-                onResize?(currentX - lastX)
-                lastX = currentX
-            case .leftMouseUp:
-                return
-            default:
-                break
-            }
-        }
-    }
-}
-
-// MARK: - ThemedSeparatorView
-
-/// A subtle 1pt separator line that follows the ghostty split divider color.
-private final class ThemedSeparatorView: NSView {
-    enum Axis { case horizontal, vertical }
-    private let axis: Axis
-    private var themeObserver: NSObjectProtocol?
-
-    init(axis: Axis) {
-        self.axis = axis
-        super.init(frame: .zero)
-        wantsLayer = true
-        updateColor()
-        themeObserver = NotificationCenter.default.addObserver(
-            forName: GhosttyThemeProvider.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.updateColor()
-        }
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
-    private func updateColor() {
-        let theme = GhosttyThemeProvider.shared
-        layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
-    }
-}
-
-// MARK: - Notifications Popover
-
-struct NotificationsPopoverView: View {
-    @State private var viewModel = NotificationsViewModel.shared
-    var onViewAll: (() -> Void)?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Notifications")
-                    .font(.headline)
-                Spacer()
-                Button("Mark All Read") { viewModel.markAllRead() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .font(.caption)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            Divider()
-
-            if let statusMessage = viewModel.statusMessage {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "bell.badge")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                    Text(statusMessage)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            } else if viewModel.filteredNotifications.isEmpty {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "bell.slash")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                    Text("No notifications yet")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Text("Desktop notifications will appear here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            } else {
-                List(viewModel.filteredNotifications.prefix(10)) { notification in
-                    NotificationRow(notification: notification)
-                        .onTapGesture { viewModel.markRead(notification.id) }
-                }
-                .listStyle(.plain)
-            }
-
-            Divider()
-
-            Button(action: { onViewAll?() }) {
-                Text("View All")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-}
-
-private final class BadgeOverlayView: NSView {
-    var count: Int = 0 {
-        didSet {
-            isHidden = count <= 0
-            needsDisplay = true
-        }
-    }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        isHidden = true
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard count > 0 else { return }
-
-        let text = count > 99 ? "99+" : "\(count)"
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 8, weight: .bold),
-            .foregroundColor: NSColor.white
-        ]
-        let textSize = (text as NSString).size(withAttributes: attributes)
-
-        let capsuleWidth = max(textSize.width + 6, 14)
-        let capsuleHeight: CGFloat = 12
-        let capsuleRect = NSRect(
-            x: bounds.width - capsuleWidth,
-            y: 0,
-            width: capsuleWidth,
-            height: capsuleHeight
-        )
-        let capsulePath = NSBezierPath(roundedRect: capsuleRect, xRadius: capsuleHeight / 2, yRadius: capsuleHeight / 2)
-        NSColor.systemRed.setFill()
-        capsulePath.fill()
-
-        let textRect = NSRect(
-            x: capsuleRect.midX - textSize.width / 2,
-            y: capsuleRect.midY - textSize.height / 2,
-            width: textSize.width,
-            height: textSize.height
-        )
-        (text as NSString).draw(in: textRect, withAttributes: attributes)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-private final class StatusDotOverlayView: NSView {
-    enum Status {
-        case hidden
-        case ok
-        case warning
-        case error
-    }
-
-    var status: Status = .hidden {
-        didSet {
-            isHidden = status == .hidden
-            needsDisplay = true
-        }
-    }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        isHidden = true
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard status != .hidden else { return }
-        let color: NSColor = switch status {
-        case .hidden:
-            .clear
-        case .ok:
-            .systemGreen
-        case .warning:
-            .systemOrange
-        case .error:
-            .systemRed
-        }
-        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
-        color.setFill()
-        circle.fill()
-        NSColor.black.withAlphaComponent(0.35).setStroke()
-        circle.lineWidth = 0.5
-        circle.stroke()
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-private final class RightInspectorOverlayBlockerView: NSView {
-    override var isFlipped: Bool { true }
-    var capturesPointerEvents = false
-    var overlayHitRect: CGRect = .zero
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard capturesPointerEvents else { return nil }
-        let localPoint = convert(point, from: superview)
-        guard bounds.contains(localPoint) else { return nil }
-        // Block all clicks in the content area when the overlay is visible.
-        // Clicks on interactive SwiftUI controls are caught by the hosting view
-        // (which sits above this view in z-order) before reaching here.
-        return self
-    }
-}
-
-private final class RightInspectorOverlayHostingView<Content: View>: NSHostingView<Content> {
-    var capturesPointerEvents = false
-    var overlayHitRect: CGRect = .zero
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard capturesPointerEvents else { return nil }
-        // Delegate entirely to NSHostingView which bridges AppKit hit-testing
-        // into SwiftUI's coordinate system correctly — no manual coordinate
-        // conversion or overlayHitRect comparison needed.
-        return super.hitTest(point)
-    }
-}
-
-private final class BrowserDrawerOverlayBlockerView: NSView {
-    override var isFlipped: Bool { true }
-    var capturesPointerEvents = false
-    var overlayHitRect: CGRect = .zero
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-}
-
-private final class BrowserDrawerOverlayHostingView<Content: View>: NSHostingView<Content> {
-    var capturesPointerEvents = false
-    var overlayHitRect: CGRect = .zero
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard capturesPointerEvents else { return nil }
-        return super.hitTest(point)
+        onHoverChanged?(false)
     }
 }
