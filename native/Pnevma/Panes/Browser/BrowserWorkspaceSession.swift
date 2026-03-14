@@ -13,6 +13,8 @@ final class BrowserWorkspaceSession {
     private var hasRestoredInitialURL = false
     private var onURLChanged: ((URL?) -> Void)?
     private var onDrawerHeightChanged: ((Double?) -> Void)?
+    @ObservationIgnored
+    nonisolated(unsafe) private var pendingDrawerRestoreTask: Task<Void, Never>?
 
     init(
         workspaceID: UUID = UUID(),
@@ -35,11 +37,16 @@ final class BrowserWorkspaceSession {
         }
     }
 
+    deinit {
+        pendingDrawerRestoreTask?.cancel()
+    }
+
     var currentURL: URL? {
         viewModel.persistedURL ?? restoredURL
     }
 
     func updateRestoredURL(_ url: URL?) {
+        cancelPendingDrawerRestore()
         restoredURL = url
         if viewModel.persistedURL == nil {
             hasRestoredInitialURL = false
@@ -55,6 +62,8 @@ final class BrowserWorkspaceSession {
     }
 
     func restoreIfNeeded() {
+        pendingDrawerRestoreTask?.cancel()
+        pendingDrawerRestoreTask = nil
         guard !hasRestoredInitialURL else { return }
         hasRestoredInitialURL = true
         guard viewModel.persistedURL == nil, let restoredURL else { return }
@@ -63,7 +72,6 @@ final class BrowserWorkspaceSession {
     }
 
     func showDrawer(focusOmnibar: Bool = true) {
-        restoreIfNeeded()
         isDrawerVisible = true
         if focusOmnibar {
             viewModel.requestOmnibarFocus()
@@ -71,6 +79,7 @@ final class BrowserWorkspaceSession {
     }
 
     func hideDrawer() {
+        cancelPendingDrawerRestore()
         isDrawerVisible = false
     }
 
@@ -78,6 +87,7 @@ final class BrowserWorkspaceSession {
         if revealInDrawer {
             isDrawerVisible = true
         }
+        cancelPendingDrawerRestore()
         hasRestoredInitialURL = true
         restoredURL = url
         viewModel.navigate(to: url)
@@ -88,6 +98,28 @@ final class BrowserWorkspaceSession {
 
     func requestOmnibarFocus() {
         viewModel.requestOmnibarFocus()
+    }
+
+    func cancelPendingDrawerRestore() {
+        pendingDrawerRestoreTask?.cancel()
+        pendingDrawerRestoreTask = nil
+    }
+
+    func scheduleDrawerRestoreIfNeeded(after delay: Duration = .seconds(0)) {
+        cancelPendingDrawerRestore()
+        guard isDrawerVisible else { return }
+        guard !hasRestoredInitialURL else { return }
+        guard viewModel.persistedURL == nil, restoredURL != nil else { return }
+
+        pendingDrawerRestoreTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+            }
+            guard !Task.isCancelled else { return }
+            guard self.isDrawerVisible else { return }
+            self.restoreIfNeeded()
+        }
     }
 
     func resolvedDrawerHeight(for availableHeight: CGFloat) -> CGFloat {

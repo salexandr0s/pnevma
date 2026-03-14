@@ -100,6 +100,9 @@ actor CommandBus: CommandCalling {
     }
 }
 
+// SAFETY: @unchecked Sendable is safe here because this class is @MainActor-isolated,
+// ensuring all property access happens on the main thread. The Sendable conformance
+// is needed only to pass references across isolation boundaries (e.g., into Tasks).
 @MainActor
 final class ActiveWorkspaceCommandBus: CommandCalling, @unchecked Sendable {
     private let fallback: any CommandCalling
@@ -159,6 +162,8 @@ enum PnevmaError: Error, LocalizedError {
             return "Workspace trust is required before this project can open."
         case "workspace_config_changed":
             return "The workspace configuration changed and must be trusted again before opening."
+        case "workspace_not_initialized":
+            return "This workspace is missing pnevma.toml and the .pnevma support files. Initialize the project scaffold to open it."
         case "no open project":
             return "No active project is available."
         case "no projects available":

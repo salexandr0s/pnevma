@@ -387,6 +387,7 @@ private struct TaskLaneColumn: View {
                             .padding(8)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Create task")
                     .background(
                         Circle()
                             .fill(Color.accentColor.opacity(0.14))
@@ -494,6 +495,7 @@ private struct TaskCard: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .accessibilityLabel("Task actions")
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -696,8 +698,8 @@ private struct TaskCreationSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Goal")
                                 .font(.callout.weight(.semibold))
-                            TextEditor(text: $draft.goal)
-                                .frame(minHeight: 84)
+                            TextField("", text: $draft.goal, axis: .vertical)
+                                .lineLimit(3...6)
                                 .font(.callout)
                         }
                         Picker("Priority", selection: $draft.priority) {

@@ -51,11 +51,17 @@ async fn call(
 ) -> axum::response::Response {
     match router.route(method, &params).await {
         Ok(result) => (StatusCode::OK, Json(RpcResponse::success(result))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(RpcResponse::failure(e)),
-        )
-            .into_response(),
+        Err(e) => {
+            let error_id = uuid::Uuid::new_v4().to_string();
+            tracing::warn!(error_id = %error_id, method = %method, error = %e, "RPC call failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RpcResponse::failure(format!(
+                    "internal error (ref: {error_id})"
+                ))),
+            )
+                .into_response()
+        }
     }
 }
 

@@ -53,6 +53,8 @@ pub enum RunnerError {
     NoAdapter,
     #[error("queued:{0}")]
     Queued(usize),
+    #[error("dispatch failed: {0}")]
+    DispatchFailed(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -348,17 +350,22 @@ pub async fn prepare(
 
     let queued = QueuedDispatch {
         task_id: task_id_uuid,
-        priority: task.priority.clone(),
+        priority: task.priority,
     };
 
     let permit = match pool.try_acquire(queued).await {
-        Ok(permit) => permit,
-        Err(position) => {
+        pnevma_agents::TryAcquireResult::Acquired(permit) => permit,
+        pnevma_agents::TryAcquireResult::Queued(position) => {
             emitter.emit(
                 "task_queue_updated",
                 json!({"task_id": task_id, "queued_position": position}),
             );
             return Err(RunnerError::Queued(position));
+        }
+        pnevma_agents::TryAcquireResult::QueueFull(position) => {
+            return Err(RunnerError::DispatchFailed(format!(
+                "dispatch queue full (capacity {position}), try again later"
+            )));
         }
     };
 
@@ -1749,7 +1756,7 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                 id: Uuid::new_v4().to_string(),
                 project_id: project_id.to_string(),
                 signature_hash: sig_hash,
-                canonical_message: normalized,
+                canonical_message: normalized.into_owned(),
                 category: category.to_string(),
                 first_seen: now,
                 last_seen: now,

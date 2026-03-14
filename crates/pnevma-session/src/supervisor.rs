@@ -2,9 +2,9 @@ use crate::error::SessionError;
 use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
 use chrono::{Duration, Utc};
 use pnevma_redaction::{normalize_secrets, StreamRedactionBuffer};
-use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
@@ -19,11 +19,11 @@ fn redact_stream_chunk(input: &str) -> String {
 #[derive(Debug, Clone)]
 struct StreamRedactor {
     buffer: StreamRedactionBuffer,
-    secrets: Arc<RwLock<Vec<SecretString>>>,
+    secrets: Arc<RwLock<Vec<String>>>,
 }
 
 impl StreamRedactor {
-    fn new(secrets: Arc<RwLock<Vec<SecretString>>>) -> Self {
+    fn new(secrets: Arc<RwLock<Vec<String>>>) -> Self {
         Self {
             buffer: StreamRedactionBuffer::new(),
             secrets,
@@ -31,23 +31,13 @@ impl StreamRedactor {
     }
 
     async fn push_chunk(&mut self, chunk: &str) -> Option<String> {
-        let guard = self.secrets.read().await;
-        let exposed: Vec<String> = guard
-            .iter()
-            .map(|s| s.expose_secret().to_string())
-            .collect();
-        drop(guard);
-        self.buffer.push_chunk(chunk, &exposed)
+        let secrets = self.secrets.read().await.clone();
+        self.buffer.push_chunk(chunk, &secrets)
     }
 
     async fn finish(&mut self) -> Option<String> {
-        let guard = self.secrets.read().await;
-        let exposed: Vec<String> = guard
-            .iter()
-            .map(|s| s.expose_secret().to_string())
-            .collect();
-        drop(guard);
-        self.buffer.finish(&exposed)
+        let secrets = self.secrets.read().await.clone();
+        self.buffer.finish(&secrets)
     }
 }
 
@@ -127,11 +117,64 @@ pub fn resolve_binary(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Encodes `SessionHealth` as a `u8` for atomic storage.
+fn health_to_u8(h: &SessionHealth) -> u8 {
+    match h {
+        SessionHealth::Active => 0,
+        SessionHealth::Idle => 1,
+        SessionHealth::Stuck => 2,
+        SessionHealth::Waiting => 3,
+        SessionHealth::Error => 4,
+        SessionHealth::Complete => 5,
+    }
+}
+
+/// Decodes a `u8` back to `SessionHealth`.
+fn u8_to_health(v: u8) -> SessionHealth {
+    match v {
+        0 => SessionHealth::Active,
+        1 => SessionHealth::Idle,
+        2 => SessionHealth::Stuck,
+        3 => SessionHealth::Waiting,
+        4 => SessionHealth::Error,
+        _ => SessionHealth::Complete,
+    }
+}
+
+/// Lock-free heartbeat and health state, stored parallel to `SessionMetadata`.
+/// Reads from these atomics avoid taking a write lock on the sessions map.
+#[derive(Debug)]
+struct AtomicSessionState {
+    last_heartbeat: AtomicI64,
+    health: AtomicU8,
+}
+
+impl AtomicSessionState {
+    fn new(heartbeat_ts: i64, health: &SessionHealth) -> Self {
+        Self {
+            last_heartbeat: AtomicI64::new(heartbeat_ts),
+            health: AtomicU8::new(health_to_u8(health)),
+        }
+    }
+}
+
+// Manual Clone impl because AtomicI64/AtomicU8 are not Clone; we load+copy.
+impl Clone for AtomicSessionState {
+    fn clone(&self) -> Self {
+        Self {
+            last_heartbeat: AtomicI64::new(self.last_heartbeat.load(Ordering::Relaxed)),
+            health: AtomicU8::new(self.health.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionSupervisor {
     sessions: Arc<RwLock<HashMap<Uuid, SessionMetadata>>>,
+    /// Lock-free heartbeat/health data parallel to `sessions`.
+    atomic_states: Arc<RwLock<HashMap<Uuid, Arc<AtomicSessionState>>>>,
     inputs: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChildStdin>>>>>,
-    redaction_secrets: Arc<RwLock<Vec<SecretString>>>,
+    redaction_secrets: Arc<RwLock<Vec<String>>>,
     tx: broadcast::Sender<SessionEvent>,
     idle_after: Duration,
     stuck_after: Duration,
@@ -148,6 +191,7 @@ impl SessionSupervisor {
         let (tx, _) = broadcast::channel(512);
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            atomic_states: Arc::new(RwLock::new(HashMap::new())),
             inputs: Arc::new(RwLock::new(HashMap::new())),
             redaction_secrets: Arc::new(RwLock::new(Vec::new())),
             tx,
@@ -170,9 +214,13 @@ impl SessionSupervisor {
     }
 
     pub async fn set_redaction_secrets(&self, secrets: Vec<String>) {
-        let normalized = normalize_secrets(&secrets);
-        *self.redaction_secrets.write().await =
-            normalized.into_iter().map(SecretString::from).collect();
+        *self.redaction_secrets.write().await = normalize_secrets(&secrets);
+    }
+
+    fn canonical_scrollback_path(&self, session_id: Uuid) -> PathBuf {
+        self.data_dir
+            .join("scrollback")
+            .join(format!("{session_id}.log"))
     }
 
     pub async fn spawn_shell(
@@ -192,10 +240,7 @@ impl SessionSupervisor {
             command.clone()
         };
 
-        let scrollback_path = self
-            .data_dir
-            .join("scrollback")
-            .join(format!("{session_id}.log"));
+        let scrollback_path = self.canonical_scrollback_path(session_id);
 
         let meta = SessionMetadata {
             id: session_id,
@@ -231,6 +276,15 @@ impl SessionSupervisor {
             sessions.insert(session_id, meta.clone());
         }
 
+        // Insert atomic state for lock-free heartbeat reads.
+        self.atomic_states.write().await.insert(
+            session_id,
+            Arc::new(AtomicSessionState::new(
+                meta.last_heartbeat.timestamp(),
+                &meta.health,
+            )),
+        );
+
         // Perform I/O outside the lock. On failure, remove the reserved slot
         // and any partial state left by attach_tmux_client.
         if let Err(err) = self
@@ -238,11 +292,14 @@ impl SessionSupervisor {
             .await
         {
             self.sessions.write().await.remove(&session_id);
+            self.atomic_states.write().await.remove(&session_id);
             self.inputs.write().await.remove(&session_id);
             return Err(err);
         }
 
-        let _ = self.tx.send(SessionEvent::Spawned(meta));
+        if self.tx.send(SessionEvent::Spawned(meta)).is_err() {
+            tracing::debug!("no active subscribers for session spawned event");
+        }
 
         self.get(session_id)
             .await
@@ -484,10 +541,16 @@ impl SessionSupervisor {
             meta.ended_at = None;
         }
 
-        let _ = self.tx.send(SessionEvent::Heartbeat {
-            session_id,
-            health: SessionHealth::Active,
-        });
+        if self
+            .tx
+            .send(SessionEvent::Heartbeat {
+                session_id,
+                health: SessionHealth::Active,
+            })
+            .is_err()
+        {
+            tracing::debug!("no active subscribers for session heartbeat event");
+        }
 
         if let Some(stdout) = stdout {
             self.spawn_reader_task(
@@ -518,7 +581,7 @@ impl SessionSupervisor {
         mut reader: R,
         scrollback_path: PathBuf,
         scrollback_index_path: PathBuf,
-        redaction_secrets: Arc<RwLock<Vec<SecretString>>>,
+        redaction_secrets: Arc<RwLock<Vec<String>>>,
     ) where
         R: AsyncRead + Send + Unpin + 'static,
     {
@@ -571,10 +634,15 @@ impl SessionSupervisor {
                         }
                     }
                 }
-                let _ = tx.send(SessionEvent::Heartbeat {
-                    session_id,
-                    health: SessionHealth::Active,
-                });
+                if tx
+                    .send(SessionEvent::Heartbeat {
+                        session_id,
+                        health: SessionHealth::Active,
+                    })
+                    .is_err()
+                {
+                    tracing::debug!("no active subscribers for reader heartbeat event");
+                }
                 if let Some(chunk) = redactor.push_chunk(&raw_chunk).await {
                     let chunk_bytes = chunk.as_bytes();
 
@@ -592,7 +660,9 @@ impl SessionSupervisor {
                         let _ = idx.flush().await;
                     }
 
-                    let _ = tx.send(SessionEvent::Output { session_id, chunk });
+                    if tx.send(SessionEvent::Output { session_id, chunk }).is_err() {
+                        tracing::debug!("no active subscribers for session output event");
+                    }
                 }
             }
 
@@ -610,7 +680,9 @@ impl SessionSupervisor {
                     let _ = idx.write_all(format!("{total}\n").as_bytes()).await;
                     let _ = idx.flush().await;
                 }
-                let _ = tx.send(SessionEvent::Output { session_id, chunk });
+                if tx.send(SessionEvent::Output { session_id, chunk }).is_err() {
+                    tracing::debug!("no active subscribers for session output event");
+                }
             }
         });
     }
@@ -646,7 +718,9 @@ impl SessionSupervisor {
             }
 
             inputs.write().await.remove(&session_id);
-            let _ = tx.send(SessionEvent::Exited { session_id, code });
+            if tx.send(SessionEvent::Exited { session_id, code }).is_err() {
+                tracing::debug!("no active subscribers for session exited event");
+            }
         });
     }
 
@@ -687,20 +761,43 @@ impl SessionSupervisor {
     }
 
     pub async fn mark_activity(&self, session_id: Uuid) -> Result<(), SessionError> {
+        // Fast path: update atomics without taking the sessions write lock.
+        let now = Utc::now();
+        {
+            let atomic_states = self.atomic_states.read().await;
+            if let Some(state) = atomic_states.get(&session_id) {
+                state
+                    .last_heartbeat
+                    .store(now.timestamp(), Ordering::Relaxed);
+                state
+                    .health
+                    .store(health_to_u8(&SessionHealth::Active), Ordering::Relaxed);
+            } else {
+                return Err(SessionError::NotFound(session_id.to_string()));
+            }
+        }
+
+        // Update the canonical metadata under write lock.
         let mut sessions = self.sessions.write().await;
         let Some(meta) = sessions.get_mut(&session_id) else {
             return Err(SessionError::NotFound(session_id.to_string()));
         };
 
-        meta.last_heartbeat = Utc::now();
+        meta.last_heartbeat = now;
         meta.health = SessionHealth::Active;
         if meta.status != SessionStatus::Complete {
             meta.status = SessionStatus::Running;
         }
-        let _ = self.tx.send(SessionEvent::Heartbeat {
-            session_id,
-            health: SessionHealth::Active,
-        });
+        if self
+            .tx
+            .send(SessionEvent::Heartbeat {
+                session_id,
+                health: SessionHealth::Active,
+            })
+            .is_err()
+        {
+            tracing::debug!("no active subscribers for session heartbeat event");
+        }
         Ok(())
     }
 
@@ -733,15 +830,21 @@ impl SessionSupervisor {
     }
 
     pub async fn register_restored(&self, mut meta: SessionMetadata) {
-        // Derive scrollback path from session_id to prevent arbitrary file reads.
-        // Ignore caller-supplied scrollback_path.
-        let canonical = self
-            .data_dir
-            .join("scrollback")
-            .join(format!("{}.log", meta.id));
-        meta.scrollback_path = canonical.to_string_lossy().to_string();
+        meta.scrollback_path = self
+            .canonical_scrollback_path(meta.id)
+            .to_string_lossy()
+            .to_string();
+        self.atomic_states.write().await.insert(
+            meta.id,
+            Arc::new(AtomicSessionState::new(
+                meta.last_heartbeat.timestamp(),
+                &meta.health,
+            )),
+        );
         self.sessions.write().await.insert(meta.id, meta.clone());
-        let _ = self.tx.send(SessionEvent::Spawned(meta));
+        if self.tx.send(SessionEvent::Spawned(meta)).is_err() {
+            tracing::debug!("no active subscribers for session spawned event");
+        }
     }
 
     pub async fn read_scrollback(
@@ -787,10 +890,10 @@ impl SessionSupervisor {
         let total = file.metadata().await?.len();
 
         if total as usize > MAX_SCROLLBACK_READ_BYTES {
-            return Err(SessionError::SpawnFailed(format!(
-                "scrollback file too large: {} bytes (max {})",
-                total, MAX_SCROLLBACK_READ_BYTES
-            )));
+            return Err(SessionError::ScrollbackTooLarge {
+                size: total,
+                max: MAX_SCROLLBACK_READ_BYTES,
+            });
         }
 
         let capped_limit = limit.min(MAX_READ_LIMIT);
@@ -815,28 +918,69 @@ impl SessionSupervisor {
 
     pub async fn refresh_health(&self) {
         let now = Utc::now();
-        let mut sessions = self.sessions.write().await;
+        let now_ts = now.timestamp();
 
-        for meta in sessions.values_mut() {
-            if meta.status != SessionStatus::Running {
-                continue;
+        // First pass: read atomics to find sessions whose health changed.
+        // This avoids taking the sessions write lock when nothing changed.
+        let changed: Vec<(Uuid, SessionHealth)> = {
+            let atomic_states = self.atomic_states.read().await;
+            let sessions = self.sessions.read().await;
+
+            let mut changes = Vec::new();
+            for (id, meta) in sessions.iter() {
+                if meta.status != SessionStatus::Running {
+                    continue;
+                }
+
+                let heartbeat_ts = atomic_states
+                    .get(id)
+                    .map(|s| s.last_heartbeat.load(Ordering::Relaxed))
+                    .unwrap_or(meta.last_heartbeat.timestamp());
+
+                let delta_secs = now_ts.saturating_sub(heartbeat_ts);
+                let next = if delta_secs >= self.stuck_after.num_seconds() {
+                    SessionHealth::Stuck
+                } else if delta_secs >= self.idle_after.num_seconds() {
+                    SessionHealth::Idle
+                } else {
+                    SessionHealth::Active
+                };
+
+                let current = atomic_states
+                    .get(id)
+                    .map(|s| u8_to_health(s.health.load(Ordering::Relaxed)))
+                    .unwrap_or(meta.health.clone());
+
+                if current != next {
+                    changes.push((*id, next));
+                }
             }
+            changes
+        };
 
-            let delta = now - meta.last_heartbeat;
-            let next = if delta >= self.stuck_after {
-                SessionHealth::Stuck
-            } else if delta >= self.idle_after {
-                SessionHealth::Idle
-            } else {
-                SessionHealth::Active
-            };
+        if changed.is_empty() {
+            return;
+        }
 
-            if meta.health != next {
+        // Second pass: take write lock only for sessions that actually changed.
+        let mut sessions = self.sessions.write().await;
+        let atomic_states = self.atomic_states.read().await;
+        for (id, next) in changed {
+            if let Some(meta) = sessions.get_mut(&id) {
                 meta.health = next.clone();
-                let _ = self.tx.send(SessionEvent::Heartbeat {
-                    session_id: meta.id,
+            }
+            if let Some(state) = atomic_states.get(&id) {
+                state.health.store(health_to_u8(&next), Ordering::Relaxed);
+            }
+            if self
+                .tx
+                .send(SessionEvent::Heartbeat {
+                    session_id: id,
                     health: next,
-                });
+                })
+                .is_err()
+            {
+                tracing::debug!("no active subscribers for session health change event");
             }
         }
     }
@@ -855,8 +999,15 @@ impl SessionSupervisor {
             meta.exit_code = code;
             meta.ended_at = Some(Utc::now());
         }
+        self.atomic_states.write().await.remove(&session_id);
         self.inputs.write().await.remove(&session_id);
-        let _ = self.tx.send(SessionEvent::Exited { session_id, code });
+        if self
+            .tx
+            .send(SessionEvent::Exited { session_id, code })
+            .is_err()
+        {
+            tracing::debug!("no active subscribers for session exited event");
+        }
         Ok(())
     }
 
@@ -963,9 +1114,8 @@ mod tests {
     use crate::error::SessionError;
     use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
     use chrono::Utc;
-    use secrecy::SecretString;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
     use tokio::sync::RwLock;
@@ -982,9 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_redactor_redacts_secret_split_across_chunks() {
-        let secrets = Arc::new(RwLock::new(vec![SecretString::from(
-            "supersecret123".to_string(),
-        )]));
+        let secrets = Arc::new(RwLock::new(vec!["supersecret123".to_string()]));
         let mut redactor = StreamRedactor::new(secrets);
 
         let first = redactor
@@ -1002,7 +1150,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_redactor_redacts_pattern_split_across_chunks() {
-        let secrets: Arc<RwLock<Vec<SecretString>>> = Arc::new(RwLock::new(Vec::new()));
+        let secrets = Arc::new(RwLock::new(Vec::new()));
         let mut redactor = StreamRedactor::new(secrets);
 
         assert!(
@@ -1019,7 +1167,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_redactor_flushes_safe_marker_words_immediately() {
-        let secrets: Arc<RwLock<Vec<SecretString>>> = Arc::new(RwLock::new(Vec::new()));
+        let secrets = Arc::new(RwLock::new(Vec::new()));
         let mut redactor = StreamRedactor::new(secrets);
 
         let output = redactor
@@ -1057,9 +1205,7 @@ mod tests {
         let supervisor = SessionSupervisor::new(&root);
         let session_id = Uuid::new_v4();
         let now = Utc::now();
-        let missing_path = root
-            .join("scrollback")
-            .join(format!("{session_id}.missing.log"));
+        let missing_path = root.join("off-root").join("ignored.log");
         supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
@@ -1085,6 +1231,59 @@ mod tests {
             .await
             .expect_err("missing scrollback file should error");
         assert!(matches!(err, SessionError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn register_restored_ignores_caller_supplied_scrollback_path() {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let canonical_path = supervisor.canonical_scrollback_path(session_id);
+        let attacker_path = root.join("..").join(format!("{session_id}-attacker.log"));
+
+        tokio::fs::create_dir_all(canonical_path.parent().expect("scrollback parent"))
+            .await
+            .expect("create canonical scrollback dir");
+        tokio::fs::write(&canonical_path, b"canonical output")
+            .await
+            .expect("write canonical scrollback");
+        tokio::fs::write(&attacker_path, b"attacker output")
+            .await
+            .expect("write attacker scrollback");
+
+        supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "restored".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: attacker_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let meta = supervisor.get(session_id).await.expect("restored session");
+        assert_eq!(
+            PathBuf::from(meta.scrollback_path),
+            canonical_path,
+            "restored sessions must store the canonical scrollback path"
+        );
+
+        let slice = supervisor
+            .read_scrollback(session_id, 0, 128)
+            .await
+            .expect("canonical scrollback should be readable");
+        assert_eq!(slice.data, "canonical output");
     }
 
     #[tokio::test]

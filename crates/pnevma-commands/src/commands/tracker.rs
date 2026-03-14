@@ -93,7 +93,7 @@ pub async fn tracker_status(state: &AppState) -> Result<TrackerStatusView, Strin
 
     Ok(TrackerStatusView {
         enabled: config_section.enabled,
-        kind: config_section.kind,
+        kind: config_section.kind.to_string(),
         team_id: config_section.team_id,
         labels: config_section.labels,
         poll_interval_seconds: config_section.poll_interval_seconds,

@@ -48,6 +48,10 @@ fn build_initialize_params() -> serde_json::Value {
 
 fn build_thread_start_params(config: &AgentConfig) -> serde_json::Value {
     let sandbox = if config.auto_approve {
+        tracing::warn!(
+            agent_id = %config.working_dir,
+            "Codex v2 auto_approve enabled — using danger-full-access sandbox (unrestricted system access)"
+        );
         "danger-full-access"
     } else {
         "workspace-write"
@@ -421,25 +425,26 @@ impl AgentAdapter for CodexV2Adapter {
             .clone()
             .ok_or_else(|| AgentError::Protocol("no thread_id".into()))?;
 
+        let sanitize = crate::adapters::claude::sanitize_prompt_field;
         let prompt = format!(
             "{}\n\nConstraints:\n{}\n\nChecks:\n{}\n\nRules:\n{}",
-            &input.objective,
+            sanitize(&input.objective),
             input
                 .constraints
                 .iter()
-                .map(|c| format!("- {c}"))
+                .map(|c| format!("- {}", sanitize(c)))
                 .collect::<Vec<_>>()
                 .join("\n"),
             input
                 .acceptance_checks
                 .iter()
-                .map(|c| format!("- {c}"))
+                .map(|c| format!("- {}", sanitize(c)))
                 .collect::<Vec<_>>()
                 .join("\n"),
             input
                 .project_rules
                 .iter()
-                .map(|r| format!("- {r}"))
+                .map(|r| format!("- {}", sanitize(r)))
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -518,22 +523,38 @@ impl AgentAdapter for CodexV2Adapter {
                 .await;
             }
 
+            conn.stdout_task.abort();
+            conn.stdin_task.abort();
+
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets process group.
-            if let Some(pid) = conn.child.id() {
+            let mut child = conn.child;
+            if let Some(pid) = child.id() {
                 unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    // Only send SIGKILL if the process is still running.
+                    // Avoids killing a reused PID after the original has exited.
+                    match child.try_wait() {
+                        Ok(None) => {
+                            // Still running — force kill.
+                            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                        }
+                        _ => {
+                            // Already exited or error checking — skip SIGKILL.
+                        }
+                    }
                 });
             }
-
-            conn.stdout_task.abort();
-            conn.stdin_task.abort();
         }
 
         if let Some(tx) = self.channels.read().await.get(&handle.id) {
             let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
         }
+
+        // Clean up state maps now that the connection is torn down.
+        self.channels.write().await.remove(&handle.id);
+        self.configs.write().await.remove(&handle.id);
+        self.costs.write().await.remove(&handle.id);
 
         Ok(())
     }

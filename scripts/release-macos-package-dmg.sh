@@ -2,27 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/release-common.sh"
+
 APP_PATH="${APP_PATH:-}"
 VERSION="${VERSION:-}"
 DMG_PATH="${DMG_PATH:-}"
 CHECKSUM_PATH="${CHECKSUM_PATH:-}"
 VOLUME_NAME="${DMG_VOLUME_NAME:-Pnevma}"
 ARCH_SUFFIX="${ARCH_SUFFIX:-arm64}"
-
-default_app_path() {
-  local candidates=(
-    "$ROOT_DIR/native/build/Release/Pnevma.app"
-    "$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app"
-  )
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    if [[ -d "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  printf '%s\n' "${candidates[0]}"
-}
 
 resolve_version() {
   /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT_DIR/native/Info.plist"

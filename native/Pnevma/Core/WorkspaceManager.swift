@@ -10,6 +10,7 @@ import os
 final class WorkspaceManager {
 
     typealias RuntimeFactory = @MainActor (UUID) -> WorkspaceRuntime
+    typealias ProjectInitializationPrompt = @MainActor (_ workspaceName: String, _ path: String) async -> Bool
 
     private(set) var workspaces: [Workspace] = []
     private(set) var activeWorkspaceID: UUID?
@@ -41,6 +42,8 @@ final class WorkspaceManager {
     @ObservationIgnored
     private let runtimeFactory: RuntimeFactory
     @ObservationIgnored
+    private let projectInitializationPrompt: ProjectInitializationPrompt
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
     @ObservationIgnored
     private var nextRequestGeneration: UInt64 = 0
@@ -56,11 +59,13 @@ final class WorkspaceManager {
     init(
         activationHub: ActiveWorkspaceActivationHub = .shared,
         projectPathResolver: any WorkspaceProjectPathResolving = DefaultWorkspaceProjectPathResolver(),
-        runtimeFactory: @escaping RuntimeFactory = { WorkspaceRuntime(workspaceID: $0) }
+        runtimeFactory: @escaping RuntimeFactory = { WorkspaceRuntime(workspaceID: $0) },
+        projectInitializationPrompt: @escaping ProjectInitializationPrompt = WorkspaceManager.defaultProjectInitializationPrompt
     ) {
         self.activationHub = activationHub
         self.projectPathResolver = projectPathResolver
         self.runtimeFactory = runtimeFactory
+        self.projectInitializationPrompt = projectInitializationPrompt
         bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleBridgeEvent(event)
@@ -72,7 +77,8 @@ final class WorkspaceManager {
         bridge: PnevmaBridge,
         commandBus: any CommandCalling,
         activationHub: ActiveWorkspaceActivationHub = .shared,
-        projectPathResolver: any WorkspaceProjectPathResolving = DefaultWorkspaceProjectPathResolver()
+        projectPathResolver: any WorkspaceProjectPathResolving = DefaultWorkspaceProjectPathResolver(),
+        projectInitializationPrompt: @escaping ProjectInitializationPrompt = WorkspaceManager.defaultProjectInitializationPrompt
     ) {
         // Shared-bus convenience path for tests or intentionally single-runtime
         // scenarios only. Production app wiring should prefer the primary
@@ -83,7 +89,8 @@ final class WorkspaceManager {
             projectPathResolver: projectPathResolver,
             runtimeFactory: { workspaceID in
                 WorkspaceRuntime(workspaceID: workspaceID, commandBus: commandBus)
-            }
+            },
+            projectInitializationPrompt: projectInitializationPrompt
         )
     }
 
@@ -474,6 +481,7 @@ final class WorkspaceManager {
 
             let response = try await openOrTrust(
                 path: path,
+                workspaceName: workspace.name,
                 activationToken: Self.clientActivationToken(
                     workspaceID: workspace.id,
                     generation: generation
@@ -548,8 +556,11 @@ final class WorkspaceManager {
 
     private func openOrTrust(
         path: String,
+        workspaceName: String,
         activationToken: String,
-        commandBus: any CommandCalling
+        commandBus: any CommandCalling,
+        allowInitialize: Bool = true,
+        allowTrust: Bool = true
     ) async throws -> ProjectOpenResponse {
         do {
             return try await commandBus.call(
@@ -560,7 +571,27 @@ final class WorkspaceManager {
                 )
             )
         } catch let error as PnevmaError {
-            guard case .backendError(_, let message) = error,
+            guard case .backendError(_, let message) = error else {
+                throw error
+            }
+
+            if allowInitialize, message == "workspace_not_initialized" {
+                try await initializeProjectScaffold(
+                    path: path,
+                    workspaceName: workspaceName,
+                    commandBus: commandBus
+                )
+                return try await openOrTrust(
+                    path: path,
+                    workspaceName: workspaceName,
+                    activationToken: activationToken,
+                    commandBus: commandBus,
+                    allowInitialize: false,
+                    allowTrust: allowTrust
+                )
+            }
+
+            guard allowTrust,
                   message == "workspace_not_trusted" || message == "workspace_config_changed" else {
                 throw error
             }
@@ -572,14 +603,51 @@ final class WorkspaceManager {
                     clientActivationToken: nil
                 )
             )
-            return try await commandBus.call(
-                method: "project.open",
-                params: OpenProjectParams(
-                    path: path,
-                    clientActivationToken: activationToken
-                )
+            return try await openOrTrust(
+                path: path,
+                workspaceName: workspaceName,
+                activationToken: activationToken,
+                commandBus: commandBus,
+                allowInitialize: allowInitialize,
+                allowTrust: false
             )
         }
+    }
+
+    private func initializeProjectScaffold(
+        path: String,
+        workspaceName: String,
+        commandBus: any CommandCalling
+    ) async throws {
+        let shouldInitialize = await projectInitializationPrompt(workspaceName, path)
+        guard shouldInitialize else {
+            throw WorkspaceProjectInitializationError.canceled(workspaceName)
+        }
+
+        let projectName = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let _: InitializeProjectScaffoldResult = try await commandBus.call(
+            method: "project.initialize_scaffold",
+            params: InitializeProjectScaffoldParams(
+                path: path,
+                projectName: projectName.isEmpty ? nil : projectName,
+                projectBrief: nil,
+                defaultProvider: nil
+            )
+        )
+    }
+
+    private static func defaultProjectInitializationPrompt(
+        workspaceName: String,
+        path: String
+    ) async -> Bool {
+        let displayName = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = displayName.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : displayName
+        let alert = NSAlert()
+        alert.messageText = "Initialize Project Scaffold?"
+        alert.informativeText = "\(subject) is missing pnevma.toml and the .pnevma support directory. Initialize them now to open this workspace?"
+        alert.addButton(withTitle: "Initialize")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func handleBridgeEvent(_ event: BridgeEvent) {
@@ -889,6 +957,20 @@ enum WorkspaceActionError: LocalizedError {
     }
 }
 
+private enum WorkspaceProjectInitializationError: LocalizedError {
+    case canceled(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .canceled(let workspaceName):
+            if workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Project initialization was canceled."
+            }
+            return "Project initialization for \(workspaceName) was canceled."
+        }
+    }
+}
+
 protocol WorkspaceProjectPathResolving {
     func resolveProjectPath(for workspace: Workspace) async throws -> String?
     func cleanup(workspace: Workspace)
@@ -947,7 +1029,7 @@ private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathRes
 
         switch workspace.location {
         case .local:
-            return workspace.projectPath
+            return Self.standardizeLocalProjectPath(workspace.projectPath)
         case .remote:
             guard let remoteTarget = workspace.remoteTarget else {
                 throw WorkspaceProjectTransportError.missingRemoteTarget
@@ -962,6 +1044,12 @@ private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathRes
     func cleanup(workspace: Workspace) {
         guard workspace.location == .remote else { return }
         remoteMountManager.unmount(mountPath: workspace.projectPath)
+    }
+
+    private static func standardizeLocalProjectPath(_ path: String?) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        let expanded = NSString(string: path).expandingTildeInPath
+        return NSString(string: expanded).standardizingPath
     }
 
     func cleanupAll(workspaces: [Workspace]) {
@@ -1201,6 +1289,13 @@ private struct OpenProjectParams: Encodable {
     let path: String
     let clientActivationToken: String?
 }
+
+private struct InitializeProjectScaffoldParams: Encodable {
+    let path: String
+    let projectName: String?
+    let projectBrief: String?
+    let defaultProvider: String?
+}
 private struct ProjectOpenedEventPayload: Decodable {
     let projectID: String
     let projectPath: String
@@ -1211,6 +1306,12 @@ private struct ProjectOpenFailureEventPayload: Codable {
     let workspaceID: UUID
     let generation: UInt64
     let message: String
+}
+
+struct InitializeProjectScaffoldResult: Decodable {
+    let rootPath: String
+    let createdPaths: [String]
+    let alreadyInitialized: Bool
 }
 
 struct ProjectOpenResponse: Decodable {

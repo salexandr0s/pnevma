@@ -389,6 +389,39 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(persistedHeight, 612)
     }
 
+    @MainActor
+    func testBrowserWorkspaceSessionShowDrawerDefersRestoredNavigationUntilScheduled() async {
+        let session = BrowserWorkspaceSession(
+            restoredURL: URL(string: "https://example.com/docs")!
+        )
+
+        session.showDrawer()
+
+        XCTAssertFalse(session.viewModel.shouldRenderWebView)
+        XCTAssertEqual(session.viewModel.navigatedURL, nil)
+
+        session.scheduleDrawerRestoreIfNeeded(after: .zero)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertTrue(session.viewModel.shouldRenderWebView)
+        XCTAssertEqual(session.viewModel.navigatedURL?.absoluteString, "https://example.com/docs")
+    }
+
+    @MainActor
+    func testBrowserWorkspaceSessionHideDrawerCancelsPendingRestore() async {
+        let session = BrowserWorkspaceSession(
+            restoredURL: URL(string: "https://example.com/docs")!
+        )
+
+        session.showDrawer()
+        session.scheduleDrawerRestoreIfNeeded(after: .milliseconds(40))
+        session.hideDrawer()
+        try? await Task.sleep(for: .milliseconds(80))
+
+        XCTAssertFalse(session.viewModel.shouldRenderWebView)
+        XCTAssertEqual(session.viewModel.navigatedURL, nil)
+    }
+
     // MARK: - PaneLayoutEngine.reset
 
     func testResetPreservesObjectIdentity() {

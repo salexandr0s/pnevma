@@ -13,7 +13,6 @@ bundle:
 - `scripts/release-macos-staple-verify.sh`
 - `scripts/check-entitlements.sh`
 
-The legacy `scripts/release-updater-*.sh` helpers are intentionally disabled.
 Pnevma ships real version checking against GitHub releases but does not yet
 perform in-app self-update.
 

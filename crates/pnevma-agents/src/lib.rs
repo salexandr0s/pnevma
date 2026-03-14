@@ -18,7 +18,7 @@ pub use model::{
     AgentAdapter, AgentConfig, AgentEvent, AgentHandle, AgentStatus, CostRecord, DynamicToolDef,
     TaskPayload,
 };
-pub use pool::{DispatchPermit, DispatchPool, QueuedDispatch};
+pub use pool::{DispatchPermit, DispatchPool, QueuedDispatch, TryAcquireResult};
 pub use profiles::{AgentProfile, DispatchRecommendation};
 pub use reconciler::{reconcile_claims, ReconciliationAction, ReconciliationClaim};
 pub use registry::AdapterRegistry;

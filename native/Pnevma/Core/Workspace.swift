@@ -57,7 +57,7 @@ struct WorkspaceRemoteTarget: Codable, Equatable {
 
     private static func shellEscapeArg(_ value: String) -> String {
         guard !value.isEmpty else { return "''" }
-        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        let escaped = value.replacing("'", with: "'\\''")
         return "'\(escaped)'"
     }
 }

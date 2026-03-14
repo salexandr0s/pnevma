@@ -124,7 +124,15 @@ impl GlobalDb {
             "ALTER TABLE global_agent_profiles ADD COLUMN source_path TEXT",
             "ALTER TABLE global_agent_profiles ADD COLUMN user_modified INTEGER NOT NULL DEFAULT 0",
         ] {
-            let _ = sqlx::query(stmt).execute(&pool).await;
+            match sqlx::query(stmt).execute(&pool).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column name") {
+                        return Err(e.into());
+                    }
+                }
+            }
         }
 
         sqlx::query(

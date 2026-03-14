@@ -714,8 +714,8 @@ private func humanizeCommandCenterString(_ raw: String?) -> String? {
     }
 
     return raw
-        .replacingOccurrences(of: "-", with: " ")
-        .replacingOccurrences(of: "_", with: " ")
+        .replacing("-", with: " ")
+        .replacing("_", with: " ")
         .split(separator: " ")
         .map { component in
             let token = String(component)

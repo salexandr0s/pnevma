@@ -2,9 +2,11 @@ use crate::{SessionId, TaskId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
+use std::str::FromStr;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Priority {
     P0,
     P1,
@@ -12,10 +14,11 @@ pub enum Priority {
     P3,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskStatus {
     Planned,
     Ready,
+    Dispatching,
     InProgress,
     Review,
     Done,
@@ -23,6 +26,96 @@ pub enum TaskStatus {
     Blocked,
     Looped,
 }
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Priority::P0 => write!(f, "P0"),
+            Priority::P1 => write!(f, "P1"),
+            Priority::P2 => write!(f, "P2"),
+            Priority::P3 => write!(f, "P3"),
+        }
+    }
+}
+
+impl FromStr for Priority {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "P0" => Ok(Priority::P0),
+            "P1" => Ok(Priority::P1),
+            "P2" => Ok(Priority::P2),
+            "P3" => Ok(Priority::P3),
+            _ => Err(format!("unknown priority: {s}")),
+        }
+    }
+}
+
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskStatus::Planned => write!(f, "Planned"),
+            TaskStatus::Ready => write!(f, "Ready"),
+            TaskStatus::Dispatching => write!(f, "Dispatching"),
+            TaskStatus::InProgress => write!(f, "InProgress"),
+            TaskStatus::Review => write!(f, "Review"),
+            TaskStatus::Done => write!(f, "Done"),
+            TaskStatus::Failed => write!(f, "Failed"),
+            TaskStatus::Blocked => write!(f, "Blocked"),
+            TaskStatus::Looped => write!(f, "Looped"),
+        }
+    }
+}
+
+impl FromStr for TaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Planned" => Ok(TaskStatus::Planned),
+            "Ready" => Ok(TaskStatus::Ready),
+            "Dispatching" => Ok(TaskStatus::Dispatching),
+            "InProgress" => Ok(TaskStatus::InProgress),
+            "Review" => Ok(TaskStatus::Review),
+            "Done" => Ok(TaskStatus::Done),
+            "Failed" => Ok(TaskStatus::Failed),
+            "Blocked" => Ok(TaskStatus::Blocked),
+            "Looped" => Ok(TaskStatus::Looped),
+            _ => Err(format!("unknown task status: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LeaseStatus {
+    Active,
+    Released,
+    Expired,
+}
+
+impl fmt::Display for LeaseStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LeaseStatus::Active => write!(f, "Active"),
+            LeaseStatus::Released => write!(f, "Released"),
+            LeaseStatus::Expired => write!(f, "Expired"),
+        }
+    }
+}
+
+impl FromStr for LeaseStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Active" | "active" => Ok(LeaseStatus::Active),
+            "Released" | "released" => Ok(LeaseStatus::Released),
+            "Expired" | "expired" => Ok(LeaseStatus::Expired),
+            _ => Err(format!("unknown lease status: {s}")),
+        }
+    }
+}
+
+/// Re-export from workflow module for TaskContract usage.
+pub use crate::workflow::ExecutionMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CheckType {
@@ -80,10 +173,10 @@ pub struct TaskContract {
     pub handoff_summary: Option<String>,
     pub auto_dispatch: bool,
     pub agent_profile_override: Option<String>,
-    pub execution_mode: Option<String>,
-    pub timeout_minutes: Option<i64>,
+    pub execution_mode: Option<ExecutionMode>,
+    pub timeout_minutes: Option<u32>,
     pub max_retries: Option<i64>,
-    pub loop_iteration: i64,
+    pub loop_iteration: u32,
     pub loop_context_json: Option<String>,
     pub external_source: Option<TaskExternalSource>,
     pub created_at: DateTime<Utc>,
@@ -106,12 +199,16 @@ pub enum TransitionError {
 }
 
 impl TaskContract {
-    pub fn validate_new(&self) -> Result<(), String> {
+    pub fn validate_new(&self) -> Result<(), crate::CoreError> {
         if self.title.trim().is_empty() {
-            return Err("title must not be empty".to_string());
+            return Err(crate::CoreError::InvalidConfig(
+                "title must not be empty".to_string(),
+            ));
         }
         if self.goal.trim().is_empty() {
-            return Err("goal must not be empty".to_string());
+            return Err(crate::CoreError::InvalidConfig(
+                "goal must not be empty".to_string(),
+            ));
         }
         Ok(())
     }
@@ -121,6 +218,10 @@ impl TaskContract {
         let valid = matches!(
             (&self.status, &to),
             (Planned, Ready)
+                | (Ready, Dispatching)
+                | (Dispatching, InProgress)
+                | (Dispatching, Ready)
+                | (Dispatching, Failed)
                 | (Ready, InProgress)
                 | (InProgress, Review)
                 | (Review, Done)
@@ -132,11 +233,12 @@ impl TaskContract {
                 | (Blocked, Planned)
                 | (Failed, Looped)
                 | (Done, Looped)
+                | (Looped, Planned)
         );
 
         if !valid {
             return Err(TransitionError::InvalidTransition {
-                from: self.status.clone(),
+                from: self.status,
                 to,
             });
         }
@@ -149,11 +251,11 @@ impl TaskContract {
     pub fn refresh_blocked_status(&mut self, completed: &HashSet<TaskId>) {
         let unmet = self.dependencies.iter().any(|dep| !completed.contains(dep));
         if unmet && self.status != TaskStatus::Blocked {
-            self.status = TaskStatus::Blocked;
-            self.updated_at = Utc::now();
+            // Attempt to transition to Blocked; ignore if the current state
+            // does not have a valid edge to Blocked (e.g. Done, Failed).
+            let _ = self.transition(TaskStatus::Blocked);
         } else if !unmet && self.status == TaskStatus::Blocked {
-            self.status = TaskStatus::Planned;
-            self.updated_at = Utc::now();
+            let _ = self.transition(TaskStatus::Planned);
         }
     }
 }
@@ -227,11 +329,12 @@ mod tests {
         #[test]
         fn arbitrary_transition_sequence_never_panics(
             // Generate up to 10 transition attempts using indices into valid statuses
-            transitions in proptest::collection::vec(0usize..8, 0..=10)
+            transitions in proptest::collection::vec(0usize..9, 0..=10)
         ) {
             let statuses = [
                 TaskStatus::Planned,
                 TaskStatus::Ready,
+                TaskStatus::Dispatching,
                 TaskStatus::InProgress,
                 TaskStatus::Review,
                 TaskStatus::Done,
@@ -242,7 +345,7 @@ mod tests {
 
             let mut task = base_task();
             for idx in &transitions {
-                let to = statuses[*idx].clone();
+                let to = statuses[*idx];
                 // Transition may succeed or fail — both are acceptable, no panics allowed.
                 let _ = task.transition(to);
                 // Assert task is always in one of the defined states (not corrupted).
@@ -250,6 +353,7 @@ mod tests {
                     task.status,
                     TaskStatus::Planned
                         | TaskStatus::Ready
+                        | TaskStatus::Dispatching
                         | TaskStatus::InProgress
                         | TaskStatus::Review
                         | TaskStatus::Done
@@ -262,11 +366,12 @@ mod tests {
 
         #[test]
         fn terminal_states_cannot_transition_further(
-            next in 0usize..8
+            next in 0usize..9
         ) {
             let statuses = [
                 TaskStatus::Planned,
                 TaskStatus::Ready,
+                TaskStatus::Dispatching,
                 TaskStatus::InProgress,
                 TaskStatus::Review,
                 TaskStatus::Done,
@@ -275,17 +380,17 @@ mod tests {
                 TaskStatus::Looped,
             ];
 
-            // Looped is fully terminal — no outgoing transitions defined.
-            // Done allows only Done → Looped (for until_complete loops).
+            // Done allows only Done -> Looped (for until_complete loops).
+            // Looped allows only Looped -> Planned (to re-enter the pipeline).
             for terminal in [TaskStatus::Done, TaskStatus::Looped] {
                 let mut task = base_task();
-                task.status = terminal.clone();
-                let to = statuses[next].clone();
-                if terminal == TaskStatus::Done && to == TaskStatus::Looped {
-                    // Done → Looped is valid (until_complete mode)
+                task.status = terminal;
+                let to = statuses[next];
+                let is_valid_exit = (terminal == TaskStatus::Done && to == TaskStatus::Looped)
+                    || (terminal == TaskStatus::Looped && to == TaskStatus::Planned);
+                if is_valid_exit {
                     let result = task.transition(to);
-                    prop_assert!(result.is_ok(), "Done -> Looped should succeed");
-                    prop_assert_eq!(task.status, TaskStatus::Looped);
+                    prop_assert!(result.is_ok(), "{:?} -> {:?} should succeed", terminal, to);
                 } else {
                     // All other transitions from terminal states must be rejected.
                     let result = task.transition(to);
@@ -358,7 +463,7 @@ mod tests {
             let mut task = base_task();
             task.status = TaskStatus::Done;
             assert!(
-                task.transition(to.clone()).is_err(),
+                task.transition(to).is_err(),
                 "Done -> {to:?} should be rejected"
             );
         }
@@ -395,9 +500,81 @@ mod tests {
             let mut task = base_task();
             task.status = TaskStatus::Failed;
             assert!(
-                task.transition(to.clone()).is_err(),
+                task.transition(to).is_err(),
                 "Failed -> {to:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn priority_display_fromstr_roundtrip() {
+        for p in [Priority::P0, Priority::P1, Priority::P2, Priority::P3] {
+            let s = p.to_string();
+            let parsed: Priority = s.parse().unwrap();
+            assert_eq!(parsed, p);
+        }
+    }
+
+    #[test]
+    fn priority_fromstr_unknown_is_err() {
+        assert!("high".parse::<Priority>().is_err());
+        assert!("medium".parse::<Priority>().is_err());
+        assert!("".parse::<Priority>().is_err());
+    }
+
+    #[test]
+    fn task_status_display_fromstr_roundtrip() {
+        for s in [
+            TaskStatus::Planned,
+            TaskStatus::Ready,
+            TaskStatus::Dispatching,
+            TaskStatus::InProgress,
+            TaskStatus::Review,
+            TaskStatus::Done,
+            TaskStatus::Failed,
+            TaskStatus::Blocked,
+            TaskStatus::Looped,
+        ] {
+            let text = s.to_string();
+            let parsed: TaskStatus = text.parse().unwrap();
+            assert_eq!(parsed, s);
+        }
+    }
+
+    #[test]
+    fn task_status_fromstr_unknown_is_err() {
+        assert!("Pending".parse::<TaskStatus>().is_err());
+        assert!("".parse::<TaskStatus>().is_err());
+    }
+
+    #[test]
+    fn lease_status_display_fromstr_roundtrip() {
+        use crate::task::LeaseStatus;
+        for s in [
+            LeaseStatus::Active,
+            LeaseStatus::Released,
+            LeaseStatus::Expired,
+        ] {
+            let text = s.to_string();
+            let parsed: LeaseStatus = text.parse().unwrap();
+            assert_eq!(parsed, s);
+        }
+    }
+
+    #[test]
+    fn lease_status_accepts_lowercase() {
+        use crate::task::LeaseStatus;
+        assert_eq!(
+            "active".parse::<LeaseStatus>().unwrap(),
+            LeaseStatus::Active
+        );
+        assert_eq!(
+            "released".parse::<LeaseStatus>().unwrap(),
+            LeaseStatus::Released
+        );
+        assert_eq!(
+            "expired".parse::<LeaseStatus>().unwrap(),
+            LeaseStatus::Expired
+        );
     }
 }

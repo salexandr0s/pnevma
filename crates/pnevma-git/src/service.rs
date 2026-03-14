@@ -8,6 +8,21 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+/// Sanitize a branch slug to prevent path traversal and git-invalid characters.
+fn sanitize_slug(slug: &str) -> String {
+    let mut s: String = slug
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect::<String>()
+        .trim_start_matches(['-', '.'])
+        .to_string();
+    // Collapse consecutive dots until none remain (git rejects `..` in ref names).
+    while s.contains("..") {
+        s = s.replace("..", ".");
+    }
+    s.chars().take(100).collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct GitService {
     repo_root: PathBuf,
@@ -69,11 +84,11 @@ impl GitService {
                     if canonical.starts_with(&worktree_root_canonical) {
                         if let Some(dir_name) = canonical.file_name().and_then(|n| n.to_str()) {
                             if let Ok(task_id) = dir_name.parse::<Uuid>() {
-                                if let std::collections::hash_map::Entry::Vacant(e) =
+                                if let std::collections::hash_map::Entry::Vacant(entry) =
                                     leases.entry(task_id)
                                 {
                                     let branch = current_branch.clone().unwrap_or_default();
-                                    e.insert(WorktreeLease {
+                                    entry.insert(WorktreeLease {
                                         id: Uuid::new_v4(),
                                         task_id,
                                         branch,
@@ -136,6 +151,7 @@ impl GitService {
 
         tokio::fs::create_dir_all(&self.worktree_root).await?;
 
+        let slug = sanitize_slug(slug);
         let branch = format!("pnevma/{}/{}", task_id, slug);
         let path = self.worktree_root.join(task_id.to_string());
 

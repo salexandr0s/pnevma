@@ -131,6 +131,87 @@ private actor FailingProjectOpenCommandBus: CommandCalling {
     }
 }
 
+private actor RecoveringProjectOpenCommandBus: CommandCalling {
+    private let spec: MockCommandBus.ProjectSpec
+    private var currentProjectIDValue: String?
+    private var openCallCountValue = 0
+    private var initializeCallCountValue = 0
+    private var trustCallCountValue = 0
+
+    init(spec: MockCommandBus.ProjectSpec) {
+        self.spec = spec
+    }
+
+    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+        switch method {
+        case "project.open":
+            openCallCountValue += 1
+            if initializeCallCountValue == 0 {
+                throw PnevmaError.backendError(method: method, message: "workspace_not_initialized")
+            }
+            if trustCallCountValue == 0 {
+                throw PnevmaError.backendError(method: method, message: "workspace_not_trusted")
+            }
+            currentProjectIDValue = spec.projectID
+            return ProjectOpenResponse(
+                projectID: spec.projectID,
+                status: ProjectStatusResponse(
+                    projectID: spec.projectID,
+                    projectName: spec.projectPath,
+                    projectPath: spec.projectPath,
+                    sessions: 0,
+                    tasks: spec.activeTasks,
+                    worktrees: 0
+                )
+            ) as! T
+        case "project.initialize_scaffold":
+            initializeCallCountValue += 1
+            return InitializeProjectScaffoldResult(
+                rootPath: spec.projectPath,
+                createdPaths: [
+                    spec.projectPath + "/pnevma.toml",
+                    spec.projectPath + "/.pnevma"
+                ],
+                alreadyInitialized: false
+            ) as! T
+        case "project.trust":
+            trustCallCountValue += 1
+            return OkResponse(ok: true) as! T
+        case "project.summary":
+            guard let currentProjectIDValue,
+                  currentProjectIDValue == spec.projectID else {
+                throw NSError(domain: "RecoveringProjectOpenCommandBus", code: 2)
+            }
+            return ProjectSummary(
+                projectID: spec.projectID,
+                gitBranch: spec.gitBranch,
+                activeTasks: spec.activeTasks,
+                activeAgents: spec.activeAgents,
+                costToday: spec.costToday,
+                unreadNotifications: spec.unreadNotifications,
+                gitDirty: nil
+            ) as! T
+        case "project.close":
+            currentProjectIDValue = nil
+            return OkResponse(ok: true) as! T
+        default:
+            throw NSError(domain: "RecoveringProjectOpenCommandBus", code: 1)
+        }
+    }
+
+    func openCallCount() -> Int {
+        openCallCountValue
+    }
+
+    func initializeCallCount() -> Int {
+        initializeCallCountValue
+    }
+
+    func trustCallCount() -> Int {
+        trustCallCountValue
+    }
+}
+
 private final class MockWorkspaceProjectPathResolver: WorkspaceProjectPathResolving {
     var resolvedPaths: [UUID: String] = [:]
     var defaultRemotePath: String?
@@ -763,6 +844,101 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(initialOpening.workspaceID, workspace.id)
         XCTAssertEqual(manager.runtime(for: workspace.id)?.projectID, "project-a")
         XCTAssertEqual(openCount, initialOpenCount)
+    }
+
+    func testMissingScaffoldInitializationPromptsThenRecoversWorkspaceOpen() async throws {
+        let spec = MockCommandBus.ProjectSpec(
+            projectID: "project-a",
+            projectPath: "/tmp/a",
+            gitBranch: "branch-a",
+            activeTasks: 1,
+            activeAgents: 1,
+            costToday: 1.0,
+            unreadNotifications: 0,
+            openDelayNanos: 0
+        )
+        let bus = RecoveringProjectOpenCommandBus(spec: spec)
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub,
+            projectInitializationPrompt: { _, _ in true }
+        )
+
+        let workspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+
+        try await waitUntil(timeoutNanos: 2_000_000_000) {
+            activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
+                && workspace.activationFailureMessage == nil
+                && workspace.gitBranch == "branch-a"
+        }
+
+        let initializeCallCount = await bus.initializeCallCount()
+        let trustCallCount = await bus.trustCallCount()
+        let openCallCount = await bus.openCallCount()
+        XCTAssertEqual(initializeCallCount, 1)
+        XCTAssertEqual(trustCallCount, 1)
+        XCTAssertEqual(openCallCount, 3)
+        XCTAssertEqual(manager.runtime(for: workspace.id)?.projectID, "project-a")
+    }
+
+    func testMissingScaffoldCancellationFailsWorkspaceActivation() async throws {
+        let bus = FailingProjectOpenCommandBus(message: "workspace_not_initialized")
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(
+            bridge: bridge,
+            commandBus: bus,
+            activationHub: activationHub,
+            projectInitializationPrompt: { _, _ in false }
+        )
+
+        let workspace = manager.createWorkspace(name: "Canceled", projectPath: "/tmp/canceled")
+
+        try await waitUntil(timeoutNanos: 2_000_000_000) {
+            if case .failed(let workspaceID, _, let message) = activationHub.currentState {
+                return workspaceID == workspace.id
+                    && message == "Project initialization for Canceled was canceled."
+            }
+            return false
+        }
+
+        XCTAssertEqual(
+            workspace.activationFailureMessage,
+            "Project initialization for Canceled was canceled."
+        )
+    }
+
+    func testDefaultResolverExpandsHomeRelativeLocalProjectPaths() async throws {
+        let absolutePath = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Caches/pnevma-home-relative-test")
+            .path
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-home",
+                projectPath: absolutePath,
+                gitBranch: "main",
+                activeTasks: 0,
+                activeAgents: 0,
+                costToday: 0,
+                unreadNotifications: 0,
+                openDelayNanos: 0
+            )
+        ])
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+
+        let workspace = manager.createWorkspace(name: "Home", projectPath: "~/Library/Caches/pnevma-home-relative-test")
+
+        try await waitUntil(timeoutNanos: 2_000_000_000) {
+            manager.runtime(for: workspace.id)?.projectID == "project-home"
+        }
+
+        let openCount = await bus.openCount(for: absolutePath)
+        XCTAssertEqual(openCount, 1)
+        XCTAssertEqual(workspace.projectPath, absolutePath)
     }
 
     func testProjectOpenFailurePostsActionableEvent() async throws {

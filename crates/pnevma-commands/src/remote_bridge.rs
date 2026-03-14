@@ -62,7 +62,7 @@ pub async fn maybe_start_remote(state: Arc<AppState>) -> Option<pnevma_remote::R
     let remote_config = pnevma_remote::RemoteAccessConfig {
         enabled: true,
         port: config.port,
-        tls_mode: config.tls_mode,
+        tls_mode: config.tls_mode.to_string(),
         token_ttl_hours: config.token_ttl_hours,
         rate_limit_rpm: config.rate_limit_rpm,
         max_ws_per_ip: config.max_ws_per_ip,

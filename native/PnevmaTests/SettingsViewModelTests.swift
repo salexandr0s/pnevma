@@ -89,13 +89,15 @@ final class SettingsViewModelTests: XCTestCase {
             terminalFontSize: 13,
             scrollbackLines: 10_000,
             sidebarBackgroundOffset: 0.05,
+            bottomToolBarAutoHide: false,
             focusBorderEnabled: true,
             focusBorderOpacity: 0.4,
             focusBorderWidth: 2.0,
             focusBorderColor: "accent",
             telemetryEnabled: telemetryEnabled,
             crashReports: false,
-            keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")]
+            keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")],
+            toolPresentationOverrides: [:]
         )
     }
 
@@ -166,5 +168,44 @@ final class SettingsViewModelTests: XCTestCase {
 
         try await waitUntil { AppRuntimeSettings.shared.normalizedDefaultShell == "/bin/bash" }
         XCTAssertEqual(AppRuntimeSettings.shared.normalizedDefaultShell, "/bin/bash")
+    }
+
+    func testSuccessfulSaveUpdatesDockAutoHideRuntimeSetting() async throws {
+        let bus = SettingsCommandBusStub(getResult: .success(makeSnapshot()))
+        let viewModel = SettingsViewModel(commandBus: bus)
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        viewModel.bottomToolBarAutoHide = true
+        try await waitUntil { await bus.setRequestCount() == 1 }
+        let savedRequest = await bus.request(at: 0)
+        XCTAssertTrue(savedRequest.bottomToolBarAutoHide)
+
+        await bus.completeSet(
+            at: 0,
+            with: AppSettingsSnapshot(
+                autoSaveWorkspaceOnQuit: true,
+                restoreWindowsOnLaunch: true,
+                autoUpdate: true,
+                defaultShell: "",
+                terminalFont: "SF Mono",
+                terminalFontSize: 13,
+                scrollbackLines: 10_000,
+                sidebarBackgroundOffset: 0.05,
+                bottomToolBarAutoHide: true,
+                focusBorderEnabled: true,
+                focusBorderOpacity: 0.4,
+                focusBorderWidth: 2.0,
+                focusBorderColor: "accent",
+                telemetryEnabled: false,
+                crashReports: false,
+                keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")],
+                toolPresentationOverrides: [:]
+            )
+        )
+
+        try await waitUntil { AppRuntimeSettings.shared.bottomToolBarAutoHide }
+        XCTAssertTrue(AppRuntimeSettings.shared.bottomToolBarAutoHide)
     }
 }

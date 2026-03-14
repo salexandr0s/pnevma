@@ -95,11 +95,49 @@ struct GeneralSettingsTab: View {
                 Text("/bin/bash").tag("/bin/bash")
             }
 
-            Section("Sidebar") {
+            Section("Workspace Sidebar") {
                 HStack {
                     Text("Background tint")
                     Slider(value: $viewModel.sidebarBackgroundOffset, in: 0.0...0.3, step: 0.01)
                     Text(viewModel.sidebarBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.sidebarBackgroundOffset * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+
+            Section("Tool Dock") {
+                Toggle("Auto-hide bottom tool bar", isOn: $viewModel.bottomToolBarAutoHide)
+
+                Text("When enabled, the bottom tool bar collapses to a slim reveal strip until you move the pointer over it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("Background tint")
+                    Slider(value: $viewModel.toolDockBackgroundOffset, in: 0.0...0.3, step: 0.01)
+                    Text(viewModel.toolDockBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.toolDockBackgroundOffset * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+
+            Section("Tool Presentation") {
+                Text("Choose how each tool opens when clicked in the sidebar or tool dock.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(configurablePresentationTools()) { tool in
+                    ToolPresentationRow(viewModel: viewModel, tool: tool)
+                }
+            }
+
+            Section("Right Inspector") {
+                HStack {
+                    Text("Background tint")
+                    Slider(value: $viewModel.rightInspectorBackgroundOffset, in: 0.0...0.3, step: 0.01)
+                    Text(viewModel.rightInspectorBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.rightInspectorBackgroundOffset * 100))%")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: 40, alignment: .trailing)
@@ -153,6 +191,50 @@ struct GeneralSettingsTab: View {
         case .failed(let msg):
             Text("Failed: \(msg)")
                 .foregroundStyle(.red)
+        }
+    }
+}
+
+private struct ToolPresentationRow: View {
+    @Bindable var viewModel: SettingsViewModel
+    let tool: SidebarToolItem
+
+    private var selection: Binding<SidebarToolDefaultPresentation> {
+        Binding(
+            get: { viewModel.effectiveToolPresentation(for: tool.id) },
+            set: { viewModel.setToolPresentationOverride(toolID: tool.id, value: $0) }
+        )
+    }
+
+    var body: some View {
+        HStack {
+            Label(tool.title, systemImage: tool.icon)
+                .frame(minWidth: 140, alignment: .leading)
+
+            Spacer()
+
+            Picker("", selection: selection) {
+                Text("Pane").tag(SidebarToolDefaultPresentation.pane)
+                Text("Tab").tag(SidebarToolDefaultPresentation.tab)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 120)
+
+            if viewModel.hasToolPresentationOverride(toolID: tool.id) {
+                Button {
+                    viewModel.resetToolPresentationOverride(toolID: tool.id)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Reset to default")
+            } else {
+                Text("Default")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 50)
+            }
         }
     }
 }
@@ -1050,6 +1132,59 @@ final class SettingsViewModel {
             scheduleSave()
         }
     }
+    var bottomToolBarAutoHide = false {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+    var toolPresentationOverrides: [String: String] = [:] {
+        didSet {
+            guard !isRestoring else { return }
+            toolPresentationModified = true
+            scheduleSave()
+        }
+    }
+    private var toolPresentationModified = false
+
+    func effectiveToolPresentation(for toolID: String) -> SidebarToolDefaultPresentation {
+        if let raw = toolPresentationOverrides[toolID],
+           let presentation = SidebarToolDefaultPresentation(rawValue: raw) {
+            return presentation
+        }
+        return sidebarToolDefinition(id: toolID)?.defaultPresentation ?? .tab
+    }
+
+    func setToolPresentationOverride(toolID: String, value: SidebarToolDefaultPresentation) {
+        let defaultValue = sidebarToolDefinition(id: toolID)?.defaultPresentation ?? .tab
+        if value == defaultValue {
+            toolPresentationOverrides.removeValue(forKey: toolID)
+        } else {
+            toolPresentationOverrides[toolID] = value.rawValue
+        }
+    }
+
+    func resetToolPresentationOverride(toolID: String) {
+        toolPresentationOverrides.removeValue(forKey: toolID)
+    }
+
+    func hasToolPresentationOverride(toolID: String) -> Bool {
+        toolPresentationOverrides[toolID] != nil
+    }
+    var toolDockBackgroundOffset: Double = ToolDockPreferences.backgroundOffset {
+        didSet {
+            guard !isRestoring else { return }
+            ToolDockPreferences.backgroundOffset = toolDockBackgroundOffset
+            GhosttyThemeProvider.shared.refresh()
+        }
+    }
+    var rightInspectorBackgroundOffset: Double = RightInspectorPreferences.backgroundOffset {
+        didSet {
+            guard !isRestoring else { return }
+            RightInspectorPreferences.backgroundOffset = rightInspectorBackgroundOffset
+            GhosttyThemeProvider.shared.refresh()
+        }
+    }
     var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
         didSet {
             guard !isRestoring else { return }
@@ -1197,6 +1332,7 @@ final class SettingsViewModel {
             terminalFontSize: terminalFontSize,
             scrollbackLines: scrollbackLines,
             sidebarBackgroundOffset: sidebarBackgroundOffset,
+            bottomToolBarAutoHide: bottomToolBarAutoHide,
             focusBorderEnabled: focusBorderEnabled,
             focusBorderOpacity: Double(focusBorderOpacity),
             focusBorderWidth: Double(focusBorderWidth),
@@ -1205,7 +1341,8 @@ final class SettingsViewModel {
                 : (NSColor(focusBorderColor).usingColorSpace(.sRGB)?.hexString ?? "accent"),
             telemetryEnabled: telemetryEnabled,
             crashReports: crashReports,
-            keybindings: keybindingOverrides
+            keybindings: keybindingOverrides,
+            toolPresentationOverrides: toolPresentationModified ? toolPresentationOverrides : nil
         )
 
         Task {
@@ -1217,6 +1354,7 @@ final class SettingsViewModel {
                 guard generation == latestSaveGeneration else { return }
                 latestLoadedSnapshot = snapshot
                 keybindingsModified = false
+                toolPresentationModified = false
                 AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
             } catch {
@@ -1258,11 +1396,15 @@ final class SettingsViewModel {
         terminalFontSize = Int(snapshot.terminalFontSize)
         scrollbackLines = Int(snapshot.scrollbackLines)
         sidebarBackgroundOffset = snapshot.sidebarBackgroundOffset
+        bottomToolBarAutoHide = snapshot.bottomToolBarAutoHide
         telemetryEnabled = snapshot.telemetryEnabled
         crashReports = snapshot.crashReports
         keybindings = snapshot.keybindings
+        toolPresentationOverrides = snapshot.toolPresentationOverrides
 
         SidebarPreferences.backgroundOffset = snapshot.sidebarBackgroundOffset
+        toolDockBackgroundOffset = ToolDockPreferences.backgroundOffset
+        rightInspectorBackgroundOffset = RightInspectorPreferences.backgroundOffset
         FocusBorderPreferences.enabled = snapshot.focusBorderEnabled
         FocusBorderPreferences.opacity = CGFloat(snapshot.focusBorderOpacity)
         FocusBorderPreferences.width = CGFloat(snapshot.focusBorderWidth)
@@ -1291,6 +1433,10 @@ final class SettingsViewModel {
             notifyFocusBorderChanged()
         }
         sidebarBackgroundOffset = SidebarPreferences.backgroundOffset
+        toolDockBackgroundOffset = ToolDockPreferences.backgroundOffset
+        rightInspectorBackgroundOffset = RightInspectorPreferences.backgroundOffset
+        bottomToolBarAutoHide = false
+        toolPresentationOverrides = [:]
         focusBorderEnabled = FocusBorderPreferences.enabled
         focusBorderOpacity = FocusBorderPreferences.opacity
         focusBorderWidth = FocusBorderPreferences.width

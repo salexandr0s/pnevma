@@ -144,7 +144,7 @@ fn resolve_key_to_path(key: &str) -> Result<PathBuf, String> {
     for pattern in DYNAMIC_PATTERNS {
         if let Some(suffix) = key.strip_prefix(pattern.key_prefix) {
             // Prevent path traversal in the suffix
-            if suffix.contains("..") || suffix.contains('/') {
+            if suffix.contains("..") || suffix.contains('/') || suffix.contains('\\') {
                 return Err("invalid key: path traversal detected".to_string());
             }
             let dir = home.join(pattern.dir);

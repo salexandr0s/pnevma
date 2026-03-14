@@ -262,6 +262,14 @@ pub async fn upsert_ssh_profile(
     input: SshProfileInput,
     state: &AppState,
 ) -> Result<String, String> {
+    // Validate fields before database write
+    pnevma_ssh::validate_profile_fields(
+        &input.host,
+        input.user.as_deref(),
+        input.identity_file.as_deref(),
+        input.proxy_jump.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
     let row = ssh_profile_input_to_global_row(input);
     state
         .global_db()?

@@ -68,6 +68,7 @@ targets:
       - path: Pnevma
         excludes:
           - "**/*.entitlements"
+      - path: Pnevma/App/AppDelegate+Notifications.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.app

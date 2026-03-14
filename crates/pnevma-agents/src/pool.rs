@@ -87,6 +87,18 @@ impl Drop for DispatchPermit {
     }
 }
 
+/// Result of a `try_acquire` call, distinguishing between immediate
+/// acquisition, successful queuing, and queue-full rejection.
+#[derive(Debug)]
+pub enum TryAcquireResult {
+    /// A permit was immediately acquired.
+    Acquired(DispatchPermit),
+    /// The dispatch was queued; the value is the current queue depth.
+    Queued(usize),
+    /// The queue is full; the value is the current queue depth.
+    QueueFull(usize),
+}
+
 impl DispatchPool {
     pub fn new(max: usize) -> std::sync::Arc<Self> {
         Self::with_queue_limit(max, 32)
@@ -108,23 +120,23 @@ impl DispatchPool {
     pub async fn try_acquire(
         self: &std::sync::Arc<Self>,
         dispatch: QueuedDispatch,
-    ) -> Result<DispatchPermit, usize> {
+    ) -> TryAcquireResult {
         let mut inner = self.inner.lock().await;
         if inner.active < inner.max {
             inner.active += 1;
-            return Ok(DispatchPermit {
+            return TryAcquireResult::Acquired(DispatchPermit {
                 pool: Some(self.clone()),
             });
         }
 
         if inner.queue.len() >= inner.max_queue_depth {
-            return Err(inner.queue.len());
+            return TryAcquireResult::QueueFull(inner.queue.len());
         }
 
         let seq = inner.seq;
         inner.seq += 1;
         inner.queue.push(QueueItem { seq, dispatch });
-        Err(inner.queue.len())
+        TryAcquireResult::Queued(inner.queue.len())
     }
 
     pub async fn wait_next(self: &std::sync::Arc<Self>) -> QueuedDispatch {
@@ -173,36 +185,44 @@ mod tests {
     async fn queue_depth_limit_rejects_when_full() {
         let pool = DispatchPool::with_queue_limit(1, 2);
         // Acquire the one slot
-        let _permit = pool
-            .try_acquire(QueuedDispatch {
-                task_id: Uuid::new_v4(),
-                priority: pnevma_core::Priority::P2,
-            })
-            .await
-            .expect("first acquire");
-
-        // Queue 2 items (up to limit)
-        let _ = pool
-            .try_acquire(QueuedDispatch {
-                task_id: Uuid::new_v4(),
-                priority: pnevma_core::Priority::P2,
-            })
-            .await;
-        let _ = pool
-            .try_acquire(QueuedDispatch {
-                task_id: Uuid::new_v4(),
-                priority: pnevma_core::Priority::P2,
-            })
-            .await;
-
-        // Third queue attempt should be rejected
         let result = pool
             .try_acquire(QueuedDispatch {
                 task_id: Uuid::new_v4(),
                 priority: pnevma_core::Priority::P2,
             })
             .await;
-        assert!(result.is_err());
+        let _permit = match result {
+            TryAcquireResult::Acquired(p) => p,
+            other => panic!("expected Acquired, got {:?}", other),
+        };
+
+        // Queue 2 items (up to limit)
+        assert!(matches!(
+            pool.try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await,
+            TryAcquireResult::Queued(_)
+        ));
+        assert!(matches!(
+            pool.try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await,
+            TryAcquireResult::Queued(_)
+        ));
+
+        // Third queue attempt should be rejected (queue full)
+        assert!(matches!(
+            pool.try_acquire(QueuedDispatch {
+                task_id: Uuid::new_v4(),
+                priority: pnevma_core::Priority::P2,
+            })
+            .await,
+            TryAcquireResult::QueueFull(_)
+        ));
     }
 
     #[tokio::test]

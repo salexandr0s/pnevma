@@ -311,9 +311,29 @@ impl FileDiscovery {
     /// Strategy: git diff to find recently changed files
     async fn discover_git_diff(&self, project_root: &Path) -> Result<Vec<PathBuf>, ContextError> {
         // Get files changed relative to main/master
+        // Determine a safe commit depth — repos with <10 commits would fail with HEAD~10.
+        let count_output = Command::new("git")
+            .current_dir(project_root)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .await;
+        let depth = count_output
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            })
+            .unwrap_or(0)
+            .min(10);
+        if depth == 0 {
+            return Ok(Vec::new());
+        }
         let output = Command::new("git")
             .current_dir(project_root)
-            .args(["diff", "--name-only", "HEAD~10"])
+            .args(["diff", "--name-only", &format!("HEAD~{depth}")])
             .output()
             .await;
 

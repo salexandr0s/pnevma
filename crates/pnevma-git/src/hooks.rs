@@ -88,7 +88,10 @@ pub fn parse_hook_defs(phase: HookPhase, commands: &[String]) -> Vec<HookDef> {
         .iter()
         .enumerate()
         .filter_map(|(i, cmd)| {
-            let argv: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+            let argv: Vec<String> = match shell_words::split(cmd) {
+                Ok(args) => args,
+                Err(_) => cmd.split_whitespace().map(String::from).collect(),
+            };
             if argv.is_empty() {
                 return None;
             }

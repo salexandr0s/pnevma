@@ -11,6 +11,11 @@ import GhosttyKit
 ///   2. Surface creation is deferred until the view has a window, screen, and non-zero backing size.
 ///   3. Every resize / scale change propagates to the surface immediately.
 final class TerminalHostView: NSView, NSTextInputClient {
+    struct PendingSurfaceLayout: Equatable {
+        let width: UInt32
+        let height: UInt32
+        let scale: Double
+    }
 
     // MARK: - Public
 
@@ -52,6 +57,9 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private var lastReportedGridSize: (columns: UInt16, rows: UInt16)?
     private var currentCursor: NSCursor = .iBeam
     private let closeCoordinator = TerminalCloseCoordinator()
+    private var chromeTransitionObserver: NSObjectProtocol?
+    private var pendingSurfaceLayout: PendingSurfaceLayout?
+    private var lastAppliedSurfaceLayout: PendingSurfaceLayout?
 
     // MARK: - Init
 
@@ -68,6 +76,9 @@ final class TerminalHostView: NSView, NSTextInputClient {
     deinit {
         removeWindowObservers()
         removeActionObservers()
+        if let chromeTransitionObserver {
+            NotificationCenter.default.removeObserver(chromeTransitionObserver)
+        }
     }
 
     private func commonInit() {
@@ -92,6 +103,13 @@ final class TerminalHostView: NSView, NSTextInputClient {
             userInfo: nil
         )
         addTrackingArea(trackingArea)
+        chromeTransitionObserver = NotificationCenter.default.addObserver(
+            forName: .chromeTransitionDidEnd,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.flushDeferredSurfaceLayout()
+        }
     }
 
     func ensureSurfaceCreated() {
@@ -115,6 +133,8 @@ final class TerminalHostView: NSView, NSTextInputClient {
         removeActionObservers()
         terminalSurface = nil
         lastReportedGridSize = nil
+        pendingSurfaceLayout = nil
+        lastAppliedSurfaceLayout = nil
         removeWindowObservers()
     }
 
@@ -174,7 +194,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
         if terminalSurface == nil {
             scheduleEnsureSurfaceCreated()
         }
-        updateSurfaceLayout()
+        updateSurfaceLayout(deferringForChromeTransition: false)
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -444,7 +464,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
             )
         }
         terminalSurface = surface
-        updateSurfaceLayout()
+        updateSurfaceLayout(deferringForChromeTransition: false)
 
         // Ghostty attaches a CAMetalLayer as a sublayer. CAMetalLayer defaults
         // to isOpaque=true which prevents background-opacity transparency.
@@ -477,13 +497,36 @@ final class TerminalHostView: NSView, NSTextInputClient {
         }
     }
 
-    private func updateSurfaceLayout() {
+    private func updateSurfaceLayout(deferringForChromeTransition: Bool = true) {
         guard terminalSurface != nil else { return }
         let backing = convertToBacking(bounds)
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        layer?.contentsScale = scale
-        terminalSurface?.setContentScale(scale)
-        terminalSurface?.resize(width: UInt32(backing.width), height: UInt32(backing.height))
+        let layout = PendingSurfaceLayout(
+            width: UInt32(max(0, Int(backing.width.rounded(.toNearestOrEven)))),
+            height: UInt32(max(0, Int(backing.height.rounded(.toNearestOrEven)))),
+            scale: Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
+        )
+
+        if deferringForChromeTransition, ChromeTransitionCoordinator.shared.isActive {
+            pendingSurfaceLayout = layout
+            return
+        }
+
+        applySurfaceLayout(layout)
+    }
+
+    private func flushDeferredSurfaceLayout() {
+        guard let layout = pendingSurfaceLayout else { return }
+        pendingSurfaceLayout = nil
+        applySurfaceLayout(layout)
+    }
+
+    private func applySurfaceLayout(_ layout: PendingSurfaceLayout) {
+        guard lastAppliedSurfaceLayout != layout else { return }
+        layer?.contentsScale = layout.scale
+        terminalSurface?.setContentScale(layout.scale)
+        terminalSurface?.resize(width: layout.width, height: layout.height)
+        lastAppliedSurfaceLayout = layout
+        PerformanceDiagnostics.shared.recordTerminalSurfaceResize()
         if let size = terminalSurface?.size(),
            size.columns > 0,
            size.rows > 0,

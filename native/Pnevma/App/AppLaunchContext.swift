@@ -25,6 +25,10 @@ enum AppLaunchContext {
         ProcessInfo.processInfo.environment["PNEVMA_UI_TESTING"] == "1"
     }
 
+    static var uiTestLightweightMode: Bool {
+        isUITesting && ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_LIGHTWEIGHT_MODE"] == "1"
+    }
+
     static var isTesting: Bool {
         isUITesting || isUnitTesting
     }

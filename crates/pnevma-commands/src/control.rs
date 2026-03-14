@@ -129,13 +129,23 @@ pub fn resolve_control_plane_settings(
     } else {
         project_root.join(&project.automation.socket_path)
     };
-    let auth_mode_name = global
-        .socket_auth_mode
-        .clone()
-        .unwrap_or_else(|| project.automation.socket_auth.clone());
-    let auth_mode = match auth_mode_name.as_str() {
-        "same-user" => ControlAuthMode::SameUser,
-        "password" => {
+    // Resolve auth mode: global override (string) takes precedence, then project config (enum).
+    let resolved_auth = if let Some(ref mode_str) = global.socket_auth_mode {
+        match mode_str.as_str() {
+            "same-user" => pnevma_core::SocketAuth::SameUser,
+            "password" => pnevma_core::SocketAuth::Password,
+            other => {
+                return Err(format!(
+                    "unsupported socket auth mode '{other}', expected same-user or password"
+                ));
+            }
+        }
+    } else {
+        project.automation.socket_auth
+    };
+    let auth_mode = match resolved_auth {
+        pnevma_core::SocketAuth::SameUser => ControlAuthMode::SameUser,
+        pnevma_core::SocketAuth::Password => {
             let password = load_socket_password(global.socket_password_file.as_deref())?
                 .ok_or_else(|| {
                     format!(
@@ -145,11 +155,6 @@ pub fn resolve_control_plane_settings(
                     )
                 })?;
             ControlAuthMode::Password { password }
-        }
-        other => {
-            return Err(format!(
-                "unsupported socket auth mode '{other}', expected same-user or password"
-            ));
         }
     };
 
@@ -896,18 +901,33 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "task.dispatch_next_ready" => {
-            let next = commands::list_tasks(state)
+            // Atomically claim the oldest Ready task at the DB level to prevent
+            // TOCTOU races between listing and dispatching (C13).
+            let (project_id, db) = {
+                let current = state.current.lock().await;
+                let ctx = current
+                    .as_ref()
+                    .ok_or_else(|| ("internal_error".to_string(), "no open project".to_string()))?;
+                (ctx.project_id, ctx.db.clone())
+            };
+            let claimed = db
+                .claim_next_ready_task(&project_id.to_string())
                 .await
-                .map_err(|e| ("internal_error".to_string(), e))?
-                .into_iter()
-                .filter(|task| task.status == "Ready")
-                .min_by(|a, b| a.created_at.cmp(&b.created_at))
-                .map(|task| task.id);
-            if let Some(task_id) = next {
-                let status = commands::dispatch_task(task_id.clone(), &state.emitter, state)
-                    .await
-                    .map_err(|e| ("internal_error".to_string(), e))?;
-                json!({"dispatched": true, "task_id": task_id, "status": status})
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?;
+            if let Some(task_id) = claimed {
+                match commands::dispatch_task(task_id.clone(), &state.emitter, state).await {
+                    Ok(status) => json!({"dispatched": true, "task_id": task_id, "status": status}),
+                    Err(e) => {
+                        // Revert claimed task from Dispatching → Ready so it can be retried.
+                        if let Err(revert_err) = db
+                            .update_task_status(&task_id, "Dispatching", "Ready")
+                            .await
+                        {
+                            tracing::warn!(task_id, error = %revert_err, "failed to revert Dispatching task to Ready");
+                        }
+                        return Err(("internal_error".to_string(), e));
+                    }
+                }
             } else {
                 json!({"dispatched": false})
             }
@@ -1482,22 +1502,34 @@ pub async fn route_method(
             let session_id =
                 parse_string_param_aliases(params, &["session_id", "id"], "session_id")
                     .map_err(|e| ("invalid_params".to_string(), e))?;
-            let cols = parse_optional_i64_param(params, "cols")
+            let cols_i64 = parse_optional_i64_param(params, "cols")
                 .filter(|value| *value > 0)
                 .ok_or_else(|| {
                     (
                         "invalid_params".to_string(),
                         "missing required positive integer param: cols".to_string(),
                     )
-                })? as u16;
-            let rows = parse_optional_i64_param(params, "rows")
+                })?;
+            let cols = u16::try_from(cols_i64).map_err(|_| {
+                (
+                    "invalid_params".to_string(),
+                    format!("cols value {} exceeds u16 range", cols_i64),
+                )
+            })?;
+            let rows_i64 = parse_optional_i64_param(params, "rows")
                 .filter(|value| *value > 0)
                 .ok_or_else(|| {
                     (
                         "invalid_params".to_string(),
                         "missing required positive integer param: rows".to_string(),
                     )
-                })? as u16;
+                })?;
+            let rows = u16::try_from(rows_i64).map_err(|_| {
+                (
+                    "invalid_params".to_string(),
+                    format!("rows value {} exceeds u16 range", rows_i64),
+                )
+            })?;
             commands::resize_session(session_id, cols, rows, state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
@@ -2325,12 +2357,18 @@ pub async fn route_method(
                 .map_err(|e| ("invalid_params".to_string(), e))?;
             let host = parse_string_param(params, "host")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
-            let port = parse_optional_i64_param(params, "port").unwrap_or(22);
+            let port_i64 = parse_optional_i64_param(params, "port").unwrap_or(22);
+            let port = u16::try_from(port_i64).map_err(|_| {
+                (
+                    "invalid_params".to_string(),
+                    format!("port value {} exceeds u16 range", port_i64),
+                )
+            })?;
             let input = commands::SshProfileInput {
                 id: parse_optional_string_param(params, "id"),
                 name,
                 host,
-                port: port as u16,
+                port,
                 user: parse_optional_string_param(params, "user"),
                 identity_file: parse_optional_string_param(params, "identity_file"),
                 proxy_jump: parse_optional_string_param(params, "proxy_jump"),
@@ -2820,5 +2858,64 @@ mod tests {
         .expect_err("missing project should still hit the fleet action handler");
         assert_eq!(err.0, "no_project");
         assert_eq!(err.1, "no open project");
+    }
+
+    // ── G.6: route dispatch coverage ────────────────────────────────────
+
+    #[tokio::test]
+    async fn unknown_method_returns_method_not_found() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(&state, "nonexistent.method", &json!({}))
+            .await
+            .expect_err("unknown method should fail");
+        assert_eq!(err.0, "method_not_found");
+    }
+
+    #[tokio::test]
+    async fn unknown_namespace_returns_method_not_found() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(&state, "bogus.action", &json!({}))
+            .await
+            .expect_err("unknown namespace should fail");
+        assert_eq!(err.0, "method_not_found");
+    }
+
+    #[tokio::test]
+    async fn task_create_missing_params_returns_error() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(&state, "task.create", &json!({}))
+            .await
+            .expect_err("missing required params should fail");
+        assert_eq!(err.0, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn project_open_missing_path_returns_error() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(&state, "project.open", &json!({}))
+            .await
+            .expect_err("missing path should fail");
+        assert_eq!(err.0, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn environment_readiness_route_is_reachable() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        // Should succeed even without an open project
+        let result = route_method(&state, "environment.readiness", &json!({})).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn keybindings_list_route_is_reachable() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        // keybindings.list reads from a file — verify the route is reached,
+        // not that it succeeds (it may error if the file doesn't exist)
+        let result = route_method(&state, "keybindings.list", &json!({})).await;
+        // Route is reachable if we get a value OR an internal_error (not method_not_found)
+        match result {
+            Ok(_) => {} // success is fine
+            Err((code, _)) => assert_ne!(code, "method_not_found"),
+        }
     }
 }

@@ -1,20 +1,38 @@
 use crate::state::AppState;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Spawn the cost aggregation background loop.
 ///
 /// Runs every 15 minutes, aggregating raw cost rows into hourly and daily
 /// aggregate tables for the currently open project.
-pub fn start_cost_aggregation(state: Arc<AppState>) {
+///
+/// Accepts a `watch::Receiver<bool>` for graceful shutdown -- the loop exits
+/// when the watched value becomes `true`.
+pub fn start_cost_aggregation(
+    state: Arc<AppState>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     tokio::spawn(async move {
         // Allow the app to fully initialize before first run.
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+            _ = shutdown_rx.changed() => {
+                debug!("cost-aggregation: shutdown during initial delay");
+                return;
+            }
+        }
 
         loop {
             run_cycle(&state).await;
-            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(15 * 60)) => {}
+                _ = shutdown_rx.changed() => {
+                    debug!("cost-aggregation: shutdown signal received");
+                    return;
+                }
+            }
         }
     });
 }

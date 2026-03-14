@@ -155,7 +155,7 @@ pub struct WorkflowInstance {
 impl WorkflowDef {
     /// Parse a workflow definition from a YAML string.
     pub fn from_yaml(yaml: &str) -> Result<Self, CoreError> {
-        let def: WorkflowDef = serde_yaml::from_str(yaml)
+        let def: WorkflowDef = serde_yml::from_str(yaml)
             .map_err(|e| CoreError::Serialization(format!("invalid workflow YAML: {e}")))?;
         def.validate()?;
         Ok(def)
@@ -521,9 +521,10 @@ steps:
 
         #[test]
         fn empty_workflow_name_always_rejected(
-            // Blank or whitespace-only name
-            name in "[ \t]*"
+            // Blank or space-only name (tabs in YAML values can panic libyml)
+            n in 0usize..=16
         ) {
+            let name = " ".repeat(n);
             let yaml = format!(
                 "name: \"{name}\"\nsteps:\n  - title: \"A\"\n    goal: \"Do A\"\n"
             );

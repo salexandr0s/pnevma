@@ -56,10 +56,11 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
             autoUpdate: true, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
-            sidebarBackgroundOffset: 0.05, focusBorderEnabled: true,
+            sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: []
+            crashReports: false, keybindings: [],
+            toolPresentationOverrides: [:]
         ))
 
         let checker = MockVersionChecker(result: .success(("99.0.0", releaseURL)))
@@ -83,10 +84,11 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
             autoUpdate: false, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
-            sidebarBackgroundOffset: 0.05, focusBorderEnabled: true,
+            sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: []
+            crashReports: false, keybindings: [],
+            toolPresentationOverrides: [:]
         ))
 
         let checker = MockVersionChecker(result: .success(("99.0.0", releaseURL)))
@@ -105,10 +107,11 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
             autoUpdate: false, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
-            sidebarBackgroundOffset: 0.05, focusBorderEnabled: true,
+            sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: []
+            crashReports: false, keybindings: [],
+            toolPresentationOverrides: [:]
         ))
 
         let checker = MockVersionChecker(result: .success(("99.0.0", releaseURL)))
@@ -179,10 +182,11 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
             autoUpdate: true, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
-            sidebarBackgroundOffset: 0.05, focusBorderEnabled: true,
+            sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: []
+            crashReports: false, keybindings: [],
+            toolPresentationOverrides: [:]
         ))
 
         let checker = MockVersionChecker(result: .success(("1.0.0", releaseURL)))

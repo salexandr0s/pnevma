@@ -7,7 +7,7 @@ pub mod tailscale;
 pub use config_parser::parse_ssh_config;
 pub use error::SshError;
 pub use key_manager::{generate_key, list_ssh_keys, SshKeyInfo};
-pub use profile::{build_ssh_command, SshProfile};
+pub use profile::{build_ssh_command, validate_profile, validate_profile_fields, SshProfile};
 pub use tailscale::{discover_tailscale_devices, TailscaleDevice};
 
 /// Shell-escapes a single argument for safe inclusion in a shell command string.

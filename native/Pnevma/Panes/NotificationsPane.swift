@@ -64,9 +64,12 @@ struct NotificationsView: View {
                 EmptyStateView(icon: "bell.slash", title: "No Notifications", message: "You're all caught up")
             } else {
                 List(viewModel.filteredNotifications) { notification in
-                    NotificationRow(notification: notification)
-                        .accessibilityAddTraits(.isButton)
-                        .onTapGesture { viewModel.markRead(notification.id) }
+                    Button {
+                        viewModel.markRead(notification.id)
+                    } label: {
+                        NotificationRow(notification: notification)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .listStyle(.plain)
             }

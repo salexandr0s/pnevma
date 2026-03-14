@@ -41,7 +41,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 proptest = "1"
 tempfile = "3"
 parking_lot = "0.12"
-serde_yaml = "0.9"
+serde_yml = "0.0.12"
 sha2 = "0.10"
 subtle = "2"
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -58,6 +58,7 @@ hex = "0.4"
 secrecy = { version = "0.10", features = ["serde"] }
 security-framework = "2"
 reqwest = { version = "0.12", features = ["json"] }
+shell-words = "1"
 
 [profile.dev]
 debug = true
@@ -65,3 +66,4 @@ debug = true
 [profile.release]
 lto = "thin"
 codegen-units = 1
+strip = true

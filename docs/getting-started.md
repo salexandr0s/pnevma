@@ -6,7 +6,7 @@
 2. Zig matching `.zig-version`.
 3. `just` (`brew install just`).
 4. XcodeGen (`brew install xcodegen`).
-5. Xcode 15+ with the macOS SDK.
+5. Xcode 26+ with the macOS SDK (CI uses `macos-26` runners).
 6. `git` on `PATH`.
 7. At least one supported agent CLI on `PATH` (`claude-code` or `codex`).
 

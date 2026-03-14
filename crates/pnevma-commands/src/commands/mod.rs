@@ -937,6 +937,7 @@ pub struct AppSettingsView {
     pub terminal_font_size: u32,
     pub scrollback_lines: u32,
     pub sidebar_background_offset: f64,
+    pub bottom_tool_bar_auto_hide: bool,
     pub focus_border_enabled: bool,
     pub focus_border_opacity: f64,
     pub focus_border_width: f64,
@@ -944,6 +945,8 @@ pub struct AppSettingsView {
     pub telemetry_enabled: bool,
     pub crash_reports: bool,
     pub keybindings: Vec<KeybindingView>,
+    #[serde(default)]
+    pub tool_presentation_overrides: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -962,6 +965,7 @@ pub struct SetAppSettingsInput {
     pub terminal_font_size: u32,
     pub scrollback_lines: u32,
     pub sidebar_background_offset: f64,
+    pub bottom_tool_bar_auto_hide: bool,
     pub focus_border_enabled: bool,
     pub focus_border_opacity: f64,
     pub focus_border_width: f64,
@@ -970,6 +974,8 @@ pub struct SetAppSettingsInput {
     pub crash_reports: bool,
     #[serde(default)]
     pub keybindings: Option<Vec<KeybindingOverride>>,
+    #[serde(default)]
+    pub tool_presentation_overrides: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1070,48 +1076,24 @@ pub(crate) fn validate_path_component(name: &str, label: &str) -> Result<(), Str
     Ok(())
 }
 
-fn map_priority(priority: &str) -> Priority {
-    match priority {
-        "P0" => Priority::P0,
-        "P1" => Priority::P1,
-        "P2" => Priority::P2,
-        _ => Priority::P3,
-    }
+/// Parse a priority string with fallback to P3 for unknown values.
+pub(crate) fn map_priority(priority: &str) -> Priority {
+    priority.parse().unwrap_or(Priority::P3)
 }
 
+/// Parse a status string with fallback to Planned for unknown values.
 pub(crate) fn parse_status(status: &str) -> TaskStatus {
-    match status {
-        "Ready" => TaskStatus::Ready,
-        "InProgress" => TaskStatus::InProgress,
-        "Review" => TaskStatus::Review,
-        "Done" => TaskStatus::Done,
-        "Failed" => TaskStatus::Failed,
-        "Blocked" => TaskStatus::Blocked,
-        "Looped" => TaskStatus::Looped,
-        _ => TaskStatus::Planned,
-    }
+    status.parse().unwrap_or(TaskStatus::Planned)
 }
 
-pub(crate) fn status_to_str(status: &TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Planned => "Planned",
-        TaskStatus::Ready => "Ready",
-        TaskStatus::InProgress => "InProgress",
-        TaskStatus::Review => "Review",
-        TaskStatus::Done => "Done",
-        TaskStatus::Failed => "Failed",
-        TaskStatus::Blocked => "Blocked",
-        TaskStatus::Looped => "Looped",
-    }
+/// Convert a TaskStatus to its canonical string representation.
+pub(crate) fn status_to_str(status: &TaskStatus) -> String {
+    status.to_string()
 }
 
-fn map_priority_str(priority: &Priority) -> &'static str {
-    match priority {
-        Priority::P0 => "P0",
-        Priority::P1 => "P1",
-        Priority::P2 => "P2",
-        Priority::P3 => "P3",
-    }
+/// Convert a Priority to its canonical string representation.
+pub(crate) fn map_priority_str(priority: &Priority) -> String {
+    priority.to_string()
 }
 
 fn parse_dt(input: Option<String>) -> Option<DateTime<Utc>> {
@@ -1311,7 +1293,20 @@ fn normalize_scaffold_path(path: &str) -> Result<PathBuf, String> {
     if raw.is_empty() {
         return Err("path is required".to_string());
     }
-    let candidate = PathBuf::from(raw);
+
+    let candidate = if raw == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "HOME environment variable not set".to_string())?
+    } else if let Some(suffix) = raw.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "HOME environment variable not set".to_string())?
+            .join(suffix)
+    } else {
+        PathBuf::from(raw)
+    };
+
     if candidate.is_absolute() {
         Ok(candidate)
     } else {
@@ -1922,10 +1917,13 @@ pub(crate) fn task_row_to_contract(row: &TaskRow) -> Result<TaskContract, String
         handoff_summary: row.handoff_summary.clone(),
         auto_dispatch: row.auto_dispatch,
         agent_profile_override: row.agent_profile_override.clone(),
-        execution_mode: row.execution_mode.clone(),
-        timeout_minutes: row.timeout_minutes,
+        execution_mode: row
+            .execution_mode
+            .as_deref()
+            .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok()),
+        timeout_minutes: row.timeout_minutes.map(|v| v as u32),
         max_retries: row.max_retries,
-        loop_iteration: row.loop_iteration,
+        loop_iteration: row.loop_iteration as u32,
         loop_context_json: row.loop_context_json.clone(),
         // External source is stored in a separate DB table (task_external_sources)
         // and populated by the automation runner at dispatch time, not during row conversion.
@@ -1965,10 +1963,15 @@ pub(crate) fn task_contract_to_row(
         updated_at: task.updated_at,
         auto_dispatch: task.auto_dispatch,
         agent_profile_override: task.agent_profile_override.clone(),
-        execution_mode: task.execution_mode.clone(),
-        timeout_minutes: task.timeout_minutes,
+        execution_mode: task.execution_mode.map(|m| {
+            serde_json::to_value(m)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default()
+        }),
+        timeout_minutes: task.timeout_minutes.map(|v| v as i64),
         max_retries: task.max_retries,
-        loop_iteration: task.loop_iteration,
+        loop_iteration: task.loop_iteration as i64,
         loop_context_json: task.loop_context_json.clone(),
     })
 }
@@ -2248,7 +2251,7 @@ async fn refresh_dependency_states_inner(
             continue;
         }
         let mut task = task_row_to_contract(&row)?;
-        let prev = task.status.clone();
+        let prev = task.status;
         task.refresh_blocked_status(&completed);
         if prev == TaskStatus::Blocked && task.status == TaskStatus::Planned {
             task.status = TaskStatus::Ready;
@@ -2360,7 +2363,7 @@ pub(crate) async fn refresh_dependency_states_after_completion_without_dispatch(
             continue;
         }
         let mut task = task_row_to_contract(&row)?;
-        let prev = task.status.clone();
+        let prev = task.status;
         task.refresh_blocked_status(&completed);
         if prev == TaskStatus::Blocked && task.status == TaskStatus::Planned {
             task.status = TaskStatus::Ready;
@@ -5273,7 +5276,7 @@ mod redaction_tests {
             dependencies_json: "[]".to_string(),
             acceptance_json: "[]".to_string(),
             constraints_json: "[]".to_string(),
-            priority: "medium".to_string(),
+            priority: "P2".to_string(),
             status: "Done".to_string(),
             branch: None,
             worktree_id: None,

@@ -1035,8 +1035,11 @@ pub async fn create_task(
         handoff_summary: None,
         auto_dispatch: input.auto_dispatch.unwrap_or(false),
         agent_profile_override: input.agent_profile_override.clone(),
-        execution_mode: input.execution_mode.clone(),
-        timeout_minutes: input.timeout_minutes,
+        execution_mode: input
+            .execution_mode
+            .as_deref()
+            .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok()),
+        timeout_minutes: input.timeout_minutes.map(|v| v as u32),
         max_retries: input.max_retries,
         loop_iteration: 0,
         loop_context_json: None,
@@ -1166,7 +1169,7 @@ pub async fn update_task(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("task not found: {}", input.id))?;
     let mut task = task_row_to_contract(&existing)?;
-    let previous_status = task.status.clone();
+    let previous_status = task.status;
 
     if let Some(title) = input.title {
         task.title = title;

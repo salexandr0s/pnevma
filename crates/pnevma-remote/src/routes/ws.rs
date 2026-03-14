@@ -173,6 +173,18 @@ fn rpc_result(id: String, result: Result<serde_json::Value, String>) -> WsServer
     }
 }
 
+/// Sanitize a router error so internal details are never sent to the client.
+fn sanitize_router_result(
+    result: Result<serde_json::Value, String>,
+    context: &str,
+) -> Result<serde_json::Value, String> {
+    result.map_err(|e| {
+        let error_id = uuid::Uuid::new_v4().to_string();
+        tracing::warn!(error_id = %error_id, context = %context, error = %e, "WS RPC call failed");
+        format!("internal error (ref: {error_id})")
+    })
+}
+
 fn is_valid_channel(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -430,8 +442,9 @@ async fn handle_socket(
                 let client_msg: WsClientMessage = match serde_json::from_str(&text) {
                     Ok(m) => m,
                     Err(e) => {
+                        tracing::debug!(error = %e, "malformed WebSocket message");
                         let message = WsServerMessage::Error {
-                            message: format!("invalid message: {e}"),
+                            message: "invalid message format".to_string(),
                         };
                         if !send_ws_message(&mut sender, &message).await {
                             break;
@@ -529,7 +542,10 @@ async fn handle_socket(
                             });
                             rpc_result(
                                 "session.send_input".to_string(),
-                                router.route("session.send_input", &params).await,
+                                sanitize_router_result(
+                                    router.route("session.send_input", &params).await,
+                                    "session.send_input",
+                                ),
                             )
                         }
                     }
@@ -541,7 +557,13 @@ async fn handle_socket(
                         } else if !super::rpc_allowlist::is_allowed(&method) {
                             rpc_result(id, Err(format!("method not allowed via RPC: {method}")))
                         } else {
-                            rpc_result(id, router.route(&method, &params).await)
+                            rpc_result(
+                                id,
+                                sanitize_router_result(
+                                    router.route(&method, &params).await,
+                                    &method,
+                                ),
+                            )
                         }
                     }
                 };

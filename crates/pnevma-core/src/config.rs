@@ -1,8 +1,60 @@
 use crate::CoreError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Socket authentication mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SocketAuth {
+    /// Unix peer credential check (default).
+    SameUser,
+    /// Password-based authentication via keychain or file.
+    Password,
+}
+
+impl fmt::Display for SocketAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SameUser => f.write_str("same-user"),
+            Self::Password => f.write_str("password"),
+        }
+    }
+}
+
+/// TLS configuration mode for remote access.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsMode {
+    Tailscale,
+    SelfSigned,
+}
+
+impl fmt::Display for TlsMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tailscale => f.write_str("tailscale"),
+            Self::SelfSigned => f.write_str("self-signed"),
+        }
+    }
+}
+
+/// Issue tracker integration kind.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackerKind {
+    Linear,
+}
+
+impl fmt::Display for TrackerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Linear => f.write_str("linear"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSection {
@@ -50,7 +102,7 @@ pub struct AutomationSection {
     #[serde(default = "default_socket_path")]
     pub socket_path: String,
     #[serde(default = "default_socket_auth")]
-    pub socket_auth: String,
+    pub socket_auth: SocketAuth,
     #[serde(default = "default_socket_rate_limit_rpm")]
     pub socket_rate_limit_rpm: u32,
     /// Enable automatic dispatch of Ready tasks when pool has capacity.
@@ -124,7 +176,7 @@ pub struct RemoteSection {
     pub port: u16,
     /// TLS mode: "tailscale" or "self-signed".
     #[serde(default = "default_tls_mode")]
-    pub tls_mode: String,
+    pub tls_mode: TlsMode,
     /// Token TTL in hours.
     #[serde(default = "default_token_ttl")]
     pub token_ttl_hours: u64,
@@ -176,8 +228,8 @@ pub struct RedactionSection {
 fn default_remote_port() -> u16 {
     8443
 }
-fn default_tls_mode() -> String {
-    "tailscale".to_string()
+fn default_tls_mode() -> TlsMode {
+    TlsMode::Tailscale
 }
 fn default_token_ttl() -> u64 {
     24
@@ -197,7 +249,7 @@ pub struct TrackerSection {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_tracker_kind")]
-    pub kind: String,
+    pub kind: TrackerKind,
     pub team_id: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
@@ -206,8 +258,8 @@ pub struct TrackerSection {
     pub api_key_secret: Option<String>,
 }
 
-fn default_tracker_kind() -> String {
-    "linear".to_string()
+fn default_tracker_kind() -> TrackerKind {
+    TrackerKind::Linear
 }
 fn default_tracker_poll_interval() -> u64 {
     120
@@ -279,6 +331,8 @@ pub struct GlobalConfig {
     pub scrollback_lines: u32,
     #[serde(default = "default_global_sidebar_background_offset")]
     pub sidebar_background_offset: f64,
+    #[serde(default = "default_global_bottom_tool_bar_auto_hide")]
+    pub bottom_tool_bar_auto_hide: bool,
     #[serde(default = "default_global_focus_border_enabled")]
     pub focus_border_enabled: bool,
     #[serde(default = "default_global_focus_border_opacity")]
@@ -289,6 +343,12 @@ pub struct GlobalConfig {
     pub focus_border_color: Option<String>,
     #[serde(default)]
     pub usage_providers: UsageProvidersConfig,
+    /// Per-tool presentation overrides (tool_id → "pane"|"tab"|"drawer").
+    #[serde(default)]
+    pub tool_presentation_overrides: HashMap<String, String>,
+    /// Generation counter for tool presentation defaults migration.
+    #[serde(default)]
+    pub tool_presentation_generation: u32,
 }
 
 impl Default for GlobalConfig {
@@ -309,11 +369,14 @@ impl Default for GlobalConfig {
             terminal_font_size: default_global_terminal_font_size(),
             scrollback_lines: default_global_scrollback_lines(),
             sidebar_background_offset: default_global_sidebar_background_offset(),
+            bottom_tool_bar_auto_hide: default_global_bottom_tool_bar_auto_hide(),
             focus_border_enabled: default_global_focus_border_enabled(),
             focus_border_opacity: default_global_focus_border_opacity(),
             focus_border_width: default_global_focus_border_width(),
             focus_border_color: None,
             usage_providers: UsageProvidersConfig::default(),
+            tool_presentation_overrides: HashMap::new(),
+            tool_presentation_generation: 0,
         }
     }
 }
@@ -366,8 +429,8 @@ fn default_socket_path() -> String {
     ".pnevma/run/control.sock".to_string()
 }
 
-fn default_socket_auth() -> String {
-    "same-user".to_string()
+fn default_socket_auth() -> SocketAuth {
+    SocketAuth::SameUser
 }
 
 fn default_socket_rate_limit_rpm() -> u32 {
@@ -424,6 +487,10 @@ fn default_global_scrollback_lines() -> u32 {
 
 fn default_global_sidebar_background_offset() -> f64 {
     0.05
+}
+
+fn default_global_bottom_tool_bar_auto_hide() -> bool {
+    false
 }
 
 fn default_global_focus_border_enabled() -> bool {
@@ -494,11 +561,7 @@ fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
             "agents.max_concurrent must be greater than 0".to_string(),
         ));
     }
-    if cfg.automation.socket_auth != "same-user" && cfg.automation.socket_auth != "password" {
-        return Err(CoreError::InvalidConfig(
-            "automation.socket_auth must be either 'same-user' or 'password'".to_string(),
-        ));
-    }
+    // SocketAuth is validated by serde deserialization — invalid values rejected at parse time.
     if cfg.automation.socket_path.trim().is_empty() {
         return Err(CoreError::InvalidConfig(
             "automation.socket_path must not be empty".to_string(),
@@ -524,11 +587,7 @@ fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
             "retention.scrollback_days must be greater than 0".to_string(),
         ));
     }
-    if cfg.remote.tls_mode != "tailscale" && cfg.remote.tls_mode != "self-signed" {
-        return Err(CoreError::InvalidConfig(
-            "remote.tls_mode must be either 'tailscale' or 'self-signed'".to_string(),
-        ));
-    }
+    // TlsMode is validated by serde deserialization — invalid values rejected at parse time.
     if cfg.remote.token_ttl_hours == 0 {
         return Err(CoreError::InvalidConfig(
             "remote.token_ttl_hours must be greater than 0".to_string(),
@@ -544,7 +603,7 @@ fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
             "remote.max_ws_per_ip must be greater than 0".to_string(),
         ));
     }
-    if cfg.remote.tls_allow_self_signed_fallback && cfg.remote.tls_mode != "tailscale" {
+    if cfg.remote.tls_allow_self_signed_fallback && cfg.remote.tls_mode != TlsMode::Tailscale {
         return Err(CoreError::InvalidConfig(
             "remote.tls_allow_self_signed_fallback is only valid when remote.tls_mode = 'tailscale'"
                 .to_string(),
@@ -729,7 +788,12 @@ pub fn save_global_config(config: &GlobalConfig) -> Result<(), CoreError> {
     }
     let encoded = toml::to_string_pretty(config)
         .map_err(|e| CoreError::Serialization(format!("failed to encode global config: {e}")))?;
-    fs::write(path, encoded)?;
+    // Atomic write: write to temp file in same dir, then rename.
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    std::io::Write::write_all(&mut tmp, encoded.as_bytes())?;
+    tmp.persist(&path)
+        .map_err(|e: tempfile::PersistError| CoreError::Io(std::io::Error::other(e.to_string())))?;
     Ok(())
 }
 
@@ -774,10 +838,14 @@ mod tests {
 
     #[test]
     fn remote_tls_mode_must_be_supported() {
-        let mut cfg = valid_project_config();
-        cfg.remote.tls_mode = "invalid".to_string();
-        let err = validate_project_config(&cfg).expect_err("invalid tls mode");
-        assert!(err.to_string().contains("remote.tls_mode"));
+        // TlsMode is now an enum — invalid values are caught at deserialization
+        // time rather than by validate_project_config(). Verify that the enum
+        // rejects unknown values via serde.
+        let result: Result<TlsMode, _> = serde_json::from_str("\"invalid\"");
+        assert!(
+            result.is_err(),
+            "unknown tls mode should fail deserialization"
+        );
     }
 
     #[test]
@@ -791,7 +859,7 @@ mod tests {
     #[test]
     fn remote_self_signed_fallback_requires_tailscale_mode() {
         let mut cfg = valid_project_config();
-        cfg.remote.tls_mode = "self-signed".to_string();
+        cfg.remote.tls_mode = TlsMode::SelfSigned;
         cfg.remote.tls_allow_self_signed_fallback = true;
         let err = validate_project_config(&cfg).expect_err("invalid fallback combination");
         assert!(err.to_string().contains("tls_allow_self_signed_fallback"));
@@ -887,6 +955,12 @@ mod tests {
         };
         let err = validate_global_config(&cfg).expect_err("invalid focus border width");
         assert!(err.to_string().contains("focus_border_width"));
+    }
+
+    #[test]
+    fn global_config_missing_bottom_tool_bar_auto_hide_defaults_to_false() {
+        let cfg: GlobalConfig = toml::from_str("").expect("deserialize empty global config");
+        assert!(!cfg.bottom_tool_bar_auto_hide);
     }
 
     #[test]

@@ -52,7 +52,7 @@ jobs:
   rust:
     name: Rust checks
     runs-on: macos-latest
-    needs: [secret-scan, workflow-hygiene]
+    needs: [secret-scan]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -74,6 +74,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Cache cargo tools
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-tools-audit-deny-cyclonedx-v1
+
       - name: Check formatting
         run: cargo fmt --check
 
@@ -84,19 +90,19 @@ jobs:
         run: cargo test --workspace
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked
 
       - name: Audit dependencies
         run: cargo audit
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked
 
       - name: Check licenses, bans, and advisories
         run: cargo deny check
 
       - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx --locked
+        run: command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
 
       - name: Generate SBOM
         run: cargo cyclonedx --format json

@@ -1,28 +1,27 @@
 import XCTest
 
 final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
-    func testLaunchShowsWelcomeSurface() {
+    func testLaunchShowsWorkspaceSidebarAndToolDock() {
         requireExists(identifiedElement("sidebar.addWorkspace"))
-        requireExists(button("Collapse tools section"))
+        requireExists(identifiedElement("tool-dock.view"))
+        requireExists(toolDockItem("terminal"))
         XCTAssertFalse(app.buttons["Task Board"].exists)
     }
 
-    func testSidebarToolsOpenStableTerminalWorkspaceSurfaces() {
+    func testTerminalWorkspaceKeepsProjectOnlyToolsOutOfDock() {
         requireExists(identifiedElement("sidebar.addWorkspace"))
-        requireExists(button("Collapse tools section"))
+        requireExists(identifiedElement("tool-dock.view"))
         XCTAssertFalse(app.buttons["Task Board"].exists)
+        XCTAssertFalse(app.buttons["tool-dock.item.tasks"].exists)
     }
 
-    func testToolsSectionToggleIsVisible() {
-        requireExists(button("Collapse tools section"))
-    }
-
-    func testSettingsWindowOpensFromSidebar() {
-        app.typeKey(",", modifierFlags: .command)
+    func testSettingsWindowOpensFromTitlebarButton() {
+        identifiedElement("titlebar.settings").click()
 
         let settingsWindow = app.windows["Settings"]
         requireExists(settingsWindow)
         requireExists(settingsWindow.staticTexts["Auto-save workspace on quit"])
+        requireExists(settingsWindow.staticTexts["Auto-hide bottom tool bar"])
     }
 
     func testOpenWorkspaceDialogShowsVisibleActionsImmediately() {

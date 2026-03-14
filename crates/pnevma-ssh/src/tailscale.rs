@@ -138,7 +138,14 @@ where
     I: IntoIterator<Item = PathBuf>,
 {
     if let Some(path) = explicit_override {
-        return path;
+        if path.is_file() {
+            tracing::info!(path = %path.display(), "using PNEVMA_TAILSCALE_BIN override");
+            return path;
+        }
+        tracing::warn!(
+            path = %path.display(),
+            "PNEVMA_TAILSCALE_BIN points to non-existent or non-file path, falling back to discovery"
+        );
     }
 
     if let Some(path) = find_binary_on_path("tailscale", path_var.as_deref()) {
@@ -377,6 +384,18 @@ mod tests {
         let resolved = resolve_tailscale_binary_from(None, None, std::iter::empty());
 
         assert_eq!(resolved, PathBuf::from("tailscale"));
+    }
+
+    #[test]
+    fn resolve_tailscale_binary_ignores_nonexistent_override() {
+        let temp = tempdir().unwrap();
+        let path_entry = create_fake_binary(temp.path(), "tailscale");
+        let resolved = resolve_tailscale_binary_from(
+            Some(PathBuf::from("/nonexistent/tailscale")),
+            Some(std::env::join_paths([temp.path()]).unwrap()),
+            std::iter::empty(),
+        );
+        assert_eq!(resolved, path_entry);
     }
 
     fn create_fake_binary(dir: &Path, name: &str) -> PathBuf {

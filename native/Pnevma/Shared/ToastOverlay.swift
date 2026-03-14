@@ -71,27 +71,28 @@ struct ToastOverlayView: View {
         VStack {
             Spacer()
             if let toast = manager.currentToast {
-                HStack(spacing: 8) {
-                    if let icon = toast.icon {
-                        Image(systemName: icon)
-                            .foregroundStyle(iconColor(toast.style))
+                Button(action: { manager.dismiss() }) {
+                    HStack(spacing: 8) {
+                        if let icon = toast.icon {
+                            Image(systemName: icon)
+                                .foregroundStyle(iconColor(toast.style))
+                        }
+                        Text(toast.text)
+                            .font(.body.weight(.medium))
+                            .lineLimit(2)
                     }
-                    Text(toast.text)
-                        .font(.body.weight(.medium))
-                        .lineLimit(2)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(.ultraThinMaterial)
+                            .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                    )
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.ultraThinMaterial)
-                        .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .padding(.bottom, 40)
-                .accessibilityAddTraits(.isButton)
+                .buttonStyle(.plain)
                 .accessibilityLabel("Dismiss notification")
-                .onTapGesture { manager.dismiss() }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .padding(.bottom, DesignTokens.Layout.toolDockHeight + 12)
             }
         }
         .animation(.easeInOut(duration: DesignTokens.Motion.normal), value: manager.currentToast?.id)

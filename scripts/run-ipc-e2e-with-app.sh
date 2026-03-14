@@ -53,7 +53,7 @@ if [[ -S "$SOCKET_PATH" ]]; then
 fi
 
 if [[ -z "$PROJECT_PATH" ]]; then
-  temp_dir="$(mktemp -d /tmp/pne2e.XXXXXX)"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/pne2e.XXXXXX")"
   project_dir="$temp_dir/p"
   mkdir -p "$project_dir"
   PROJECT_PATH="$project_dir"
