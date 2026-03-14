@@ -1,8 +1,10 @@
+import AppKit
 import XCTest
 
 class PnevmaUITestCase: XCTestCase {
     let defaultTimeout: TimeInterval = 10
     var app: XCUIApplication!
+    private let appBundleIdentifier = "com.pnevma.app"
 
     var expectedLaunchReadinessState: String { "terminal-ready" }
 
@@ -10,8 +12,10 @@ class PnevmaUITestCase: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        terminateRunningPnevmaApps()
         app = XCUIApplication()
         app.launchEnvironment["PNEVMA_UI_TESTING"] = "1"
+        app.launchEnvironment["PNEVMA_UI_TEST_LIGHTWEIGHT_MODE"] = "1"
         try configureApp(app)
         app.launch()
         waitForReadinessState(expectedLaunchReadinessState)
@@ -22,6 +26,29 @@ class PnevmaUITestCase: XCTestCase {
     override func tearDownWithError() throws {
         app?.terminate()
         app = nil
+    }
+
+    private func terminateRunningPnevmaApps() {
+        let runningApps = NSRunningApplication.runningApplications(
+            withBundleIdentifier: appBundleIdentifier
+        )
+        for runningApp in runningApps {
+            guard !runningApp.isTerminated else { continue }
+            _ = runningApp.forceTerminate()
+        }
+
+        let deadline = Date().addingTimeInterval(3)
+        repeat {
+            let hasLiveApp = NSRunningApplication.runningApplications(
+                withBundleIdentifier: appBundleIdentifier
+            )
+            .contains { !$0.isTerminated }
+
+            if !hasLiveApp {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
     }
 
     @discardableResult
@@ -188,6 +215,23 @@ class PnevmaUITestCase: XCTestCase {
     func clickSidebarTool(_ toolID: String) {
         app.activate()
         sidebarTool(toolID).click()
+    }
+
+    @discardableResult
+    func toolDockItem(
+        _ toolID: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        let identifiedButton = app.buttons["tool-dock.item.\(toolID)"]
+        if identifiedButton.waitForExistence(timeout: defaultTimeout) {
+            return identifiedButton
+        }
+        let identified = app.descendants(matching: .any)["tool-dock.item.\(toolID)"]
+        if identified.waitForExistence(timeout: defaultTimeout) {
+            return identified
+        }
+        return button(sidebarToolLabel(for: toolID), file: file, line: line)
     }
 
     func dismissOpenWorkspaceDialogIfNeeded() {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// SwiftUI sidebar listing workspaces, projects, and quick actions.
+/// SwiftUI sidebar listing workspaces and workspace-level actions.
 /// Embedded in the main window via NSHostingView + NSVisualEffectView.
 struct SidebarView: View {
     var workspaceManager: WorkspaceManager
@@ -8,17 +8,6 @@ struct SidebarView: View {
 
     /// Called when the user wants to add a new workspace.
     var onAddWorkspace: (() -> Void)?
-    /// Called when the user wants to open settings.
-    var onOpenSettings: (() -> Void)?
-    /// Called when the user wants to open a tool using its default presentation.
-    var onOpenTool: ((String) -> Void)?
-    /// Called when the user wants to open a tool as a new tab.
-    var onOpenToolAsTab: ((String) -> Void)?
-    /// Called when the user wants to open a tool as a split pane.
-    var onOpenToolAsPane: ((String) -> Void)?
-
-    @State private var activeToolID: String?
-    @State private var isToolsExpanded: Bool = true
 
     /// Sidebar background derived from the ghostty terminal theme.
     private var sidebarBackground: Color {
@@ -42,7 +31,6 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 1. Workspaces (top, takes remaining space)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
@@ -76,55 +64,6 @@ struct SidebarView: View {
                 .padding(.top, 8)
             }
             .scrollIndicators(.hidden)
-
-            Spacer(minLength: 0)
-
-            // 2. Tools (bottom-aligned, no scroll)
-            VStack(spacing: 0) {
-                Divider()
-
-                ToolsSectionHeader(isExpanded: $isToolsExpanded)
-
-                if isToolsExpanded {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(sidebarTools(for: workspaceManager.activeWorkspace)) { tool in
-                            SidebarToolButton(
-                                tool: tool,
-                                isActive: activeToolID == tool.id,
-                                onOpenAsTab: { onOpenToolAsTab?(tool.id) },
-                                onOpenAsPane: { onOpenToolAsPane?(tool.id) }
-                            ) {
-                                activeToolID = tool.id
-                                onOpenTool?(tool.id)
-                            }
-                        }
-                    }
-                    .padding(.bottom, 4)
-                }
-            }
-            .padding(.horizontal, 8)
-
-            // 3. Settings (pinned bottom)
-            VStack(spacing: 0) {
-                Divider()
-                SidebarToolButton(
-                    tool: SidebarToolItem(
-                        id: "settings",
-                        title: "Settings",
-                        icon: "gear",
-                        paneType: "settings",
-                        defaultPresentation: .tab
-                    ),
-                    isActive: activeToolID == "settings",
-                    accessibilityID: "sidebar.tool.settings"
-                ) {
-                    activeToolID = "settings"
-                    onOpenSettings?()
-                }
-                .padding(.vertical, 4)
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
         }
         .frame(width: DesignTokens.Layout.sidebarWidth)
         .background(sidebarBackground)

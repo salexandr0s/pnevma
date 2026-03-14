@@ -34,9 +34,12 @@ struct WorkspaceRow: View {
 
     private var shortenedPath: String? {
         guard let path = workspace.displayPath else { return nil }
-        let components = path.split(separator: "/")
-        if components.count <= 2 { return path }
-        return "~/" + components.suffix(2).joined(separator: "/")
+        switch workspace.location {
+        case .local:
+            return WorkspacePathDisplayFormatter.shortenedLocalPath(path)
+        case .remote:
+            return path
+        }
     }
 
     private var modeLabel: String {

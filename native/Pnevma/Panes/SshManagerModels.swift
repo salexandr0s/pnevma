@@ -116,8 +116,8 @@ struct TailscaleDevice: Identifiable, Decodable {
 extension TailscaleDevice {
     var remoteWorkspaceProfileID: String {
         let sanitizedID = id
-            .replacingOccurrences(of: ":", with: "-")
-            .replacingOccurrences(of: "/", with: "-")
+            .replacing(":", with: "-")
+            .replacing("/", with: "-")
         return "tailscale-\(sanitizedID)"
     }
 

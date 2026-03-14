@@ -593,6 +593,8 @@ pub struct StreamRedactionBuffer {
     pending: String,
 }
 
+const MAX_BUFFER_BYTES: usize = 64 * 1024; // 64 KB
+
 impl StreamRedactionBuffer {
     pub fn new() -> Self {
         Self::default()
@@ -600,6 +602,15 @@ impl StreamRedactionBuffer {
 
     pub fn push_chunk(&mut self, chunk: &str, secrets: &[String]) -> Option<String> {
         self.pending.push_str(chunk);
+        // Prevent unbounded buffer growth — force flush when exceeding limit.
+        if self.pending.len() > MAX_BUFFER_BYTES {
+            tracing::warn!(
+                buffered = self.pending.len(),
+                "redaction buffer exceeded {}B, force flushing",
+                MAX_BUFFER_BYTES
+            );
+            return self.drain(true, secrets);
+        }
         self.drain(false, secrets)
     }
 
@@ -1040,6 +1051,255 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "PATTERNS_LAST_REVIEWED must be a valid YYYY-MM-DD date"
+        );
+    }
+
+    // --- G.9: Redaction streaming edge cases ---
+
+    #[test]
+    fn stream_buffer_empty_input_returns_none() {
+        let mut buffer = StreamRedactionBuffer::new();
+        assert!(
+            buffer.push_chunk("", &[]).is_none(),
+            "empty chunk should produce no output"
+        );
+        assert!(
+            buffer.finish(&[]).is_none(),
+            "finish on empty buffer should produce no output"
+        );
+    }
+
+    #[test]
+    fn stream_buffer_secret_at_very_start_of_input() {
+        let secret = "start-secret-value";
+        let secrets = vec![secret.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        let chunk = format!("{secret} and then safe text");
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&chunk, &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret),
+            "secret at start of input should be redacted, got: {full_output}"
+        );
+        assert!(full_output.contains(REDACTED));
+        assert!(full_output.contains("and then safe text"));
+    }
+
+    #[test]
+    fn stream_buffer_secret_at_very_end_of_input() {
+        let secret = "end-secret-value";
+        let secrets = vec![secret.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        let chunk = format!("safe text before {secret}");
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&chunk, &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret),
+            "secret at end of input should be redacted, got: {full_output}"
+        );
+        assert!(full_output.contains(REDACTED));
+    }
+
+    #[test]
+    fn stream_buffer_secret_split_across_two_chunks() {
+        let secret = "split-across-chunks-secret";
+        let secrets = vec![secret.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        // Split the secret in the middle
+        let mid = secret.len() / 2;
+        let part1 = &secret[..mid];
+        let part2 = &secret[mid..];
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&format!("before {part1}"), &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.push_chunk(&format!("{part2} after"), &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret),
+            "secret split across chunks should be redacted, got: {full_output}"
+        );
+        assert!(full_output.contains(REDACTED));
+    }
+
+    #[test]
+    fn stream_buffer_overlapping_secrets() {
+        // Two secrets that share a substring: "secret-overlap-ab" and "overlap-ab-end"
+        let secret1 = "secret-overlap-ab";
+        let secret2 = "overlap-ab-end";
+        let secrets = vec![secret1.to_string(), secret2.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        // Input contains both secrets separately
+        let input = format!("x {secret1} y {secret2} z");
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&input, &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret1),
+            "first overlapping secret should be redacted, got: {full_output}"
+        );
+        assert!(
+            !full_output.contains(secret2),
+            "second overlapping secret should be redacted, got: {full_output}"
+        );
+    }
+
+    #[test]
+    fn stream_buffer_long_input_no_secrets_passthrough() {
+        let mut buffer = StreamRedactionBuffer::new();
+        // 50KB of safe content with no secret patterns
+        let line = "This is a safe log line with build ID 12345 and nothing sensitive.\n";
+        let input: String = line.repeat(800); // ~52KB
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&input, &[]) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&[]) {
+            full_output.push_str(&out);
+        }
+        // The complete input should pass through unmodified
+        assert_eq!(
+            full_output, input,
+            "long safe input should pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn stream_buffer_unicode_content_with_secrets() {
+        let secret = "unicode-secret-val";
+        let secrets = vec![secret.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        // Mix of unicode characters around the secret
+        let input = format!(
+            "Greetings, {}. Status: {secret}. Done.",
+            "\u{1F600}\u{2603}\u{00E9}\u{4E16}\u{754C}"
+        );
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&input, &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret),
+            "secret within unicode content should be redacted, got: {full_output}"
+        );
+        assert!(full_output.contains(REDACTED));
+        // Verify unicode characters survived
+        assert!(
+            full_output.contains("\u{1F600}"),
+            "unicode emoji should survive redaction"
+        );
+        assert!(
+            full_output.contains("\u{4E16}\u{754C}"),
+            "CJK characters should survive redaction"
+        );
+    }
+
+    #[test]
+    fn stream_buffer_unicode_split_at_boundary_does_not_corrupt() {
+        // Ensure the buffer handles multi-byte characters that could be split
+        // at a chunk boundary without corrupting the output.
+        let mut buffer = StreamRedactionBuffer::new();
+        // 4-byte emoji repeated to fill enough content that a split happens
+        let emoji_text = "\u{1F680}".repeat(100); // 400 bytes of rockets
+        let safe_suffix = " safe ending";
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&emoji_text, &[]) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.push_chunk(safe_suffix, &[]) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&[]) {
+            full_output.push_str(&out);
+        }
+        assert_eq!(
+            full_output,
+            format!("{emoji_text}{safe_suffix}"),
+            "unicode content should not be corrupted across chunk boundaries"
+        );
+    }
+
+    #[test]
+    fn redact_text_empty_input_returns_empty() {
+        let output = redact_text("", &[]);
+        assert_eq!(output, "", "empty input should produce empty output");
+    }
+
+    #[test]
+    fn redact_text_empty_input_with_secrets_returns_empty() {
+        let output = redact_text("", &["some-secret".to_string()]);
+        assert_eq!(
+            output, "",
+            "empty input with secrets should produce empty output"
+        );
+    }
+
+    #[test]
+    fn stream_buffer_multiple_secrets_in_single_chunk() {
+        let secret_a = "first-secret-aaa";
+        let secret_b = "second-secret-bbb";
+        let secrets = vec![secret_a.to_string(), secret_b.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        let input = format!("start {secret_a} middle {secret_b} end");
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&input, &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret_a),
+            "first secret should be redacted"
+        );
+        assert!(
+            !full_output.contains(secret_b),
+            "second secret should be redacted"
+        );
+        assert!(full_output.contains("start"));
+        assert!(full_output.contains("end"));
+    }
+
+    #[test]
+    fn stream_buffer_finish_flushes_held_back_content() {
+        let secret = "held-back-secret-value";
+        let secrets = vec![secret.to_string()];
+        let mut buffer = StreamRedactionBuffer::new();
+        // Push partial prefix of the secret -- the buffer may hold it back
+        let partial = &secret[..5];
+        let _ = buffer.push_chunk(partial, &secrets);
+        // finish() must flush everything
+        let remainder = buffer.finish(&secrets);
+        // Even if it was held, finish should produce the partial (not a secret match)
+        let mut full_output = String::new();
+        if let Some(out) = remainder {
+            full_output.push_str(&out);
+        }
+        // The partial prefix by itself is not the secret, so it should appear unredacted
+        assert!(
+            !full_output.contains(secret),
+            "full secret should not appear in output"
         );
     }
 }

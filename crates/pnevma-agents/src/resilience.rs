@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+/// Check if `needle` appears as a whole word in `haystack`.
+fn word_boundary_match(haystack: &str, needle: &str) -> bool {
+    for (start, _) in haystack.match_indices(needle) {
+        let before_ok = start == 0 || !haystack.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let end = start + needle.len();
+        let after_ok = end >= haystack.len() || !haystack.as_bytes()[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
 /// Policy controlling retry behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryPolicy {
@@ -78,17 +91,17 @@ pub fn classify_failure(error_msg: &str) -> FailureClass {
         || lower.contains("connection refused")
         || lower.contains("network")
         || lower.contains("dns")
-        || lower.contains("eof")
+        || word_boundary_match(&lower, "eof")
         || lower.contains("broken pipe")
     {
         return FailureClass::Transient;
     }
 
-    // Server errors
-    if lower.contains("500")
-        || lower.contains("502")
-        || lower.contains("503")
-        || lower.contains("504")
+    // Server errors — use word boundaries to avoid matching "500" in "processed 500 items"
+    if word_boundary_match(&lower, "500")
+        || word_boundary_match(&lower, "502")
+        || word_boundary_match(&lower, "503")
+        || word_boundary_match(&lower, "504")
         || lower.contains("internal server error")
         || lower.contains("service unavailable")
     {

@@ -108,3 +108,35 @@ enum SidebarPreferences {
         set { defaults.set(newValue, forKey: "sidebarBackgroundOffset") }
     }
 }
+
+// MARK: - ToolDockPreferences
+
+enum ToolDockPreferences {
+    private static let defaults = UserDefaults.standard
+
+    /// How much to lighten the tool dock background relative to the terminal.
+    /// Uses the same scale as the sidebar. Default matches sidebar default (0.05).
+    static var backgroundOffset: Double {
+        get {
+            let raw = defaults.object(forKey: "toolDockBackgroundOffset") as? Double ?? 0.05
+            return max(0.0, min(0.3, raw))
+        }
+        set { defaults.set(newValue, forKey: "toolDockBackgroundOffset") }
+    }
+}
+
+// MARK: - RightInspectorPreferences
+
+enum RightInspectorPreferences {
+    private static let defaults = UserDefaults.standard
+
+    /// How much to lighten the right inspector background relative to the terminal.
+    /// Default is 0.0 (exact terminal color, no tinting).
+    static var backgroundOffset: Double {
+        get {
+            let raw = defaults.object(forKey: "rightInspectorBackgroundOffset") as? Double ?? 0.0
+            return max(0.0, min(0.3, raw))
+        }
+        set { defaults.set(newValue, forKey: "rightInspectorBackgroundOffset") }
+    }
+}

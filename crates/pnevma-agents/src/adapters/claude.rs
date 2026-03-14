@@ -1,27 +1,21 @@
+use crate::adapters::process::ProcessState;
 use crate::error::AgentError;
 use crate::model::{
     AgentAdapter, AgentConfig, AgentEvent, AgentHandle, AgentStatus, CostRecord, TaskPayload,
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::sync::broadcast;
-use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
 #[derive(Default)]
 pub struct ClaudeCodeAdapter {
-    channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<AgentEvent>>>>,
-    configs: Arc<RwLock<HashMap<Uuid, AgentConfig>>>,
-    costs: Arc<RwLock<HashMap<Uuid, CostRecord>>>,
-    /// Tracks PIDs of spawned agent subprocesses for lifecycle management.
-    processes: Arc<RwLock<HashMap<Uuid, u32>>>,
+    state: ProcessState<AgentConfig>,
 }
 
 impl ClaudeCodeAdapter {
@@ -90,8 +84,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
         let id = Uuid::new_v4();
         let (tx, _) = broadcast::channel(2048);
-        self.channels.write().await.insert(id, tx);
-        self.configs.write().await.insert(id, config.clone());
+        self.state.channels.write().await.insert(id, tx);
+        self.state.configs.write().await.insert(id, config.clone());
 
         Ok(AgentHandle {
             id,
@@ -104,6 +98,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
     async fn send(&self, handle: &AgentHandle, input: TaskPayload) -> Result<(), AgentError> {
         let tx = self
+            .state
             .channels
             .read()
             .await
@@ -111,6 +106,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             .cloned()
             .ok_or_else(|| AgentError::Unavailable("missing event channel".to_string()))?;
         let cfg = self
+            .state
             .configs
             .read()
             .await
@@ -158,7 +154,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         // Store PID for interrupt/stop lifecycle management.
         if let Some(pid) = child.id() {
-            self.processes.write().await.insert(handle.id, pid);
+            self.state.processes.write().await.insert(handle.id, pid);
         }
 
         let stdout = child
@@ -172,17 +168,27 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         let handle_id = handle.id;
         let task_id = input.task_id;
-        let costs = self.costs.clone();
-        let processes = self.processes.clone();
-        let channels = self.channels.clone();
-        let configs = self.configs.clone();
+        let costs = self.state.costs.clone();
+        let processes = self.state.processes.clone();
+        let channels = self.state.channels.clone();
+        let configs = self.state.configs.clone();
         let working_dir = cfg.working_dir.clone();
         let timeout_minutes = cfg.timeout_minutes;
 
-        let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Running));
-        let _ = tx.send(AgentEvent::OutputChunk(format!(
-            "[claude-code] spawned in {working_dir}\n"
-        )));
+        if tx
+            .send(AgentEvent::StatusChange(AgentStatus::Running))
+            .is_err()
+        {
+            tracing::debug!("no active subscribers for claude agent status change");
+        }
+        if tx
+            .send(AgentEvent::OutputChunk(format!(
+                "[claude-code] spawned in {working_dir}\n"
+            )))
+            .is_err()
+        {
+            tracing::debug!("no active subscribers for claude agent output");
+        }
 
         tokio::spawn(async move {
             // Parse structured stream-json output from stdout.
@@ -201,7 +207,12 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     }
 
                     if !use_stream_json {
-                        let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                        if tx_out
+                            .send(AgentEvent::OutputChunk(format!("{line}\n")))
+                            .is_err()
+                        {
+                            tracing::debug!("no active subscribers for claude agent output");
+                        }
                         continue;
                     }
 
@@ -232,9 +243,14 @@ impl AgentAdapter for ClaudeCodeAdapter {
                                                 if let Some(text) =
                                                     block.get("text").and_then(|v| v.as_str())
                                                 {
-                                                    let _ = tx_out.send(AgentEvent::OutputChunk(
-                                                        format!("{text}\n"),
-                                                    ));
+                                                    if tx_out
+                                                        .send(AgentEvent::OutputChunk(format!(
+                                                            "{text}\n"
+                                                        )))
+                                                        .is_err()
+                                                    {
+                                                        tracing::debug!("no active subscribers for claude agent output");
+                                                    }
                                                 }
                                             }
                                             Some("tool_use") => {
@@ -246,11 +262,16 @@ impl AgentAdapter for ClaudeCodeAdapter {
                                                     .get("input")
                                                     .map(|v| v.to_string())
                                                     .unwrap_or_default();
-                                                let _ = tx_out.send(AgentEvent::ToolUse {
-                                                    name: name.to_string(),
-                                                    input: tool_input,
-                                                    output: String::new(),
-                                                });
+                                                if tx_out
+                                                    .send(AgentEvent::ToolUse {
+                                                        name: name.to_string(),
+                                                        input: tool_input,
+                                                        output: String::new(),
+                                                    })
+                                                    .is_err()
+                                                {
+                                                    tracing::debug!("no active subscribers for claude agent tool use");
+                                                }
                                             }
                                             _ => {}
                                         }
@@ -278,25 +299,51 @@ impl AgentAdapter for ClaudeCodeAdapter {
                                 .and_then(|v| v.as_f64())
                                 .unwrap_or(0.0);
 
-                            let _ = tx_out.send(AgentEvent::UsageUpdate {
-                                tokens_in: total_tokens_in,
-                                tokens_out: total_tokens_out,
-                                cost_usd: total_cost,
-                            });
+                            if tx_out
+                                .send(AgentEvent::UsageUpdate {
+                                    tokens_in: total_tokens_in,
+                                    tokens_out: total_tokens_out,
+                                    cost_usd: total_cost,
+                                })
+                                .is_err()
+                            {
+                                tracing::debug!(
+                                    "no active subscribers for claude agent usage update"
+                                );
+                            }
 
                             if let Some(result) = event.get("result").and_then(|v| v.as_str()) {
-                                let _ = tx_out.send(AgentEvent::OutputChunk(format!(
-                                    "\n--- Result ---\n{result}\n"
-                                )));
+                                if tx_out
+                                    .send(AgentEvent::OutputChunk(format!(
+                                        "\n--- Result ---\n{result}\n"
+                                    )))
+                                    .is_err()
+                                {
+                                    tracing::debug!(
+                                        "no active subscribers for claude agent result output"
+                                    );
+                                }
                             }
                         }
                         Some("system") => {
-                            let _ = tx_out.send(AgentEvent::OutputChunk(
-                                "[claude-code] session initialized\n".to_string(),
-                            ));
+                            if tx_out
+                                .send(AgentEvent::OutputChunk(
+                                    "[claude-code] session initialized\n".to_string(),
+                                ))
+                                .is_err()
+                            {
+                                tracing::debug!(
+                                    "no active subscribers for claude agent system event"
+                                );
+                            }
                         }
                         _ => {
-                            let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                            if tx_out
+                                .send(AgentEvent::OutputChunk(format!("{line}\n")))
+                                .is_err()
+                            {
+                                tracing::debug!("no active subscribers for claude agent output");
+                            }
                         }
                     }
                 }
@@ -308,7 +355,12 @@ impl AgentAdapter for ClaudeCodeAdapter {
             let err_task = tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = tx_err.send(AgentEvent::OutputChunk(format!("[stderr] {line}\n")));
+                    if tx_err
+                        .send(AgentEvent::OutputChunk(format!("[stderr] {line}\n")))
+                        .is_err()
+                    {
+                        tracing::debug!("no active subscribers for claude agent stderr");
+                    }
                 }
             });
 
@@ -385,80 +437,19 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
-            // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
-            let ret = unsafe { libc::kill(-(pid as i32), libc::SIGINT) };
-            if ret != 0 {
-                tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGINT) failed");
-            }
-            true
-        } else {
-            false
-        };
-        if pid_found {
-            if let Some(tx) = self.channels.read().await.get(&handle.id) {
-                let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Paused));
-            }
-            Ok(())
-        } else {
-            Err(AgentError::Unavailable("no process found for agent".into()))
-        }
+        self.state.interrupt(handle).await
     }
 
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
-        // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
-        let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
-            // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
-            let ret = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
-            if ret != 0 {
-                tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGTERM) failed");
-            }
-            let processes = self.processes.clone();
-            let agent_id = handle.id;
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                let should_kill = {
-                    let procs = processes.read().await;
-                    procs.get(&agent_id).copied() == Some(pid)
-                };
-                if should_kill {
-                    let ret = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-                    if ret != 0 {
-                        tracing::warn!(pid, error = %std::io::Error::last_os_error(), "kill(SIGKILL) failed");
-                    }
-                    processes.write().await.remove(&agent_id);
-                }
-            });
-            true
-        } else {
-            false
-        };
-        if pid_found {
-            if let Some(tx) = self.channels.read().await.get(&handle.id) {
-                let _ = tx.send(AgentEvent::StatusChange(AgentStatus::Completed));
-            }
-            Ok(())
-        } else {
-            Err(AgentError::Unavailable("no process found for agent".into()))
-        }
+        self.state.stop(handle).await
     }
 
     fn events(&self, handle: &AgentHandle) -> broadcast::Receiver<AgentEvent> {
-        // NOTE: try_read() is used because this is a sync fn (trait requirement).
-        // Under write contention, this may briefly return a fallback error receiver
-        // even for valid handles — callers retry on the next poll cycle.
-        if let Ok(guard) = self.channels.try_read() {
-            if let Some(tx) = guard.get(&handle.id) {
-                return tx.subscribe();
-            }
-        }
-        let (tx, rx) = broadcast::channel(4);
-        let _ = tx.send(AgentEvent::Error("missing handle".to_string()));
-        rx
+        self.state.events(handle)
     }
 
     async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
-        if let Some(record) = self.costs.read().await.get(&handle.id) {
+        if let Some(record) = self.state.costs.read().await.get(&handle.id) {
             return Ok(record.clone());
         }
 
@@ -642,7 +633,7 @@ mod tests {
         let handle = make_handle();
         // Insert a channel so the adapter knows the handle, but no PID
         let (tx, _) = broadcast::channel(16);
-        adapter.channels.write().await.insert(handle.id, tx);
+        adapter.state.channels.write().await.insert(handle.id, tx);
 
         let err = adapter.interrupt(&handle).await.unwrap_err();
         assert!(
@@ -656,7 +647,7 @@ mod tests {
         let adapter = ClaudeCodeAdapter::new();
         let handle = make_handle();
         let (tx, _) = broadcast::channel(16);
-        adapter.channels.write().await.insert(handle.id, tx);
+        adapter.state.channels.write().await.insert(handle.id, tx);
 
         let err = adapter.stop(&handle).await.unwrap_err();
         assert!(

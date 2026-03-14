@@ -2,27 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/release-common.sh"
+
 ENTITLEMENTS_PATH="${ENTITLEMENTS_PATH:-$ROOT_DIR/native/Pnevma/Pnevma.entitlements}"
 SIGNING_KEYCHAIN_PATH="${SIGNING_KEYCHAIN_PATH:-}"
 
 # Default: detect the xcodebuild release output location.
 # Override APP_PATH to use a custom location.
 SIGN_TARGET_PATH="${TARGET_PATH:-${APP_PATH:-}}"
-
-default_app_path() {
-  local candidates=(
-    "$ROOT_DIR/native/build/Release/Pnevma.app"
-    "$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app"
-  )
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    if [[ -d "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  printf '%s\n' "${candidates[0]}"
-}
 
 if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   echo "APPLE_SIGNING_IDENTITY is required"

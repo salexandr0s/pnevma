@@ -3,6 +3,7 @@
 //! This crate provides a staticlib that Swift code links against.
 //! All public functions are `extern "C"` with `catch_unwind` safety.
 
+use futures::FutureExt;
 use parking_lot::Mutex as ParkingMutex;
 use pnevma_commands::event_emitter::EventEmitter;
 use pnevma_commands::state::AppState;
@@ -51,7 +52,7 @@ pub struct PnevmaResult {
 pub struct PnevmaHandle {
     runtime: Runtime,
     state: Arc<AppState>,
-    session_output_cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
+    session_output_cb: Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
     session_output_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     project_service_generation: Arc<AtomicU64>,
     pending_async_callbacks: Arc<ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>>,
@@ -74,6 +75,7 @@ struct EventCallbackWrapper {
 unsafe impl Send for EventCallbackWrapper {}
 unsafe impl Sync for EventCallbackWrapper {}
 
+#[derive(Clone, Copy)]
 struct SessionOutputCallbackWrapper {
     cb: SessionOutputCallback,
     ctx: *mut (),
@@ -81,6 +83,13 @@ struct SessionOutputCallbackWrapper {
 unsafe impl Send for SessionOutputCallbackWrapper {}
 unsafe impl Sync for SessionOutputCallbackWrapper {}
 
+struct SessionOutputCallbackRegistration {
+    wrapper: SessionOutputCallbackWrapper,
+}
+unsafe impl Send for SessionOutputCallbackRegistration {}
+unsafe impl Sync for SessionOutputCallbackRegistration {}
+
+#[derive(Clone, Copy)]
 struct AsyncCallbackWrapper {
     cb: AsyncCallback,
     ctx: *mut (),
@@ -152,6 +161,135 @@ fn finish_async_callback(callback: AsyncCallbackWrapper, result: *mut PnevmaResu
     release_async_context(callback);
     // Free the result after callback returns.
     unsafe { pnevma_free_result(result) };
+}
+
+fn finish_pending_async_callback(
+    callbacks: &ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>,
+    shutting_down: &AtomicBool,
+    callback_id: u64,
+    result: Option<*mut PnevmaResult>,
+) {
+    let callback = callbacks.lock().remove(&callback_id);
+    match (callback, result) {
+        (Some(callback), Some(result)) => {
+            if shutting_down.load(Ordering::SeqCst) {
+                release_async_context(callback);
+                unsafe { pnevma_free_result(result) };
+            } else {
+                finish_async_callback(callback, result);
+            }
+        }
+        (None, Some(result)) => unsafe { pnevma_free_result(result) },
+        (Some(callback), None) => {
+            if shutting_down.load(Ordering::SeqCst) {
+                release_async_context(callback);
+            } else {
+                finish_async_callback(
+                    callback,
+                    make_error_result("internal error: async call panicked"),
+                );
+            }
+        }
+        (None, None) => {}
+    }
+}
+
+struct PendingAsyncCallbackGuard {
+    callbacks: Arc<ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>>,
+    shutting_down: Arc<AtomicBool>,
+    callback_id: u64,
+    active: bool,
+}
+
+impl PendingAsyncCallbackGuard {
+    fn insert(
+        callbacks: Arc<ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>>,
+        shutting_down: Arc<AtomicBool>,
+        callback_id: u64,
+        callback: AsyncCallbackWrapper,
+    ) -> Self {
+        callbacks.lock().insert(callback_id, callback);
+        Self {
+            callbacks,
+            shutting_down,
+            callback_id,
+            active: true,
+        }
+    }
+
+    fn finish(mut self, result: *mut PnevmaResult) {
+        self.active = false;
+        finish_pending_async_callback(
+            &self.callbacks,
+            self.shutting_down.as_ref(),
+            self.callback_id,
+            Some(result),
+        );
+    }
+}
+
+impl Drop for PendingAsyncCallbackGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        finish_pending_async_callback(
+            &self.callbacks,
+            self.shutting_down.as_ref(),
+            self.callback_id,
+            None,
+        );
+    }
+}
+
+fn snapshot_session_output_callback(
+    cb: &Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
+) -> Option<Arc<SessionOutputCallbackRegistration>> {
+    let guard = cb.lock().ok()?;
+    guard.clone()
+}
+
+fn wait_for_session_output_callback_quiescence(
+    registration: Arc<SessionOutputCallbackRegistration>,
+) {
+    while Arc::strong_count(&registration) > 1 {
+        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn replace_session_output_callback(
+    cb: &Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
+    next: Option<Arc<SessionOutputCallbackRegistration>>,
+) -> Result<Option<Arc<SessionOutputCallbackRegistration>>, ()> {
+    let mut guard = cb.lock().map_err(|_| ())?;
+    Ok(std::mem::replace(&mut *guard, next))
+}
+
+fn clear_session_output_callback(
+    cb: &Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
+) {
+    if let Ok(Some(registration)) = replace_session_output_callback(cb, None) {
+        wait_for_session_output_callback_quiescence(registration);
+    }
+}
+
+fn invoke_session_output_callback(
+    registration: Arc<SessionOutputCallbackRegistration>,
+    session_id: &str,
+    bytes: &[u8],
+) {
+    let sid_cstr = match CString::new(session_id) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let wrapper = registration.wrapper;
+        (wrapper.cb)(sid_cstr.as_ptr(), bytes.as_ptr(), bytes.len(), wrapper.ctx);
+    }));
+    if result.is_err() {
+        tracing::error!("panic in session output FFI callback");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,8 +519,12 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
 
         // Start background services
         let state_clone = Arc::clone(&state);
+        let cost_shutdown_rx = shutdown_tx.subscribe();
         runtime.spawn(async move {
-            pnevma_commands::cost_aggregation::start_cost_aggregation(state_clone);
+            pnevma_commands::cost_aggregation::start_cost_aggregation(
+                state_clone,
+                cost_shutdown_rx,
+            );
         });
 
         Box::into_raw(Box::new(PnevmaHandle {
@@ -415,9 +557,12 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
         // Signal all tasks to shut down
         handle.shutting_down.store(true, Ordering::SeqCst);
         let _ = handle.shutdown.send(true);
-        if let Ok(mut cb_guard) = handle.session_output_cb.lock() {
-            *cb_guard = None;
+        if let Ok(mut task_guard) = handle.session_output_task.lock() {
+            if let Some(task) = task_guard.take() {
+                task.abort();
+            }
         }
+        clear_session_output_callback(&handle.session_output_cb);
         let pending_callbacks = handle
             .pending_async_callbacks
             .lock()
@@ -426,11 +571,6 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
             .collect::<Vec<_>>();
         for callback in pending_callbacks {
             release_async_context(callback);
-        }
-        if let Ok(mut task_guard) = handle.session_output_task.lock() {
-            if let Some(task) = task_guard.take() {
-                task.abort();
-            }
         }
         // Give tasks time to finish gracefully
         handle
@@ -594,7 +734,9 @@ pub extern "C" fn pnevma_call_async(
         let callback_id = handle
             .next_async_callback_id
             .fetch_add(1, Ordering::Relaxed);
-        handle.pending_async_callbacks.lock().insert(
+        let pending_callback = PendingAsyncCallbackGuard::insert(
+            Arc::clone(&handle.pending_async_callbacks),
+            Arc::clone(&handle.shutting_down),
             callback_id,
             AsyncCallbackWrapper {
                 cb,
@@ -602,11 +744,15 @@ pub extern "C" fn pnevma_call_async(
                 release_cb,
             },
         );
-        let callbacks = Arc::clone(&handle.pending_async_callbacks);
-        let shutting_down = Arc::clone(&handle.shutting_down);
         let project_service_generation = Arc::clone(&handle.project_service_generation);
         handle.runtime.spawn(async move {
-            let result = route_method(&state, &method_str, &params).await;
+            let result = AssertUnwindSafe(route_method(&state, &method_str, &params))
+                .catch_unwind()
+                .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => return,
+            };
             let r = match result {
                 Ok(val) => {
                     match method_str.as_str() {
@@ -634,17 +780,7 @@ pub extern "C" fn pnevma_call_async(
                 }
                 Err((_code, msg)) => make_error_result(&msg),
             };
-            if shutting_down.load(Ordering::SeqCst) {
-                callbacks.lock().remove(&callback_id);
-                unsafe { pnevma_free_result(r) };
-                return;
-            }
-            let callback = callbacks.lock().remove(&callback_id);
-            if let Some(callback) = callback {
-                finish_async_callback(callback, r);
-            } else {
-                unsafe { pnevma_free_result(r) };
-            }
+            pending_callback.finish(r);
         });
     }));
 }
@@ -677,8 +813,10 @@ pub unsafe extern "C" fn pnevma_free_result(result: *mut PnevmaResult) {
 ///
 /// LIFETIME CONTRACT: `ctx` must remain valid for as long as the callback
 /// is registered (i.e., until a new callback is registered or the handle
-/// is destroyed). The caller must NOT free or mutate the context while
-/// the callback may be invoked from a background thread.
+/// is destroyed). Unregistering or destroying the handle waits for any
+/// in-flight callback snapshots to finish before returning. The caller must
+/// NOT free or mutate the context while the callback may be invoked from a
+/// background thread.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_set_session_output_callback(
@@ -697,12 +835,15 @@ pub extern "C" fn pnevma_set_session_output_callback(
             }
         }
         let cb_arc = Arc::clone(&handle.session_output_cb);
-        if let Ok(mut cb_guard) = cb_arc.lock() {
-            if cb as usize == 0 {
-                *cb_guard = None;
-                return;
-            }
-            *cb_guard = Some(SessionOutputCallbackWrapper { cb, ctx });
+        clear_session_output_callback(&cb_arc);
+        if cb as usize == 0 {
+            return;
+        }
+        let registration = Arc::new(SessionOutputCallbackRegistration {
+            wrapper: SessionOutputCallbackWrapper { cb, ctx },
+        });
+        if replace_session_output_callback(&cb_arc, Some(registration)).is_err() {
+            return;
         }
 
         // Spawn a background task that subscribes to the session supervisor's
@@ -730,7 +871,7 @@ pub extern "C" fn pnevma_set_session_output_callback(
 /// Exits when the shutdown signal is received.
 async fn session_output_forward_loop(
     state: Arc<AppState>,
-    cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
+    cb: Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
     shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
@@ -759,28 +900,9 @@ async fn session_output_forward_loop(
                 event = rx.recv() => {
                     match event {
                         Ok(SessionEvent::Output { session_id, chunk }) => {
-                            let cb_guard = match cb.lock() {
-                                Ok(g) => g,
-                                Err(_) => continue,
-                            };
-                            if let Some(wrapper) = cb_guard.as_ref() {
+                            if let Some(wrapper) = snapshot_session_output_callback(&cb) {
                                 let sid = session_id.to_string();
-                                let sid_cstr = match CString::new(sid) {
-                                    Ok(s) => s,
-                                    Err(_) => continue,
-                                };
-                                let bytes = chunk.as_bytes();
-                                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                    (wrapper.cb)(
-                                        sid_cstr.as_ptr(),
-                                        bytes.as_ptr(),
-                                        bytes.len(),
-                                        wrapper.ctx,
-                                    );
-                                }));
-                                if result.is_err() {
-                                    tracing::error!("panic in session output FFI callback");
-                                }
+                                invoke_session_output_callback(wrapper, &sid, chunk.as_bytes());
                             }
                         }
                         Ok(_) => {} // Ignore non-output events
@@ -801,6 +923,61 @@ async fn session_output_forward_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct AsyncCallbackState {
+        called: AtomicU64,
+        released: AtomicU64,
+        last_ok: Mutex<Option<i32>>,
+        last_payload: Mutex<Option<String>>,
+    }
+
+    fn async_callback_ctx(state: &Arc<AsyncCallbackState>) -> *mut () {
+        Arc::into_raw(Arc::clone(state)).cast_mut().cast()
+    }
+
+    extern "C" fn test_async_cb(result: *const PnevmaResult, ctx: *mut ()) {
+        let state = unsafe { &*(ctx as *const AsyncCallbackState) };
+        state.called.fetch_add(1, Ordering::SeqCst);
+        if result.is_null() {
+            return;
+        }
+
+        let result = unsafe { &*result };
+        *state.last_ok.lock().unwrap() = Some(result.ok);
+        let payload = if result.data.is_null() {
+            String::new()
+        } else {
+            let bytes = unsafe { std::slice::from_raw_parts(result.data.cast::<u8>(), result.len) };
+            String::from_utf8_lossy(bytes).to_string()
+        };
+        *state.last_payload.lock().unwrap() = Some(payload);
+    }
+
+    extern "C" fn test_async_release_cb(ctx: *mut ()) {
+        let state = unsafe { Arc::from_raw(ctx as *const AsyncCallbackState) };
+        state.released.fetch_add(1, Ordering::SeqCst);
+    }
+
+    struct SessionOutputProbe {
+        callback_slot: Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
+        reacquired_mutex: AtomicBool,
+        call_count: AtomicU64,
+    }
+
+    extern "C" fn session_output_probe_cb(
+        _sid: *const c_char,
+        _data: *const u8,
+        _len: usize,
+        ctx: *mut (),
+    ) {
+        let probe = unsafe { &*(ctx as *const SessionOutputProbe) };
+        probe.call_count.fetch_add(1, Ordering::SeqCst);
+        probe
+            .reacquired_mutex
+            .store(probe.callback_slot.try_lock().is_ok(), Ordering::SeqCst);
+    }
 
     #[test]
     fn pnevma_create_returns_non_null() {
@@ -932,22 +1109,10 @@ mod tests {
 
     #[test]
     fn pnevma_call_async_invokes_callback() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
         let handle = pnevma_create(noop_cb, ptr::null_mut());
         assert!(!handle.is_null());
-
-        static CALLED: AtomicBool = AtomicBool::new(false);
-        static RELEASED: AtomicUsize = AtomicUsize::new(0);
-
-        extern "C" fn async_cb(_result: *const PnevmaResult, _ctx: *mut ()) {
-            CALLED.store(true, Ordering::SeqCst);
-        }
-        extern "C" fn release_cb(ctx: *mut ()) {
-            let released = unsafe { &*(ctx as *const AtomicUsize) };
-            released.fetch_add(1, Ordering::SeqCst);
-        }
+        let state = Arc::new(AsyncCallbackState::default());
 
         let method = CString::new("task.list").unwrap();
         let params = CString::new("{}").unwrap();
@@ -956,19 +1121,20 @@ mod tests {
             method.as_ptr(),
             params.as_ptr(),
             params.as_bytes().len(),
-            async_cb,
-            (&RELEASED as *const AtomicUsize).cast_mut().cast(),
-            release_cb,
+            test_async_cb,
+            async_callback_ctx(&state),
+            test_async_release_cb,
         );
 
         // Give the async task time to complete
         std::thread::sleep(std::time::Duration::from_millis(500));
-        assert!(
-            CALLED.load(Ordering::SeqCst),
-            "async callback should have been invoked"
+        assert_eq!(
+            state.called.load(Ordering::SeqCst),
+            1,
+            "async callback should fire exactly once"
         );
         assert_eq!(
-            RELEASED.load(Ordering::SeqCst),
+            state.released.load(Ordering::SeqCst),
             1,
             "async callback context should be released once after completion"
         );
@@ -978,22 +1144,10 @@ mod tests {
 
     #[test]
     fn pnevma_destroy_cancels_pending_async_callbacks() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
         let handle = pnevma_create(noop_cb, ptr::null_mut());
         assert!(!handle.is_null());
-
-        static CALLED_AFTER_DESTROY: AtomicBool = AtomicBool::new(false);
-        static RELEASED_AFTER_DESTROY: AtomicUsize = AtomicUsize::new(0);
-
-        extern "C" fn async_cb(_result: *const PnevmaResult, _ctx: *mut ()) {
-            CALLED_AFTER_DESTROY.store(true, Ordering::SeqCst);
-        }
-        extern "C" fn release_cb(ctx: *mut ()) {
-            let released = unsafe { &*(ctx as *const AtomicUsize) };
-            released.fetch_add(1, Ordering::SeqCst);
-        }
+        let state = Arc::new(AsyncCallbackState::default());
 
         let method = CString::new("task.list").unwrap();
         let params = CString::new("{}").unwrap();
@@ -1002,11 +1156,9 @@ mod tests {
             method.as_ptr(),
             params.as_ptr(),
             params.as_bytes().len(),
-            async_cb,
-            (&RELEASED_AFTER_DESTROY as *const AtomicUsize)
-                .cast_mut()
-                .cast(),
-            release_cb,
+            test_async_cb,
+            async_callback_ctx(&state),
+            test_async_release_cb,
         );
         let h = unsafe { &*handle };
         assert_eq!(
@@ -1018,13 +1170,151 @@ mod tests {
         pnevma_destroy(handle);
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert!(
-            !CALLED_AFTER_DESTROY.load(Ordering::SeqCst),
+            state.called.load(Ordering::SeqCst) == 0,
             "destroyed handles must not invoke pending async callbacks"
         );
         assert_eq!(
-            RELEASED_AFTER_DESTROY.load(Ordering::SeqCst),
+            state.released.load(Ordering::SeqCst),
             1,
             "destroy must release pending async callback context exactly once"
+        );
+    }
+
+    #[test]
+    fn pending_async_callback_guard_cleans_up_panic_once() {
+        let callbacks = Arc::new(ParkingMutex::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AsyncCallbackState::default());
+
+        let unwind = panic::catch_unwind(AssertUnwindSafe({
+            let callbacks = Arc::clone(&callbacks);
+            let shutting_down = Arc::clone(&shutting_down);
+            let state = Arc::clone(&state);
+            move || {
+                let _pending = PendingAsyncCallbackGuard::insert(
+                    callbacks,
+                    shutting_down,
+                    7,
+                    AsyncCallbackWrapper {
+                        cb: test_async_cb,
+                        ctx: async_callback_ctx(&state),
+                        release_cb: test_async_release_cb,
+                    },
+                );
+                panic!("simulate panic after pending callback registration");
+            }
+        }));
+
+        assert!(
+            unwind.is_err(),
+            "the inner panic should be caught by the test"
+        );
+        assert!(
+            callbacks.lock().is_empty(),
+            "panic cleanup must remove the pending callback"
+        );
+        assert_eq!(
+            state.called.load(Ordering::SeqCst),
+            1,
+            "panic cleanup must complete the callback exactly once"
+        );
+        assert_eq!(
+            state.released.load(Ordering::SeqCst),
+            1,
+            "panic cleanup must release the callback context exactly once"
+        );
+        assert_eq!(
+            *state.last_ok.lock().unwrap(),
+            Some(0),
+            "panic cleanup should surface an internal error result"
+        );
+        let payload = state
+            .last_payload
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            payload.contains("internal error"),
+            "panic cleanup should report a synthetic internal error"
+        );
+    }
+
+    #[test]
+    fn invoke_session_output_callback_does_not_hold_mutex_during_callback() {
+        let callback_slot = Arc::new(std::sync::Mutex::new(None));
+        let probe = Box::new(SessionOutputProbe {
+            callback_slot: Arc::clone(&callback_slot),
+            reacquired_mutex: AtomicBool::new(false),
+            call_count: AtomicU64::new(0),
+        });
+        let probe_ptr = Box::into_raw(probe);
+
+        {
+            let mut guard = callback_slot.lock().unwrap();
+            *guard = Some(Arc::new(SessionOutputCallbackRegistration {
+                wrapper: SessionOutputCallbackWrapper {
+                    cb: session_output_probe_cb,
+                    ctx: probe_ptr.cast(),
+                },
+            }));
+        }
+
+        let wrapper = snapshot_session_output_callback(&callback_slot)
+            .expect("callback snapshot should be available");
+        invoke_session_output_callback(wrapper, "session-123", b"hello");
+
+        let probe = unsafe { Box::from_raw(probe_ptr) };
+        assert_eq!(
+            probe.call_count.load(Ordering::SeqCst),
+            1,
+            "callback should be invoked exactly once"
+        );
+        assert!(
+            probe.reacquired_mutex.load(Ordering::SeqCst),
+            "the callback mutex must not be held across FFI invocation"
+        );
+    }
+
+    #[test]
+    fn clear_session_output_callback_waits_for_in_flight_snapshot() {
+        let callback_slot = Arc::new(std::sync::Mutex::new(Some(Arc::new(
+            SessionOutputCallbackRegistration {
+                wrapper: SessionOutputCallbackWrapper {
+                    cb: session_output_probe_cb,
+                    ctx: ptr::null_mut(),
+                },
+            },
+        ))));
+        let snapshot = snapshot_session_output_callback(&callback_slot)
+            .expect("callback snapshot should be available");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let holder = std::thread::spawn(move || {
+            held_tx.send(()).expect("signal held snapshot");
+            release_rx.recv().expect("wait for release signal");
+            drop(snapshot);
+        });
+
+        held_rx.recv().expect("snapshot should be held");
+        let slot = Arc::clone(&callback_slot);
+        let clearer = std::thread::spawn(move || {
+            clear_session_output_callback(&slot);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            !clearer.is_finished(),
+            "clearing must wait for any in-flight snapshot to finish"
+        );
+
+        release_tx.send(()).expect("release held snapshot");
+        clearer.join().expect("clearer should exit cleanly");
+        holder.join().expect("holder should exit cleanly");
+        assert!(
+            callback_slot.lock().unwrap().is_none(),
+            "callback slot should be empty after clear"
         );
     }
 

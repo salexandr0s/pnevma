@@ -1,5 +1,14 @@
 import Cocoa
 
+private extension NSRect {
+    func approximatelyEquals(_ other: NSRect, tolerance: CGFloat = 0.5) -> Bool {
+        abs(origin.x - other.origin.x) < tolerance
+            && abs(origin.y - other.origin.y) < tolerance
+            && abs(size.width - other.size.width) < tolerance
+            && abs(size.height - other.size.height) < tolerance
+    }
+}
+
 /// Hosts the pane split tree in the main window content area.
 /// Manages pane view lifecycle, divider rendering, and keyboard shortcuts.
 final class ContentAreaView: NSView {
@@ -151,15 +160,24 @@ final class ContentAreaView: NSView {
     /// Recompute and apply pane frames. Safe to call during drag.
     private func repositionPanes() {
         if let zoomedID = zoomedPaneID {
-            paneViews[zoomedID]?.frame = bounds
+            if let view = paneViews[zoomedID], !view.frame.approximatelyEquals(bounds) {
+                view.frame = bounds
+                view.needsLayout = true
+                if !(view is TerminalPaneView) {
+                    view.needsDisplay = true
+                }
+            }
             return
         }
         layoutEngine.layout(in: bounds)
         for (id, frame) in layoutEngine.paneFrames {
             if let view = paneViews[id] {
+                guard !view.frame.approximatelyEquals(frame) else { continue }
                 view.frame = frame
                 view.needsLayout = true
-                view.needsDisplay = true
+                if !(view is TerminalPaneView) {
+                    view.needsDisplay = true
+                }
             }
         }
     }

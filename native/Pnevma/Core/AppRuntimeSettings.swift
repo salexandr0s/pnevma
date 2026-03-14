@@ -42,7 +42,7 @@ struct KeybindingEntry: Identifiable, Codable, Equatable {
     }
 }
 
-struct AppSettingsSnapshot: Decodable, Equatable {
+struct AppSettingsSnapshot: Equatable {
     let autoSaveWorkspaceOnQuit: Bool
     let restoreWindowsOnLaunch: Bool
     let autoUpdate: Bool
@@ -51,6 +51,7 @@ struct AppSettingsSnapshot: Decodable, Equatable {
     let terminalFontSize: UInt32
     let scrollbackLines: UInt32
     let sidebarBackgroundOffset: Double
+    let bottomToolBarAutoHide: Bool
     let focusBorderEnabled: Bool
     let focusBorderOpacity: Double
     let focusBorderWidth: Double
@@ -58,6 +59,7 @@ struct AppSettingsSnapshot: Decodable, Equatable {
     let telemetryEnabled: Bool
     let crashReports: Bool
     let keybindings: [KeybindingEntry]
+    let toolPresentationOverrides: [String: String]
 
     static let defaults = Self(
         autoSaveWorkspaceOnQuit: true,
@@ -68,18 +70,51 @@ struct AppSettingsSnapshot: Decodable, Equatable {
         terminalFontSize: 13,
         scrollbackLines: 10_000,
         sidebarBackgroundOffset: 0.05,
+        bottomToolBarAutoHide: false,
         focusBorderEnabled: true,
         focusBorderOpacity: 0.4,
         focusBorderWidth: 2.0,
         focusBorderColor: "accent",
         telemetryEnabled: false,
         crashReports: false,
-        keybindings: []
+        keybindings: [],
+        toolPresentationOverrides: [:]
     )
 
     var normalizedDefaultShell: String? {
         let trimmed = defaultShell.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+extension AppSettingsSnapshot: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case autoSaveWorkspaceOnQuit, restoreWindowsOnLaunch, autoUpdate, defaultShell
+        case terminalFont, terminalFontSize, scrollbackLines, sidebarBackgroundOffset
+        case bottomToolBarAutoHide, focusBorderEnabled, focusBorderOpacity, focusBorderWidth
+        case focusBorderColor, telemetryEnabled, crashReports, keybindings
+        case toolPresentationOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        autoSaveWorkspaceOnQuit = try c.decode(Bool.self, forKey: .autoSaveWorkspaceOnQuit)
+        restoreWindowsOnLaunch = try c.decode(Bool.self, forKey: .restoreWindowsOnLaunch)
+        autoUpdate = try c.decode(Bool.self, forKey: .autoUpdate)
+        defaultShell = try c.decode(String.self, forKey: .defaultShell)
+        terminalFont = try c.decode(String.self, forKey: .terminalFont)
+        terminalFontSize = try c.decode(UInt32.self, forKey: .terminalFontSize)
+        scrollbackLines = try c.decode(UInt32.self, forKey: .scrollbackLines)
+        sidebarBackgroundOffset = try c.decode(Double.self, forKey: .sidebarBackgroundOffset)
+        bottomToolBarAutoHide = try c.decode(Bool.self, forKey: .bottomToolBarAutoHide)
+        focusBorderEnabled = try c.decode(Bool.self, forKey: .focusBorderEnabled)
+        focusBorderOpacity = try c.decode(Double.self, forKey: .focusBorderOpacity)
+        focusBorderWidth = try c.decode(Double.self, forKey: .focusBorderWidth)
+        focusBorderColor = try c.decode(String.self, forKey: .focusBorderColor)
+        telemetryEnabled = try c.decode(Bool.self, forKey: .telemetryEnabled)
+        crashReports = try c.decode(Bool.self, forKey: .crashReports)
+        keybindings = try c.decode([KeybindingEntry].self, forKey: .keybindings)
+        toolPresentationOverrides = try c.decodeIfPresent([String: String].self, forKey: .toolPresentationOverrides) ?? [:]
     }
 }
 
@@ -97,6 +132,7 @@ struct AppSettingsSaveRequest: Encodable, Equatable {
     let terminalFontSize: Int
     let scrollbackLines: Int
     let sidebarBackgroundOffset: Double
+    let bottomToolBarAutoHide: Bool
     let focusBorderEnabled: Bool
     let focusBorderOpacity: Double
     let focusBorderWidth: Double
@@ -104,6 +140,7 @@ struct AppSettingsSaveRequest: Encodable, Equatable {
     let telemetryEnabled: Bool
     let crashReports: Bool
     let keybindings: [KeybindingOverrideSave]?
+    let toolPresentationOverrides: [String: String]?
 }
 
 @MainActor
@@ -142,12 +179,20 @@ final class AppRuntimeSettings {
         snapshot.restoreWindowsOnLaunch
     }
 
+    var bottomToolBarAutoHide: Bool {
+        snapshot.bottomToolBarAutoHide
+    }
+
     var normalizedDefaultShell: String? {
         snapshot.normalizedDefaultShell
     }
 
     var autoUpdate: Bool {
         snapshot.autoUpdate
+    }
+
+    var toolPresentationOverrides: [String: String] {
+        snapshot.toolPresentationOverrides
     }
 
     func load(commandBus: (any CommandCalling)? = CommandBus.shared) async {

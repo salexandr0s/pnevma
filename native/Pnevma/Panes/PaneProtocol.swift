@@ -1006,6 +1006,20 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private func loadOrRestoreSession() {
         loadTask?.cancel()
 
+        if AppLaunchContext.uiTestLightweightMode {
+            projectNotReadyRetryCount = 0
+            awaitingProjectActivation = false
+            showState(
+                title: initialStateTitle,
+                message: "Terminal preview is disabled during UI smoke tests.",
+                detail: "Pnevma uses a lightweight placeholder terminal here so UI automation can bootstrap quickly and deterministically.",
+                scrollback: nil,
+                actions: [],
+                isLoading: false
+            )
+            return
+        }
+
         guard let sessionBridge = PaneFactory.sessionBridge else {
             showState(
                 title: "Terminal Unavailable",

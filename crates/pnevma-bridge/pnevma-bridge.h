@@ -128,8 +128,10 @@ void pnevma_call_async(struct PnevmaHandle *handle,
  *
  * LIFETIME CONTRACT: `ctx` must remain valid for as long as the callback
  * is registered (i.e., until a new callback is registered or the handle
- * is destroyed). The caller must NOT free or mutate the context while
- * the callback may be invoked from a background thread.
+ * is destroyed). Unregistering or destroying the handle waits for any
+ * in-flight callback snapshots to finish before returning. The caller must
+ * NOT free or mutate the context while the callback may be invoked from a
+ * background thread.
  */
 
 void pnevma_set_session_output_callback(struct PnevmaHandle *handle,

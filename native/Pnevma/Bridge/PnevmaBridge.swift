@@ -96,7 +96,10 @@ final class ActiveWorkspaceActivationHub {
         self.state = state
         let callbacks = Array(observers.values)
         lock.unlock()
-        callbacks.forEach { $0(state) }
+        // Dispatch observer calls on MainActor to ensure UI safety.
+        Task { @MainActor in
+            callbacks.forEach { $0(state) }
+        }
     }
 }
 
@@ -176,6 +179,8 @@ struct BridgeCallResult {
 
 /// Swift wrapper around the Rust pnevma-bridge C FFI.
 /// Manages the PnevmaHandle lifecycle and provides type-safe call interface.
+// SAFETY: @unchecked Sendable is safe because all mutable state (handle) is
+// protected by handleLock (NSLock). FFI calls are thread-safe by design.
 final class PnevmaBridge: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let handleLock = NSLock()
@@ -226,7 +231,7 @@ final class PnevmaBridge: @unchecked Sendable {
 
         return method.withCString { methodPtr in
             params.withCString { paramsPtr in
-                let result = pnevma_call(h, methodPtr, paramsPtr, UInt(params.utf8.count))
+                let result = pnevma_call(h, methodPtr, paramsPtr, UInt(strlen(paramsPtr)))
                 guard let result = result else { return nil as BridgeCallResult? }
                 defer { pnevma_free_result(result) }
 
@@ -282,7 +287,7 @@ final class PnevmaBridge: @unchecked Sendable {
                     h,
                     methodPtr,
                     paramsPtr,
-                    UInt(params.utf8.count),
+                    UInt(strlen(paramsPtr)),
                     callback,
                     context,
                     releaseContext

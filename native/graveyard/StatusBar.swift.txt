@@ -1,3 +1,7 @@
+// Archived on 2026-03-14 after the workspace-only sidebar + bottom tool dock
+// migration. This legacy bottom status bar is intentionally kept out of the
+// active build for reference only.
+
 import Cocoa
 import Observation
 

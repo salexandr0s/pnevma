@@ -177,7 +177,7 @@ impl ContextCompiler {
         let pack = ContextPack {
             task_contract: Box::new(task),
             project_brief,
-            architecture_notes: String::new(),
+            architecture_notes,
             conventions,
             rules,
             relevant_file_contents,
@@ -229,7 +229,7 @@ impl ContextCompiler {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use pnevma_core::{Check, CheckType, Priority, TaskStatus};
+    use pnevma_core::{Check, CheckType, ContextPack, Priority, TaskStatus};
     use uuid::Uuid;
 
     fn make_task(secret: &str) -> TaskContract {
@@ -264,6 +264,245 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    fn make_minimal_task() -> TaskContract {
+        TaskContract {
+            id: Uuid::new_v4(),
+            title: "Minimal task".to_string(),
+            goal: "Do the thing".to_string(),
+            scope: vec![],
+            out_of_scope: vec![],
+            dependencies: vec![],
+            acceptance_criteria: vec![],
+            constraints: vec![],
+            priority: Priority::P1,
+            status: TaskStatus::Ready,
+            assigned_session: None,
+            branch: None,
+            worktree: None,
+            prompt_pack: None,
+            handoff_summary: None,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+            external_source: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn make_compiler(budget: usize) -> ContextCompiler {
+        ContextCompiler::new(
+            ContextCompilerConfig {
+                mode: ContextCompileMode::V2,
+                token_budget: budget,
+            },
+            vec![],
+        )
+    }
+
+    fn make_minimal_input() -> ContextCompileInput {
+        ContextCompileInput {
+            task: make_minimal_task(),
+            project_brief: String::new(),
+            architecture_notes: String::new(),
+            conventions: vec![],
+            rules: vec![],
+            relevant_file_contents: vec![],
+            prior_task_summaries: vec![],
+        }
+    }
+
+    // --- G.8: Context compiler round-trip tests ---
+
+    #[test]
+    fn compile_minimal_context_pack_succeeds() {
+        let compiler = make_compiler(10_000);
+        let result = compiler
+            .compile(make_minimal_input())
+            .expect("compile should succeed");
+        // The pack should contain the task contract with the original goal
+        assert_eq!(result.pack.task_contract.goal, "Do the thing");
+        // Markdown output should not be empty (at least contains the task section)
+        assert!(!result.markdown.is_empty());
+    }
+
+    #[test]
+    fn compile_rejects_zero_token_budget() {
+        let compiler = make_compiler(0);
+        let err = compiler
+            .compile(make_minimal_input())
+            .expect_err("zero budget should be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("token_budget"),
+            "error should mention token_budget: {msg}"
+        );
+    }
+
+    #[test]
+    fn compile_rejects_empty_goal() {
+        let compiler = make_compiler(10_000);
+        let mut input = make_minimal_input();
+        input.task.goal = "   ".to_string();
+        let err = compiler
+            .compile(input)
+            .expect_err("empty goal should be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("goal"), "error should mention goal: {msg}");
+    }
+
+    #[test]
+    fn actual_tokens_does_not_exceed_budget_when_content_fits() {
+        let compiler = make_compiler(10_000);
+        let mut input = make_minimal_input();
+        input.project_brief = "A brief project description.".to_string();
+        input.architecture_notes = "Simple flat architecture.".to_string();
+        input.conventions = vec!["Use snake_case".to_string()];
+        input.rules = vec!["No unsafe code".to_string()];
+        let result = compiler.compile(input).expect("compile");
+        assert!(
+            result.pack.actual_tokens <= result.pack.token_budget,
+            "actual_tokens ({}) should not exceed token_budget ({})",
+            result.pack.actual_tokens,
+            result.pack.token_budget,
+        );
+    }
+
+    #[test]
+    fn tight_budget_excludes_optional_sections() {
+        // Set budget so small that only the required Task Contract section fits.
+        // The task title+goal is ~30 chars => ~8 tokens, so a budget of 20 should
+        // include the task but exclude the larger optional sections.
+        let compiler = make_compiler(20);
+        let mut input = make_minimal_input();
+        input.project_brief = "A".repeat(200); // ~50 tokens, should be excluded
+        input.architecture_notes = "B".repeat(200);
+        let result = compiler.compile(input).expect("compile");
+        // Task Contract is required, so it must always be included
+        let task_item = result
+            .pack
+            .manifest
+            .iter()
+            .find(|m| m.kind == "## Task Contract")
+            .expect("manifest should contain Task Contract");
+        assert!(
+            task_item.included,
+            "Task Contract should always be included"
+        );
+        // At least one optional section should have been excluded
+        let excluded = result.pack.manifest.iter().any(|m| !m.included);
+        assert!(
+            excluded,
+            "with a tight budget, at least one optional section should be excluded"
+        );
+        // Excluded items should have a reason
+        for item in &result.pack.manifest {
+            if !item.included {
+                assert!(
+                    item.reason.is_some(),
+                    "excluded manifest item '{}' should have a reason",
+                    item.kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn manifest_records_all_section_kinds() {
+        let compiler = make_compiler(100_000);
+        let mut input = make_minimal_input();
+        input.project_brief = "brief".to_string();
+        input.architecture_notes = "arch".to_string();
+        input.conventions = vec!["conv".to_string()];
+        input.rules = vec!["rule".to_string()];
+        input.relevant_file_contents = vec![("f.rs".to_string(), "code".to_string())];
+        input.prior_task_summaries = vec!["prior".to_string()];
+        let result = compiler.compile(input).expect("compile");
+        let kinds: Vec<&str> = result
+            .pack
+            .manifest
+            .iter()
+            .map(|m| m.kind.as_str())
+            .collect();
+        assert!(
+            kinds.contains(&"## Task Contract"),
+            "missing Task Contract in manifest"
+        );
+        assert!(
+            kinds.contains(&"## Relevant Files"),
+            "missing Relevant Files in manifest"
+        );
+        assert!(
+            kinds.contains(&"## Rules and Conventions"),
+            "missing Rules and Conventions in manifest"
+        );
+        assert!(
+            kinds.contains(&"## Architecture Notes"),
+            "missing Architecture Notes in manifest"
+        );
+        assert!(
+            kinds.contains(&"## Prior Summaries"),
+            "missing Prior Summaries in manifest"
+        );
+        assert!(
+            kinds.contains(&"## Project Brief"),
+            "missing Project Brief in manifest"
+        );
+    }
+
+    #[test]
+    fn context_pack_round_trip_serde_json() {
+        let compiler = make_compiler(10_000);
+        let mut input = make_minimal_input();
+        input.project_brief = "Test project brief".to_string();
+        input.architecture_notes = "Layered architecture".to_string();
+        input.conventions = vec!["Use Rust 2021".to_string()];
+        input.rules = vec!["No panics".to_string()];
+        input.relevant_file_contents =
+            vec![("src/lib.rs".to_string(), "pub fn hello() {}".to_string())];
+        input.prior_task_summaries = vec!["Completed setup".to_string()];
+        let result = compiler.compile(input).expect("compile");
+        let json = serde_json::to_string(&result.pack).expect("serialize ContextPack");
+        let deserialized: ContextPack =
+            serde_json::from_str(&json).expect("deserialize ContextPack");
+        // Verify key fields survive the round-trip
+        assert_eq!(
+            deserialized.task_contract.goal,
+            result.pack.task_contract.goal
+        );
+        assert_eq!(deserialized.project_brief, result.pack.project_brief);
+        assert_eq!(deserialized.token_budget, result.pack.token_budget);
+        assert_eq!(deserialized.actual_tokens, result.pack.actual_tokens);
+        assert_eq!(deserialized.manifest.len(), result.pack.manifest.len());
+        assert_eq!(deserialized.conventions, result.pack.conventions);
+        assert_eq!(deserialized.rules, result.pack.rules);
+        assert_eq!(
+            deserialized.relevant_file_contents,
+            result.pack.relevant_file_contents
+        );
+        assert_eq!(
+            deserialized.prior_task_summaries,
+            result.pack.prior_task_summaries
+        );
+    }
+
+    #[test]
+    fn context_compiler_config_round_trip_serde_json() {
+        let config = ContextCompilerConfig {
+            mode: ContextCompileMode::V2,
+            token_budget: 5000,
+        };
+        let json = serde_json::to_string(&config).expect("serialize config");
+        let deserialized: ContextCompilerConfig =
+            serde_json::from_str(&json).expect("deserialize config");
+        assert_eq!(deserialized.mode, config.mode);
+        assert_eq!(deserialized.token_budget, config.token_budget);
     }
 
     #[test]

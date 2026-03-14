@@ -20,13 +20,15 @@ final class AppLaunchContextTests: XCTestCase {
             terminalFontSize: 13,
             scrollbackLines: 10000,
             sidebarBackgroundOffset: 0.05,
+            bottomToolBarAutoHide: false,
             focusBorderEnabled: true,
             focusBorderOpacity: 0.4,
             focusBorderWidth: 2.0,
             focusBorderColor: "accent",
             telemetryEnabled: false,
             crashReports: false,
-            keybindings: []
+            keybindings: [],
+            toolPresentationOverrides: [:]
         ))
 
         XCTAssertFalse(AppLaunchContext.shouldRestoreWindowsOnLaunch)

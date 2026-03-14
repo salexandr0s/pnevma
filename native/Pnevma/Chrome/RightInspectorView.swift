@@ -1036,9 +1036,9 @@ private struct InspectorReviewSection: View {
                         }
 
                         GroupBox("Notes") {
-                            TextEditor(text: $viewModel.notes)
+                            TextField("Add notes...", text: $viewModel.notes, axis: .vertical)
                                 .font(.body)
-                                .frame(minHeight: 90)
+                                .lineLimit(3...6)
                         }
 
                         HStack {
@@ -1490,9 +1490,9 @@ private struct InspectorReviewOverlay: View {
                     }
 
                     GroupBox("Notes") {
-                        TextEditor(text: $viewModel.notes)
+                        TextField("Add notes...", text: $viewModel.notes, axis: .vertical)
                             .font(.body)
-                            .frame(minHeight: 90)
+                            .lineLimit(3...6)
                     }
 
                     HStack {

@@ -92,7 +92,7 @@ fn parse_claude_code_agent(path: &Path) -> Result<DiscoveredAgent, String> {
     let body = after_first[body_start..].trim().to_string();
 
     let fm: ClaudeCodeFrontmatter =
-        serde_yaml::from_str(yaml_str).map_err(|e| format!("YAML parse error: {e}"))?;
+        serde_yml::from_str(yaml_str).map_err(|e| format!("YAML parse error: {e}"))?;
 
     let file_stem = path
         .file_stem()

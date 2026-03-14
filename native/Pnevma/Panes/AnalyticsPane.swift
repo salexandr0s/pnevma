@@ -414,7 +414,7 @@ final class UsageViewModel {
         self.activationHub = activationHub
 
         let calendar = Calendar.autoupdatingCurrent
-        let end = calendar.startOfDay(for: Date())
+        let end = calendar.startOfDay(for: Date.now)
         self.rangeEnd = end
         self.rangeStart = calendar.date(byAdding: .day, value: -29, to: end) ?? end
 
@@ -627,7 +627,7 @@ final class UsageViewModel {
 
     func applyQuickRange(days: Int) {
         let calendar = Calendar.autoupdatingCurrent
-        let end = calendar.startOfDay(for: Date())
+        let end = calendar.startOfDay(for: Date.now)
         rangeEnd = end
         rangeStart = calendar.date(byAdding: .day, value: -(days - 1), to: end) ?? end
         selectedQuickRangeDays = days
@@ -841,7 +841,7 @@ final class UsageViewModel {
 
     private func csv(_ values: [String]) -> String {
         values
-            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+            .map { "\"\($0.replacing("\"", with: "\"\""))\"" }
             .joined(separator: ",")
     }
 
@@ -2129,7 +2129,7 @@ private struct StatusPill: View {
     }
 
     var body: some View {
-        Text(status.replacingOccurrences(of: "_", with: " ").capitalized)
+        Text(status.replacing("_", with: " ").capitalized)
             .font(.caption)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)

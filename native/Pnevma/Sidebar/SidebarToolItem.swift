@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum SidebarToolDefaultPresentation: Equatable {
+enum SidebarToolDefaultPresentation: String, Equatable, CaseIterable {
     case pane
     case tab
     case drawer
@@ -39,14 +39,14 @@ private let allSidebarTools: [SidebarToolItem] = [
         title: "Terminal",
         icon: "terminal",
         paneType: "terminal",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
     SidebarToolItem(
         id: "tasks",
         title: "Task Board",
         icon: "checklist",
         paneType: "taskboard",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
     SidebarToolItem(
         id: "workflow",
@@ -60,21 +60,21 @@ private let allSidebarTools: [SidebarToolItem] = [
         title: "Notifications",
         icon: "bell",
         paneType: "notifications",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
     SidebarToolItem(
         id: "files",
         title: "File Browser",
         icon: "folder",
         paneType: "file_browser",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
     SidebarToolItem(
         id: "ssh",
         title: "SSH Manager",
         icon: "network",
         paneType: "ssh",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
     SidebarToolItem(
         id: "harness",
@@ -130,13 +130,20 @@ private let allSidebarTools: [SidebarToolItem] = [
         title: "Rules Manager",
         icon: "list.bullet.rectangle",
         paneType: "rules",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
     SidebarToolItem(
         id: "secrets",
         title: "Secrets",
         icon: "key.fill",
         paneType: "secrets",
+        defaultPresentation: .tab
+    ),
+    SidebarToolItem(
+        id: "settings",
+        title: "Settings",
+        icon: "gearshape",
+        paneType: "settings",
         defaultPresentation: .tab
     ),
 ]
@@ -169,10 +176,27 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "brief",
             "rules",
             "secrets",
+            "settings",
         ]
     } else {
-        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics"]
+        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "settings"]
     }
 
     return allSidebarTools.filter { allowedIDs.contains($0.id) }
+}
+
+/// Returns the effective presentation for a tool, checking runtime overrides first.
+@MainActor
+func effectiveToolPresentation(for toolID: String) -> SidebarToolDefaultPresentation {
+    let overrides = AppRuntimeSettings.shared.toolPresentationOverrides
+    if let raw = overrides[toolID],
+       let presentation = SidebarToolDefaultPresentation(rawValue: raw) {
+        return presentation
+    }
+    return sidebarToolDefinition(id: toolID)?.defaultPresentation ?? .tab
+}
+
+/// Tools that are configurable for presentation in Phase 1 (all except browser).
+func configurablePresentationTools() -> [SidebarToolItem] {
+    allSidebarTools.filter { $0.id != "browser" && $0.id != "settings" }
 }

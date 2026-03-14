@@ -13,7 +13,8 @@ final class BrowserWorkspaceSession {
     private var hasRestoredInitialURL = false
     private var onURLChanged: ((URL?) -> Void)?
     private var onDrawerHeightChanged: ((Double?) -> Void)?
-    private var pendingDrawerRestoreTask: Task<Void, Never>?
+    @ObservationIgnored
+    nonisolated(unsafe) private var pendingDrawerRestoreTask: Task<Void, Never>?
 
     init(
         workspaceID: UUID = UUID(),

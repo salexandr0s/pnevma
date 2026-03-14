@@ -29,7 +29,7 @@ struct OmnibarTextField: NSViewRepresentable {
         }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 guard nsView.window != nil else { return }
                 nsView.window?.makeFirstResponder(nsView)
                 nsView.selectText(nil)

@@ -13,4 +13,7 @@ pub enum SessionError {
 
     #[error("session limit reached: {0}")]
     LimitReached(String),
+
+    #[error("scrollback too large: {size} bytes (max {max})")]
+    ScrollbackTooLarge { size: u64, max: usize },
 }

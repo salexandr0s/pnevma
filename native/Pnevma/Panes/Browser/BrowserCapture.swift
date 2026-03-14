@@ -273,7 +273,7 @@ enum BrowserCaptureUtilities {
 
         let pathComponent = sourceURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if !pathComponent.isEmpty {
-            components.append(pathComponent.replacingOccurrences(of: "/", with: "-"))
+            components.append(pathComponent.replacing("/", with: "-"))
         }
 
         return components.isEmpty ? "page" : components.joined(separator: "-")

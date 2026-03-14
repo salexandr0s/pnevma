@@ -60,11 +60,17 @@ jobs:
             echo "WARNING: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
           fi
 
+      - name: Cache cargo tools
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-tools-audit-deny-v1
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked
 
       - name: Run release preflight
         run: ./scripts/release-preflight.sh

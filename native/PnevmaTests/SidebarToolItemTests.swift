@@ -13,6 +13,7 @@ final class SidebarToolItemTests: XCTestCase {
         XCTAssertEqual(tools.firstIndex(of: "harness"), 5)
         XCTAssertEqual(tools.firstIndex(of: "replay"), 6)
         XCTAssertTrue(tools.contains("secrets"))
+        XCTAssertTrue(tools.contains("settings"))
     }
 
     func testTerminalWorkspaceSidebarIncludesHarnessConfig() {
@@ -22,18 +23,18 @@ final class SidebarToolItemTests: XCTestCase {
 
         XCTAssertEqual(
             tools,
-            ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics"]
+            ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "settings"]
         )
     }
 
     func testSidebarToolDefinitionsExposeRecommendedDefaultPresentations() {
         let expectedDefaults: [String: SidebarToolDefaultPresentation] = [
-            "terminal": .pane,
-            "tasks": .pane,
+            "terminal": .tab,
+            "tasks": .tab,
             "workflow": .tab,
-            "notifications": .pane,
-            "files": .pane,
-            "ssh": .pane,
+            "notifications": .tab,
+            "files": .tab,
+            "ssh": .tab,
             "harness": .tab,
             "replay": .tab,
             "browser": .drawer,
@@ -41,8 +42,9 @@ final class SidebarToolItemTests: XCTestCase {
             "diff": .tab,
             "analytics": .tab,
             "brief": .tab,
-            "rules": .pane,
+            "rules": .tab,
             "secrets": .tab,
+            "settings": .tab,
         ]
 
         for (toolID, presentation) in expectedDefaults {

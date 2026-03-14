@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 if [[ -z "${SOCKET_PATH:-}" ]]; then
   SOCKET_PATH=".pnevma/run/control.sock"

@@ -133,39 +133,42 @@ struct LayoutTemplatePopoverView: View {
                 ScrollView {
                     VStack(spacing: 2) {
                         ForEach(templates) { template in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(template.name)
-                                        .font(.body)
-                                    Text(panesSummary(template))
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                }
-
-                                Spacer()
-
-                                if hoveredID == template.id {
-                                    Button(role: .destructive) {
-                                        onDelete(template)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                            .font(.caption)
+                            Button(action: { onSelect(template) }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(template.name)
+                                            .font(.body)
+                                        Text(panesSummary(template))
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
                                     }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.secondary)
+
+                                    Spacer()
+
+                                    if hoveredID == template.id {
+                                        Button(role: .destructive) {
+                                            onDelete(template)
+                                        } label: {
+                                            Image(systemName: "trash")
+                                                .font(.caption)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.secondary)
+                                    }
                                 }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(hoveredID == template.id ? Color.accentColor.opacity(0.1) : Color.clear)
+                                )
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(hoveredID == template.id ? Color.accentColor.opacity(0.1) : Color.clear)
-                            )
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Select template: \(template.name)")
                             .onHover { isHovering in
                                 hoveredID = isHovering ? template.id : nil
                             }
-                            .onTapGesture { onSelect(template) }
                         }
                     }
                 }
@@ -211,7 +214,7 @@ struct LayoutTemplatePopoverView: View {
             } else {
                 Button {
                     isSaving = true
-                    DispatchQueue.main.async { nameFocused = true }
+                    Task { @MainActor in nameFocused = true }
                 } label: {
                     Label("Save Current Layout", systemImage: "plus.circle")
                         .font(.subheadline)

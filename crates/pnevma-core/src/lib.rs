@@ -12,8 +12,8 @@ pub mod workflow_contract;
 
 pub use config::{
     global_config_path, load_global_config, load_project_config, save_global_config, GlobalConfig,
-    ProjectConfig, RemoteSection, RetentionSection, TrackerSection, UsageProviderConfig,
-    UsageProvidersConfig,
+    ProjectConfig, RemoteSection, RetentionSection, SocketAuth, TlsMode, TrackerKind,
+    TrackerSection, UsageProviderConfig, UsageProvidersConfig,
 };
 pub use error::CoreError;
 pub use events::{
@@ -23,8 +23,8 @@ pub use orchestration::{DispatchOrchestrator, DispatchRequest, DispatchResult, P
 pub use protected_actions::{ActionKind, ActionRiskInfo, RiskLevel};
 pub use stories::StoryStatus;
 pub use task::{
-    Check, CheckType, ContextManifestItem, ContextPack, Priority, TaskContract, TaskExternalSource,
-    TaskStatus, TransitionError,
+    Check, CheckType, ContextManifestItem, ContextPack, LeaseStatus, Priority, TaskContract,
+    TaskExternalSource, TaskStatus, TransitionError,
 };
 pub use workflow::{
     ExecutionMode, FailurePolicy, LoopConfig, LoopMode, StageResult, WorkflowDef, WorkflowInstance,

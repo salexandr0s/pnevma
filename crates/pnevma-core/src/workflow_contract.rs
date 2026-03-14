@@ -191,7 +191,7 @@ impl WorkflowDocument {
             .to_string();
 
         // Parse YAML
-        let config: WorkflowMdConfig = serde_yaml::from_str(yaml_str)
+        let config: WorkflowMdConfig = serde_yml::from_str(yaml_str)
             .map_err(|e| WorkflowParseError::InvalidYaml(e.to_string()))?;
 
         Ok(Self {

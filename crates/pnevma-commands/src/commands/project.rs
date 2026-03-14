@@ -257,6 +257,7 @@ fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
         terminal_font_size: config.terminal_font_size,
         scrollback_lines: config.scrollback_lines,
         sidebar_background_offset: config.sidebar_background_offset,
+        bottom_tool_bar_auto_hide: config.bottom_tool_bar_auto_hide,
         focus_border_enabled: config.focus_border_enabled,
         focus_border_opacity: config.focus_border_opacity,
         focus_border_width: config.focus_border_width,
@@ -268,6 +269,12 @@ fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
         telemetry_enabled: config.telemetry_opt_in,
         crash_reports: config.crash_reports_opt_in,
         keybindings: keybinding_views_from_config(config),
+        tool_presentation_overrides: config
+            .tool_presentation_overrides
+            .iter()
+            .filter(|(_, v)| v.as_str() == "pane" || v.as_str() == "tab" || v.as_str() == "drawer")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     }
 }
 
@@ -313,6 +320,7 @@ pub async fn set_app_settings(
     config.terminal_font_size = input.terminal_font_size;
     config.scrollback_lines = input.scrollback_lines;
     config.sidebar_background_offset = input.sidebar_background_offset;
+    config.bottom_tool_bar_auto_hide = input.bottom_tool_bar_auto_hide;
     config.focus_border_enabled = input.focus_border_enabled;
     config.focus_border_opacity = input.focus_border_opacity;
     config.focus_border_width = input.focus_border_width;
@@ -340,6 +348,23 @@ pub async fn set_app_settings(
                 config.keybindings.insert(action, shortcut);
             }
         }
+    }
+
+    // Persist tool presentation overrides — only store valid values
+    if let Some(overrides) = input.tool_presentation_overrides {
+        config.tool_presentation_overrides.clear();
+        for (tool_id, value) in overrides {
+            let tool_id = tool_id.trim().to_string();
+            let value = value.trim().to_lowercase();
+            if !tool_id.is_empty() && (value == "pane" || value == "tab" || value == "drawer") {
+                config.tool_presentation_overrides.insert(tool_id, value);
+            }
+        }
+    }
+
+    // Ensure generation is at least 1 for Phase 1
+    if config.tool_presentation_generation < 1 {
+        config.tool_presentation_generation = 1;
     }
 
     save_global_config(&config).map_err(|e| e.to_string())?;
@@ -418,8 +443,12 @@ pub async fn open_project(
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<String, String> {
-    let path_buf = std::fs::canonicalize(PathBuf::from(path.clone()))
+    let normalized_path = normalize_scaffold_path(&path)?;
+    let path_buf = std::fs::canonicalize(&normalized_path)
         .map_err(|e| format!("failed to canonicalize project path: {e}"))?;
+    if !project_is_initialized(&path_buf) {
+        return Err("workspace_not_initialized".to_string());
+    }
     let config_path = path_buf.join("pnevma.toml");
 
     // --- Workspace trust gate ---
@@ -479,6 +508,18 @@ pub async fn open_project(
     let adapters = pnevma_agents::AdapterRegistry::detect().await;
     let pool = DispatchPool::new(cfg.agents.max_concurrent);
     let git = Arc::new(GitService::new(&path_buf));
+
+    // Recover tasks stuck in Dispatching from a prior crash — revert them to Ready.
+    let reverted = db
+        .update_task_status_bulk(&project_id.to_string(), "Dispatching", "Ready")
+        .await
+        .unwrap_or(0);
+    if reverted > 0 {
+        tracing::info!(
+            count = reverted,
+            "reverted orphaned Dispatching tasks to Ready on startup"
+        );
+    }
 
     let session_rows = reconcile_persisted_sessions(&db, project_id, path_buf.as_path()).await?;
     let restore_root = path_buf.join(".pnevma/data");
@@ -625,20 +666,20 @@ pub async fn open_project(
 
     {
         let mut recents = state.recents.lock().await;
-        recents.retain(|r| r.path != path);
+        recents.retain(|r| r.path != path_str);
         recents.insert(
             0,
             RecentProject {
                 id: project_id.to_string(),
                 name: cfg.project.name.clone(),
-                path: path.clone(),
+                path: path_str.clone(),
             },
         );
         recents.truncate(20);
     }
 
     if let Err(e) = global_db
-        .add_recent_project(&path, &cfg.project.name, &project_id.to_string())
+        .add_recent_project(&path_str, &cfg.project.name, &project_id.to_string())
         .await
     {
         tracing::warn!("failed to persist recent project: {e}");
@@ -1037,7 +1078,8 @@ pub async fn list_recent_projects(state: &AppState) -> Result<Vec<RecentProject>
 }
 
 pub async fn trust_workspace(path: String, state: &AppState) -> Result<(), String> {
-    let path_buf = std::fs::canonicalize(PathBuf::from(&path))
+    let normalized_path = normalize_scaffold_path(&path)?;
+    let path_buf = std::fs::canonicalize(&normalized_path)
         .map_err(|e| format!("failed to canonicalize path: {e}"))?;
     let config_path = path_buf.join("pnevma.toml");
     let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
@@ -1052,7 +1094,8 @@ pub async fn trust_workspace(path: String, state: &AppState) -> Result<(), Strin
 }
 
 pub async fn revoke_workspace_trust(path: String, state: &AppState) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(PathBuf::from(&path))
+    let normalized_path = normalize_scaffold_path(&path)?;
+    let canonical = std::fs::canonicalize(&normalized_path)
         .map_err(|e| format!("failed to canonicalize path: {e}"))?;
     let canonical_str = canonical.to_string_lossy().to_string();
     let global_db = state.global_db()?;
@@ -3290,9 +3333,9 @@ fn keybinding_views_from_config(config: &GlobalConfig) -> Vec<KeybindingView> {
     let mut out: Vec<KeybindingView> = merged
         .into_iter()
         .map(|(action, shortcut)| {
-            let is_default = defaults.get(&action).map_or(false, |d| {
-                normalize_shortcut(d) == normalize_shortcut(&shortcut)
-            });
+            let is_default = defaults
+                .get(&action)
+                .is_some_and(|d| normalize_shortcut(d) == normalize_shortcut(&shortcut));
             let normalized = normalize_shortcut(&shortcut);
             let conflicts: Vec<String> = shortcut_to_actions
                 .get(&normalized)
@@ -5676,11 +5719,9 @@ async fn initialize_tracker(
         return None;
     }
 
-    let adapter: Arc<dyn pnevma_tracker::TrackerAdapter> = match config.kind.as_str() {
-        "linear" => Arc::new(pnevma_tracker::linear::LinearAdapter::new(api_key)),
-        other => {
-            tracing::warn!(kind = %other, "unsupported tracker kind");
-            return None;
+    let adapter: Arc<dyn pnevma_tracker::TrackerAdapter> = match config.kind {
+        pnevma_core::TrackerKind::Linear => {
+            Arc::new(pnevma_tracker::linear::LinearAdapter::new(api_key))
         }
     };
 
@@ -5693,7 +5734,7 @@ async fn initialize_tracker(
     Some(pnevma_tracker::poll::TrackerCoordinator::new(
         adapter,
         filter,
-        config.kind.clone(),
+        config.kind.to_string(),
     ))
 }
 
@@ -5806,8 +5847,8 @@ enable_entropy_guard = false
             dependencies_json: "[]".to_string(),
             acceptance_json: "[]".to_string(),
             constraints_json: "[]".to_string(),
-            priority: "medium".to_string(),
-            status: "ready".to_string(),
+            priority: "P2".to_string(),
+            status: "Ready".to_string(),
             branch: None,
             worktree_id: None,
             handoff_summary: None,
@@ -6306,11 +6347,93 @@ enable_entropy_guard = false
     }
 
     #[tokio::test]
+    async fn open_project_returns_workspace_not_initialized_for_existing_repo_without_scaffold() {
+        let project_root = tempdir().expect("temp project");
+        let global_db = GlobalDb::open().await.expect("open global db");
+        let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+
+        let err = open_project(
+            project_root.path().to_string_lossy().to_string(),
+            None,
+            &emitter,
+            &state,
+        )
+        .await
+        .expect_err("missing scaffold should fail open");
+
+        assert_eq!(err, "workspace_not_initialized");
+    }
+
+    #[tokio::test]
+    async fn open_project_returns_workspace_not_initialized_when_support_dir_is_missing() {
+        let project_root = tempdir().expect("temp project");
+        write_test_project_config(project_root.path(), &[]);
+        let global_db = GlobalDb::open().await.expect("open global db");
+        let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+
+        let err = open_project(
+            project_root.path().to_string_lossy().to_string(),
+            None,
+            &emitter,
+            &state,
+        )
+        .await
+        .expect_err("missing support dir should fail open");
+
+        assert_eq!(err, "workspace_not_initialized");
+    }
+
+    #[tokio::test]
+    async fn trust_and_open_project_expand_home_relative_paths() {
+        let _guard = redaction_config_lock().lock().await;
+        let home = tempdir().expect("temp home");
+        let _home = HomeOverride::new(home.path()).await;
+        let project_root = home.path().join("dev/claude-code/cc-skills");
+        std::fs::create_dir_all(project_root.join(".pnevma/data")).expect("create scaffold dirs");
+        write_test_project_config(&project_root, &[]);
+
+        let global_db = GlobalDb::open().await.expect("open global db");
+        let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let input_path = "~/dev/claude-code/cc-skills".to_string();
+
+        trust_workspace(input_path.clone(), &state)
+            .await
+            .expect("trust workspace");
+        let project_id = open_project(input_path.clone(), None, &emitter, &state)
+            .await
+            .expect("open project");
+
+        let global_db = state.global_db().expect("global db");
+        let recents = global_db
+            .list_recent_projects(10)
+            .await
+            .expect("list recent projects");
+        let recent = recents
+            .into_iter()
+            .find(|row| row.project_id == project_id)
+            .expect("recent project row");
+
+        let expected_path = std::fs::canonicalize(&project_root)
+            .expect("canonical project path")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            recent.path, expected_path,
+            "recent project path should be canonicalized"
+        );
+    }
+
+    #[tokio::test]
     async fn open_project_invalid_redaction_does_not_replace_live_runtime_config() {
         let _guard = redaction_config_lock().lock().await;
         let home = tempdir().expect("temp home");
         let _home = HomeOverride::new(home.path()).await;
         let project_root = tempdir().expect("temp project");
+        std::fs::create_dir_all(project_root.path().join(".pnevma/data"))
+            .expect("create scaffold dirs");
         write_test_project_config(project_root.path(), &["("]);
 
         let global_db = GlobalDb::open().await.expect("open global db");
@@ -6963,8 +7086,23 @@ enable_entropy_guard = false
     fn app_settings_view_uses_defaults_for_empty_optional_fields() {
         let view = app_settings_view_from_config(&GlobalConfig::default());
         assert_eq!(view.default_shell, "");
+        assert!(!view.bottom_tool_bar_auto_hide);
         assert_eq!(view.focus_border_color, "accent");
         assert!(!view.keybindings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_app_settings_defaults_bottom_tool_bar_auto_hide_to_false() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeOverride::new(temp.path()).await;
+
+        save_global_config(&GlobalConfig::default()).expect("save initial config");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+
+        let settings = get_app_settings(&state).await.expect("get app settings");
+        assert!(!settings.bottom_tool_bar_auto_hide);
     }
 
     #[tokio::test]
@@ -6980,7 +7118,7 @@ enable_entropy_guard = false
         };
         initial
             .keybindings
-            .insert("Open Settings".to_string(), "Cmd+,".to_string());
+            .insert("menu.split_right".to_string(), "Cmd+Shift+R".to_string());
         save_global_config(&initial).expect("save initial config");
 
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
@@ -6995,6 +7133,7 @@ enable_entropy_guard = false
                 terminal_font_size: 14,
                 scrollback_lines: 20_000,
                 sidebar_background_offset: 0.1,
+                bottom_tool_bar_auto_hide: true,
                 focus_border_enabled: false,
                 focus_border_opacity: 0.5,
                 focus_border_width: 3.0,
@@ -7002,6 +7141,7 @@ enable_entropy_guard = false
                 telemetry_enabled: true,
                 crash_reports: true,
                 keybindings: None,
+                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7010,6 +7150,7 @@ enable_entropy_guard = false
 
         assert_eq!(updated.default_shell, "/bin/bash");
         assert_eq!(updated.terminal_font, "JetBrains Mono");
+        assert!(updated.bottom_tool_bar_auto_hide);
         assert_eq!(updated.focus_border_color, "#336699");
         assert!(updated.telemetry_enabled);
         assert!(updated.crash_reports);
@@ -7021,15 +7162,16 @@ enable_entropy_guard = false
         assert_eq!(
             reloaded
                 .keybindings
-                .get("Open Settings")
+                .get("menu.split_right")
                 .map(String::as_str),
-            Some("Cmd+,")
+            Some("Cmd+Shift+R")
         );
         assert_eq!(reloaded.default_shell.as_deref(), Some("/bin/bash"));
         assert_eq!(reloaded.terminal_font, "JetBrains Mono");
         assert_eq!(reloaded.terminal_font_size, 14);
         assert_eq!(reloaded.scrollback_lines, 20_000);
         assert_eq!(reloaded.sidebar_background_offset, 0.1);
+        assert!(reloaded.bottom_tool_bar_auto_hide);
         assert!(!reloaded.focus_border_enabled);
         assert_eq!(reloaded.focus_border_opacity, 0.5);
         assert_eq!(reloaded.focus_border_width, 3.0);
@@ -7041,7 +7183,7 @@ enable_entropy_guard = false
     #[tokio::test]
     async fn set_app_settings_persists_keybinding_overrides() {
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("PNEVMA_GLOBAL_CONFIG", temp.path().join("config.toml"));
+        let _home = HomeOverride::new(temp.path()).await;
         let initial = GlobalConfig::default();
         save_global_config(&initial).expect("save initial config");
 
@@ -7059,6 +7201,7 @@ enable_entropy_guard = false
                 terminal_font_size: 13,
                 scrollback_lines: 10_000,
                 sidebar_background_offset: 0.05,
+                bottom_tool_bar_auto_hide: false,
                 focus_border_enabled: true,
                 focus_border_opacity: 0.4,
                 focus_border_width: 2.0,
@@ -7069,6 +7212,7 @@ enable_entropy_guard = false
                     action: "menu.split_right".to_string(),
                     shortcut: "Cmd+Shift+R".to_string(),
                 }]),
+                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7105,6 +7249,7 @@ enable_entropy_guard = false
                 terminal_font_size: 13,
                 scrollback_lines: 10_000,
                 sidebar_background_offset: 0.05,
+                bottom_tool_bar_auto_hide: false,
                 focus_border_enabled: true,
                 focus_border_opacity: 0.4,
                 focus_border_width: 2.0,
@@ -7112,6 +7257,7 @@ enable_entropy_guard = false
                 telemetry_enabled: false,
                 crash_reports: false,
                 keybindings: Some(vec![]),
+                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7133,9 +7279,49 @@ enable_entropy_guard = false
     }
 
     #[tokio::test]
+    async fn set_app_settings_persists_bottom_tool_bar_auto_hide() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeOverride::new(temp.path()).await;
+        save_global_config(&GlobalConfig::default()).expect("save initial config");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+
+        let updated = set_app_settings(
+            SetAppSettingsInput {
+                auto_save_workspace_on_quit: true,
+                restore_windows_on_launch: true,
+                auto_update: true,
+                default_shell: "".to_string(),
+                terminal_font: "SF Mono".to_string(),
+                terminal_font_size: 13,
+                scrollback_lines: 10_000,
+                sidebar_background_offset: 0.05,
+                bottom_tool_bar_auto_hide: true,
+                focus_border_enabled: true,
+                focus_border_opacity: 0.4,
+                focus_border_width: 2.0,
+                focus_border_color: "accent".to_string(),
+                telemetry_enabled: false,
+                crash_reports: false,
+                keybindings: None,
+                tool_presentation_overrides: None,
+            },
+            &state,
+        )
+        .await
+        .expect("set app settings");
+
+        assert!(updated.bottom_tool_bar_auto_hide);
+
+        let reloaded = load_global_config().expect("reload config");
+        assert!(reloaded.bottom_tool_bar_auto_hide);
+    }
+
+    #[tokio::test]
     async fn set_app_settings_rejects_protected_keybinding_overrides() {
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("PNEVMA_GLOBAL_CONFIG", temp.path().join("config.toml"));
+        let _home = HomeOverride::new(temp.path()).await;
         let initial = GlobalConfig::default();
         save_global_config(&initial).expect("save initial config");
 
@@ -7152,6 +7338,7 @@ enable_entropy_guard = false
                 terminal_font_size: 13,
                 scrollback_lines: 10_000,
                 sidebar_background_offset: 0.05,
+                bottom_tool_bar_auto_hide: false,
                 focus_border_enabled: true,
                 focus_border_opacity: 0.4,
                 focus_border_width: 2.0,
@@ -7162,6 +7349,7 @@ enable_entropy_guard = false
                     action: "menu.quit".to_string(),
                     shortcut: "Cmd+Shift+Q".to_string(),
                 }]),
+                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7170,7 +7358,7 @@ enable_entropy_guard = false
 
         // Protected action should NOT be persisted
         let reloaded = load_global_config().expect("reload config");
-        assert!(reloaded.keybindings.get("menu.quit").is_none());
+        assert!(!reloaded.keybindings.contains_key("menu.quit"));
     }
 
     #[test]

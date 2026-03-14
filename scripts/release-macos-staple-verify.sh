@@ -2,22 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-STAPLE_TARGET_PATH="${TARGET_PATH:-${APP_PATH:-}}"
+source "$ROOT_DIR/scripts/release-common.sh"
 
-default_app_path() {
-  local candidates=(
-    "$ROOT_DIR/native/build/Release/Pnevma.app"
-    "$ROOT_DIR/native/build/Build/Products/Release/Pnevma.app"
-  )
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    if [[ -d "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  printf '%s\n' "${candidates[0]}"
-}
+STAPLE_TARGET_PATH="${TARGET_PATH:-${APP_PATH:-}}"
 
 if [[ -z "$STAPLE_TARGET_PATH" ]]; then
   STAPLE_TARGET_PATH="$(default_app_path)"

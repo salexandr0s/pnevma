@@ -130,6 +130,15 @@ final class CommandBusTests: XCTestCase {
             changedError.localizedDescription,
             "The workspace configuration changed and must be trusted again before opening."
         )
+
+        let initializationError = PnevmaError.backendError(
+            method: "project.open",
+            message: "workspace_not_initialized"
+        )
+        XCTAssertEqual(
+            initializationError.localizedDescription,
+            "This workspace is missing pnevma.toml and the .pnevma support files. Initialize the project scaffold to open it."
+        )
     }
 
     func testBackendErrorLocalizedDescriptionMapsUsageAvailabilityFailures() {

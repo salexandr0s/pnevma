@@ -9,9 +9,75 @@ use tracing::{debug, warn};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
+/// Convert a Linear GraphQL issue node to a `TrackerItem`.
+/// Used by both `poll_candidates` and `fetch_states` to avoid duplicating
+/// the field extraction logic.
+fn node_to_tracker_item(node: &serde_json::Value, fallback_id: &str) -> Option<TrackerItem> {
+    // Require id and title — skip malformed nodes instead of producing garbage items.
+    let external_id = node
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_id);
+    let title = node
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+
+    let state_name = node
+        .get("state")
+        .and_then(|s| s.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("unknown");
+    let labels: Vec<String> = node
+        .get("labels")
+        .and_then(|l| l.get("nodes"))
+        .and_then(|n| n.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| l.get("name")?.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(TrackerItem {
+        kind: "linear".to_string(),
+        external_id: external_id.to_string(),
+        identifier: node
+            .get("identifier")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        title: title.to_string(),
+        description: node
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        url: node
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        state: ExternalState::from_linear_state(state_name),
+        priority: node.get("priority").and_then(|p| p.as_f64()),
+        labels,
+        assignee: node
+            .get("assignee")
+            .and_then(|a| a.get("name"))
+            .and_then(|n| n.as_str())
+            .map(String::from),
+        updated_at: node
+            .get("updatedAt")
+            .and_then(|u| u.as_str())
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+            .unwrap_or_else(Utc::now),
+    })
+}
+
 pub struct LinearAdapter {
     client: Client,
     api_key: SecretString,
+    base_url: String,
 }
 
 impl LinearAdapter {
@@ -19,6 +85,16 @@ impl LinearAdapter {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
+            base_url: LINEAR_API_URL.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_base_url(api_key: impl Into<SecretString>, base_url: String) -> Self {
+        Self {
+            client: Client::new(),
+            api_key: api_key.into(),
+            base_url,
         }
     }
 
@@ -34,7 +110,7 @@ impl LinearAdapter {
 
         let resp = self
             .client
-            .post(LINEAR_API_URL)
+            .post(&self.base_url)
             .header(
                 "Authorization",
                 format!("Bearer {}", self.api_key.expose_secret()),
@@ -140,44 +216,7 @@ impl TrackerAdapter for LinearAdapter {
 
         let items = nodes
             .iter()
-            .filter_map(|node| {
-                let state_name = node.get("state")?.get("name")?.as_str()?;
-                let labels: Vec<String> = node
-                    .get("labels")
-                    .and_then(|l| l.get("nodes"))
-                    .and_then(|n| n.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|l| l.get("name")?.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                Some(TrackerItem {
-                    kind: "linear".to_string(),
-                    external_id: node.get("id")?.as_str()?.to_string(),
-                    identifier: node.get("identifier")?.as_str()?.to_string(),
-                    title: node.get("title")?.as_str()?.to_string(),
-                    description: node
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .map(String::from),
-                    url: node.get("url")?.as_str()?.to_string(),
-                    state: ExternalState::from_linear_state(state_name),
-                    priority: node.get("priority").and_then(|p| p.as_f64()),
-                    labels,
-                    assignee: node
-                        .get("assignee")
-                        .and_then(|a| a.get("name"))
-                        .and_then(|n| n.as_str())
-                        .map(String::from),
-                    updated_at: node
-                        .get("updatedAt")
-                        .and_then(|u| u.as_str())
-                        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
-                        .unwrap_or_else(Utc::now),
-                })
-            })
+            .filter_map(|node| node_to_tracker_item(node, ""))
             .collect();
 
         Ok(items)
@@ -230,62 +269,9 @@ impl TrackerAdapter for LinearAdapter {
                 for (i, id) in ids.iter().enumerate() {
                     let alias = format!("i{i}");
                     if let Some(node) = data.get(&alias) {
-                        let state_name = node
-                            .get("state")
-                            .and_then(|s| s.get("name"))
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("unknown");
-                        let labels: Vec<String> = node
-                            .get("labels")
-                            .and_then(|l| l.get("nodes"))
-                            .and_then(|n| n.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|l| l.get("name")?.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        items.push(TrackerItem {
-                            kind: "linear".to_string(),
-                            external_id: node
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(id)
-                                .to_string(),
-                            identifier: node
-                                .get("identifier")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            title: node
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            description: node
-                                .get("description")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            url: node
-                                .get("url")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            state: ExternalState::from_linear_state(state_name),
-                            priority: node.get("priority").and_then(|p| p.as_f64()),
-                            labels,
-                            assignee: node
-                                .get("assignee")
-                                .and_then(|a| a.get("name"))
-                                .and_then(|n| n.as_str())
-                                .map(String::from),
-                            updated_at: node
-                                .get("updatedAt")
-                                .and_then(|u| u.as_str())
-                                .and_then(|s| s.parse::<DateTime<Utc>>().ok())
-                                .unwrap_or_else(Utc::now),
-                        });
+                        if let Some(item) = node_to_tracker_item(node, id) {
+                            items.push(item);
+                        }
                     } else {
                         warn!(id = %id, "issue not found in batched response");
                     }
@@ -313,63 +299,9 @@ impl TrackerAdapter for LinearAdapter {
                     {
                         Ok(data) => {
                             if let Some(node) = data.get("issue") {
-                                let state_name = node
-                                    .get("state")
-                                    .and_then(|s| s.get("name"))
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("unknown");
-                                let labels: Vec<String> = node
-                                    .get("labels")
-                                    .and_then(|l| l.get("nodes"))
-                                    .and_then(|n| n.as_array())
-                                    .map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|l| {
-                                                l.get("name")?.as_str().map(String::from)
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-                                items.push(TrackerItem {
-                                    kind: "linear".to_string(),
-                                    external_id: node
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or(id)
-                                        .to_string(),
-                                    identifier: node
-                                        .get("identifier")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    title: node
-                                        .get("title")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    description: node
-                                        .get("description")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from),
-                                    url: node
-                                        .get("url")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    state: ExternalState::from_linear_state(state_name),
-                                    priority: node.get("priority").and_then(|p| p.as_f64()),
-                                    labels,
-                                    assignee: node
-                                        .get("assignee")
-                                        .and_then(|a| a.get("name"))
-                                        .and_then(|n| n.as_str())
-                                        .map(String::from),
-                                    updated_at: node
-                                        .get("updatedAt")
-                                        .and_then(|u| u.as_str())
-                                        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
-                                        .unwrap_or_else(Utc::now),
-                                });
+                                if let Some(item) = node_to_tracker_item(node, id) {
+                                    items.push(item);
+                                }
                             }
                         }
                         Err(e) => {
@@ -497,16 +429,207 @@ impl TrackerAdapter for LinearAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{header, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn linear_adapter_debug_does_not_leak_api_key() {
         let adapter = LinearAdapter::new("lin_api_test_secret_key_12345".to_string());
-        // LinearAdapter doesn't derive Debug, but we can verify the api_key
-        // field is SecretString by checking its debug output
         let debug_output = format!("{:?}", adapter.api_key);
         assert!(
             !debug_output.contains("lin_api_test_secret_key_12345"),
             "API key should not appear in debug output"
         );
+    }
+
+    fn mock_adapter(base_url: String) -> LinearAdapter {
+        LinearAdapter::with_base_url("test-key", base_url)
+    }
+
+    fn issue_node(id: &str, title: &str, state: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "identifier": format!("ENG-{}", &id[..3]),
+            "title": title,
+            "description": "desc",
+            "url": format!("https://linear.app/issue/{id}"),
+            "priority": 2,
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "state": { "name": state },
+            "labels": { "nodes": [] },
+            "assignee": { "name": "Dev" }
+        })
+    }
+
+    #[tokio::test]
+    async fn poll_candidates_success() {
+        let server = MockServer::start().await;
+        let response = serde_json::json!({
+            "data": {
+                "issues": {
+                    "nodes": [
+                        issue_node("aaa-bbb-ccc", "Fix login bug", "Todo"),
+                        issue_node("ddd-eee-fff", "Add dashboard", "In Progress"),
+                    ]
+                }
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&server)
+            .await;
+
+        let adapter = mock_adapter(server.uri());
+        let filter = TrackerFilter {
+            team_id: None,
+            project_id: None,
+            labels: vec![],
+            states: vec![],
+            updated_since: None,
+            limit: Some(10),
+        };
+
+        let items = adapter.poll_candidates(&filter).await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Fix login bug");
+        assert_eq!(items[1].title, "Add dashboard");
+    }
+
+    #[tokio::test]
+    async fn poll_candidates_graphql_error() {
+        let server = MockServer::start().await;
+        let response = serde_json::json!({
+            "errors": [{"message": "Authentication required"}]
+        });
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&server)
+            .await;
+
+        let adapter = mock_adapter(server.uri());
+        let filter = TrackerFilter::default();
+        let err = adapter.poll_candidates(&filter).await.unwrap_err();
+        assert!(matches!(err, TrackerError::GraphQL(_)));
+    }
+
+    #[tokio::test]
+    async fn poll_candidates_http_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "data": null
+            })))
+            .mount(&server)
+            .await;
+
+        let adapter = mock_adapter(server.uri());
+        let filter = TrackerFilter::default();
+        let err = adapter.poll_candidates(&filter).await.unwrap_err();
+        assert!(matches!(err, TrackerError::GraphQL(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_states_empty_ids() {
+        let adapter = LinearAdapter::new("test-key");
+        let items = adapter.fetch_states(&[]).await.unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_states_success() {
+        let server = MockServer::start().await;
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let response = serde_json::json!({
+            "data": {
+                "i0": issue_node(id, "Task one", "Done")
+            }
+        });
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&server)
+            .await;
+
+        let adapter = mock_adapter(server.uri());
+        let items = adapter.fetch_states(&[id.to_string()]).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Task one");
+    }
+
+    #[tokio::test]
+    async fn fetch_states_rejects_invalid_uuid() {
+        let adapter = LinearAdapter::new("test-key");
+        let err = adapter
+            .fetch_states(&["not-a-valid-uuid".to_string()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TrackerError::Config(_)));
+    }
+
+    #[tokio::test]
+    async fn transition_item_success() {
+        let server = MockServer::start().await;
+        // First call: fetch workflow states
+        // Second call: issue update mutation
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "workflowStates": {
+                        "nodes": [
+                            { "id": "state-1", "name": "Todo" },
+                            { "id": "state-2", "name": "In Progress" },
+                            { "id": "state-3", "name": "Done" },
+                        ]
+                    }
+                }
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issueUpdate": { "success": true }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let adapter = mock_adapter(server.uri());
+        let transition = StateTransition {
+            external_id: "issue-123".to_string(),
+            kind: "linear".to_string(),
+            from_state: ExternalState::Todo,
+            to_state: ExternalState::InProgress,
+            team_id: None,
+            comment: None,
+        };
+
+        adapter.transition_item(&transition).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn post_comment_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "commentCreate": { "success": true }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let adapter = mock_adapter(server.uri());
+        adapter
+            .post_comment("issue-123", "Build passed!")
+            .await
+            .unwrap();
     }
 }
