@@ -60,6 +60,12 @@ final class BrowserToolBridge {
             handleGetContent(request)
         case "browser.screenshot":
             handleScreenshot(request)
+        case "browser.copy_selection":
+            handleCopySelection(request)
+        case "browser.save_markdown":
+            handleSaveMarkdown(request)
+        case "browser.copy_link_list":
+            handleCopyLinkList(request)
         default:
             sendResult(
                 callID: request.callID,
@@ -211,6 +217,125 @@ final class BrowserToolBridge {
                         "data": pngData.base64EncodedString(),
                         "width": image.size.width,
                         "height": image.size.height,
+                    ]
+                )
+            }
+        }
+    }
+
+    private func handleCopySelection(_ request: ToolRequestPayload) {
+        ensureBrowserVisible(nil)
+        guard let session = sessionProvider(),
+              session.viewModel.shouldRenderWebView else {
+            sendResult(
+                callID: request.callID,
+                result: ["success": false, "error": "no active browser page"]
+            )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let capture = try await session.copySelectionWithSource()
+                self.sendResult(
+                    callID: request.callID,
+                    result: [
+                        "success": true,
+                        "text": capture.selectedText,
+                        "content": capture.clipboardText,
+                        "url": capture.sourceURL.absoluteString,
+                        "copied": true,
+                        "length": capture.selectedText.count,
+                    ]
+                )
+            } catch {
+                self.sendResult(
+                    callID: request.callID,
+                    result: [
+                        "success": false,
+                        "error": "selection capture failed: \(error.localizedDescription)",
+                    ]
+                )
+            }
+        }
+    }
+
+    private func handleSaveMarkdown(_ request: ToolRequestPayload) {
+        ensureBrowserVisible(nil)
+        guard let session = sessionProvider(),
+              session.viewModel.shouldRenderWebView else {
+            sendResult(
+                callID: request.callID,
+                result: ["success": false, "error": "no active browser page"]
+            )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let saved = try await session.savePageAsMarkdown()
+                self.sendResult(
+                    callID: request.callID,
+                    result: [
+                        "success": true,
+                        "title": saved.title,
+                        "url": saved.sourceURL?.absoluteString as Any,
+                        "path": saved.outputURL.path,
+                        "content": saved.markdown,
+                    ]
+                )
+            } catch {
+                self.sendResult(
+                    callID: request.callID,
+                    result: [
+                        "success": false,
+                        "error": "save markdown failed: \(error.localizedDescription)",
+                    ]
+                )
+            }
+        }
+    }
+
+    private func handleCopyLinkList(_ request: ToolRequestPayload) {
+        ensureBrowserVisible(nil)
+        guard let session = sessionProvider(),
+              session.viewModel.shouldRenderWebView else {
+            sendResult(
+                callID: request.callID,
+                result: ["success": false, "error": "no active browser page"]
+            )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let capture = try await session.copyPageLinkListAsMarkdown()
+                let links = capture.links.map { link in
+                    [
+                        "text": link.text,
+                        "url": link.url.absoluteString,
+                    ]
+                }
+                self.sendResult(
+                    callID: request.callID,
+                    result: [
+                        "success": true,
+                        "content": capture.markdown,
+                        "url": capture.sourceURL.absoluteString,
+                        "copied": true,
+                        "link_count": capture.links.count,
+                        "links": links,
+                    ]
+                )
+            } catch {
+                self.sendResult(
+                    callID: request.callID,
+                    result: [
+                        "success": false,
+                        "error": "copy link list failed: \(error.localizedDescription)",
                     ]
                 )
             }

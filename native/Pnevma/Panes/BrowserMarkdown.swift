@@ -298,7 +298,7 @@ struct BrowserReaderModeView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
-                Button("Save as .md", action: onSaveMarkdown)
+                Button("Save to Scratch", action: onSaveMarkdown)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -365,30 +365,5 @@ final class BrowserReaderState {
             }
             self.isExtracting = false
         }
-    }
-
-    func copyMarkdown() {
-        guard let markdown = result?.markdown else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(markdown, forType: .string)
-    }
-
-    func saveMarkdown() {
-        guard let markdown = result?.markdown else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = sanitizeFilename(result?.title ?? "page") + ".md"
-        panel.canCreateDirectories = true
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? markdown.write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    private func sanitizeFilename(_ name: String) -> String {
-        let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
-        return name.components(separatedBy: invalid).joined(separator: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(100)
-            .description
     }
 }

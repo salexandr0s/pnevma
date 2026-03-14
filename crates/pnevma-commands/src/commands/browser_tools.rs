@@ -47,6 +47,30 @@ pub fn browser_tool_defs() -> Vec<DynamicToolDef> {
                 "properties": {}
             }),
         },
+        DynamicToolDef {
+            name: "browser.copy_selection".to_string(),
+            description: "Copy the current browser text selection with its source URL and return the copied content.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        DynamicToolDef {
+            name: "browser.save_markdown".to_string(),
+            description: "Save the current page as markdown into the deterministic workspace browser-captures scratch directory.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        DynamicToolDef {
+            name: "browser.copy_link_list".to_string(),
+            description: "Copy the current page's link list as markdown and return the copied links.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -124,10 +148,13 @@ mod tests {
     #[test]
     fn test_browser_tool_defs_count() {
         let defs = browser_tool_defs();
-        assert_eq!(defs.len(), 3);
+        assert_eq!(defs.len(), 6);
         assert_eq!(defs[0].name, "browser.navigate");
         assert_eq!(defs[1].name, "browser.get_content");
         assert_eq!(defs[2].name, "browser.screenshot");
+        assert_eq!(defs[3].name, "browser.copy_selection");
+        assert_eq!(defs[4].name, "browser.save_markdown");
+        assert_eq!(defs[5].name, "browser.copy_link_list");
     }
 
     #[test]

@@ -39,6 +39,22 @@ private actor BrowserToolBridgeCommandBus: CommandCalling {
 @MainActor
 final class BrowserToolBridgeTests: XCTestCase {
     func testBridgeReturnsErrorResultWhenNoBrowserSessionIsAvailable() async throws {
+        for toolName in [
+            "browser.get_content",
+            "browser.copy_selection",
+            "browser.save_markdown",
+            "browser.copy_link_list",
+        ] {
+            let (methods, paramsJSON) = try await invokeToolWithoutSession(toolName: toolName)
+            XCTAssertEqual(methods, ["browser.tool_result"], "toolName=\(toolName)")
+            XCTAssertTrue(paramsJSON.first?.contains("\"call_id\":\"call-1\"") == true, "toolName=\(toolName)")
+            XCTAssertTrue(paramsJSON.first?.contains("no active browser page") == true, "toolName=\(toolName)")
+        }
+    }
+
+    private func invokeToolWithoutSession(
+        toolName: String
+    ) async throws -> ([String], [String]) {
         let hub = BridgeEventHub()
         let bus = BrowserToolBridgeCommandBus()
         let bridge = BrowserToolBridge(
@@ -52,7 +68,7 @@ final class BrowserToolBridgeTests: XCTestCase {
         hub.post(
             BridgeEvent(
                 name: "browser_tool_request",
-                payloadJSON: #"{"call_id":"call-1","tool_name":"browser.get_content","params":{}}"#
+                payloadJSON: #"{"call_id":"call-1","tool_name":"\#(toolName)","params":{}}"#
             )
         )
 
@@ -63,11 +79,6 @@ final class BrowserToolBridgeTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        let methods = await bus.recordedMethods()
-        let paramsJSON = await bus.recordedParamsJSON()
-
-        XCTAssertEqual(methods, ["browser.tool_result"])
-        XCTAssertTrue(paramsJSON.first?.contains("\"call_id\":\"call-1\"") == true)
-        XCTAssertTrue(paramsJSON.first?.contains("no active browser page") == true)
+        return (await bus.recordedMethods(), await bus.recordedParamsJSON())
     }
 }

@@ -1035,6 +1035,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "l"
         )
         editMenu.addItem(browserOmnibarItem)
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(NSMenuItem(
+            title: "Copy Browser Selection with Source URL",
+            action: #selector(copyBrowserSelectionWithSourceAction),
+            keyEquivalent: ""
+        ))
+        editMenu.addItem(NSMenuItem(
+            title: "Save Browser Page as Markdown",
+            action: #selector(saveBrowserPageAsMarkdownAction),
+            keyEquivalent: ""
+        ))
+        editMenu.addItem(NSMenuItem(
+            title: "Copy Browser Link List as Markdown",
+            action: #selector(copyBrowserLinkListAction),
+            keyEquivalent: ""
+        ))
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -1063,6 +1079,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         browserDrawerItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(browserDrawerItem)
+        let browserDrawerShorterItem = NSMenuItem(
+            title: "Make Browser Drawer Shorter",
+            action: #selector(makeBrowserDrawerShorterAction),
+            keyEquivalent: "-"
+        )
+        browserDrawerShorterItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(browserDrawerShorterItem)
+        let browserDrawerTallerItem = NSMenuItem(
+            title: "Make Browser Drawer Taller",
+            action: #selector(makeBrowserDrawerTallerAction),
+            keyEquivalent: "="
+        )
+        browserDrawerTallerItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(browserDrawerTallerItem)
         let pinBrowserItem = NSMenuItem(
             title: "Pin Browser to Pane",
             action: #selector(pinBrowserToPaneAction),
@@ -1341,6 +1371,32 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         focusBrowserOmnibar()
     }
 
+    @objc private func copyBrowserSelectionWithSourceAction() {
+        Task { @MainActor [weak self] in
+            await self?.copyBrowserSelectionWithSource()
+        }
+    }
+
+    @objc private func saveBrowserPageAsMarkdownAction() {
+        Task { @MainActor [weak self] in
+            await self?.saveBrowserPageAsMarkdown()
+        }
+    }
+
+    @objc private func copyBrowserLinkListAction() {
+        Task { @MainActor [weak self] in
+            await self?.copyBrowserLinkListAsMarkdown()
+        }
+    }
+
+    @objc private func makeBrowserDrawerShorterAction() {
+        resizeBrowserDrawer(by: -BrowserDrawerSizing.keyboardStep)
+    }
+
+    @objc private func makeBrowserDrawerTallerAction() {
+        resizeBrowserDrawer(by: BrowserDrawerSizing.keyboardStep)
+    }
+
     @objc private func pinBrowserToPaneAction() {
         pinBrowserToPane()
     }
@@ -1596,6 +1652,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             CommandItem(id: "browser.focus_omnibar", title: "Focus Browser Omnibar", category: "view", shortcut: "Cmd+L", description: "Focus the built-in browser address bar") { [weak self] in
                 self?.focusBrowserOmnibar()
+            },
+            CommandItem(id: "browser.copy_selection_with_source", title: "Copy Browser Selection with Source URL", category: "view", shortcut: nil, description: "Copy the current browser selection and append the page URL") { [weak self] in
+                Task { @MainActor in
+                    await self?.copyBrowserSelectionWithSource()
+                }
+            },
+            CommandItem(id: "browser.save_markdown", title: "Save Browser Page as Markdown", category: "view", shortcut: nil, description: "Write the current page markdown into the workspace scratch capture directory") { [weak self] in
+                Task { @MainActor in
+                    await self?.saveBrowserPageAsMarkdown()
+                }
+            },
+            CommandItem(id: "browser.copy_link_list", title: "Copy Browser Link List as Markdown", category: "view", shortcut: nil, description: "Copy the current page links as a markdown list") { [weak self] in
+                Task { @MainActor in
+                    await self?.copyBrowserLinkListAsMarkdown()
+                }
+            },
+            CommandItem(id: "browser.drawer_shorter", title: "Make Browser Drawer Shorter", category: "view", shortcut: "Opt+Cmd+-", description: "Shrink the built-in browser drawer height") { [weak self] in
+                self?.resizeBrowserDrawer(by: -BrowserDrawerSizing.keyboardStep)
+            },
+            CommandItem(id: "browser.drawer_taller", title: "Make Browser Drawer Taller", category: "view", shortcut: "Opt+Cmd+=", description: "Expand the built-in browser drawer height") { [weak self] in
+                self?.resizeBrowserDrawer(by: BrowserDrawerSizing.keyboardStep)
             },
             CommandItem(id: "browser.pin_to_pane", title: "Pin Browser to Pane", category: "view", shortcut: "Shift+Cmd+Return", description: "Promote the browser drawer into a persistent pane") { [weak self] in
                 self?.pinBrowserToPane()
@@ -2302,16 +2379,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func browserSession(for workspace: Workspace) -> BrowserWorkspaceSession {
         if let existing = browserSessions[workspace.id] {
             existing.updateRestoredURL(workspace.browserLastURL.flatMap(URL.init(string:)))
+            existing.updateRestoredDrawerHeight(workspace.browserDrawerHeight)
+            existing.updateWorkspaceProjectPath(workspace.projectPath)
             return existing
         }
 
         let session = BrowserWorkspaceSession(
-            restoredURL: workspace.browserLastURL.flatMap(URL.init(string:))
-        ) { [weak self, weak workspace] url in
-            guard let workspace else { return }
-            workspace.browserLastURL = url?.absoluteString
-            self?.persistence?.markDirty()
-        }
+            workspaceID: workspace.id,
+            workspaceProjectPath: workspace.projectPath,
+            restoredURL: workspace.browserLastURL.flatMap(URL.init(string:)),
+            restoredDrawerHeight: workspace.browserDrawerHeight,
+            onURLChanged: { [weak self, weak workspace] url in
+                guard let workspace else { return }
+                workspace.browserLastURL = url?.absoluteString
+                self?.persistence?.markDirty()
+            },
+            onDrawerHeightChanged: { [weak self, weak workspace] height in
+                guard let workspace else { return }
+                workspace.browserDrawerHeight = height
+                self?.persistence?.markDirty()
+            }
+        )
         browserSessions[workspace.id] = session
         return session
     }
@@ -2363,6 +2451,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return focusExistingTool(browserTool, scope: .anyTab)
     }
 
+    private func activeWorkspaceHasBrowserPane() -> Bool {
+        workspaceManager?.activeWorkspace?.firstPaneLocation(ofType: "browser") != nil
+    }
+
     private func toggleBrowserDrawer() {
         guard workspaceManager?.activeWorkspace != nil else { return }
         if focusExistingBrowserPaneIfPresent() {
@@ -2407,6 +2499,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         session.showDrawer()
         session.requestOmnibarFocus()
+        refreshBrowserDrawerOverlayRootView()
+        persistence?.markDirty()
+    }
+
+    private func resizeBrowserDrawer(by delta: CGFloat) {
+        guard let session = activeBrowserSession() else { return }
+        if !session.isDrawerVisible {
+            guard !activeWorkspaceHasBrowserPane() else { return }
+            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
+            session.showDrawer(focusOmnibar: false)
+        }
+
+        let availableHeight = browserDrawerOverlayHostView?.bounds.height
+            ?? contentAreaView?.bounds.height
+            ?? window?.contentView?.bounds.height
+            ?? 0
+        session.adjustDrawerHeight(by: delta, availableHeight: availableHeight)
         refreshBrowserDrawerOverlayRootView()
         persistence?.markDirty()
     }
@@ -2458,6 +2567,76 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.openToolAsTab("browser")
         }
+    }
+
+    private func copyBrowserSelectionWithSource() async {
+        guard let session = activeBrowserSession() else {
+            showBrowserCaptureError(BrowserCaptureError.noActivePage)
+            return
+        }
+
+        do {
+            let capture = try await session.copySelectionWithSource()
+            ToastManager.shared.show(
+                "Copied selection with source from \(capture.sourceURL.host(percentEncoded: false) ?? capture.sourceURL.absoluteString)",
+                icon: "doc.on.doc",
+                style: .success
+            )
+        } catch {
+            showBrowserCaptureError(error)
+        }
+    }
+
+    private func saveBrowserPageAsMarkdown() async {
+        guard let session = activeBrowserSession() else {
+            showBrowserCaptureError(BrowserCaptureError.noActivePage)
+            return
+        }
+
+        do {
+            let saved = try await session.savePageAsMarkdown()
+            let message: String
+            if let workspace = workspaceManager?.activeWorkspace,
+               let projectPath = workspace.projectPath {
+                let projectURL = URL(fileURLWithPath: projectPath, isDirectory: true)
+                message = saved.outputURL.path.replacingOccurrences(of: projectURL.path + "/", with: "")
+            } else {
+                message = saved.outputURL.lastPathComponent
+            }
+            ToastManager.shared.show(
+                "Saved markdown to \(message)",
+                icon: "square.and.arrow.down",
+                style: .success
+            )
+        } catch {
+            showBrowserCaptureError(error)
+        }
+    }
+
+    private func copyBrowserLinkListAsMarkdown() async {
+        guard let session = activeBrowserSession() else {
+            showBrowserCaptureError(BrowserCaptureError.noActivePage)
+            return
+        }
+
+        do {
+            let capture = try await session.copyPageLinkListAsMarkdown()
+            ToastManager.shared.show(
+                "Copied \(capture.links.count) page links as markdown",
+                icon: "list.bullet.clipboard",
+                style: .success
+            )
+        } catch {
+            showBrowserCaptureError(error)
+        }
+    }
+
+    private func showBrowserCaptureError(_ error: Error) {
+        ToastManager.shared.show(
+            error.localizedDescription,
+            icon: "exclamationmark.triangle",
+            style: .error
+        )
     }
 
     private func makeToolPane(_ toolID: String) -> (NSView & PaneContent)? {

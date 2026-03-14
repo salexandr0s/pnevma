@@ -32,7 +32,7 @@ final class BrowserPaneView: NSView, PaneContent {
     init(frame: NSRect, session: BrowserWorkspaceSession) {
         self.session = session
         super.init(frame: frame)
-        _ = addSwiftUISubview(BrowserView(viewModel: session.viewModel))
+        _ = addSwiftUISubview(BrowserView(session: session))
     }
 
     required init?(coder: NSCoder) { fatalError() }

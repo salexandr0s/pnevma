@@ -578,4 +578,590 @@ final class CommandCenterStoreTests: XCTestCase {
             "/tmp/worktree"
         )
     }
+
+    func testWorkspaceScopeFiltersVisibleRunsAndSummary() {
+        let manager = WorkspaceManager()
+        let workspaceA = manager.createWorkspace(name: "Alpha", projectPath: "/tmp/alpha")
+        let workspaceB = manager.createWorkspace(name: "Beta", projectPath: "/tmp/beta")
+        let store = CommandCenterStore(workspaceManager: manager)
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceA.id,
+                workspaceName: workspaceA.name,
+                workspacePath: "/tmp/alpha",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "alpha",
+                    projectName: "Alpha",
+                    projectPath: "/tmp/alpha",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 1,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 0,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 1.25
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-a",
+                            taskTitle: "Alpha work",
+                            state: "running"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceB.id,
+                workspaceName: workspaceB.name,
+                workspacePath: "/tmp/beta",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "beta",
+                    projectName: "Beta",
+                    projectPath: "/tmp/beta",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 0,
+                        queuedCount: 1,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 1,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 2.50
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-b",
+                            taskTitle: "Beta failure",
+                            state: "failed",
+                            attentionReason: "build_failed"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+        ])
+
+        XCTAssertEqual(store.visibleRuns.count, 2)
+        XCTAssertEqual(store.fleetSummary.workspaceCount, 2)
+
+        store.selectWorkspace(workspaceA.id)
+
+        XCTAssertEqual(store.scopeTitle, "Alpha")
+        XCTAssertEqual(store.visibleRuns.count, 1)
+        XCTAssertEqual(store.visibleRuns.first?.workspaceID, workspaceA.id)
+        XCTAssertEqual(store.fleetSummary.workspaceCount, 1)
+        XCTAssertEqual(store.fleetSummary.activeCount, 1)
+    }
+
+    func testFocusIncidentClearsStaleWorkspaceScopeForMultiWorkspaceIncident() {
+        let manager = WorkspaceManager()
+        let workspaceA = manager.createWorkspace(name: "Alpha", projectPath: "/tmp/alpha")
+        let workspaceB = manager.createWorkspace(name: "Beta", projectPath: "/tmp/beta")
+        let workspaceC = manager.createWorkspace(name: "Gamma", projectPath: "/tmp/gamma")
+        let store = CommandCenterStore(workspaceManager: manager)
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceA.id,
+                workspaceName: workspaceA.name,
+                workspacePath: "/tmp/alpha",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "alpha",
+                    projectName: "Alpha",
+                    projectPath: "/tmp/alpha",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 1,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 0,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.25
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-a",
+                            taskTitle: "Alpha work",
+                            state: "running"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceB.id,
+                workspaceName: workspaceB.name,
+                workspacePath: "/tmp/beta",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "beta",
+                    projectName: "Beta",
+                    projectPath: "/tmp/beta",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 0,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 1,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.5
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-b",
+                            taskTitle: "Beta failure",
+                            state: "failed",
+                            attentionReason: "tests_failed"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceC.id,
+                workspaceName: workspaceC.name,
+                workspacePath: "/tmp/gamma",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "gamma",
+                    projectName: "Gamma",
+                    projectPath: "/tmp/gamma",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 0,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 1,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.5
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-c",
+                            taskTitle: "Gamma failure",
+                            state: "failed",
+                            attentionReason: "tests_failed"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+        ])
+
+        store.selectWorkspace(workspaceA.id)
+        XCTAssertEqual(store.selectedWorkspaceID, workspaceA.id)
+        XCTAssertEqual(store.selectedRun?.run.id, "run-a")
+
+        store.focusIncident(
+            CommandCenterIncident(
+                kind: .failed,
+                title: "Failed runs",
+                summary: "Run failed",
+                count: 2,
+                severity: .urgent,
+                oldestAt: nil,
+                workspaceIDs: [workspaceB.id, workspaceC.id]
+            )
+        )
+
+        XCTAssertNil(store.selectedWorkspaceID)
+        XCTAssertEqual(store.filter, .failed)
+        XCTAssertEqual(Set(store.visibleRuns.map(\.run.id)), Set(["run-b", "run-c"]))
+        XCTAssertTrue([workspaceB.id, workspaceC.id].contains(store.selectedRun?.workspaceID))
+    }
+
+    func testFocusIncidentScopesToSingleWorkspaceAndSelectsMatchingRun() {
+        let manager = WorkspaceManager()
+        let workspaceA = manager.createWorkspace(name: "Alpha", projectPath: "/tmp/alpha")
+        let workspaceB = manager.createWorkspace(name: "Beta", projectPath: "/tmp/beta")
+        let store = CommandCenterStore(workspaceManager: manager)
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceA.id,
+                workspaceName: workspaceA.name,
+                workspacePath: "/tmp/alpha",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "alpha",
+                    projectName: "Alpha",
+                    projectPath: "/tmp/alpha",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 1,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 0,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.25
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-a",
+                            taskTitle: "Alpha work",
+                            state: "running"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+            CommandCenterWorkspaceSnapshot(
+                id: workspaceB.id,
+                workspaceName: workspaceB.name,
+                workspacePath: "/tmp/beta",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "beta",
+                    projectName: "Beta",
+                    projectPath: "/tmp/beta",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 0,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 1,
+                        failedCount: 0,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.5
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "run-b",
+                            taskTitle: "Needs review",
+                            state: "review_needed"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+        ])
+
+        store.selectWorkspace(workspaceA.id)
+        XCTAssertEqual(store.selectedWorkspaceID, workspaceA.id)
+        XCTAssertEqual(store.selectedRun?.run.id, "run-a")
+
+        store.focusIncident(
+            CommandCenterIncident(
+                kind: .review,
+                title: "Review needed",
+                summary: "Waiting on manual review",
+                count: 1,
+                severity: .watch,
+                oldestAt: nil,
+                workspaceIDs: [workspaceB.id]
+            )
+        )
+
+        XCTAssertEqual(store.selectedWorkspaceID, workspaceB.id)
+        XCTAssertEqual(store.filter, .review)
+        XCTAssertEqual(store.visibleRuns.map(\.run.id), ["run-b"])
+        XCTAssertEqual(store.selectedRun?.workspaceID, workspaceB.id)
+        XCTAssertEqual(store.selectedRun?.run.id, "run-b")
+    }
+
+    func testAttentionItemsGroupRunIncidentsAndWorkspaceErrors() {
+        let manager = WorkspaceManager()
+        let workspace = manager.createWorkspace(name: "Ops", projectPath: "/tmp/ops")
+        let store = CommandCenterStore(workspaceManager: manager)
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspace.id,
+                workspaceName: workspace.name,
+                workspacePath: "/tmp/ops",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "ops",
+                    projectName: "Ops",
+                    projectPath: "/tmp/ops",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 0,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 1,
+                        reviewNeededCount: 1,
+                        failedCount: 1,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.5
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "failed",
+                            taskTitle: "Broken run",
+                            state: "failed",
+                            attentionReason: "tests_failed"
+                        ),
+                        makeCommandCenterRun(
+                            id: "review",
+                            taskTitle: "Needs review",
+                            state: "review_needed"
+                        ),
+                        makeCommandCenterRun(
+                            id: "stuck",
+                            taskTitle: "Hung run",
+                            state: "stuck"
+                        ),
+                    ]
+                ),
+                errorMessage: "Workspace runtime is still opening."
+            ),
+        ])
+
+        let kinds = Set(store.attentionItems.map(\.kind))
+        XCTAssertTrue(kinds.contains(.workspaceError))
+        XCTAssertTrue(kinds.contains(.failed))
+        XCTAssertTrue(kinds.contains(.review))
+        XCTAssertTrue(kinds.contains(.stuck))
+        XCTAssertEqual(store.attentionRunCount, 4)
+    }
+
+    func testSearchOnlyFiltersBoardWhileHealthAndAttentionQueueStayScoped() {
+        let manager = WorkspaceManager()
+        let workspace = manager.createWorkspace(name: "Ops", projectPath: "/tmp/ops")
+        let store = CommandCenterStore(workspaceManager: manager)
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspace.id,
+                workspaceName: workspace.name,
+                workspacePath: "/tmp/ops",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "ops",
+                    projectName: "Ops",
+                    projectPath: "/tmp/ops",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 0,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 1,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.5
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "failed",
+                            taskTitle: "Broken run",
+                            state: "failed",
+                            attentionReason: "tests_failed"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            ),
+        ])
+
+        XCTAssertEqual(store.fleetHealth, .interventionNeeded)
+        XCTAssertEqual(store.attentionRunCount, 1)
+        XCTAssertEqual(store.healthSummaryText, "Immediate follow-up required for 1 item")
+        XCTAssertEqual(store.attentionItems.map(\.kind), [.failed])
+        XCTAssertEqual(store.attentionItems.first?.count, 1)
+        XCTAssertEqual(store.workspaceClusters.first?.attentionCount, 1)
+
+        store.searchQuery = "no visible runs"
+
+        XCTAssertTrue(store.visibleRuns.isEmpty)
+        XCTAssertEqual(store.filterCount(for: .failed), 0)
+        XCTAssertEqual(store.fleetHealth, .interventionNeeded)
+        XCTAssertEqual(store.attentionRunCount, 1)
+        XCTAssertEqual(store.healthSummaryText, "Immediate follow-up required for 1 item")
+        XCTAssertEqual(store.attentionItems.map(\.kind), [.failed])
+        XCTAssertEqual(store.attentionItems.first?.count, 1)
+        XCTAssertEqual(store.workspaceClusters.first?.attentionCount, 1)
+    }
+
+    func testKeyboardSelectionNavigationTracksVisibleRunOrder() {
+        let manager = WorkspaceManager()
+        let workspace = manager.createWorkspace(name: "Ops", projectPath: "/tmp/ops")
+        let store = CommandCenterStore(workspaceManager: manager)
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspace.id,
+                workspaceName: workspace.name,
+                workspacePath: "/tmp/ops",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "ops",
+                    projectName: "Ops",
+                    projectPath: "/tmp/ops",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 1,
+                        queuedCount: 1,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 1,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 2,
+                        costTodayUsd: 0.75
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "active",
+                            taskTitle: "Active run",
+                            state: "running"
+                        ),
+                        makeCommandCenterRun(
+                            id: "failed",
+                            taskTitle: "Failed run",
+                            state: "failed",
+                            attentionReason: "tests_failed"
+                        ),
+                        makeCommandCenterRun(
+                            id: "queued",
+                            taskTitle: "Queued run",
+                            state: "queued"
+                        ),
+                    ]
+                ),
+                errorMessage: nil
+            )
+        ])
+
+        XCTAssertEqual(store.selectedRun?.run.id, "failed")
+
+        store.selectNextRun()
+        XCTAssertEqual(store.selectedRun?.run.id, "active")
+
+        store.selectNextRun()
+        XCTAssertEqual(store.selectedRun?.run.id, "queued")
+
+        store.selectPreviousRun()
+        XCTAssertEqual(store.selectedRun?.run.id, "active")
+
+        store.selectLastRun()
+        XCTAssertEqual(store.selectedRun?.run.id, "queued")
+
+        store.selectFirstRun()
+        XCTAssertEqual(store.selectedRun?.run.id, "failed")
+    }
+
+    func testPerformSelectedActionUsesSelectedRunWhenShortcutMatchesAvailableAction() {
+        let manager = WorkspaceManager()
+        let workspace = manager.createWorkspace(name: "Ops", projectPath: "/tmp/ops")
+        let store = CommandCenterStore(workspaceManager: manager)
+        var capturedAction: CommandCenterAction?
+        var capturedRunID: String?
+
+        store.onPerformAction = { action, run in
+            capturedAction = action
+            capturedRunID = run.run.id
+        }
+
+        store.replaceSnapshotsForTesting([
+            CommandCenterWorkspaceSnapshot(
+                id: workspace.id,
+                workspaceName: workspace.name,
+                workspacePath: "/tmp/ops",
+                snapshot: CommandCenterSnapshot(
+                    projectID: "ops",
+                    projectName: "Ops",
+                    projectPath: "/tmp/ops",
+                    generatedAt: Date(),
+                    summary: CommandCenterSummary(
+                        activeCount: 1,
+                        queuedCount: 0,
+                        idleCount: 0,
+                        stuckCount: 0,
+                        reviewNeededCount: 0,
+                        failedCount: 0,
+                        retryingCount: 0,
+                        slotLimit: 4,
+                        slotInUse: 1,
+                        costTodayUsd: 0.25
+                    ),
+                    runs: [
+                        makeCommandCenterRun(
+                            id: "selected",
+                            taskTitle: "Selected run",
+                            state: "running"
+                        )
+                    ]
+                ),
+                errorMessage: nil
+            )
+        ])
+
+        store.performSelectedAction(.openTerminal)
+
+        XCTAssertEqual(capturedAction, .openTerminal)
+        XCTAssertEqual(capturedRunID, "selected")
+
+        capturedAction = nil
+        capturedRunID = nil
+
+        store.performSelectedAction(.killSession)
+
+        XCTAssertNil(capturedAction)
+        XCTAssertNil(capturedRunID)
+    }
+
+    private func makeCommandCenterRun(
+        id: String,
+        taskTitle: String,
+        state: String,
+        attentionReason: String? = nil
+    ) -> CommandCenterRun {
+        CommandCenterRun(
+            id: id,
+            taskID: "task-\(id)",
+            taskTitle: taskTitle,
+            taskStatus: "InProgress",
+            sessionID: "session-\(id)",
+            sessionName: "Session \(id)",
+            sessionStatus: "running",
+            sessionHealth: "healthy",
+            provider: "claude",
+            model: "sonnet",
+            agentProfile: "research",
+            branch: "feature/\(id)",
+            worktreeID: "wt-\(id)",
+            primaryFilePath: "/tmp/\(id).swift",
+            scopePaths: ["/tmp/\(id)-scope.swift"],
+            worktreePath: "/tmp/worktree-\(id)",
+            state: state,
+            attentionReason: attentionReason,
+            startedAt: Date(timeIntervalSinceNow: -600),
+            lastActivityAt: Date(timeIntervalSinceNow: -120),
+            retryCount: 0,
+            retryAfter: nil,
+            costUsd: 0.25,
+            tokensIn: 128,
+            tokensOut: 256,
+            availableActions: ["open_terminal", "open_replay", "open_files"]
+        )
+    }
 }

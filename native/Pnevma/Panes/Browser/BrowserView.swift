@@ -1,10 +1,11 @@
+import AppKit
 import SwiftUI
 import WebKit
 
 // MARK: - BrowserView (SwiftUI)
 
 struct BrowserView: View {
-    @Bindable var viewModel: BrowserViewModel
+    @Bindable var session: BrowserWorkspaceSession
     @Environment(GhosttyThemeProvider.self) var theme
     @State private var readerState = BrowserReaderState()
     @State private var findState: BrowserFindState?
@@ -37,8 +38,8 @@ struct BrowserView: View {
                     BrowserReaderModeView(
                         result: result,
                         onClose: { readerState.isActive = false },
-                        onCopyMarkdown: { readerState.copyMarkdown() },
-                        onSaveMarkdown: { readerState.saveMarkdown() }
+                        onCopyMarkdown: copyReaderMarkdown,
+                        onSaveMarkdown: savePageAsMarkdown
                     )
                 } else if viewModel.shouldRenderWebView {
                     WebViewRepresentable(webView: viewModel.webView)
@@ -101,6 +102,10 @@ struct BrowserView: View {
         }
     }
 
+    private var viewModel: BrowserViewModel {
+        session.viewModel
+    }
+
     private var omnibar: some View {
         HStack(spacing: 6) {
             // Back
@@ -138,7 +143,10 @@ struct BrowserView: View {
                     .frame(height: 28)
 
                 OmnibarTextField(
-                    text: $viewModel.omnibarText,
+                    text: Binding(
+                        get: { viewModel.omnibarText },
+                        set: { viewModel.omnibarText = $0 }
+                    ),
                     focusToken: viewModel.omnibarFocusToken,
                     onCommit: {
                         viewModel.showSuggestions = false
@@ -169,6 +177,19 @@ struct BrowserView: View {
             .disabled(!viewModel.shouldRenderWebView)
             .opacity(viewModel.shouldRenderWebView ? 1 : 0.4)
             .accessibilityLabel("Reader mode")
+
+            Menu {
+                Button("Copy Selection with Source URL", action: copySelectionWithSource)
+                Button("Save Page as Markdown", action: savePageAsMarkdown)
+                Button("Copy Page Link List", action: copyPageLinkList)
+            } label: {
+                Image(systemName: "square.and.arrow.down.on.square")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(!viewModel.shouldRenderWebView)
+            .opacity(viewModel.shouldRenderWebView ? 1 : 0.4)
+            .accessibilityLabel("Capture browser content")
 
             // Find
             Button(action: {
@@ -247,6 +268,76 @@ struct BrowserView: View {
 
     private var recentHistory: [BrowserHistoryStore.Entry] {
         viewModel.recentHistory
+    }
+
+    private func copySelectionWithSource() {
+        Task { @MainActor in
+            do {
+                let capture = try await session.copySelectionWithSource()
+                ToastManager.shared.show(
+                    "Copied selection with source from \(capture.sourceURL.host(percentEncoded: false) ?? capture.sourceURL.absoluteString)",
+                    icon: "doc.on.doc",
+                    style: .success
+                )
+            } catch {
+                showCaptureError(error)
+            }
+        }
+    }
+
+    private func savePageAsMarkdown() {
+        Task { @MainActor in
+            do {
+                let saved = try await session.savePageAsMarkdown(
+                    extractedMarkdown: readerState.isActive ? readerState.result : nil
+                )
+                ToastManager.shared.show(
+                    "Saved markdown to \(saved.outputURL.lastPathComponent)",
+                    icon: "square.and.arrow.down",
+                    style: .success
+                )
+            } catch {
+                showCaptureError(error)
+            }
+        }
+    }
+
+    private func copyPageLinkList() {
+        Task { @MainActor in
+            do {
+                let capture = try await session.copyPageLinkListAsMarkdown()
+                ToastManager.shared.show(
+                    "Copied \(capture.links.count) page links as markdown",
+                    icon: "list.bullet.clipboard",
+                    style: .success
+                )
+            } catch {
+                showCaptureError(error)
+            }
+        }
+    }
+
+    private func copyReaderMarkdown() {
+        guard let markdown = readerState.result?.markdown else {
+            showCaptureError(BrowserCaptureError.noActivePage)
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
+        ToastManager.shared.show(
+            "Copied page markdown",
+            icon: "doc.on.doc",
+            style: .success
+        )
+    }
+
+    private func showCaptureError(_ error: Error) {
+        ToastManager.shared.show(
+            error.localizedDescription,
+            icon: "exclamationmark.triangle",
+            style: .error
+        )
     }
 
     private var newTabPage: some View {

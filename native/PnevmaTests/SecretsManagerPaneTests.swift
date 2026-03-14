@@ -191,7 +191,8 @@ final class SecretsManagerPaneTests: XCTestCase {
 
         try await waitUntil {
             let names = viewModel.secrets.map(\.id)
-            return names == ["global-1"] && (await bus.currentSecrets().map(\.id)) == ["global-1"]
+            let busSecretIDs = await bus.currentSecrets().map(\.id)
+            return names == ["global-1"] && busSecretIDs == ["global-1"]
         }
     }
 

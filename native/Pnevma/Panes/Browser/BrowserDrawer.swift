@@ -1,6 +1,29 @@
 import Observation
 import SwiftUI
 
+enum BrowserDrawerSizing {
+    static let minHeight: CGFloat = 320
+    static let verticalInset: CGFloat = 24
+    static let defaultHeightRatio: CGFloat = 0.45
+    static let keyboardStep: CGFloat = 72
+
+    static func maxHeight(for availableHeight: CGFloat) -> CGFloat {
+        max(minHeight, availableHeight - verticalInset)
+    }
+
+    static func defaultHeight(for availableHeight: CGFloat) -> CGFloat {
+        clamp(availableHeight * defaultHeightRatio, availableHeight: availableHeight)
+    }
+
+    static func resolvedHeight(storedHeight: CGFloat?, availableHeight: CGFloat) -> CGFloat {
+        clamp(storedHeight ?? defaultHeight(for: availableHeight), availableHeight: availableHeight)
+    }
+
+    static func clamp(_ height: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        min(max(height, minHeight), maxHeight(for: availableHeight))
+    }
+}
+
 @Observable @MainActor
 final class BrowserDrawerChromeState {
     var isPresented = false
@@ -12,6 +35,46 @@ private struct BrowserDrawerFramePreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         value = nextValue()
+    }
+}
+
+private struct BrowserDrawerResizeHandle: View {
+    let currentHeight: CGFloat
+    let availableHeight: CGFloat
+    let onHeightChanged: (CGFloat) -> Void
+
+    @State private var dragStartHeight: CGFloat?
+
+    var body: some View {
+        ZStack {
+            Color.clear
+                .frame(height: 18)
+
+            Capsule(style: .continuous)
+                .fill(Color.secondary.opacity(0.55))
+                .frame(width: 46, height: 5)
+        }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let baseHeight = dragStartHeight ?? currentHeight
+                    if dragStartHeight == nil {
+                        dragStartHeight = currentHeight
+                    }
+                    onHeightChanged(
+                        BrowserDrawerSizing.clamp(
+                            baseHeight - value.translation.height,
+                            availableHeight: availableHeight
+                        )
+                    )
+                }
+                .onEnded { _ in
+                    dragStartHeight = nil
+                }
+        )
+        .help("Drag to resize the browser drawer. Use Option-Command-Equals and Option-Command-Minus to resize it from the keyboard.")
+        .accessibilityLabel("Resize browser drawer")
     }
 }
 
@@ -69,11 +132,19 @@ struct BrowserDrawerOverlayView: View {
 
     @ViewBuilder
     private func drawerCard(for session: BrowserWorkspaceSession, in size: CGSize) -> some View {
-        let drawerHeight = max(320, min(size.height * 0.45, size.height - 24))
+        let drawerHeight = session.resolvedDrawerHeight(for: size.height)
+        let maxDrawerHeight = BrowserDrawerSizing.maxHeight(for: size.height)
         let cardBackgroundOpacity = min(1.0, max(0.96, theme.backgroundOpacity))
         let cardBackgroundColor = Color(nsColor: theme.backgroundColor).opacity(cardBackgroundOpacity)
 
         VStack(spacing: 0) {
+            BrowserDrawerResizeHandle(
+                currentHeight: drawerHeight,
+                availableHeight: size.height,
+                onHeightChanged: { session.setDrawerHeight($0) }
+            )
+            .padding(.top, 8)
+
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.viewModel.pageTitle.isEmpty ? "Browser" : session.viewModel.pageTitle)
@@ -86,6 +157,34 @@ struct BrowserDrawerOverlayView: View {
                 }
 
                 Spacer()
+
+                Button(action: {
+                    session.adjustDrawerHeight(
+                        by: -BrowserDrawerSizing.keyboardStep,
+                        availableHeight: size.height
+                    )
+                }) {
+                    Image(systemName: "rectangle.compress.vertical")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(drawerHeight <= BrowserDrawerSizing.minHeight + 1)
+                .accessibilityLabel("Make browser drawer shorter")
+
+                Button(action: {
+                    session.adjustDrawerHeight(
+                        by: BrowserDrawerSizing.keyboardStep,
+                        availableHeight: size.height
+                    )
+                }) {
+                    Image(systemName: "rectangle.expand.vertical")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(drawerHeight >= maxDrawerHeight - 1)
+                .accessibilityLabel("Make browser drawer taller")
 
                 Button("Open as Tab", action: onOpenAsTab)
                     .buttonStyle(.bordered)
@@ -104,11 +203,11 @@ struct BrowserDrawerOverlayView: View {
                 .accessibilityLabel("Close browser drawer")
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.bottom, 10)
 
             Divider()
 
-            BrowserView(viewModel: session.viewModel)
+            BrowserView(session: session)
         }
         .frame(maxWidth: .infinity)
         .frame(height: drawerHeight)

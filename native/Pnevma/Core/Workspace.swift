@@ -229,6 +229,7 @@ final class Workspace: Identifiable {
     var activationFailureMessage: String?
     var rightInspectorSection: RightInspectorSection = .files
     var browserLastURL: String?
+    var browserDrawerHeight: Double?
 
     /// Tabs within this workspace.
     var tabs: [WorkspaceTab]
@@ -487,6 +488,7 @@ extension Workspace {
         var isPinned: Bool?
         var rightInspectorSection: RightInspectorSection?
         var browserLastURL: String?
+        var browserDrawerHeight: Double?
     }
 
     func snapshot() -> Snapshot {
@@ -504,7 +506,8 @@ extension Workspace {
             customColor: customColor,
             isPinned: isPinned,
             rightInspectorSection: rightInspectorSection,
-            browserLastURL: browserLastURL
+            browserLastURL: browserLastURL,
+            browserDrawerHeight: browserDrawerHeight
         )
     }
 
@@ -554,5 +557,6 @@ extension Workspace {
         self.isPinned = snapshot.isPinned ?? false
         self.rightInspectorSection = snapshot.rightInspectorSection ?? .files
         self.browserLastURL = snapshot.browserLastURL
+        self.browserDrawerHeight = snapshot.browserDrawerHeight
     }
 }

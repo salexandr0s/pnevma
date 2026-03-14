@@ -208,6 +208,7 @@ private struct SecretsHeaderActions: View {
     }
 }
 
+@MainActor
 struct SecretsManagerView: View {
     @State private var viewModel = SecretsManagerViewModel()
     @State private var showingDeleteAlert = false
