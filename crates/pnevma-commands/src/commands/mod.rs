@@ -380,6 +380,119 @@ pub struct ProjectSummaryView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandCenterSummaryView {
+    pub active_count: usize,
+    pub queued_count: usize,
+    pub idle_count: usize,
+    pub stuck_count: usize,
+    pub review_needed_count: usize,
+    pub failed_count: usize,
+    pub retrying_count: usize,
+    pub slot_limit: usize,
+    pub slot_in_use: usize,
+    pub cost_today_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandCenterRunView {
+    pub id: String,
+    pub task_id: Option<String>,
+    pub task_title: Option<String>,
+    pub task_status: Option<String>,
+    pub session_id: Option<String>,
+    pub session_name: Option<String>,
+    pub session_status: Option<String>,
+    pub session_health: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub agent_profile: Option<String>,
+    pub branch: Option<String>,
+    pub worktree_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attention_reason: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub last_activity_at: DateTime<Utc>,
+    pub retry_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<DateTime<Utc>>,
+    pub cost_usd: f64,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub available_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandCenterSnapshotView {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub generated_at: DateTime<Utc>,
+    pub summary: CommandCenterSummaryView,
+    pub runs: Vec<CommandCenterRunView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetProjectEntryView {
+    pub machine_id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_opened_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<CommandCenterSnapshotView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetMachineSummaryView {
+    pub project_count: usize,
+    pub open_project_count: usize,
+    pub active_count: usize,
+    pub queued_count: usize,
+    pub idle_count: usize,
+    pub stuck_count: usize,
+    pub review_needed_count: usize,
+    pub failed_count: usize,
+    pub retrying_count: usize,
+    pub slot_limit: usize,
+    pub slot_in_use: usize,
+    pub cost_today_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetMachineSnapshotView {
+    pub machine_id: String,
+    pub machine_name: String,
+    pub generated_at: DateTime<Utc>,
+    pub summary: FleetMachineSummaryView,
+    pub projects: Vec<FleetProjectEntryView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetActionInput {
+    pub action: String,
+    pub session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetActionResultView {
+    pub ok: bool,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDispatchResponse {
     pub status: String,
 }
@@ -1927,7 +2040,7 @@ async fn refresh_dependency_states_inner(
     db: &Db,
     project_id: Uuid,
     emitter: Option<&Arc<dyn EventEmitter>>,
-    state: &AppState,
+    state: Option<&AppState>,
     extra_completed: &[Uuid],
 ) -> Result<(), String> {
     let mut rows = db
@@ -1983,12 +2096,14 @@ async fn refresh_dependency_states_inner(
 
             // Auto-dispatch: if the task became Ready and has auto_dispatch set, dispatch it.
             if row.auto_dispatch && task.status == TaskStatus::Ready {
-                match dispatch_task(task.id.to_string(), emitter, state).await {
-                    Ok(_) => {
-                        tracing::info!(task_id = %task.id, "auto-dispatched task on dependency completion")
-                    }
-                    Err(e) => {
-                        tracing::warn!(task_id = %task.id, error = %e, "auto-dispatch failed")
+                if let Some(state) = state {
+                    match dispatch_task(task.id.to_string(), emitter, state).await {
+                        Ok(_) => {
+                            tracing::info!(task_id = %task.id, "auto-dispatched task on dependency completion")
+                        }
+                        Err(e) => {
+                            tracing::warn!(task_id = %task.id, error = %e, "auto-dispatch failed")
+                        }
                     }
                 }
             }
@@ -2003,15 +2118,21 @@ pub(crate) async fn refresh_dependency_states(
     emitter: Option<&Arc<dyn EventEmitter>>,
     state: &AppState,
 ) -> Result<(), String> {
-    refresh_dependency_states_with_extra_completed(db, project_id, emitter, state, &HashSet::new())
-        .await
+    refresh_dependency_states_with_extra_completed(
+        db,
+        project_id,
+        emitter,
+        Some(state),
+        &HashSet::new(),
+    )
+    .await
 }
 
 pub(crate) async fn refresh_dependency_states_with_extra_completed(
     db: &Db,
     project_id: Uuid,
     emitter: Option<&Arc<dyn EventEmitter>>,
-    state: &AppState,
+    state: Option<&AppState>,
     extra_completed: &HashSet<Uuid>,
 ) -> Result<(), String> {
     let extra = extra_completed.iter().copied().collect::<Vec<_>>();
@@ -2023,9 +2144,71 @@ pub(crate) async fn refresh_dependency_states_after_completion(
     project_id: Uuid,
     completed_task_id: Uuid,
     emitter: Option<&Arc<dyn EventEmitter>>,
-    state: &AppState,
+    state: Option<&AppState>,
 ) -> Result<(), String> {
     refresh_dependency_states_inner(db, project_id, emitter, state, &[completed_task_id]).await
+}
+
+pub(crate) async fn refresh_dependency_states_after_completion_without_dispatch(
+    db: &Db,
+    project_id: Uuid,
+    completed_task_id: Uuid,
+    emitter: Option<&Arc<dyn EventEmitter>>,
+) -> Result<(), String> {
+    let mut rows = db
+        .list_tasks(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    for row in &mut rows {
+        let persisted = db
+            .list_task_dependencies(&row.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut from_json =
+            serde_json::from_str::<Vec<String>>(&row.dependencies_json).unwrap_or_default();
+        from_json.sort();
+        let mut normalized = persisted;
+        normalized.sort();
+        if from_json != normalized {
+            row.dependencies_json =
+                serde_json::to_string(&normalized).map_err(|e| e.to_string())?;
+            row.updated_at = Utc::now();
+            db.update_task(row).await.map_err(|e| e.to_string())?;
+        }
+    }
+
+    let completed = rows
+        .iter()
+        .filter(|row| row.status == "Done")
+        .filter_map(|row| Uuid::parse_str(&row.id).ok())
+        .chain(std::iter::once(completed_task_id))
+        .collect::<HashSet<_>>();
+
+    for row in rows {
+        if row.status != "Planned" && row.status != "Ready" && row.status != "Blocked" {
+            continue;
+        }
+        let mut task = task_row_to_contract(&row)?;
+        let prev = task.status.clone();
+        task.refresh_blocked_status(&completed);
+        if prev == TaskStatus::Blocked && task.status == TaskStatus::Planned {
+            task.status = TaskStatus::Ready;
+            task.updated_at = Utc::now();
+        }
+        if task.status == prev {
+            continue;
+        }
+
+        let next = task_contract_to_row(&task, &project_id.to_string())?;
+        db.update_task(&next).await.map_err(|e| e.to_string())?;
+        emit_task_status_changed(db, project_id, task.id, &prev, &task.status).await;
+        emit_task_updated(db, project_id, task.id).await;
+        if let Some(emitter) = emitter {
+            emit_enriched_task_event(emitter, db, &task.id.to_string()).await;
+        }
+    }
+
+    Ok(())
 }
 
 fn required_arg(args: &HashMap<String, String>, key: &str) -> Result<String, String> {

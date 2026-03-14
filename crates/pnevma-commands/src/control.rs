@@ -793,6 +793,18 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.command_center_snapshot" => serde_json::to_value(
+            commands::command_center_snapshot(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "fleet.snapshot" => serde_json::to_value(
+            commands::fleet_snapshot(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "project.cleanup_data" => serde_json::to_value(
             commands::cleanup_project_data(
                 parse_optional_bool_param(params, "dry_run").unwrap_or(false),
@@ -1569,6 +1581,81 @@ pub async fn route_method(
             .await
             .map_err(|e| ("internal_error".to_string(), e))?;
             result
+        }
+        "fleet.action" => {
+            let action = parse_string_param(params, "action")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let target_project_id = parse_optional_string_param(params, "project_id");
+            let current_project_id = {
+                let current = state.current.lock().await;
+                current.as_ref().map(|ctx| ctx.project_id.to_string())
+            };
+            if let Some(target_project_id) = target_project_id {
+                if current_project_id.as_deref() != Some(target_project_id.as_str()) {
+                    return Err((
+                        "internal_error".to_string(),
+                        "fleet.action currently requires the target project to be open on this runtime"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            match action.as_str() {
+                "kill_session" => {
+                    let session_id = parse_string_param(params, "session_id")
+                        .map_err(|e| ("invalid_params".to_string(), e))?;
+                    let sid = Uuid::parse_str(&session_id)
+                        .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+                    let supervisor = {
+                        let current = state.current.lock().await;
+                        current
+                            .as_ref()
+                            .ok_or_else(|| {
+                                ("no_project".to_string(), "no open project".to_string())
+                            })?
+                            .sessions
+                            .clone()
+                    };
+                    let result = kill_live_session(&supervisor, sid).await;
+                    serde_json::to_value(commands::FleetActionResultView {
+                        ok: matches!(result.outcome.as_str(), "killed" | "already_gone"),
+                        action,
+                        session_id: Some(session_id),
+                    })
+                    .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+                }
+                "restart_session" | "reattach_session" => {
+                    let session_id = parse_string_param(params, "session_id")
+                        .map_err(|e| ("invalid_params".to_string(), e))?;
+                    let recovery_action = if action == "restart_session" {
+                        "restart".to_string()
+                    } else {
+                        "reattach".to_string()
+                    };
+                    let _ = commands::recover_session(
+                        commands::SessionRecoveryInput {
+                            session_id: session_id.clone(),
+                            action: recovery_action,
+                        },
+                        &state.emitter,
+                        state,
+                    )
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?;
+                    serde_json::to_value(commands::FleetActionResultView {
+                        ok: true,
+                        action,
+                        session_id: Some(session_id),
+                    })
+                    .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+                }
+                _ => {
+                    return Err((
+                        "invalid_params".to_string(),
+                        format!("unsupported fleet action: {action}"),
+                    ))
+                }
+            }
         }
         "project.daily_brief" => serde_json::to_value(
             commands::get_daily_brief(state)
@@ -2631,6 +2718,33 @@ mod tests {
             .await
             .expect_err("missing project should still route to the file tree handler");
         assert_eq!(err.0, "internal_error");
+        assert_eq!(err.1, "no open project");
+    }
+
+    #[tokio::test]
+    async fn fleet_snapshot_route_is_registered() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let value = route_method(&state, "fleet.snapshot", &Value::Null)
+            .await
+            .expect("fleet snapshot route should be available without an open project");
+        assert!(value.get("machine_id").is_some());
+        assert!(value.get("projects").is_some());
+    }
+
+    #[tokio::test]
+    async fn fleet_action_route_is_registered() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(
+            &state,
+            "fleet.action",
+            &json!({
+                "action": "kill_session",
+                "session_id": Uuid::new_v4().to_string(),
+            }),
+        )
+        .await
+        .expect_err("missing project should still hit the fleet action handler");
+        assert_eq!(err.0, "no_project");
         assert_eq!(err.1, "no open project");
     }
 }

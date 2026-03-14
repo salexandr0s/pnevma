@@ -76,6 +76,15 @@ impl GlobalDb {
         .await?;
 
         sqlx::query(
+            "CREATE TABLE IF NOT EXISTS app_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
             "CREATE TABLE IF NOT EXISTS global_workflows (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
@@ -227,6 +236,27 @@ impl GlobalDb {
             .bind(path)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn get_metadata(&self, key: &str) -> Result<Option<String>, DbError> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_metadata WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(value,)| value))
+    }
+
+    pub async fn set_metadata(&self, key: &str, value: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO app_metadata (key, value)
+             VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

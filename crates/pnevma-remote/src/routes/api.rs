@@ -80,6 +80,17 @@ pub async fn project_search(
     call(&r, "project.search", params).await
 }
 
+pub async fn fleet_snapshot(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResponse {
+    call(&r, "fleet.snapshot", Value::Null).await
+}
+
+pub async fn fleet_action(
+    State(r): State<Arc<dyn CommandRouter>>,
+    Json(params): Json<Value>,
+) -> impl IntoResponse {
+    call(&r, "fleet.action", params).await
+}
+
 fn inject_id(params: &mut Value, id: String) {
     if let Some(obj) = params.as_object_mut() {
         obj.insert("id".to_string(), Value::String(id));
@@ -218,7 +229,7 @@ pub async fn rpc(
 #[cfg(test)]
 mod tests {
     use super::super::rpc_allowlist;
-    use super::task_dispatch;
+    use super::{fleet_action, fleet_snapshot, task_dispatch};
     use crate::CommandRouter;
     use async_trait::async_trait;
     use axum::{
@@ -280,6 +291,44 @@ mod tests {
                 "priority": "high",
                 "task_id": "task-123"
             }))
+        );
+    }
+
+    #[tokio::test]
+    async fn fleet_snapshot_routes_to_fleet_snapshot_method() {
+        let recorder = Arc::new(RecordingRouter::default());
+        let router: Arc<dyn CommandRouter> = recorder.clone();
+
+        let _ = fleet_snapshot(State(router)).await;
+
+        assert_eq!(
+            recorder.method.lock().expect("method mutex").as_deref(),
+            Some("fleet.snapshot")
+        );
+        assert_eq!(
+            recorder.params.lock().expect("params mutex").clone(),
+            Some(Value::Null)
+        );
+    }
+
+    #[tokio::test]
+    async fn fleet_action_routes_to_fleet_action_method() {
+        let recorder = Arc::new(RecordingRouter::default());
+        let router: Arc<dyn CommandRouter> = recorder.clone();
+        let params = json!({
+            "action": "kill_session",
+            "session_id": "session-123"
+        });
+
+        let _ = fleet_action(State(router), Json(params.clone())).await;
+
+        assert_eq!(
+            recorder.method.lock().expect("method mutex").as_deref(),
+            Some("fleet.action")
+        );
+        assert_eq!(
+            recorder.params.lock().expect("params mutex").clone(),
+            Some(params)
         );
     }
 }

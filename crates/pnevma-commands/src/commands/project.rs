@@ -1,5 +1,7 @@
 use super::tasks::{ensure_scope_rows_from_config, rule_row_to_view};
 use super::*;
+use pnevma_db::{AutomationRunRow, WorktreeRow};
+use std::collections::{HashMap, HashSet};
 
 const MAX_SESSION_NAME_BYTES: usize = 128;
 const MAX_SESSION_COMMAND_BYTES: usize = 2048;
@@ -48,6 +50,36 @@ async fn abort_project_runtime(state: &AppState) {
     if let Some(runtime) = state.current_runtime.lock().await.take() {
         runtime.abort();
     }
+}
+
+const FLEET_MACHINE_ID_KEY: &str = "fleet.machine_id";
+
+async fn fleet_machine_id() -> Result<String, String> {
+    let global_db = pnevma_db::GlobalDb::open()
+        .await
+        .map_err(|e| format!("failed to open global db: {e}"))?;
+    if let Some(existing) = global_db
+        .get_metadata(FLEET_MACHINE_ID_KEY)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(existing);
+    }
+
+    let generated = Uuid::new_v4().to_string();
+    global_db
+        .set_metadata(FLEET_MACHINE_ID_KEY, &generated)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(generated)
+}
+
+fn fleet_machine_name() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "local-machine".to_string())
 }
 
 fn process_alive(pid: libc::pid_t) -> bool {
@@ -4241,6 +4273,516 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
     })
 }
 
+#[derive(Debug, Clone)]
+struct CommandCenterSessionCandidate {
+    id: String,
+    name: String,
+    status: String,
+    health: String,
+    branch: Option<String>,
+    worktree_id: Option<String>,
+    started_at: DateTime<Utc>,
+    last_activity_at: DateTime<Utc>,
+}
+
+fn command_center_session_status(status: SessionStatus) -> &'static str {
+    match status {
+        SessionStatus::Running => "running",
+        SessionStatus::Waiting => "waiting",
+        SessionStatus::Error => "error",
+        SessionStatus::Complete => "complete",
+    }
+}
+
+fn command_center_session_health(health: SessionHealth) -> &'static str {
+    match health {
+        SessionHealth::Active => "active",
+        SessionHealth::Idle => "idle",
+        SessionHealth::Stuck => "stuck",
+        SessionHealth::Waiting => "waiting",
+        SessionHealth::Error => "error",
+        SessionHealth::Complete => "complete",
+    }
+}
+
+fn command_center_actions(
+    task_id: Option<&str>,
+    task_status: Option<&str>,
+    session_id: Option<&str>,
+    session_status: Option<&str>,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if session_id.is_some() {
+        actions.push("open_terminal".to_string());
+        actions.push("open_replay".to_string());
+        actions.push("restart_session".to_string());
+        if matches!(session_status, Some("running" | "waiting" | "error")) {
+            actions.push("kill_session".to_string());
+        }
+        if matches!(session_status, Some("waiting")) {
+            actions.push("reattach_session".to_string());
+        }
+    }
+    if task_id.is_some() {
+        actions.push("open_diff".to_string());
+        actions.push("open_files".to_string());
+        if matches!(task_status, Some("Review")) {
+            actions.push("open_review".to_string());
+        }
+    }
+    actions
+}
+
+fn command_center_file_targets(
+    project_path: &str,
+    task_scope_json: &str,
+    worktree: Option<&WorktreeRow>,
+) -> (Option<String>, Vec<String>, Option<String>) {
+    let scope: Vec<String> = serde_json::from_str(task_scope_json).unwrap_or_default();
+    let project_root = std::path::Path::new(project_path);
+    let worktree_root = worktree.map(|row| std::path::Path::new(&row.path));
+
+    let mut scope_paths = Vec::new();
+    for raw_scope in scope {
+        let trimmed = raw_scope.trim().trim_start_matches('/');
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let scope_path = std::path::Path::new(trimmed);
+        let candidate = if let Some(worktree_root) = worktree_root {
+            worktree_root.join(scope_path)
+        } else {
+            project_root.join(scope_path)
+        };
+
+        if let Ok(relative) = candidate.strip_prefix(project_root) {
+            let rel = relative.to_string_lossy().replace('\\', "/");
+            if !rel.is_empty() && !scope_paths.contains(&rel) {
+                scope_paths.push(rel);
+            }
+        }
+    }
+
+    let worktree_path = worktree.and_then(|row| {
+        std::path::Path::new(&row.path)
+            .strip_prefix(project_root)
+            .ok()
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .filter(|path| !path.is_empty())
+    });
+    let primary_file_path = scope_paths.first().cloned();
+
+    (primary_file_path, scope_paths, worktree_path)
+}
+
+pub async fn command_center_snapshot(
+    state: &AppState,
+) -> Result<CommandCenterSnapshotView, String> {
+    let (db, project_id, project_name, project_path, max_concurrent, sessions, coordinator) = {
+        let current = state.current.lock().await;
+        let ctx = current
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        (
+            ctx.db.clone(),
+            ctx.project_id,
+            ctx.config.project.name.clone(),
+            ctx.project_path.to_string_lossy().to_string(),
+            ctx.config.agents.max_concurrent,
+            ctx.sessions.clone(),
+            ctx.coordinator.clone(),
+        )
+    };
+
+    let tasks = db
+        .list_tasks(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let worktrees = db
+        .list_worktrees(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let recent_runs = db
+        .list_automation_runs(&project_id.to_string(), 100)
+        .await
+        .map_err(|e| e.to_string())?;
+    let pending_retries = db
+        .list_pending_retries(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    db.aggregate_costs_daily(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let cost_today = db
+        .get_usage_daily_trend(&project_id.to_string(), 1)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|row| row.period_date == today)
+        .map(|row| row.estimated_usd)
+        .unwrap_or(0.0);
+
+    let automation_snapshot = if let Some(coord) = coordinator {
+        coord.snapshot().await
+    } else {
+        default_automation_snapshot(max_concurrent)
+    };
+
+    let worktrees_by_id: HashMap<String, WorktreeRow> = worktrees
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect();
+    let runs_by_task: HashMap<String, AutomationRunRow> = recent_runs.into_iter().fold(
+        HashMap::<String, AutomationRunRow>::new(),
+        |mut acc, row| {
+            acc.entry(row.task_id.clone()).or_insert(row);
+            acc
+        },
+    );
+    let retries_by_task: HashMap<String, pnevma_db::AutomationRetryRow> = pending_retries
+        .into_iter()
+        .fold(HashMap::new(), |mut acc, row| {
+            acc.entry(row.task_id.clone()).or_insert(row);
+            acc
+        });
+
+    let live_sessions: Vec<CommandCenterSessionCandidate> = sessions
+        .list()
+        .await
+        .into_iter()
+        .map(|meta| CommandCenterSessionCandidate {
+            id: meta.id.to_string(),
+            name: meta.name,
+            status: command_center_session_status(meta.status).to_string(),
+            health: command_center_session_health(meta.health).to_string(),
+            branch: meta.branch,
+            worktree_id: meta.worktree_id.map(|id| id.to_string()),
+            started_at: meta.started_at,
+            last_activity_at: meta.last_heartbeat,
+        })
+        .collect();
+
+    let claims: HashSet<&str> = automation_snapshot
+        .claimed_task_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let running_task_ids: HashSet<&str> = automation_snapshot
+        .running_task_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    let mut runs: Vec<CommandCenterRunView> = Vec::new();
+    let mut matched_session_ids: HashSet<String> = HashSet::new();
+
+    for task in tasks {
+        let branch = task.branch.clone();
+        let worktree_id = task.worktree_id.clone();
+        let live_session = live_sessions.iter().find(|session| {
+            worktree_id
+                .as_ref()
+                .is_some_and(|id| session.worktree_id.as_ref() == Some(id))
+                || branch
+                    .as_ref()
+                    .is_some_and(|task_branch| session.branch.as_ref() == Some(task_branch))
+        });
+        if let Some(session) = live_session {
+            matched_session_ids.insert(session.id.clone());
+        }
+        let latest_run = runs_by_task.get(&task.id);
+        let pending_retry = retries_by_task.get(&task.id);
+        let is_running = running_task_ids.contains(task.id.as_str());
+        let is_claimed = claims.contains(task.id.as_str());
+
+        let (state, attention_reason) = if let Some(retry) = pending_retry {
+            let _ = retry;
+            ("retrying".to_string(), Some("retrying".to_string()))
+        } else if task.status == "Review" {
+            (
+                "review_needed".to_string(),
+                Some("review_needed".to_string()),
+            )
+        } else if let Some(session) = live_session {
+            match session.health.as_str() {
+                "stuck" => ("stuck".to_string(), Some("stuck".to_string())),
+                "idle" => ("idle".to_string(), Some("idle".to_string())),
+                _ if matches!(session.status.as_str(), "running" | "waiting") => {
+                    ("running".to_string(), None)
+                }
+                _ => ("failed".to_string(), Some("failed".to_string())),
+            }
+        } else if is_claimed && !is_running {
+            ("queued".to_string(), Some("queued".to_string()))
+        } else if task.status == "Failed"
+            || latest_run
+                .map(|run| run.status == "failed")
+                .unwrap_or(false)
+        {
+            ("failed".to_string(), Some("failed".to_string()))
+        } else if latest_run
+            .map(|run| run.status == "completed")
+            .unwrap_or(false)
+        {
+            ("completed".to_string(), None)
+        } else {
+            continue;
+        };
+
+        let started_at = live_session
+            .map(|session| session.started_at)
+            .or_else(|| latest_run.map(|run| run.started_at))
+            .unwrap_or(task.updated_at);
+        let last_activity_at = live_session
+            .map(|session| session.last_activity_at)
+            .or_else(|| pending_retry.map(|retry| retry.retry_after))
+            .or_else(|| latest_run.and_then(|run| run.finished_at))
+            .unwrap_or(task.updated_at);
+        let cost_usd = latest_run.map(|run| run.cost_usd).unwrap_or(0.0);
+        let tokens_in = latest_run.map(|run| run.tokens_in).unwrap_or(0);
+        let tokens_out = latest_run.map(|run| run.tokens_out).unwrap_or(0);
+        let derived_branch = branch.clone().or_else(|| {
+            worktree_id
+                .as_ref()
+                .and_then(|id| worktrees_by_id.get(id).map(|wt| wt.branch.clone()))
+        });
+        let worktree = worktree_id.as_ref().and_then(|id| worktrees_by_id.get(id));
+        let (primary_file_path, scope_paths, worktree_path) =
+            command_center_file_targets(&project_path, &task.scope_json, worktree);
+
+        runs.push(CommandCenterRunView {
+            id: latest_run
+                .map(|run| run.run_id.clone())
+                .or_else(|| live_session.map(|session| session.id.clone()))
+                .unwrap_or_else(|| task.id.clone()),
+            task_id: Some(task.id.clone()),
+            task_title: Some(task.title.clone()),
+            task_status: Some(task.status.clone()),
+            session_id: live_session.map(|session| session.id.clone()),
+            session_name: live_session.map(|session| session.name.clone()),
+            session_status: live_session.map(|session| session.status.clone()),
+            session_health: live_session.map(|session| session.health.clone()),
+            provider: latest_run.map(|run| run.provider.clone()),
+            model: latest_run.and_then(|run| run.model.clone()),
+            agent_profile: task.agent_profile_override.clone(),
+            branch: derived_branch,
+            worktree_id: worktree_id.clone(),
+            primary_file_path,
+            scope_paths,
+            worktree_path,
+            state: state.clone(),
+            attention_reason,
+            started_at,
+            last_activity_at,
+            retry_count: pending_retry
+                .map(|retry| retry.attempt)
+                .unwrap_or_else(|| latest_run.map(|run| run.attempt).unwrap_or(0)),
+            retry_after: pending_retry.map(|retry| retry.retry_after),
+            cost_usd,
+            tokens_in,
+            tokens_out,
+            available_actions: command_center_actions(
+                Some(task.id.as_str()),
+                Some(task.status.as_str()),
+                live_session.map(|session| session.id.as_str()),
+                live_session.map(|session| session.status.as_str()),
+            ),
+        });
+    }
+
+    for session in live_sessions {
+        if matched_session_ids.contains(&session.id) {
+            continue;
+        }
+        runs.push(CommandCenterRunView {
+            id: session.id.clone(),
+            task_id: None,
+            task_title: None,
+            task_status: None,
+            session_id: Some(session.id.clone()),
+            session_name: Some(session.name.clone()),
+            session_status: Some(session.status.clone()),
+            session_health: Some(session.health.clone()),
+            provider: None,
+            model: None,
+            agent_profile: None,
+            branch: session.branch.clone(),
+            worktree_id: session.worktree_id.clone(),
+            primary_file_path: None,
+            scope_paths: Vec::new(),
+            worktree_path: session
+                .worktree_id
+                .as_ref()
+                .and_then(|id| worktrees_by_id.get(id))
+                .and_then(|wt| {
+                    std::path::Path::new(&wt.path)
+                        .strip_prefix(std::path::Path::new(&project_path))
+                        .ok()
+                        .map(|path| path.to_string_lossy().replace('\\', "/"))
+                        .filter(|path| !path.is_empty())
+                }),
+            state: match session.health.as_str() {
+                "stuck" => "stuck",
+                "idle" => "idle",
+                _ => "running",
+            }
+            .to_string(),
+            attention_reason: match session.health.as_str() {
+                "stuck" => Some("stuck".to_string()),
+                "idle" => Some("idle".to_string()),
+                _ => None,
+            },
+            started_at: session.started_at,
+            last_activity_at: session.last_activity_at,
+            retry_count: 0,
+            retry_after: None,
+            cost_usd: 0.0,
+            tokens_in: 0,
+            tokens_out: 0,
+            available_actions: command_center_actions(
+                None,
+                None,
+                Some(session.id.as_str()),
+                Some(session.status.as_str()),
+            ),
+        });
+    }
+
+    runs.sort_by(|lhs, rhs| {
+        let lhs_attention = lhs.attention_reason.is_some();
+        let rhs_attention = rhs.attention_reason.is_some();
+        rhs_attention
+            .cmp(&lhs_attention)
+            .then_with(|| rhs.last_activity_at.cmp(&lhs.last_activity_at))
+    });
+
+    let summary = CommandCenterSummaryView {
+        active_count: runs.iter().filter(|run| run.state == "running").count(),
+        queued_count: runs.iter().filter(|run| run.state == "queued").count(),
+        idle_count: runs.iter().filter(|run| run.state == "idle").count(),
+        stuck_count: runs.iter().filter(|run| run.state == "stuck").count(),
+        review_needed_count: runs
+            .iter()
+            .filter(|run| run.state == "review_needed")
+            .count(),
+        failed_count: runs.iter().filter(|run| run.state == "failed").count(),
+        retrying_count: runs.iter().filter(|run| run.state == "retrying").count(),
+        slot_limit: automation_snapshot.max_concurrent,
+        slot_in_use: automation_snapshot.active_runs.max(
+            runs.iter()
+                .filter(|run| matches!(run.state.as_str(), "running" | "idle" | "stuck"))
+                .count(),
+        ),
+        cost_today_usd: cost_today,
+    };
+
+    Ok(CommandCenterSnapshotView {
+        project_id: project_id.to_string(),
+        project_name,
+        project_path,
+        generated_at: Utc::now(),
+        summary,
+        runs,
+    })
+}
+
+pub async fn fleet_snapshot(state: &AppState) -> Result<FleetMachineSnapshotView, String> {
+    let machine_id = fleet_machine_id().await?;
+    let machine_name = fleet_machine_name();
+    let generated_at = Utc::now();
+    let open_snapshot = command_center_snapshot(state).await.ok();
+    let open_project_path = open_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.project_path.clone());
+
+    let mut projects = Vec::new();
+    if let Some(snapshot) = open_snapshot.clone() {
+        projects.push(FleetProjectEntryView {
+            machine_id: machine_id.clone(),
+            project_id: snapshot.project_id.clone(),
+            project_name: snapshot.project_name.clone(),
+            project_path: snapshot.project_path.clone(),
+            state: "open".to_string(),
+            last_opened_at: Some(generated_at),
+            snapshot: Some(snapshot),
+        });
+    }
+
+    if let Ok(global_db) = pnevma_db::GlobalDb::open().await {
+        let recents = global_db
+            .list_recent_projects(50)
+            .await
+            .map_err(|e| e.to_string())?;
+        for recent in recents {
+            if open_project_path.as_deref() == Some(recent.path.as_str()) {
+                continue;
+            }
+            projects.push(FleetProjectEntryView {
+                machine_id: machine_id.clone(),
+                project_id: recent.project_id,
+                project_name: recent.name,
+                project_path: recent.path,
+                state: "cataloged".to_string(),
+                last_opened_at: Some(recent.opened_at),
+                snapshot: None,
+            });
+        }
+    }
+
+    projects.sort_by(|left, right| {
+        right
+            .last_opened_at
+            .cmp(&left.last_opened_at)
+            .then_with(|| left.project_name.cmp(&right.project_name))
+    });
+
+    let summary = projects.iter().fold(
+        FleetMachineSummaryView {
+            project_count: projects.len(),
+            open_project_count: 0,
+            active_count: 0,
+            queued_count: 0,
+            idle_count: 0,
+            stuck_count: 0,
+            review_needed_count: 0,
+            failed_count: 0,
+            retrying_count: 0,
+            slot_limit: 0,
+            slot_in_use: 0,
+            cost_today_usd: 0.0,
+        },
+        |mut acc, project| {
+            if project.state == "open" {
+                acc.open_project_count += 1;
+            }
+            if let Some(snapshot) = &project.snapshot {
+                acc.active_count += snapshot.summary.active_count;
+                acc.queued_count += snapshot.summary.queued_count;
+                acc.idle_count += snapshot.summary.idle_count;
+                acc.stuck_count += snapshot.summary.stuck_count;
+                acc.review_needed_count += snapshot.summary.review_needed_count;
+                acc.failed_count += snapshot.summary.failed_count;
+                acc.retrying_count += snapshot.summary.retrying_count;
+                acc.slot_limit += snapshot.summary.slot_limit;
+                acc.slot_in_use += snapshot.summary.slot_in_use;
+                acc.cost_today_usd += snapshot.summary.cost_today_usd;
+            }
+            acc
+        },
+    );
+
+    Ok(FleetMachineSnapshotView {
+        machine_id,
+        machine_name,
+        generated_at,
+        summary,
+        projects,
+    })
+}
+
 pub async fn get_daily_brief(state: &AppState) -> Result<DailyBriefView, String> {
     let (db, project_id) = {
         let current = state.current.lock().await;
@@ -5026,6 +5568,27 @@ pub(crate) async fn automation_status_from_snapshot(
     }
 }
 
+fn default_automation_snapshot(
+    max_concurrent: usize,
+) -> crate::automation::coordinator::AutomationSnapshot {
+    crate::automation::coordinator::AutomationSnapshot {
+        enabled: false,
+        config_source: "none".to_string(),
+        poll_interval_seconds: 0,
+        max_concurrent,
+        active_runs: 0,
+        queued_tasks: 0,
+        claimed_task_ids: Vec::new(),
+        running_task_ids: Vec::new(),
+        retry_queue_size: 0,
+        last_tick_at: None,
+        total_dispatched: 0,
+        total_completed: 0,
+        total_failed: 0,
+        total_retried: 0,
+    }
+}
+
 pub async fn automation_status(state: &AppState) -> Result<AutomationStatusView, String> {
     let (db, project_id, coordinator) = {
         let current = state.current.lock().await;
@@ -5036,22 +5599,7 @@ pub async fn automation_status(state: &AppState) -> Result<AutomationStatusView,
     let snapshot = if let Some(ref coord) = coordinator {
         coord.snapshot().await
     } else {
-        crate::automation::coordinator::AutomationSnapshot {
-            enabled: false,
-            config_source: "none".to_string(),
-            poll_interval_seconds: 0,
-            max_concurrent: 0,
-            active_runs: 0,
-            queued_tasks: 0,
-            claimed_task_ids: Vec::new(),
-            running_task_ids: Vec::new(),
-            retry_queue_size: 0,
-            last_tick_at: None,
-            total_dispatched: 0,
-            total_completed: 0,
-            total_failed: 0,
-            total_retried: 0,
-        }
+        default_automation_snapshot(0)
     };
 
     Ok(automation_status_from_snapshot(snapshot, &db, &project_id).await)
@@ -5110,7 +5658,7 @@ mod tests {
         RedactionSection, RetentionSection,
     };
     use pnevma_core::{RemoteSection, TrackerSection};
-    use pnevma_db::GlobalDb;
+    use pnevma_db::{AutomationRetryRow, AutomationRunRow, GlobalDb, WorktreeRow};
     use serde_json::Value;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::ffi::OsString;
@@ -5286,6 +5834,20 @@ enable_entropy_guard = false
         }
     }
 
+    fn make_command_center_task(
+        project_id: Uuid,
+        title: &str,
+        status: &str,
+        branch: Option<&str>,
+        worktree_id: Option<&str>,
+    ) -> TaskRow {
+        let mut task = make_task(&project_id.to_string(), title);
+        task.status = status.to_string();
+        task.branch = branch.map(str::to_string);
+        task.worktree_id = worktree_id.map(str::to_string);
+        task
+    }
+
     async fn make_state_with_project(
         project_id: Uuid,
         project_root: &Path,
@@ -5314,6 +5876,384 @@ enable_entropy_guard = false
             shutdown_tx,
         });
         state
+    }
+
+    #[tokio::test]
+    async fn command_center_snapshot_includes_live_queued_retry_review_and_failed_rows() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback")).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "command-center-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let now = Utc::now();
+        let live_task_id = Uuid::new_v4();
+        let queued_task_id = Uuid::new_v4();
+        let retry_task_id = Uuid::new_v4();
+        let review_task_id = Uuid::new_v4();
+        let failed_task_id = Uuid::new_v4();
+
+        let worktree_live = WorktreeRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: live_task_id.to_string(),
+            path: project_root
+                .join("worktrees/live")
+                .to_string_lossy()
+                .to_string(),
+            branch: "pnevma/live".to_string(),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        };
+        let worktree_review = WorktreeRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: review_task_id.to_string(),
+            path: project_root
+                .join("worktrees/review")
+                .to_string_lossy()
+                .to_string(),
+            branch: "pnevma/review".to_string(),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        };
+        let worktree_failed = WorktreeRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: failed_task_id.to_string(),
+            path: project_root
+                .join("worktrees/failed")
+                .to_string_lossy()
+                .to_string(),
+            branch: "pnevma/failed".to_string(),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        };
+        let mut live_task = make_task(&project_id.to_string(), "Live task");
+        live_task.id = live_task_id.to_string();
+        live_task.scope_json = serde_json::to_string(&vec!["src/live.rs"]).unwrap();
+        live_task.status = "InProgress".to_string();
+        live_task.branch = Some(worktree_live.branch.clone());
+        live_task.worktree_id = Some(worktree_live.id.clone());
+        db.create_task(&live_task).await.unwrap();
+
+        let mut queued_task = make_task(&project_id.to_string(), "Queued task");
+        queued_task.id = queued_task_id.to_string();
+        queued_task.scope_json = serde_json::to_string(&vec!["src/queued.rs"]).unwrap();
+        queued_task.status = "Ready".to_string();
+        queued_task.branch = Some("pnevma/queued".to_string());
+        db.create_task(&queued_task).await.unwrap();
+
+        let mut retry_task = make_task(&project_id.to_string(), "Retry task");
+        retry_task.id = retry_task_id.to_string();
+        retry_task.status = "Failed".to_string();
+        retry_task.branch = Some("pnevma/retry".to_string());
+        db.create_task(&retry_task).await.unwrap();
+
+        let mut review_task = make_task(&project_id.to_string(), "Review task");
+        review_task.id = review_task_id.to_string();
+        review_task.scope_json = serde_json::to_string(&vec!["src/review.rs"]).unwrap();
+        review_task.status = "Review".to_string();
+        review_task.branch = Some(worktree_review.branch.clone());
+        review_task.worktree_id = Some(worktree_review.id.clone());
+        db.create_task(&review_task).await.unwrap();
+
+        let mut failed_task = make_task(&project_id.to_string(), "Failed task");
+        failed_task.id = failed_task_id.to_string();
+        failed_task.status = "Failed".to_string();
+        failed_task.branch = Some(worktree_failed.branch.clone());
+        failed_task.worktree_id = Some(worktree_failed.id.clone());
+        db.create_task(&failed_task).await.unwrap();
+
+        db.upsert_worktree(&worktree_live).await.unwrap();
+        db.upsert_worktree(&worktree_review).await.unwrap();
+        db.upsert_worktree(&worktree_failed).await.unwrap();
+
+        db.create_automation_run(&AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: live_task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "manual".to_string(),
+            provider: "claude-code".to_string(),
+            model: Some("sonnet".to_string()),
+            status: "running".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: None,
+            duration_seconds: None,
+            tokens_in: 11,
+            tokens_out: 22,
+            cost_usd: 1.25,
+            summary: None,
+            error_message: None,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+        let retry_run = AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: retry_task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "auto".to_string(),
+            provider: "codex".to_string(),
+            model: Some("gpt-5".to_string()),
+            status: "failed".to_string(),
+            attempt: 2,
+            started_at: now,
+            finished_at: Some(now),
+            duration_seconds: Some(12.0),
+            tokens_in: 33,
+            tokens_out: 44,
+            cost_usd: 2.5,
+            summary: Some("failed".to_string()),
+            error_message: Some("boom".to_string()),
+            created_at: now,
+        };
+        db.create_automation_run(&retry_run).await.unwrap();
+        db.create_automation_run(&AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: review_task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "auto".to_string(),
+            provider: "claude-code".to_string(),
+            model: Some("sonnet".to_string()),
+            status: "completed".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: Some(now),
+            duration_seconds: Some(5.0),
+            tokens_in: 55,
+            tokens_out: 66,
+            cost_usd: 3.0,
+            summary: Some("done".to_string()),
+            error_message: None,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+        db.create_automation_run(&AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: failed_task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "auto".to_string(),
+            provider: "codex".to_string(),
+            model: Some("gpt-5".to_string()),
+            status: "failed".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: Some(now),
+            duration_seconds: Some(7.0),
+            tokens_in: 77,
+            tokens_out: 88,
+            cost_usd: 4.0,
+            summary: Some("failed".to_string()),
+            error_message: Some("oops".to_string()),
+            created_at: now,
+        })
+        .await
+        .unwrap();
+
+        db.create_automation_retry(&AutomationRetryRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            run_id: retry_run.id.clone(),
+            task_id: retry_task.id.clone(),
+            attempt: 2,
+            reason: "transient".to_string(),
+            retry_after: now + chrono::Duration::minutes(5),
+            retried_at: None,
+            outcome: None,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+
+        db.upsert_review(&ReviewRow {
+            id: Uuid::new_v4().to_string(),
+            task_id: review_task.id.clone(),
+            status: "Ready".to_string(),
+            review_pack_path: project_root
+                .join("review-pack.json")
+                .to_string_lossy()
+                .to_string(),
+            reviewer_notes: None,
+            approved_at: None,
+        })
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let live_session_id = Uuid::new_v4();
+        sessions
+            .register_restored(SessionMetadata {
+                id: live_session_id,
+                project_id,
+                name: "agent-live".to_string(),
+                status: SessionStatus::Running,
+                health: SessionHealth::Active,
+                pid: Some(42),
+                cwd: worktree_live.path.clone(),
+                command: "claude-code".to_string(),
+                branch: Some(worktree_live.branch.clone()),
+                worktree_id: Some(Uuid::parse_str(&worktree_live.id).unwrap()),
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: project_root
+                    .join(".pnevma/data/scrollback/live.log")
+                    .to_string_lossy()
+                    .to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let state =
+            Arc::new(make_state_with_project(project_id, &project_root, db, sessions).await);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let coordinator = Arc::new(crate::automation::coordinator::AutomationCoordinator::new(
+            Arc::clone(&state),
+            Arc::new(crate::automation::workflow_store::WorkflowStore::new(
+                &project_root,
+            )),
+            shutdown_rx,
+        ));
+        assert!(
+            coordinator
+                .try_claim(queued_task_id, crate::automation::DispatchOrigin::Manual)
+                .await
+        );
+        state.current.lock().await.as_mut().unwrap().coordinator = Some(coordinator);
+
+        let snapshot = command_center_snapshot(state.as_ref())
+            .await
+            .expect("command center snapshot");
+
+        assert_eq!(snapshot.summary.active_count, 1);
+        assert_eq!(snapshot.summary.queued_count, 1);
+        assert_eq!(snapshot.summary.retrying_count, 1);
+        assert_eq!(snapshot.summary.review_needed_count, 1);
+        assert_eq!(snapshot.summary.failed_count, 1);
+
+        let by_title: HashMap<String, CommandCenterRunView> = snapshot
+            .runs
+            .into_iter()
+            .filter_map(|run| run.task_title.clone().map(|title| (title, run)))
+            .collect();
+
+        let live = by_title.get("Live task").expect("live row");
+        assert_eq!(live.state, "running");
+        assert_eq!(
+            live.primary_file_path.as_deref(),
+            Some("worktrees/live/src/live.rs")
+        );
+        assert!(live
+            .available_actions
+            .contains(&"open_terminal".to_string()));
+        assert!(live.available_actions.contains(&"kill_session".to_string()));
+        assert!(!live.available_actions.contains(&"open_review".to_string()));
+
+        let queued = by_title.get("Queued task").expect("queued row");
+        assert_eq!(queued.state, "queued");
+        assert_eq!(queued.primary_file_path.as_deref(), Some("src/queued.rs"));
+        assert!(queued.available_actions.contains(&"open_diff".to_string()));
+
+        let retrying = by_title.get("Retry task").expect("retry row");
+        assert_eq!(retrying.state, "retrying");
+        assert_eq!(retrying.attention_reason.as_deref(), Some("retrying"));
+
+        let review = by_title.get("Review task").expect("review row");
+        assert_eq!(review.state, "review_needed");
+        assert_eq!(
+            review.primary_file_path.as_deref(),
+            Some("worktrees/review/src/review.rs")
+        );
+        assert!(review
+            .available_actions
+            .contains(&"open_review".to_string()));
+
+        let failed = by_title.get("Failed task").expect("failed row");
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.attention_reason.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn command_center_snapshot_surfaces_unmatched_waiting_session_actions() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback")).unwrap();
+
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "command-center-session-test",
+            project_root.to_string_lossy().as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+        let waiting_session_id = Uuid::new_v4();
+        sessions
+            .register_restored(SessionMetadata {
+                id: waiting_session_id,
+                project_id,
+                name: "agent-waiting".to_string(),
+                status: SessionStatus::Waiting,
+                health: SessionHealth::Waiting,
+                pid: Some(77),
+                cwd: project_root.to_string_lossy().to_string(),
+                command: "codex".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: Utc::now(),
+                last_heartbeat: Utc::now(),
+                scrollback_path: project_root
+                    .join(".pnevma/data/scrollback/waiting.log")
+                    .to_string_lossy()
+                    .to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+        let snapshot = command_center_snapshot(&state)
+            .await
+            .expect("command center snapshot");
+
+        assert_eq!(snapshot.summary.slot_limit, 1);
+        assert_eq!(snapshot.runs.len(), 1);
+        let row = &snapshot.runs[0];
+        let waiting_session_id_str = waiting_session_id.to_string();
+        assert_eq!(
+            row.session_id.as_deref(),
+            Some(waiting_session_id_str.as_str())
+        );
+        assert_eq!(row.state, "running");
+        assert!(row
+            .available_actions
+            .contains(&"reattach_session".to_string()));
+        assert!(row.available_actions.contains(&"open_terminal".to_string()));
     }
 
     #[tokio::test]
@@ -7070,6 +8010,314 @@ enable_entropy_guard = false
         assert!(artifact_path.exists());
         assert_eq!(db.list_artifacts(&project_id).await.unwrap().len(), 1);
         assert!(data_root.exists());
+    }
+
+    #[tokio::test]
+    async fn command_center_snapshot_surfaces_attention_and_actions() {
+        let project_root = tempdir().expect("temp project");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "command-center-test",
+            &project_root.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect("upsert project");
+
+        let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+        let state = make_state_with_project(
+            project_id,
+            project_root.path(),
+            db.clone(),
+            sessions.clone(),
+        )
+        .await;
+
+        let running_task = make_command_center_task(
+            project_id,
+            "Running task",
+            "InProgress",
+            Some("feature/running"),
+            None,
+        );
+        let review_task = make_command_center_task(project_id, "Review task", "Review", None, None);
+        let failed_task = make_command_center_task(project_id, "Failed task", "Failed", None, None);
+        let retry_task =
+            make_command_center_task(project_id, "Retry task", "InProgress", None, None);
+
+        for task in [&running_task, &review_task, &failed_task, &retry_task] {
+            db.create_task(task).await.expect("create task");
+        }
+
+        let session_id = Uuid::new_v4();
+        let mut meta = make_session_metadata(
+            project_id,
+            session_id,
+            project_root.path(),
+            SessionStatus::Running,
+        );
+        meta.name = "Agent shell".to_string();
+        meta.branch = Some("feature/running".to_string());
+        meta.health = SessionHealth::Idle;
+        sessions.register_restored(meta.clone()).await;
+        db.upsert_session(&session_row_from_meta(&meta))
+            .await
+            .expect("persist session");
+
+        let failed_run = pnevma_db::AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: failed_task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "manual".to_string(),
+            provider: "claude-code".to_string(),
+            model: Some("sonnet".to_string()),
+            status: "failed".to_string(),
+            attempt: 2,
+            started_at: Utc::now() - chrono::Duration::minutes(8),
+            finished_at: Some(Utc::now() - chrono::Duration::minutes(2)),
+            duration_seconds: Some(360.0),
+            tokens_in: 120,
+            tokens_out: 240,
+            cost_usd: 1.25,
+            summary: Some("failed".to_string()),
+            error_message: Some("boom".to_string()),
+            created_at: Utc::now() - chrono::Duration::minutes(8),
+        };
+        db.create_automation_run(&failed_run)
+            .await
+            .expect("create failed run");
+
+        let retry_run = pnevma_db::AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: retry_task.id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "manual".to_string(),
+            provider: "codex".to_string(),
+            model: Some("gpt-5".to_string()),
+            status: "failed".to_string(),
+            attempt: 1,
+            started_at: Utc::now() - chrono::Duration::minutes(15),
+            finished_at: Some(Utc::now() - chrono::Duration::minutes(14)),
+            duration_seconds: Some(45.0),
+            tokens_in: 64,
+            tokens_out: 96,
+            cost_usd: 0.42,
+            summary: Some("retry me".to_string()),
+            error_message: Some("transient".to_string()),
+            created_at: Utc::now() - chrono::Duration::minutes(15),
+        };
+        db.create_automation_run(&retry_run)
+            .await
+            .expect("create retry run");
+
+        db.create_automation_retry(&pnevma_db::AutomationRetryRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            run_id: retry_run.id.clone(),
+            task_id: retry_task.id.clone(),
+            attempt: 2,
+            reason: "network".to_string(),
+            retry_after: Utc::now() + chrono::Duration::minutes(5),
+            retried_at: None,
+            outcome: None,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create retry");
+
+        let snapshot = command_center_snapshot(&state)
+            .await
+            .expect("snapshot should load");
+
+        assert_eq!(snapshot.project_name, "test-project");
+        assert_eq!(snapshot.summary.idle_count, 1);
+        assert_eq!(snapshot.summary.review_needed_count, 1);
+        assert_eq!(snapshot.summary.failed_count, 1);
+        assert_eq!(snapshot.summary.retrying_count, 1);
+
+        let idle_run = snapshot
+            .runs
+            .iter()
+            .find(|run| run.task_id.as_deref() == Some(running_task.id.as_str()))
+            .expect("idle run");
+        assert_eq!(idle_run.state, "idle");
+        assert_eq!(idle_run.attention_reason.as_deref(), Some("idle"));
+        assert_eq!(
+            idle_run.session_id.as_deref(),
+            Some(session_id.to_string().as_str())
+        );
+        assert!(idle_run
+            .available_actions
+            .iter()
+            .any(|action| action == "open_terminal"));
+        assert!(idle_run
+            .available_actions
+            .iter()
+            .any(|action| action == "open_replay"));
+        assert!(idle_run
+            .available_actions
+            .iter()
+            .any(|action| action == "kill_session"));
+
+        let review_run = snapshot
+            .runs
+            .iter()
+            .find(|run| run.task_id.as_deref() == Some(review_task.id.as_str()))
+            .expect("review run");
+        assert_eq!(review_run.state, "review_needed");
+        assert!(review_run
+            .available_actions
+            .iter()
+            .any(|action| action == "open_review"));
+
+        let retrying_run = snapshot
+            .runs
+            .iter()
+            .find(|run| run.task_id.as_deref() == Some(retry_task.id.as_str()))
+            .expect("retrying run");
+        assert_eq!(retrying_run.state, "retrying");
+        assert_eq!(retrying_run.retry_count, 2);
+        assert!(retrying_run.retry_after.is_some());
+
+        let failed = snapshot
+            .runs
+            .iter()
+            .find(|run| run.task_id.as_deref() == Some(failed_task.id.as_str()))
+            .expect("failed run");
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.provider.as_deref(), Some("claude-code"));
+        assert_eq!(failed.model.as_deref(), Some("sonnet"));
+    }
+
+    #[tokio::test]
+    async fn command_center_snapshot_includes_unmatched_live_sessions() {
+        let project_root = tempdir().expect("temp project");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "command-center-live-session",
+            &project_root.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect("upsert project");
+
+        let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+        let state =
+            make_state_with_project(project_id, project_root.path(), db, sessions.clone()).await;
+
+        let session_id = Uuid::new_v4();
+        let mut meta = make_session_metadata(
+            project_id,
+            session_id,
+            project_root.path(),
+            SessionStatus::Running,
+        );
+        meta.name = "Detached agent".to_string();
+        meta.health = SessionHealth::Stuck;
+        sessions.register_restored(meta).await;
+
+        let snapshot = command_center_snapshot(&state)
+            .await
+            .expect("snapshot should load");
+
+        assert_eq!(snapshot.summary.stuck_count, 1);
+        let run = snapshot
+            .runs
+            .iter()
+            .find(|run| run.session_id.as_deref() == Some(session_id.to_string().as_str()))
+            .expect("unmatched session should appear");
+        assert!(run.task_id.is_none());
+        assert_eq!(run.state, "stuck");
+        assert_eq!(run.attention_reason.as_deref(), Some("stuck"));
+        assert!(run
+            .available_actions
+            .iter()
+            .any(|action| action == "open_terminal"));
+        assert!(run
+            .available_actions
+            .iter()
+            .any(|action| action == "restart_session"));
+    }
+
+    #[tokio::test]
+    async fn fleet_snapshot_includes_open_and_cataloged_recent_projects() {
+        let home = tempdir().expect("temp home");
+        let _home = HomeOverride::new(home.path()).await;
+        let project_root = tempdir().expect("temp project");
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4();
+        db.upsert_project(
+            &project_id.to_string(),
+            "open-project",
+            &project_root.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect("upsert project");
+
+        let global_db = pnevma_db::GlobalDb::open().await.expect("open global db");
+        global_db
+            .add_recent_project("/tmp/cataloged-project", "cataloged-project", "cataloged-1")
+            .await
+            .expect("add recent project");
+
+        let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+        let state = make_state_with_project(project_id, project_root.path(), db, sessions).await;
+
+        let snapshot = fleet_snapshot(&state).await.expect("fleet snapshot");
+        let repeated = fleet_snapshot(&state)
+            .await
+            .expect("repeated fleet snapshot");
+
+        assert_eq!(snapshot.machine_id, repeated.machine_id);
+        assert!(!snapshot.machine_id.is_empty());
+        assert_eq!(snapshot.summary.project_count, 2);
+        assert_eq!(snapshot.summary.open_project_count, 1);
+
+        let open = snapshot
+            .projects
+            .iter()
+            .find(|project| project.state == "open")
+            .expect("open project entry");
+        assert_eq!(open.project_id, project_id.to_string());
+        assert!(open.snapshot.is_some());
+
+        let cataloged = snapshot
+            .projects
+            .iter()
+            .find(|project| project.state == "cataloged")
+            .expect("cataloged project entry");
+        assert_eq!(cataloged.project_id, "cataloged-1");
+        assert_eq!(cataloged.project_path, "/tmp/cataloged-project");
+        assert!(cataloged.snapshot.is_none());
+    }
+
+    #[tokio::test]
+    async fn fleet_snapshot_without_open_project_returns_catalog_projects() {
+        let home = tempdir().expect("temp home");
+        let _home = HomeOverride::new(home.path()).await;
+        let global_db = pnevma_db::GlobalDb::open().await.expect("open global db");
+        global_db
+            .add_recent_project("/tmp/closed-project", "closed-project", "closed-1")
+            .await
+            .expect("add recent project");
+
+        let state = AppState::new(Arc::new(NullEmitter));
+        let snapshot = fleet_snapshot(&state).await.expect("fleet snapshot");
+
+        assert_eq!(snapshot.summary.project_count, 1);
+        assert_eq!(snapshot.summary.open_project_count, 0);
+        assert_eq!(snapshot.projects[0].state, "cataloged");
+        assert_eq!(snapshot.projects[0].project_id, "closed-1");
     }
 
     fn run_git(project_root: &Path, args: &[&str]) {

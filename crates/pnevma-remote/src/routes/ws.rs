@@ -88,6 +88,7 @@ pub enum WsServerMessage {
 }
 
 const ALLOWED_EVENT_CHANNELS: &[&str] = &[
+    "fleet_updated",
     "project_opened",
     "task_updated",
     "notification_created",
@@ -241,6 +242,21 @@ fn is_allowed_channel(name: &str) -> bool {
 
 fn event_channels(event: &RemoteEventEnvelope) -> Vec<String> {
     let mut channels = vec![event.event.clone()];
+    if matches!(
+        event.event.as_str(),
+        "project_opened"
+            | "project_open_failed"
+            | "task_updated"
+            | "notification_created"
+            | "notification_cleared"
+            | "notification_updated"
+            | "cost_updated"
+            | "session_spawned"
+            | "session_heartbeat"
+            | "session_exited"
+    ) {
+        channels.push("fleet_updated".to_string());
+    }
     if event.event == "session_output" {
         if let Some(session_id) = event.payload.get("session_id").and_then(|v| v.as_str()) {
             channels.push(format!("session:{session_id}"));
@@ -673,6 +689,16 @@ mod tests {
         assert!(channels
             .iter()
             .any(|channel| channel.starts_with("session:")));
+    }
+
+    #[test]
+    fn fleet_relevant_events_are_fanned_out_to_fleet_updated() {
+        let channels = event_channels(&crate::RemoteEventEnvelope {
+            event: "session_heartbeat".to_string(),
+            payload: json!({}),
+        });
+        assert!(channels.contains(&"session_heartbeat".to_string()));
+        assert!(channels.contains(&"fleet_updated".to_string()));
     }
 
     #[derive(Clone)]

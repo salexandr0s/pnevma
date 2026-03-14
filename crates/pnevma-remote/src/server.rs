@@ -67,6 +67,8 @@ pub async fn build_router(
 
     // Protected API routes
     let api_router = Router::new()
+        .route("/api/fleet/snapshot", get(api::fleet_snapshot))
+        .route("/api/fleet/action", post(api::fleet_action))
         .route("/api/project/status", get(api::project_status))
         .route("/api/project/daily-brief", get(api::project_daily_brief))
         .route("/api/project/automation", get(api::project_automation))
