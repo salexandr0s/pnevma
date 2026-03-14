@@ -101,7 +101,7 @@ class TerminalConfig {
             var value: Double = 0
             guard ghostty_config_get(config, &value, key, UInt(key.count)) else { return nil }
             return String(value)
-        case "Color", "?Color":
+        case "Color", "?Color", "TerminalColor", "?TerminalColor":
             var value = ghostty_config_color_s()
             guard ghostty_config_get(config, &value, key, UInt(key.count)) else { return nil }
             return String(format: "#%02X%02X%02X", value.r, value.g, value.b)
