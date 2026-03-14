@@ -128,6 +128,9 @@ impl AutomationCoordinator {
         // Wait a moment for the app to fully initialize.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
+        // Recover zombie automation runs and orphaned tasks from prior crashes.
+        self.recover_zombie_runs().await;
+
         // Restore any pending retries from DB (survive restarts).
         self.restore_retries_from_db().await;
 
@@ -324,6 +327,13 @@ impl AutomationCoordinator {
 
     /// Release a claim on a task.
     pub async fn release_claim(&self, task_id: Uuid) {
+        self.claims.write().await.remove(&task_id);
+    }
+
+    /// Remove all in-memory tracking for a run that has already been finalized
+    /// elsewhere (for example, manual dispatch payload send failure).
+    pub async fn abandon_run(&self, task_id: Uuid) {
+        self.running.write().await.remove(&task_id);
         self.claims.write().await.remove(&task_id);
     }
 
@@ -667,6 +677,192 @@ impl AutomationCoordinator {
         }
     }
 
+    /// Recover from crashes: mark zombie automation_runs as failed and reset
+    /// orphaned InProgress tasks that have no active run.
+    async fn recover_zombie_runs(&self) {
+        let pair = {
+            let current = self.state.current.lock().await;
+            current.as_ref().map(|ctx| {
+                (
+                    ctx.db.clone(),
+                    ctx.project_id,
+                    ctx.git.clone(),
+                    ctx.project_path.clone(),
+                )
+            })
+        };
+        let (db, project_id, git, project_path) = match pair {
+            Some(pair) => pair,
+            None => return,
+        };
+
+        let project_id_str = project_id.to_string();
+
+        // 1. Mark all stuck automation_runs as failed
+        match db.mark_stale_automation_runs(&project_id_str).await {
+            Ok(count) if count > 0 => {
+                warn!(
+                    count = count,
+                    "recovered zombie automation runs from prior crash"
+                );
+            }
+            Err(e) => {
+                error!(error = %e, "failed to recover zombie automation runs");
+            }
+            _ => {}
+        }
+
+        // 2. Reconcile tasks that still have a live/restorable session and
+        // defer failing them during startup recovery.
+        let recoverable_task_ids =
+            match db.list_recoverable_in_progress_tasks(&project_id_str).await {
+                Ok(rows) => {
+                    let recoverable = rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        let task_id = Uuid::parse_str(&row.id).ok()?;
+                        warn!(
+                            task_id = %row.id,
+                            title = %row.title,
+                            "deferring startup recovery for InProgress task with live agent session"
+                        );
+                        Some((task_id, row.id))
+                    })
+                    .collect::<Vec<_>>();
+                    for (task_id, task_id_str) in &recoverable {
+                        commands::append_event(
+                            &db,
+                            project_id,
+                            Some(*task_id),
+                            None,
+                            "coordinator",
+                            "TaskRecoveryDeferred",
+                            serde_json::json!({
+                                "reason": "live agent session detected during startup recovery",
+                                "source": "startup_recovery",
+                                "task_id": task_id_str
+                            }),
+                        )
+                        .await;
+                    }
+                    recoverable
+                        .into_iter()
+                        .map(|(task_id, _)| task_id)
+                        .collect::<std::collections::HashSet<_>>()
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to list recoverable InProgress tasks");
+                    std::collections::HashSet::new()
+                }
+            };
+
+        // 3. Find tasks stuck InProgress with no live run/session and mark Failed.
+        match db.list_orphaned_in_progress_tasks(&project_id_str).await {
+            Ok(rows) if !rows.is_empty() => {
+                for mut row in rows {
+                    let Ok(task_id) = Uuid::parse_str(&row.id) else {
+                        continue;
+                    };
+                    if recoverable_task_ids.contains(&task_id) {
+                        continue;
+                    }
+                    warn!(task_id = %row.id, title = %row.title, "recovering orphaned InProgress task");
+                    row.status = "Failed".to_string();
+                    row.updated_at = Utc::now();
+                    if row.handoff_summary.is_none() {
+                        row.handoff_summary =
+                            Some("recovered: process terminated while task was in progress".into());
+                    }
+                    match db.update_task_conditional(&row, "InProgress").await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            warn!(
+                                task_id = %row.id,
+                                "skipping startup recovery task failure because status changed concurrently"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(
+                                task_id = %row.id,
+                                error = %e,
+                                "failed to reset orphaned task"
+                            );
+                            continue;
+                        }
+                    }
+                    commands::append_event(
+                        &db,
+                        project_id,
+                        Some(task_id),
+                        None,
+                        "coordinator",
+                        "TaskFailed",
+                        serde_json::json!({
+                            "reason": "orphaned InProgress task recovered on startup",
+                            "source": "startup_recovery"
+                        }),
+                    )
+                    .await;
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to list orphaned InProgress tasks");
+            }
+            _ => {}
+        }
+
+        // 4. Clean up lingering worktrees for terminal tasks.
+        match db.list_tasks(&project_id_str).await {
+            Ok(rows) => {
+                for row in rows {
+                    let status = commands::parse_status(&row.status);
+                    if !commands::is_terminal_task_status(&status) {
+                        continue;
+                    }
+                    let Ok(task_id) = Uuid::parse_str(&row.id) else {
+                        continue;
+                    };
+                    let has_worktree = row.worktree_id.is_some()
+                        || db
+                            .find_worktree_by_task(&row.id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some();
+                    if !has_worktree {
+                        continue;
+                    }
+
+                    warn!(
+                        task_id = %row.id,
+                        status = %row.status,
+                        "recovering lingering worktree for terminal task"
+                    );
+                    if let Err(e) = commands::cleanup_task_worktree(
+                        &db,
+                        &git,
+                        project_id,
+                        task_id,
+                        Some(&self.state.emitter),
+                        Some(project_path.as_path()),
+                    )
+                    .await
+                    {
+                        error!(
+                            task_id = %row.id,
+                            error = %e,
+                            "failed to cleanup lingering terminal worktree during startup recovery"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to list tasks during startup recovery");
+            }
+        }
+    }
+
     /// Release claims stuck in Preparing for too long (>5 min).
     /// Also runs the reconciler on Running tasks to detect orphaned sessions/worktrees.
     async fn reconcile_stale(&self) {
@@ -694,9 +890,15 @@ impl AutomationCoordinator {
         };
 
         for task_id in stale_ids {
-            warn!(task_id = %task_id, "releasing stale claim");
+            warn!(task_id = %task_id, "releasing stale claim and marking task failed");
             self.running.write().await.remove(&task_id);
             self.claims.write().await.remove(&task_id);
+            self.mark_task_failed(
+                task_id,
+                "stale claim released after timeout (>5 min in Preparing)",
+            )
+            .await;
+            self.stats.write().await.total_failed += 1;
         }
 
         // 2. Reconcile running tasks via the reconciler module
@@ -1062,7 +1264,7 @@ mod tests {
         RedactionSection, RetentionSection,
     };
     use pnevma_core::{GlobalConfig, ProjectConfig, RemoteSection, TrackerSection};
-    use pnevma_db::{Db, SessionRow, TaskRow, WorktreeRow};
+    use pnevma_db::{AutomationRunRow, Db, EventQueryFilter, SessionRow, TaskRow, WorktreeRow};
     use pnevma_git::GitService;
     use pnevma_session::SessionSupervisor;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -1070,6 +1272,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     struct NoopAdapter;
+    struct SendFailAdapter;
 
     #[async_trait]
     impl AgentAdapter for NoopAdapter {
@@ -1085,6 +1288,49 @@ mod tests {
 
         async fn send(&self, _handle: &AgentHandle, _input: TaskPayload) -> Result<(), AgentError> {
             Ok(())
+        }
+
+        async fn interrupt(&self, _handle: &AgentHandle) -> Result<(), AgentError> {
+            Ok(())
+        }
+
+        async fn stop(&self, _handle: &AgentHandle) -> Result<(), AgentError> {
+            Ok(())
+        }
+
+        fn events(&self, _handle: &AgentHandle) -> tokio::sync::broadcast::Receiver<AgentEvent> {
+            let (_tx, rx) = tokio::sync::broadcast::channel(1);
+            rx
+        }
+
+        async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
+            Ok(CostRecord {
+                provider: "noop".to_string(),
+                model: None,
+                tokens_in: 0,
+                tokens_out: 0,
+                estimated_cost_usd: 0.0,
+                timestamp: Utc::now(),
+                task_id: handle.task_id,
+                session_id: handle.id,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl AgentAdapter for SendFailAdapter {
+        async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
+            Ok(AgentHandle {
+                id: Uuid::new_v4(),
+                provider: config.provider,
+                task_id: Uuid::new_v4(),
+                thread_id: None,
+                turn_id: None,
+            })
+        }
+
+        async fn send(&self, _handle: &AgentHandle, _input: TaskPayload) -> Result<(), AgentError> {
+            Err(AgentError::Spawn("simulated send failure".to_string()))
         }
 
         async fn interrupt(&self, _handle: &AgentHandle) -> Result<(), AgentError> {
@@ -1310,6 +1556,162 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_dispatch_is_rejected_when_task_is_already_claimed() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = Arc::new(AutomationCoordinator::new(state.clone(), ws, shutdown_rx));
+        let task_id = Uuid::new_v4();
+        let now = Utc::now();
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "claimed task".to_string(),
+            goal: "must reject duplicate manual dispatch".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "Ready".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("task");
+
+        {
+            let mut current = state.current.lock().await;
+            current.as_mut().expect("project context").coordinator = Some(coord.clone());
+        }
+
+        assert!(coord.try_claim(task_id, DispatchOrigin::AutoDispatch).await);
+
+        let err = crate::commands::dispatch_task(task_id.to_string(), &state.emitter, &state)
+            .await
+            .expect_err("manual dispatch should fail when task is already claimed");
+        assert_eq!(err, "task is already claimed for dispatch");
+    }
+
+    #[tokio::test]
+    async fn manual_send_failure_cleans_up_claim_and_running_entry() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = Arc::new(AutomationCoordinator::new(state.clone(), ws, shutdown_rx));
+        let task_id = Uuid::new_v4();
+        let now = Utc::now();
+        let project_root = {
+            let current = state.current.lock().await;
+            current
+                .as_ref()
+                .expect("project context")
+                .project_path
+                .clone()
+        };
+
+        std::fs::write(project_root.join("README.md"), "# test\n").expect("seed project");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&project_root)
+            .output()
+            .expect("init git repo");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Pnevma Tests"])
+            .current_dir(&project_root)
+            .output()
+            .expect("configure git user");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "tests@pnevma.local"])
+            .current_dir(&project_root)
+            .output()
+            .expect("configure git email");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&project_root)
+            .output()
+            .expect("stage readme");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&project_root)
+            .output()
+            .expect("commit readme");
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "send fails".to_string(),
+            goal: "cleanup tracked manual run".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "Ready".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("task");
+
+        {
+            let mut current = state.current.lock().await;
+            let ctx = current.as_mut().expect("project context");
+            ctx.coordinator = Some(coord.clone());
+            ctx.adapters
+                .register("claude-code", Arc::new(SendFailAdapter));
+        }
+
+        let err = crate::commands::dispatch_task(task_id.to_string(), &state.emitter, &state)
+            .await
+            .expect_err("manual dispatch should fail when send fails");
+        assert!(
+            err.contains("simulated send failure"),
+            "unexpected dispatch error: {err}"
+        );
+        assert!(
+            !coord.claims.read().await.contains_key(&task_id),
+            "send failure should release the claim"
+        );
+        assert!(
+            !coord.running.read().await.contains_key(&task_id),
+            "send failure should remove the tracked manual run"
+        );
+
+        let task = db
+            .get_task(&task_id.to_string())
+            .await
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(task.status, "Failed");
+        assert_eq!(
+            task.handoff_summary.as_deref(),
+            Some("spawn failed: simulated send failure")
+        );
+    }
+
+    #[tokio::test]
     async fn snapshot_reflects_state() {
         let (_, shutdown_rx) = tokio::sync::watch::channel(false);
         let state = Arc::new(AppState::default());
@@ -1415,6 +1817,434 @@ mod tests {
 
         // Claim should be released
         assert!(!coord.claims.read().await.contains_key(&task_id));
+    }
+
+    #[tokio::test]
+    async fn reconcile_stale_marks_preparing_task_failed() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = AutomationCoordinator::new(state, ws, shutdown_rx);
+        let task_id = Uuid::new_v4();
+        let now = Utc::now();
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "stale preparing task".to_string(),
+            goal: "should fail on stale reconcile".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("task");
+
+        {
+            let mut claims = coord.claims.write().await;
+            claims.insert(
+                task_id,
+                TaskClaim {
+                    task_id,
+                    origin: DispatchOrigin::AutoDispatch,
+                    claimed_at: Utc::now() - chrono::Duration::minutes(10),
+                    run_id: Uuid::new_v4(),
+                },
+            );
+        }
+        coord.running.write().await.insert(
+            task_id,
+            TrackedRun {
+                run_id: Uuid::new_v4(),
+                task_id,
+                origin: DispatchOrigin::AutoDispatch,
+                state: RunState::Preparing,
+                event_task: None,
+                db_run_id: None,
+                handle: None,
+                adapter: None,
+            },
+        );
+
+        coord.reconcile_stale().await;
+
+        let task = db
+            .get_task(&task_id.to_string())
+            .await
+            .expect("lookup")
+            .expect("task exists");
+        assert_eq!(task.status, "Failed");
+        assert!(
+            !coord.claims.read().await.contains_key(&task_id),
+            "stale claim should be removed"
+        );
+        assert!(
+            !coord.running.read().await.contains_key(&task_id),
+            "stale running entry should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_zombie_runs_marks_runs_failed_and_orphaned_tasks_failed() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = AutomationCoordinator::new(state, ws, shutdown_rx);
+        let task_id = Uuid::new_v4();
+        let done_task_id = Uuid::new_v4();
+        let now = Utc::now();
+        let project_root = {
+            let current = coord.state.current.lock().await;
+            current
+                .as_ref()
+                .expect("project context")
+                .project_path
+                .clone()
+        };
+
+        std::fs::write(project_root.join("README.md"), "# test\n").expect("seed project");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&project_root)
+            .output()
+            .expect("init git repo");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Pnevma Tests"])
+            .current_dir(&project_root)
+            .output()
+            .expect("configure git user");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "tests@pnevma.local"])
+            .current_dir(&project_root)
+            .output()
+            .expect("configure git email");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&project_root)
+            .output()
+            .expect("stage readme");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&project_root)
+            .output()
+            .expect("commit readme");
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "orphaned task".to_string(),
+            goal: "should be recovered".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("task");
+
+        let run_id = Uuid::new_v4().to_string();
+        let automation_run = AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: task_id.to_string(),
+            run_id,
+            origin: "manual".to_string(),
+            provider: "claude-code".to_string(),
+            model: None,
+            status: "running".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: None,
+            duration_seconds: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            summary: None,
+            error_message: None,
+            created_at: now,
+        };
+        db.create_automation_run(&automation_run)
+            .await
+            .expect("automation run");
+
+        let lingering_worktree_path = project_root
+            .join(".pnevma/worktrees")
+            .join(done_task_id.to_string());
+        std::fs::create_dir_all(&lingering_worktree_path).expect("lingering worktree dir");
+        db.create_task(&TaskRow {
+            id: done_task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "done task".to_string(),
+            goal: "should lose stale worktree on startup".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "Done".to_string(),
+            branch: Some(format!("pnevma/{done_task_id}/done-task")),
+            worktree_id: Some(done_task_id.to_string()),
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("done task");
+        db.upsert_worktree(&WorktreeRow {
+            id: done_task_id.to_string(),
+            project_id: project_id.to_string(),
+            task_id: done_task_id.to_string(),
+            path: lingering_worktree_path.to_string_lossy().to_string(),
+            branch: format!("pnevma/{done_task_id}/done-task"),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        })
+        .await
+        .expect("lingering worktree");
+
+        coord.recover_zombie_runs().await;
+
+        let recovered_run = db
+            .get_automation_run(&automation_run.id)
+            .await
+            .expect("get automation run")
+            .expect("run exists");
+        assert_eq!(recovered_run.status, "failed");
+        assert!(recovered_run.finished_at.is_some());
+        assert_eq!(
+            recovered_run.error_message.as_deref(),
+            Some("recovered: process terminated while running")
+        );
+
+        let recovered_task = db
+            .get_task(&task_id.to_string())
+            .await
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(recovered_task.status, "Failed");
+        assert_eq!(
+            recovered_task.handoff_summary.as_deref(),
+            Some("recovered: process terminated while task was in progress")
+        );
+
+        let events = db
+            .query_events(EventQueryFilter {
+                project_id: project_id.to_string(),
+                task_id: Some(task_id.to_string()),
+                event_type: Some("TaskFailed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("query events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.payload_json.contains("startup_recovery")),
+            "startup recovery should emit a TaskFailed event"
+        );
+
+        assert!(db
+            .find_worktree_by_task(&done_task_id.to_string())
+            .await
+            .expect("worktree lookup")
+            .is_none());
+        let recovered_done_task = db
+            .get_task(&done_task_id.to_string())
+            .await
+            .expect("get done task")
+            .expect("done task exists");
+        assert!(recovered_done_task.branch.is_none());
+        assert!(recovered_done_task.worktree_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn recover_zombie_runs_keeps_task_in_progress_when_live_agent_session_exists() {
+        let (state, db, project_id, _tempdir) = make_state_with_project().await;
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws = Arc::new(WorkflowStore::new(std::path::Path::new("/tmp/nonexistent")));
+        let coord = AutomationCoordinator::new(state, ws, shutdown_rx);
+        let task_id = Uuid::new_v4();
+        let worktree_id = Uuid::new_v4();
+        let now = Utc::now();
+        let project_root = {
+            let current = coord.state.current.lock().await;
+            current
+                .as_ref()
+                .expect("project context")
+                .project_path
+                .clone()
+        };
+        let branch = format!("pnevma/{task_id}/live-session");
+        let worktree_path = project_root
+            .join(".pnevma/worktrees")
+            .join(task_id.to_string());
+        std::fs::create_dir_all(&worktree_path).expect("worktree dir");
+
+        db.create_task(&TaskRow {
+            id: task_id.to_string(),
+            project_id: project_id.to_string(),
+            title: "recoverable task".to_string(),
+            goal: "should remain in progress".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: Some(branch.clone()),
+            worktree_id: Some(worktree_id.to_string()),
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        })
+        .await
+        .expect("task");
+
+        db.upsert_worktree(&WorktreeRow {
+            id: worktree_id.to_string(),
+            project_id: project_id.to_string(),
+            task_id: task_id.to_string(),
+            path: worktree_path.to_string_lossy().to_string(),
+            branch: branch.clone(),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        })
+        .await
+        .expect("worktree");
+
+        let automation_run = AutomationRunRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            task_id: task_id.to_string(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "manual".to_string(),
+            provider: "claude-code".to_string(),
+            model: None,
+            status: "running".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: None,
+            duration_seconds: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            summary: None,
+            error_message: None,
+            created_at: now,
+        };
+        db.create_automation_run(&automation_run)
+            .await
+            .expect("automation run");
+
+        db.upsert_session(&SessionRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            name: "agent-live".to_string(),
+            r#type: Some("agent".to_string()),
+            status: "running".to_string(),
+            pid: None,
+            cwd: worktree_path.to_string_lossy().to_string(),
+            command: "claude-code".to_string(),
+            branch: Some(branch),
+            worktree_id: Some(worktree_id.to_string()),
+            started_at: now,
+            last_heartbeat: now,
+        })
+        .await
+        .expect("session");
+
+        coord.recover_zombie_runs().await;
+
+        let recovered_run = db
+            .get_automation_run(&automation_run.id)
+            .await
+            .expect("get automation run")
+            .expect("run exists");
+        assert_eq!(recovered_run.status, "failed");
+
+        let recovered_task = db
+            .get_task(&task_id.to_string())
+            .await
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(recovered_task.status, "InProgress");
+        assert!(recovered_task.handoff_summary.is_none());
+
+        let failed_events = db
+            .query_events(EventQueryFilter {
+                project_id: project_id.to_string(),
+                task_id: Some(task_id.to_string()),
+                event_type: Some("TaskFailed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("query task failed events");
+        assert!(
+            failed_events.is_empty(),
+            "recoverable startup tasks should not emit TaskFailed"
+        );
+
+        let deferred_events = db
+            .query_events(EventQueryFilter {
+                project_id: project_id.to_string(),
+                task_id: Some(task_id.to_string()),
+                event_type: Some("TaskRecoveryDeferred".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("query deferred events");
+        assert_eq!(deferred_events.len(), 1);
+        assert!(
+            deferred_events[0]
+                .payload_json
+                .contains("live agent session detected"),
+            "startup recovery should record why failure was deferred"
+        );
     }
 
     #[tokio::test]

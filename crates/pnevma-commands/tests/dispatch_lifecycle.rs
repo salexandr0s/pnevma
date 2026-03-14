@@ -538,3 +538,133 @@ async fn launch_failure_marks_task_failed_and_releases_permit() {
         .expect("agent session exists");
     assert_eq!(agent_session.status, "failed");
 }
+
+#[tokio::test]
+async fn completed_task_unblocks_blocked_dependent_task() {
+    let release_completion = Arc::new(Notify::new());
+    let harness = TestHarness::new(Arc::new(StreamingFakeAdapter::new(Arc::clone(
+        &release_completion,
+    ))))
+    .await;
+
+    let mut main_task = harness
+        .db
+        .get_task(&harness.task_id)
+        .await
+        .expect("main task lookup")
+        .expect("main task exists");
+    main_task.loop_context_json = Some("{\"mode\":\"until_complete\"}".to_string());
+    main_task.updated_at = Utc::now();
+    harness
+        .db
+        .update_task(&main_task)
+        .await
+        .expect("update main task");
+
+    let dependent_id = Uuid::new_v4().to_string();
+    let dependent = TaskRow {
+        id: dependent_id.clone(),
+        project_id: harness.project_id.clone(),
+        title: "Dependent task".to_string(),
+        goal: "Should unblock after main task completes".to_string(),
+        scope_json: "[]".to_string(),
+        dependencies_json: serde_json::to_string(&vec![harness.task_id.clone()])
+            .expect("dependency json"),
+        acceptance_json: "[]".to_string(),
+        constraints_json: "[]".to_string(),
+        priority: "P2".to_string(),
+        status: "Blocked".to_string(),
+        branch: None,
+        worktree_id: None,
+        handoff_summary: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        auto_dispatch: false,
+        agent_profile_override: None,
+        execution_mode: Some("worktree".to_string()),
+        timeout_minutes: None,
+        max_retries: None,
+        loop_iteration: 0,
+        loop_context_json: None,
+    };
+    harness
+        .db
+        .create_task(&dependent)
+        .await
+        .expect("create dependent");
+    harness
+        .db
+        .replace_task_dependencies(&dependent_id, std::slice::from_ref(&harness.task_id))
+        .await
+        .expect("replace dependencies");
+
+    let status = dispatch_task(
+        harness.task_id.clone(),
+        &harness.state.emitter,
+        &harness.state,
+    )
+    .await
+    .expect("dispatch succeeded");
+    assert_eq!(status, "started");
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        harness.emitter.wait_for_event("session_output"),
+    )
+    .await
+    .expect("session output should be emitted before completion");
+
+    release_completion.notify_waiters();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let dependent = harness
+                .db
+                .get_task(&dependent_id)
+                .await
+                .expect("dependent lookup")
+                .expect("dependent task exists");
+            let main = harness
+                .db
+                .get_task(&harness.task_id)
+                .await
+                .expect("main lookup")
+                .expect("main task exists");
+            if main.status == "Done" && dependent.status == "Ready" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+
+    if result.is_err() {
+        let dependent = harness
+            .db
+            .get_task(&dependent_id)
+            .await
+            .expect("dependent lookup")
+            .expect("dependent task exists");
+        let main = harness
+            .db
+            .get_task(&harness.task_id)
+            .await
+            .expect("main lookup")
+            .expect("main task exists");
+        let run = harness
+            .db
+            .list_automation_runs(&harness.project_id, 10)
+            .await
+            .expect("list automation runs")
+            .into_iter()
+            .find(|run| run.origin == "manual");
+        panic!(
+            "dependent task should unblock after main task reaches Done; main_status={} dependent_status={} run_status={:?} run_summary={:?} dependent_handoff={:?}",
+            main.status,
+            dependent.status,
+            run.as_ref().map(|r| r.status.as_str()),
+            run.as_ref().and_then(|r| r.summary.as_deref()),
+            dependent.handoff_summary
+        );
+    }
+}

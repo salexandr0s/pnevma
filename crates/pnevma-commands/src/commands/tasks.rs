@@ -741,7 +741,7 @@ pub async fn merge_queue_execute(
         project_id,
         task_uuid,
         Some(emitter),
-        state,
+        Some(state),
     )
     .await?;
     check_workflow_completion(&db, &task_id, Some(emitter)).await;
@@ -1331,7 +1331,26 @@ pub async fn update_task(
     task.updated_at = Utc::now();
 
     let row = task_contract_to_row(&task, &project_id.to_string())?;
-    db.update_task(&row).await.map_err(|e| e.to_string())?;
+    if existing.status != row.status {
+        let updated = db
+            .update_task_conditional(&row, &existing.status)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !updated {
+            let current_status = db
+                .get_task(&row.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|current| current.status)
+                .unwrap_or_else(|| "<missing>".to_string());
+            return Err(format!(
+                "task status changed concurrently (expected {}, found {})",
+                existing.status, current_status
+            ));
+        }
+    } else {
+        db.update_task(&row).await.map_err(|e| e.to_string())?;
+    }
     db.replace_task_dependencies(
         &row.id,
         &task
@@ -1428,44 +1447,84 @@ pub async fn dispatch_task(
     use crate::automation::runner;
     use crate::automation::DispatchOrigin;
 
+    let task_uuid = Uuid::parse_str(&task_id).map_err(|e| e.to_string())?;
+    let coordinator = {
+        let current = state.current.lock().await;
+        current.as_ref().and_then(|ctx| ctx.coordinator.clone())
+    };
+
+    // Claim the task BEFORE prepare to prevent double-dispatch race (H3).
+    // If a coordinator or another manual dispatch already claimed it, bail early.
+    let claimed = if let Some(ref coordinator) = coordinator {
+        coordinator
+            .try_claim(task_uuid, DispatchOrigin::Manual)
+            .await
+    } else {
+        true // no coordinator — proceed without claim guard
+    };
+    if !claimed {
+        return Err("task is already claimed for dispatch".to_string());
+    }
+
     let prepared =
         match runner::prepare(task_id.clone(), emitter, state, DispatchOrigin::Manual).await {
             Ok(p) => p,
-            Err(runner::RunnerError::Queued(pos)) => return Ok(format!("queued:{pos}")),
-            Err(e) => return Err(e.to_string()),
+            Err(runner::RunnerError::Queued(pos)) => {
+                if let Some(ref coordinator) = coordinator {
+                    coordinator.release_claim(task_uuid).await;
+                }
+                return Ok(format!("queued:{pos}"));
+            }
+            Err(e) => {
+                if let Some(ref coordinator) = coordinator {
+                    coordinator.release_claim(task_uuid).await;
+                }
+                return Err(e.to_string());
+            }
         };
 
     let manual_run_id = Uuid::new_v4();
-    let _db_run_id = runner::create_automation_run_record(&prepared, manual_run_id, 1)
-        .await
-        .map_err(|e| e.to_string())?;
+    let _db_run_id = match runner::create_automation_run_record(&prepared, manual_run_id, 1).await {
+        Ok(id) => id,
+        Err(e) => {
+            if let Some(ref coordinator) = coordinator {
+                coordinator.release_claim(task_uuid).await;
+            }
+            return Err(e.to_string());
+        }
+    };
     let running = match runner::start(&prepared).await {
         Ok(running) => running,
         Err(e) => {
             let error = e.to_string();
             runner::handle_start_failure(&prepared, &error).await;
+            if let Some(ref coordinator) = coordinator {
+                coordinator.release_claim(task_uuid).await;
+            }
             return Err(error);
         }
     };
 
-    // Register manual dispatch with coordinator if available
+    // Upgrade claim to a full tracked run in the coordinator
     {
-        let current = state.current.lock().await;
-        if let Some(ctx) = current.as_ref() {
-            if let Some(ref coordinator) = ctx.coordinator {
-                coordinator
-                    .register_manual_run(
-                        Uuid::parse_str(&task_id).unwrap_or_default(),
-                        running.session_id,
-                        running.handle.clone(),
-                        prepared.adapter.clone(),
-                    )
-                    .await;
-            }
+        if let Some(ref coordinator) = coordinator {
+            coordinator
+                .register_manual_run(
+                    task_uuid,
+                    running.session_id,
+                    running.handle.clone(),
+                    prepared.adapter.clone(),
+                )
+                .await;
         }
     }
 
-    runner::send_payload(&prepared, &running).await?;
+    if let Err(error) = runner::send_payload(&prepared, &running).await {
+        if let Some(ref coordinator) = coordinator {
+            coordinator.abandon_run(task_uuid).await;
+        }
+        return Err(error);
+    }
 
     Ok("started".to_string())
 }

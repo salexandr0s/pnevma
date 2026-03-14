@@ -7,9 +7,10 @@ use crate::commands::{
     is_terminal_task_status, load_active_scope_texts, load_recent_knowledge_summaries, load_texts,
     load_workflow_hooks, normalize_redaction_secrets, notify_task_status_transition, osc_level,
     osc_title, parse_osc_attention, parse_status, prepare_task_branch_for_review,
-    redact_json_value, redact_text, resolve_secret_env, run_acceptance_checks_for_task,
-    session_row_to_event_payload, slugify_with_fallback, status_to_str, task_contract_to_row,
-    task_row_to_contract, StreamRedactor,
+    redact_json_value, redact_text, refresh_dependency_states_after_completion_without_dispatch,
+    resolve_secret_env, run_acceptance_checks_for_task, session_row_to_event_payload,
+    slugify_with_fallback, status_to_str, task_contract_to_row, task_row_to_contract,
+    StreamRedactor,
 };
 use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
 // Helpers in commands/tasks.rs (pub(crate))
@@ -1614,6 +1615,18 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                 tracing::warn!(task_id = %row.id, error = %e, "check_loop_trigger failed");
                 false
             });
+            if !loop_triggered && next_status == TaskStatus::Done {
+                if let Err(e) = refresh_dependency_states_after_completion_without_dispatch(
+                    &db,
+                    project_id,
+                    task_id,
+                    Some(&emitter),
+                )
+                .await
+                {
+                    tracing::warn!(task_id = %row.id, error = %e, "failed to refresh dependency states after completion");
+                }
+            }
             if !loop_triggered {
                 check_workflow_completion(&db, &row.id, Some(&emitter)).await;
             }

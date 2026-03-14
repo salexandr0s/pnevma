@@ -2683,6 +2683,154 @@ impl Db {
         .await?;
         Ok(rows)
     }
+
+    /// Mark all automation runs stuck in 'running' as 'failed' for a project.
+    /// Used at startup to recover from crashes that left zombie run rows.
+    /// Returns the number of rows updated.
+    pub async fn mark_stale_automation_runs(&self, project_id: &str) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE automation_runs
+            SET status = 'failed',
+                finished_at = datetime('now'),
+                error_message = 'recovered: process terminated while running'
+            WHERE project_id = ?1 AND status = 'running'
+            "#,
+        )
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Conditionally update a task row only if the current status matches the
+    /// expected value (optimistic locking). Returns true if the update was
+    /// applied, false if the status has already changed.
+    pub async fn update_task_conditional(
+        &self,
+        task: &TaskRow,
+        expected_status: &str,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE tasks
+            SET title = ?2,
+                goal = ?3,
+                scope_json = ?4,
+                dependencies_json = ?5,
+                acceptance_json = ?6,
+                constraints_json = ?7,
+                priority = ?8,
+                status = ?9,
+                branch = ?10,
+                worktree_id = ?11,
+                handoff_summary = ?12,
+                updated_at = ?13,
+                auto_dispatch = ?14,
+                agent_profile_override = ?15,
+                execution_mode = ?16,
+                timeout_minutes = ?17,
+                max_retries = ?18,
+                loop_iteration = ?19,
+                loop_context_json = ?20
+            WHERE id = ?1 AND status = ?21
+            "#,
+        )
+        .bind(&task.id)
+        .bind(&task.title)
+        .bind(&task.goal)
+        .bind(&task.scope_json)
+        .bind(&task.dependencies_json)
+        .bind(&task.acceptance_json)
+        .bind(&task.constraints_json)
+        .bind(&task.priority)
+        .bind(&task.status)
+        .bind(&task.branch)
+        .bind(&task.worktree_id)
+        .bind(&task.handoff_summary)
+        .bind(task.updated_at)
+        .bind(task.auto_dispatch)
+        .bind(&task.agent_profile_override)
+        .bind(&task.execution_mode)
+        .bind(task.timeout_minutes)
+        .bind(task.max_retries)
+        .bind(task.loop_iteration)
+        .bind(&task.loop_context_json)
+        .bind(expected_status)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Find InProgress tasks that still appear recoverable because a live agent
+    /// session is attached via worktree, branch, or worktree cwd.
+    pub async fn list_recoverable_in_progress_tasks(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<TaskRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskRow>(
+            r#"
+            SELECT t.id, t.project_id, t.title, t.goal, t.scope_json, t.dependencies_json,
+                   t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
+                   t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
+                   t.auto_dispatch, t.agent_profile_override, t.execution_mode,
+                   t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json
+            FROM tasks t
+            WHERE t.project_id = ?1
+              AND t.status = 'InProgress'
+              AND EXISTS (
+                SELECT 1
+                FROM sessions s
+                WHERE s.project_id = t.project_id
+                  AND s.status = 'running'
+                  AND COALESCE(s.type, '') = 'agent'
+                  AND (
+                    (t.worktree_id IS NOT NULL AND s.worktree_id = t.worktree_id)
+                    OR (t.branch IS NOT NULL AND s.branch = t.branch)
+                    OR EXISTS (
+                        SELECT 1
+                        FROM worktrees wt
+                        WHERE wt.task_id = t.id
+                          AND s.cwd = wt.path
+                    )
+                  )
+              )
+            ORDER BY t.updated_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Find tasks stuck in InProgress that have no active automation run.
+    /// Used at startup to detect tasks orphaned by a crash.
+    pub async fn list_orphaned_in_progress_tasks(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<TaskRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskRow>(
+            r#"
+            SELECT t.id, t.project_id, t.title, t.goal, t.scope_json, t.dependencies_json,
+                   t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
+                   t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
+                   t.auto_dispatch, t.agent_profile_override, t.execution_mode,
+                   t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json
+            FROM tasks t
+            WHERE t.project_id = ?1
+              AND t.status = 'InProgress'
+              AND NOT EXISTS (
+                SELECT 1 FROM automation_runs ar
+                WHERE ar.task_id = t.id AND ar.status = 'running'
+              )
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -3745,5 +3893,239 @@ mod tests {
 
         drop(db);
         let _ = tokio::fs::remove_dir_all(&project_root).await;
+    }
+
+    #[tokio::test]
+    async fn update_task_conditional_succeeds_when_status_matches() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let mut task = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id,
+            title: "task".to_string(),
+            goal: "goal".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P2".to_string(),
+            status: "Ready".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&task).await.expect("create task");
+
+        task.status = "InProgress".to_string();
+        task.updated_at = Utc::now();
+        task.handoff_summary = Some("claimed".to_string());
+
+        let updated = db
+            .update_task_conditional(&task, "Ready")
+            .await
+            .expect("conditional update");
+        assert!(updated, "expected conditional update to succeed");
+
+        let loaded = db
+            .get_task(&task.id)
+            .await
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(loaded.status, "InProgress");
+        assert_eq!(loaded.handoff_summary.as_deref(), Some("claimed"));
+    }
+
+    #[tokio::test]
+    async fn update_task_conditional_rejects_stale_status() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let original = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id,
+            title: "task".to_string(),
+            goal: "goal".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P2".to_string(),
+            status: "Ready".to_string(),
+            branch: None,
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: None,
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&original).await.expect("create task");
+
+        let mut external = original.clone();
+        external.status = "Done".to_string();
+        external.updated_at = Utc::now();
+        db.update_task(&external).await.expect("external update");
+
+        let mut stale = original.clone();
+        stale.status = "InProgress".to_string();
+        stale.updated_at = Utc::now();
+
+        let updated = db
+            .update_task_conditional(&stale, "Ready")
+            .await
+            .expect("conditional update");
+        assert!(
+            !updated,
+            "stale conditional update must be rejected when status drifted"
+        );
+
+        let loaded = db
+            .get_task(&original.id)
+            .await
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(loaded.status, "Done");
+    }
+
+    #[tokio::test]
+    async fn list_recoverable_in_progress_tasks_detects_live_agent_session_by_worktree() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let recoverable_task = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            title: "recoverable".to_string(),
+            goal: "stay in progress".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: Some("pnevma/recoverable".to_string()),
+            worktree_id: Some(Uuid::new_v4().to_string()),
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&recoverable_task)
+            .await
+            .expect("create recoverable task");
+
+        let orphan_task = TaskRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            title: "orphan".to_string(),
+            goal: "should not be recoverable".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: Some("pnevma/orphan".to_string()),
+            worktree_id: Some(Uuid::new_v4().to_string()),
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: true,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&orphan_task)
+            .await
+            .expect("create orphan task");
+
+        let worktree_path = format!("/tmp/{}", recoverable_task.id);
+        db.upsert_worktree(&WorktreeRow {
+            id: recoverable_task
+                .worktree_id
+                .clone()
+                .expect("recoverable worktree id"),
+            project_id: project_id.clone(),
+            task_id: recoverable_task.id.clone(),
+            path: worktree_path.clone(),
+            branch: recoverable_task.branch.clone().expect("recoverable branch"),
+            lease_status: "Active".to_string(),
+            lease_started: now,
+            last_active: now,
+        })
+        .await
+        .expect("create worktree");
+
+        db.upsert_session(&SessionRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "agent-recoverable".to_string(),
+            r#type: Some("agent".to_string()),
+            status: "running".to_string(),
+            pid: None,
+            cwd: worktree_path,
+            command: "claude-code".to_string(),
+            branch: recoverable_task.branch.clone(),
+            worktree_id: recoverable_task.worktree_id.clone(),
+            started_at: now,
+            last_heartbeat: now,
+        })
+        .await
+        .expect("create agent session");
+
+        db.upsert_session(&SessionRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            name: "terminal".to_string(),
+            r#type: Some("terminal".to_string()),
+            status: "running".to_string(),
+            pid: None,
+            cwd: "/tmp".to_string(),
+            command: "zsh".to_string(),
+            branch: orphan_task.branch.clone(),
+            worktree_id: orphan_task.worktree_id.clone(),
+            started_at: now,
+            last_heartbeat: now,
+        })
+        .await
+        .expect("create non-agent session");
+
+        let recoverable = db
+            .list_recoverable_in_progress_tasks(&project_id)
+            .await
+            .expect("list recoverable tasks");
+
+        assert_eq!(recoverable.len(), 1);
+        assert_eq!(recoverable[0].id, recoverable_task.id);
     }
 }
