@@ -3,9 +3,21 @@ import Observation
 
 struct CommandCenterView: View {
     @Bindable var store: CommandCenterStore
+    @Environment(GhosttyThemeProvider.self) var theme
     @FocusState private var searchFieldFocused: Bool
     @State private var hoveredRunID: String?
     @State private var boardFocusToken = 0
+
+    /// Background derived from the ghostty terminal theme, matching the main sidebar.
+    private var sidebarBackground: Color {
+        let bg = theme.backgroundColor
+        let offset = SidebarPreferences.backgroundOffset
+        if offset == 0 {
+            return Color(nsColor: bg)
+        }
+        let tinted = bg.blended(withFraction: offset, of: .white) ?? bg
+        return Color(nsColor: tinted)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +29,7 @@ struct CommandCenterView: View {
             }
         }
         .frame(minWidth: 1180, minHeight: 760)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: theme.backgroundColor))
         .background(commandShortcuts)
     }
 
@@ -122,7 +134,7 @@ struct CommandCenterView: View {
         }
         .background(
             Rectangle()
-                .fill(Color(nsColor: .underPageBackgroundColor).opacity(0.72))
+                .fill(sidebarBackground)
         )
     }
 
@@ -178,7 +190,7 @@ struct CommandCenterView: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .frame(minWidth: 240, idealWidth: 258, maxWidth: 300)
-        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.32))
+        .background(sidebarBackground)
     }
 
     private var centerBoard: some View {
@@ -256,7 +268,7 @@ struct CommandCenterView: View {
             }
         }
         .frame(minWidth: 560, idealWidth: 760)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: theme.backgroundColor))
     }
 
     private var detailPane: some View {
@@ -284,7 +296,7 @@ struct CommandCenterView: View {
             }
         }
         .frame(minWidth: 360, idealWidth: 390, maxWidth: 460)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: theme.backgroundColor))
     }
 
     private func inspectorHeader(for run: CommandCenterFleetRun) -> some View {
@@ -705,10 +717,11 @@ private struct CommandCenterRunBoardRow: View {
         if run.needsAttention {
             return accentColor.opacity(0.08)
         }
+        let fg = Color(nsColor: GhosttyThemeProvider.shared.foregroundColor)
         if isHovered {
-            return Color(nsColor: .controlBackgroundColor).opacity(0.92)
+            return fg.opacity(DesignTokens.Opacity.light)
         }
-        return Color(nsColor: .controlBackgroundColor).opacity(0.58)
+        return fg.opacity(DesignTokens.Opacity.subtle)
     }
 
     private var borderColor: Color {
@@ -717,7 +730,7 @@ private struct CommandCenterRunBoardRow: View {
         }
         return run.needsAttention
             ? accentColor.opacity(0.18)
-            : Color(nsColor: .separatorColor).opacity(0.22)
+            : Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle)
     }
 }
 
@@ -736,11 +749,11 @@ private struct CommandCenterPanel<Content: View>: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
+                .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.26), lineWidth: 1)
+                .strokeBorder(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle), lineWidth: 1)
         )
     }
 }
@@ -791,11 +804,11 @@ private struct KeyboardHintToken: View {
         .padding(.vertical, 4)
         .background(
             Capsule()
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+                .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
         )
         .overlay(
             Capsule()
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
+                .strokeBorder(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle), lineWidth: 1)
         )
     }
 }
@@ -854,7 +867,7 @@ private struct AttentionIncidentRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.74))
+                    .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
@@ -908,11 +921,11 @@ private struct WorkspaceScopeRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color(nsColor: .windowBackgroundColor).opacity(0.28))
+                    .fill(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.18) : Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.45) : Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
+                    .strokeBorder(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.45) : Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -996,11 +1009,11 @@ private struct MetricCapsule: View {
         .padding(.vertical, 6)
         .background(
             Capsule()
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
         )
         .overlay(
             Capsule()
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+                .strokeBorder(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle), lineWidth: 1)
         )
     }
 }
@@ -1026,11 +1039,11 @@ private struct FilterPill: View {
             .padding(.vertical, 6)
             .background(
                 Capsule()
-                    .fill(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.18) : Color(nsColor: .controlBackgroundColor))
+                    .fill(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.18) : Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
             )
             .overlay(
                 Capsule()
-                    .strokeBorder(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.55) : Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 1)
+                    .strokeBorder(isSelected ? Color(nsColor: .controlAccentColor).opacity(0.55) : Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -1060,11 +1073,11 @@ private struct WorkspaceScopePill: View {
         .padding(.vertical, 6)
         .background(
             Capsule()
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
         )
         .overlay(
             Capsule()
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 1)
+                .strokeBorder(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle), lineWidth: 1)
         )
     }
 }
@@ -1237,7 +1250,7 @@ private struct ActionIconButton: View {
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.7))
+                .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
         )
         .accessibilityLabel(action.title)
         .help(action.title)
@@ -1297,7 +1310,7 @@ private struct InspectorValueChip<Value: View>: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.5))
+                .fill(Color(nsColor: GhosttyThemeProvider.shared.foregroundColor).opacity(DesignTokens.Opacity.subtle))
         )
     }
 }
