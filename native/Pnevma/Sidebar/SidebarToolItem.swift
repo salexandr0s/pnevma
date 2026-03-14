@@ -137,7 +137,7 @@ private let allSidebarTools: [SidebarToolItem] = [
         title: "Secrets",
         icon: "key.fill",
         paneType: "secrets",
-        defaultPresentation: .pane
+        defaultPresentation: .tab
     ),
 ]
 

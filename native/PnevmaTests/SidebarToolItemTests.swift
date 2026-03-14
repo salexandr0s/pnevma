@@ -42,7 +42,7 @@ final class SidebarToolItemTests: XCTestCase {
             "analytics": .tab,
             "brief": .tab,
             "rules": .pane,
-            "secrets": .pane,
+            "secrets": .tab,
         ]
 
         for (toolID, presentation) in expectedDefaults {
