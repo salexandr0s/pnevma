@@ -770,7 +770,7 @@ private struct ProviderUsageCard: View {
         .padding(DesignTokens.Spacing.md)
         .background(
             RoundedRectangle(cornerRadius: 18)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color.secondary.opacity(0.10))
                 .overlay {
                     RoundedRectangle(cornerRadius: 18)
                         .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
@@ -858,7 +858,7 @@ private struct ProviderUsageCompactCard: View {
         .padding(DesignTokens.Spacing.sm)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color.secondary.opacity(0.10))
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12)
@@ -1152,7 +1152,7 @@ private struct ProviderUsageMetricTile: View {
         .padding(.vertical, DesignTokens.Spacing.sm)
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color(nsColor: .windowBackgroundColor))
+                .fill(Color.secondary.opacity(0.10))
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14)
@@ -1228,7 +1228,7 @@ private struct ProviderUsageCallout: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color(nsColor: .windowBackgroundColor))
+                .fill(Color.secondary.opacity(0.10))
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14)
@@ -1243,7 +1243,7 @@ private struct ProviderLogoMark: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color(nsColor: .windowBackgroundColor))
+                .fill(Color.secondary.opacity(0.10))
                 .frame(width: 42, height: 42)
                 .overlay {
                     RoundedRectangle(cornerRadius: 14)
