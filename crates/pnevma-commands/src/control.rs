@@ -1674,6 +1674,54 @@ pub async fn route_method(
             serde_json::to_value(items)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "project.secrets.list" => {
+            let input: commands::ProjectSecretListInput =
+                serde_json::from_value(params.clone())
+                    .unwrap_or(commands::ProjectSecretListInput { scope: None });
+            let rows = commands::list_project_secrets(input.scope, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(rows).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.secrets.upsert" => {
+            let input: commands::ProjectSecretUpsertInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            let row = commands::upsert_project_secret(input, &state.emitter, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(row).map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.secrets.delete" => {
+            let input: commands::ProjectSecretDeleteInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            commands::delete_project_secret(input, &state.emitter, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({"ok": true})
+        }
+        "project.secrets.import_env" => {
+            let input: commands::ProjectSecretImportInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            let result = commands::import_project_secrets(input, &state.emitter, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.secrets.export_env_template" => {
+            let input: commands::ProjectSecretExportTemplateInput =
+                serde_json::from_value(params.clone()).unwrap_or(
+                    commands::ProjectSecretExportTemplateInput { path: None },
+                );
+            let result = commands::export_project_secret_template(input, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            serde_json::to_value(result)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "rules.list" => serde_json::to_value(
             commands::list_rules(state)
                 .await

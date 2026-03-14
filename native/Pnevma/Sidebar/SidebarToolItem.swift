@@ -132,6 +132,13 @@ private let allSidebarTools: [SidebarToolItem] = [
         paneType: "rules",
         defaultPresentation: .pane
     ),
+    SidebarToolItem(
+        id: "secrets",
+        title: "Secrets",
+        icon: "key.fill",
+        paneType: "secrets",
+        defaultPresentation: .pane
+    ),
 ]
 
 func sidebarToolDefinition(id: String) -> SidebarToolItem? {
@@ -161,6 +168,7 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "analytics",
             "brief",
             "rules",
+            "secrets",
         ]
     } else {
         allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics"]

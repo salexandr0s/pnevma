@@ -161,6 +161,21 @@ impl Db {
         Ok(row)
     }
 
+    pub async fn get_project(&self, id: &str) -> Result<Option<ProjectRow>, DbError> {
+        let row = sqlx::query_as::<_, ProjectRow>(
+            r#"
+            SELECT id, name, path, brief, config_path, created_at
+            FROM projects
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     pub async fn upsert_session(&self, session: &SessionRow) -> Result<(), DbError> {
         sqlx::query(
             r#"
@@ -1521,12 +1536,24 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO secret_refs
-            (id, project_id, scope, name, keychain_service, keychain_account, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            (
+              id,
+              project_id,
+              scope,
+              name,
+              backend,
+              keychain_service,
+              keychain_account,
+              env_file_path,
+              created_at,
+              updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(project_id, scope, name) DO UPDATE SET
-              id = excluded.id,
+              backend = excluded.backend,
               keychain_service = excluded.keychain_service,
               keychain_account = excluded.keychain_account,
+              env_file_path = excluded.env_file_path,
               updated_at = excluded.updated_at
             "#,
         )
@@ -1534,9 +1561,41 @@ impl Db {
         .bind(&row.project_id)
         .bind(&row.scope)
         .bind(&row.name)
+        .bind(&row.backend)
         .bind(&row.keychain_service)
         .bind(&row.keychain_account)
+        .bind(&row.env_file_path)
         .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_secret_ref(&self, row: &SecretRefRow) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            UPDATE secret_refs
+            SET
+              project_id = ?2,
+              scope = ?3,
+              name = ?4,
+              backend = ?5,
+              keychain_service = ?6,
+              keychain_account = ?7,
+              env_file_path = ?8,
+              updated_at = ?9
+            WHERE id = ?1
+            "#,
+        )
+        .bind(&row.id)
+        .bind(&row.project_id)
+        .bind(&row.scope)
+        .bind(&row.name)
+        .bind(&row.backend)
+        .bind(&row.keychain_service)
+        .bind(&row.keychain_account)
+        .bind(&row.env_file_path)
         .bind(row.updated_at)
         .execute(&self.pool)
         .await?;
@@ -1552,7 +1611,17 @@ impl Db {
             Some(scope) => {
                 sqlx::query_as::<_, SecretRefRow>(
                     r#"
-                    SELECT id, project_id, scope, name, keychain_service, keychain_account, created_at, updated_at
+                    SELECT
+                      id,
+                      project_id,
+                      scope,
+                      name,
+                      backend,
+                      keychain_service,
+                      keychain_account,
+                      env_file_path,
+                      created_at,
+                      updated_at
                     FROM secret_refs
                     WHERE (project_id IS NULL OR project_id = ?1) AND scope = ?2
                     ORDER BY scope ASC, name ASC
@@ -1566,7 +1635,17 @@ impl Db {
             None => {
                 sqlx::query_as::<_, SecretRefRow>(
                     r#"
-                    SELECT id, project_id, scope, name, keychain_service, keychain_account, created_at, updated_at
+                    SELECT
+                      id,
+                      project_id,
+                      scope,
+                      name,
+                      backend,
+                      keychain_service,
+                      keychain_account,
+                      env_file_path,
+                      created_at,
+                      updated_at
                     FROM secret_refs
                     WHERE project_id IS NULL OR project_id = ?1
                     ORDER BY scope ASC, name ASC
@@ -1578,6 +1657,38 @@ impl Db {
             }
         };
         Ok(rows)
+    }
+
+    pub async fn get_secret_ref(&self, id: &str) -> Result<Option<SecretRefRow>, DbError> {
+        sqlx::query_as::<_, SecretRefRow>(
+            r#"
+            SELECT
+              id,
+              project_id,
+              scope,
+              name,
+              backend,
+              keychain_service,
+              keychain_account,
+              env_file_path,
+              created_at,
+              updated_at
+            FROM secret_refs
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn delete_secret_ref(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM secret_refs WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn create_checkpoint(&self, row: &CheckpointRow) -> Result<(), DbError> {
@@ -2838,7 +2949,7 @@ mod tests {
     use super::*;
     use crate::models::{
         AutomationRunRow, ContextRuleUsageRow, CostRow, FeedbackRow, NotificationRow,
-        OnboardingStateRow, ReviewRow, RuleRow, SessionRow, TaskRow, TelemetryEventRow,
+        OnboardingStateRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, TaskRow, TelemetryEventRow,
         WorkflowInstanceRow, WorktreeRow,
     };
     use chrono::Utc;
@@ -2935,6 +3046,118 @@ mod tests {
         db.delete_task(&task.id).await.expect("delete task");
         let gone = db.get_task(&task.id).await.expect("get deleted task");
         assert!(gone.is_none());
+    }
+
+    #[tokio::test]
+    async fn secret_ref_roundtrip_supports_multiple_backends() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let keychain = SecretRefRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: Some(project_id.clone()),
+            scope: "project".to_string(),
+            name: "OPENAI_API_KEY".to_string(),
+            backend: "keychain".to_string(),
+            keychain_service: Some(format!("pnevma.project.{project_id}")),
+            keychain_account: Some("OPENAI_API_KEY".to_string()),
+            env_file_path: None,
+            created_at: now,
+            updated_at: now,
+        };
+        db.upsert_secret_ref(&keychain)
+            .await
+            .expect("insert keychain secret");
+
+        let env_file = SecretRefRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: Some(project_id.clone()),
+            scope: "project".to_string(),
+            name: "DATABASE_URL".to_string(),
+            backend: "env_file".to_string(),
+            keychain_service: None,
+            keychain_account: None,
+            env_file_path: Some(".env.local".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        db.upsert_secret_ref(&env_file)
+            .await
+            .expect("insert env file secret");
+
+        let rows = db
+            .list_secret_refs(&project_id, None)
+            .await
+            .expect("list secret refs");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| {
+            row.name == "OPENAI_API_KEY"
+                && row.backend == "keychain"
+                && row.keychain_service.as_deref() == Some(&format!("pnevma.project.{project_id}"))
+        }));
+        assert!(rows.iter().any(|row| {
+            row.name == "DATABASE_URL"
+                && row.backend == "env_file"
+                && row.env_file_path.as_deref() == Some(".env.local")
+        }));
+
+        let fetched = db
+            .get_secret_ref(&env_file.id)
+            .await
+            .expect("get secret ref")
+            .expect("secret ref exists");
+        assert_eq!(fetched.name, "DATABASE_URL");
+        assert_eq!(fetched.backend, "env_file");
+
+        db.delete_secret_ref(&env_file.id)
+            .await
+            .expect("delete secret ref");
+        let remaining = db
+            .list_secret_refs(&project_id, None)
+            .await
+            .expect("list secret refs after delete");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "OPENAI_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn update_secret_ref_allows_renaming_existing_secret() {
+        let db = open_test_db().await;
+        let project_id = Uuid::new_v4().to_string();
+        seed_project(&db, &project_id).await;
+
+        let now = Utc::now();
+        let mut row = SecretRefRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: Some(project_id.clone()),
+            scope: "project".to_string(),
+            name: "OPENAI_API_KEY".to_string(),
+            backend: "keychain".to_string(),
+            keychain_service: Some(format!("pnevma.project.{project_id}")),
+            keychain_account: Some("OPENAI_API_KEY".to_string()),
+            env_file_path: None,
+            created_at: now,
+            updated_at: now,
+        };
+        db.upsert_secret_ref(&row)
+            .await
+            .expect("insert secret ref");
+
+        row.name = "ANTHROPIC_API_KEY".to_string();
+        row.keychain_account = Some("ANTHROPIC_API_KEY".to_string());
+        row.updated_at = Utc::now();
+        db.update_secret_ref(&row).await.expect("rename secret ref");
+
+        let rows = db
+            .list_secret_refs(&project_id, Some("project"))
+            .await
+            .expect("list renamed secret refs");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, row.id);
+        assert_eq!(rows[0].name, "ANTHROPIC_API_KEY");
+        assert_eq!(rows[0].keychain_account.as_deref(), Some("ANTHROPIC_API_KEY"));
     }
 
     #[tokio::test]

@@ -1532,6 +1532,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Show Daily Brief", "tool", nil, "Show the daily summary dashboard", "daily_brief"),
             ("Show Notifications", "tool", nil, "Show project notifications and alerts", "notifications"),
             ("Show Rules Manager", "tool", nil, "Show project rules and conventions", "rules"),
+            ("Show Secrets", "tool", nil, "Show project secrets and env backends", "secrets"),
             ("Show Workflow", "tool", nil, "Show the workflow state machine", "workflow"),
             ("Show SSH Manager", "tool", nil, "Show SSH keys and remote profiles", "ssh"),
             ("Show Session Replay", "tool", nil, "Show past terminal session replays", "replay"),

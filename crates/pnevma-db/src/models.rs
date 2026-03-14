@@ -202,8 +202,10 @@ pub struct SecretRefRow {
     pub project_id: Option<String>,
     pub scope: String,
     pub name: String,
-    pub keychain_service: String,
-    pub keychain_account: String,
+    pub backend: String,
+    pub keychain_service: Option<String>,
+    pub keychain_account: Option<String>,
+    pub env_file_path: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

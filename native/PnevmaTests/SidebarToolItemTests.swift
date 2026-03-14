@@ -12,6 +12,7 @@ final class SidebarToolItemTests: XCTestCase {
         XCTAssertEqual(tools.firstIndex(of: "ssh"), 4)
         XCTAssertEqual(tools.firstIndex(of: "harness"), 5)
         XCTAssertEqual(tools.firstIndex(of: "replay"), 6)
+        XCTAssertTrue(tools.contains("secrets"))
     }
 
     func testTerminalWorkspaceSidebarIncludesHarnessConfig() {
@@ -41,6 +42,7 @@ final class SidebarToolItemTests: XCTestCase {
             "analytics": .tab,
             "brief": .tab,
             "rules": .pane,
+            "secrets": .pane,
         ]
 
         for (toolID, presentation) in expectedDefaults {

@@ -8,6 +8,7 @@ pub mod harness_config;
 pub mod plan_tools;
 pub mod project;
 pub mod provider_usage;
+pub mod secrets;
 pub mod ssh;
 pub mod tasks;
 pub mod tracker;
@@ -24,6 +25,7 @@ pub use self::harness_config::*;
 pub use self::plan_tools::*;
 pub use self::project::*;
 pub use self::provider_usage::*;
+pub use self::secrets::*;
 pub use self::ssh::*;
 pub use self::tasks::*;
 pub use self::tracker::*;
@@ -46,7 +48,7 @@ use pnevma_core::{
 use pnevma_db::{
     sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, Db, EventQueryFilter,
     EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow, OnboardingStateRow,
-    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, SshProfileRow,
+    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SessionRow, SshProfileRow,
     TaskRow, TelemetryEventRow, TrustRecord, WorkflowInstanceRow, WorkflowRow,
 };
 use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
@@ -709,20 +711,61 @@ pub struct ReviewDecisionInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecretRefInput {
-    pub name: String,
-    pub scope: String,
-    pub value: String,
+pub struct ProjectSecretListInput {
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecretRefView {
+pub struct ProjectSecretUpsertInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub scope: String,
+    pub backend: String,
+    pub value: Option<String>,
+    pub env_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSecretDeleteInput {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSecretImportInput {
+    pub path: String,
+    pub scope: String,
+    pub destination_backend: String,
+    pub on_conflict: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSecretExportTemplateInput {
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSecretImportResult {
+    pub imported_names: Vec<String>,
+    pub skipped_names: Vec<String>,
+    pub error_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSecretExportTemplateResult {
+    pub path: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSecretView {
     pub id: String,
     pub project_id: Option<String>,
     pub scope: String,
     pub name: String,
-    pub keychain_service: String,
-    pub keychain_account: String,
+    pub backend: String,
+    pub location_display: String,
+    pub status: String,
+    pub status_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2637,7 +2680,11 @@ pub(crate) async fn notify_merge_completed(
     .await;
 }
 
-async fn store_keychain_secret(service: &str, account: &str, value: &str) -> Result<(), String> {
+pub(crate) async fn store_keychain_secret(
+    service: &str,
+    account: &str,
+    value: &str,
+) -> Result<(), String> {
     // Use the security-framework crate to avoid passing the password as a CLI arg
     // (which would expose it in `ps` output).
     #[cfg(target_os = "macos")]
@@ -2652,7 +2699,7 @@ async fn store_keychain_secret(service: &str, account: &str, value: &str) -> Res
     }
 }
 
-async fn read_keychain_secret(service: &str, account: &str) -> Result<String, String> {
+pub(crate) async fn read_keychain_secret(service: &str, account: &str) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         use security_framework::passwords::get_generic_password;
@@ -2671,27 +2718,7 @@ pub(crate) async fn resolve_secret_env(
     db: &Db,
     project_id: Uuid,
 ) -> Result<(Vec<(String, String)>, Vec<String>), String> {
-    let refs = db
-        .list_secret_refs(&project_id.to_string(), None)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut env = Vec::with_capacity(refs.len());
-    let mut values = Vec::with_capacity(refs.len());
-    for secret in refs {
-        let value =
-            read_keychain_secret(&secret.keychain_service, &secret.keychain_account).await?;
-        match pnevma_agents::validate_agent_env_entry(&secret.name, &value) {
-            Ok(()) => env.push((secret.name.clone(), value.clone())),
-            Err(error) => tracing::warn!(
-                name = %secret.name,
-                project_id = %project_id,
-                %error,
-                "skipping unsafe secret environment variable"
-            ),
-        }
-        values.push(value);
-    }
-    Ok((env, values))
+    self::secrets::resolve_project_secret_env(db, project_id).await
 }
 
 pub(crate) async fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {

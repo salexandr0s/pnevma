@@ -299,6 +299,9 @@ enum PaneFactory {
         paneTuple(RulesManagerPaneView(frame: .zero))
     }
 
+    static func makeSecretsManager() -> (PaneID, NSView & PaneContent) {
+        paneTuple(SecretsManagerPaneView(frame: .zero))
+    }
 
     static func makeBrowser(url: URL? = nil) -> (PaneID, NSView & PaneContent) {
         let workspace = activeWorkspaceProvider?()
@@ -356,6 +359,8 @@ enum PaneFactory {
             inner = DailyBriefPaneView(frame: .zero)
         case "rules":
             inner = RulesManagerPaneView(frame: .zero)
+        case "secrets":
+            inner = SecretsManagerPaneView(frame: .zero)
         case "browser":
             inner = BrowserPaneView.fromMetadata(persistedPane.metadataJSON)
         case "harness_config":
@@ -392,6 +397,7 @@ enum PaneFactory {
         case "notifications": return makeNotifications()
         case "daily_brief":   return makeDailyBrief()
         case "rules":         return makeRulesManager()
+        case "secrets":       return makeSecretsManager()
         case "browser":        return makeBrowser()
         case "harness_config": return makeHarnessConfig()
         default:              return nil
@@ -421,6 +427,7 @@ enum PaneFactory {
                 "analytics",
                 "daily_brief",
                 "rules",
+                "secrets",
                 "harness_config",
             ]
         }

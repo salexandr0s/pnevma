@@ -549,7 +549,23 @@ pub async fn prepare(
     let context_path = PathBuf::from(&working_dir)
         .join(".pnevma")
         .join("task-context.md");
-    let redacted_context_markdown = redact_text(&ctx_result.markdown, &secret_values);
+    let available_secret_names = crate::commands::secrets::available_secret_names(&db, project_id)
+        .await
+        .unwrap_or_default();
+    let secret_names_section = if available_secret_names.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n## Available secret environment variables\n{}\n",
+            available_secret_names
+                .iter()
+                .map(|name| format!("- {name}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    let redacted_context_markdown =
+        redact_text(&format!("{}{}", ctx_result.markdown, secret_names_section), &secret_values);
     compiler
         .write_markdown(&redacted_context_markdown, &context_path)
         .map_err(|e| RunnerError::Internal(e.to_string()))?;

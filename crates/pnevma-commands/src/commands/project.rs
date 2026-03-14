@@ -5613,16 +5613,9 @@ async fn initialize_tracker(
     project_id: uuid::Uuid,
 ) -> Option<pnevma_tracker::poll::TrackerCoordinator> {
     let api_key_name = config.api_key_secret.as_deref()?;
-
-    // Look up the secret ref by name, then read the value from the keychain.
-    let refs = db
-        .list_secret_refs(&project_id.to_string(), None)
+    let api_key = super::secrets::resolve_secret_value_by_name(db, project_id, api_key_name)
         .await
-        .ok()?;
-    let secret_ref = refs.iter().find(|r| r.name == api_key_name)?;
-    let api_key = read_keychain_secret(&secret_ref.keychain_service, &secret_ref.keychain_account)
-        .await
-        .ok()?;
+        .ok()??;
     if api_key.is_empty() {
         return None;
     }
