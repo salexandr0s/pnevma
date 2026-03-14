@@ -428,9 +428,10 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
                 if let Some(message) = refine_claude_auth_message(&error).await {
                     return Err(message);
                 }
-                let auth_status = probe_claude_auth_status().await.ok();
-                let refined_error = refine_claude_probe_error(&error);
-                if is_transient_claude_live_error(&refined_error) {
+                if is_transient_claude_live_error(&error) {
+                    tracing::warn!("Claude OAuth usage probe failed (transient): {error}");
+                    let auth_status = probe_claude_auth_status().await.ok();
+                    let (status_message, repair_hint) = transient_error_user_message(&error);
                     return Ok(ProviderProbeOutput {
                         source: "oauth".to_string(),
                         account_email: auth_status.as_ref().and_then(|status| status.email.clone()),
@@ -440,18 +441,16 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
                                 .as_ref()
                                 .map(|value| humanize_plan_label(value))
                         }),
-                        status_message: Some(refined_error),
-                        repair_hint: Some(
-                            "Pnevma will retry Claude live usage after the OAuth endpoint stops rate-limiting requests."
-                                .to_string(),
-                        ),
+                        status_message: Some(status_message),
+                        repair_hint: Some(repair_hint),
                         session_window: None,
                         weekly_window: None,
                         model_windows: vec![],
                         credit: None,
                     });
                 }
-                return Err(refined_error);
+                tracing::warn!("Claude OAuth usage probe failed: {error}");
+                return Err(error);
             }
         }
     }
@@ -767,11 +766,31 @@ async fn refine_claude_auth_message(error: &str) -> Option<String> {
     }
 }
 
-fn refine_claude_probe_error(error: &str) -> String {
-    if is_transient_claude_live_error(error) {
-        return "Claude OAuth usage endpoint is rate-limiting requests right now.".to_string();
+/// Returns a user-facing (status_message, repair_hint) tuple that accurately
+/// reflects the transient error category instead of blanket "rate-limiting".
+fn transient_error_user_message(error: &str) -> (String, String) {
+    let lower = error.to_lowercase();
+    if lower.contains("429") || lower.contains("rate limit") {
+        (
+            "Claude OAuth usage endpoint is rate-limiting requests right now.".to_string(),
+            "Pnevma will retry Claude live usage after the OAuth endpoint stops rate-limiting requests.".to_string(),
+        )
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        (
+            "Claude OAuth usage endpoint timed out.".to_string(),
+            "Pnevma will retry Claude live usage automatically.".to_string(),
+        )
+    } else if lower.contains("connection reset") {
+        (
+            "Connection to Claude OAuth usage endpoint was reset.".to_string(),
+            "Pnevma will retry Claude live usage automatically.".to_string(),
+        )
+    } else {
+        (
+            "Claude OAuth usage endpoint is temporarily unavailable.".to_string(),
+            "Pnevma will retry Claude live usage automatically.".to_string(),
+        )
     }
-    error.to_string()
 }
 
 fn is_transient_claude_live_error(error: &str) -> bool {
@@ -1606,14 +1625,14 @@ fn fallback_snapshot_from_cached_live(
     let current_local_usage = current.local_usage.clone();
     let mut fallback = cached_live;
     fallback.status = "warning".to_string();
-    fallback.status_message = Some(
-        "Showing cached live Claude usage while the OAuth usage endpoint is rate-limiting requests."
-            .to_string(),
-    );
-    fallback.repair_hint = Some(
-        "Pnevma will retry Claude live usage automatically after the rate limit clears."
-            .to_string(),
-    );
+    let reason = current
+        .status_message
+        .as_deref()
+        .unwrap_or("the endpoint is unavailable");
+    fallback.status_message = Some(format!("Showing cached live Claude usage — {reason}"));
+    fallback.repair_hint = current.repair_hint.or(Some(
+        "Pnevma will retry Claude live usage automatically.".to_string(),
+    ));
     fallback.local_usage = current_local_usage;
     fallback.account_email = current_account_email.or(fallback.account_email);
     fallback.plan_label = current_plan_label.or(fallback.plan_label);
@@ -1880,14 +1899,27 @@ mod tests {
     }
 
     #[test]
-    fn refine_claude_probe_error_simplifies_rate_limit_failures() {
-        let error = refine_claude_probe_error(
+    fn transient_error_user_message_differentiates_error_types() {
+        let (msg, _) = transient_error_user_message(
             "Claude OAuth usage fetch failed via reqwest (request failed with 429 Too Many Requests)",
         );
-
         assert_eq!(
-            error,
+            msg,
             "Claude OAuth usage endpoint is rate-limiting requests right now."
+        );
+
+        let (msg, _) = transient_error_user_message(
+            "Claude OAuth usage fetch failed via reqwest (request failed: timed out) and curl (Operation timed out)",
+        );
+        assert_eq!(msg, "Claude OAuth usage endpoint timed out.");
+
+        let (msg, _) = transient_error_user_message("connection reset by peer");
+        assert_eq!(msg, "Connection to Claude OAuth usage endpoint was reset.");
+
+        let (msg, _) = transient_error_user_message("some other transient error");
+        assert_eq!(
+            msg,
+            "Claude OAuth usage endpoint is temporarily unavailable."
         );
     }
 
@@ -1983,7 +2015,7 @@ mod tests {
         assert_eq!(
             fallback.status_message.as_deref(),
             Some(
-                "Showing cached live Claude usage while the OAuth usage endpoint is rate-limiting requests."
+                "Showing cached live Claude usage \u{2014} Claude OAuth usage endpoint is rate-limiting requests right now."
             )
         );
     }
