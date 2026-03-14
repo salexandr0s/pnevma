@@ -4,20 +4,21 @@ use crate::types::{ExternalState, StateTransition, TrackerFilter, TrackerItem};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
+use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, warn};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 pub struct LinearAdapter {
     client: Client,
-    api_key: String,
+    api_key: SecretString,
 }
 
 impl LinearAdapter {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: impl Into<SecretString>) -> Self {
         Self {
             client: Client::new(),
-            api_key,
+            api_key: api_key.into(),
         }
     }
 
@@ -34,7 +35,10 @@ impl LinearAdapter {
         let resp = self
             .client
             .post(LINEAR_API_URL)
-            .header("Authorization", &self.api_key)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            )
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -184,12 +188,15 @@ impl TrackerAdapter for LinearAdapter {
             return Ok(Vec::new());
         }
 
-        // Build a single batched query using GraphQL aliases.
-        // Linear IDs are UUIDs; reject any containing GraphQL-breaking chars.
+        // Validate IDs are well-formed UUIDs to prevent GraphQL injection.
+        let uuid_re = regex::Regex::new(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        )
+        .expect("uuid regex");
         for id in ids {
-            if id.contains('"') || id.contains('\\') {
+            if !uuid_re.is_match(id) {
                 return Err(TrackerError::Config(format!(
-                    "invalid issue ID (contains quote or backslash): {id}"
+                    "invalid issue ID (not a valid UUID): {id}"
                 )));
             }
         }
@@ -484,5 +491,22 @@ impl TrackerAdapter for LinearAdapter {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linear_adapter_debug_does_not_leak_api_key() {
+        let adapter = LinearAdapter::new("lin_api_test_secret_key_12345".to_string());
+        // LinearAdapter doesn't derive Debug, but we can verify the api_key
+        // field is SecretString by checking its debug output
+        let debug_output = format!("{:?}", adapter.api_key);
+        assert!(
+            !debug_output.contains("lin_api_test_secret_key_12345"),
+            "API key should not appear in debug output"
+        );
     }
 }

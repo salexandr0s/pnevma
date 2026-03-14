@@ -7,8 +7,7 @@ license.workspace = true
 [dependencies]
 chrono.workspace = true
 pnevma-redaction = { path = "../pnevma-redaction" }
-portable-pty.workspace = true
-regex.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

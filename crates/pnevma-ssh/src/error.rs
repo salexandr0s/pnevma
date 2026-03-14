@@ -10,4 +10,6 @@ pub enum SshError {
     NotFound(String),
     #[error("command error: {0}")]
     Command(String),
+    #[error("passphrase application failed: {0}")]
+    PassphraseApplicationFailed(String),
 }

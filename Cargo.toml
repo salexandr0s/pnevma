@@ -23,11 +23,9 @@ authors = ["Pnevma Contributors"]
 repository = "https://github.com/salexandr0s/pnevma"
 
 [workspace.dependencies]
-anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-portable-pty = "0.9"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -43,7 +41,6 @@ uuid = { version = "1", features = ["serde", "v4"] }
 proptest = "1"
 tempfile = "3"
 parking_lot = "0.12"
-indexmap = "2"
 serde_yaml = "0.9"
 sha2 = "0.10"
 subtle = "2"
@@ -58,6 +55,7 @@ governor = "0.8"
 dashmap = "6"
 rand = "0.8"
 hex = "0.4"
+secrecy = { version = "0.10", features = ["serde"] }
 security-framework = "2"
 reqwest = { version = "0.12", features = ["json"] }
 
