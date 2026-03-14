@@ -44,3 +44,7 @@ native/.build/
 native/DerivedData/
 native/build/
 native/native/
+
+# Local release artifacts
+*.dmg
+*.dmg.sha256
