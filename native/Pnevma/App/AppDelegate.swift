@@ -15,6 +15,24 @@ private struct OpenWorkspaceSelection {
     let terminalMode: WorkspaceTerminalMode
 }
 
+private enum UITestReadinessState: String {
+    case terminalReady = "terminal-ready"
+    case projectOpening = "project-opening"
+    case projectReady = "project-ready"
+    case projectOpenFailed = "project-open-failed"
+}
+
+private final class UITestReadinessView: NSView {
+    var state: String = "launching"
+    var detail: String?
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    override func accessibilityIdentifier() -> String { "ui-test.readiness" }
+    override func accessibilityLabel() -> String? { state }
+    override func accessibilityValue() -> Any? { detail }
+}
+
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -45,6 +63,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rightInspectorOverlayHostView: RightInspectorOverlayHostingView<AnyView>?
     private var browserDrawerOverlayBlockerView: BrowserDrawerOverlayBlockerView?
     private var browserDrawerOverlayHostView: BrowserDrawerOverlayHostingView<AnyView>?
+    private var uiTestReadinessView: UITestReadinessView?
     private var contentLeadingConstraint: NSLayoutConstraint?
     private var statusLeadingConstraint: NSLayoutConstraint?
     private var tabBarLeadingConstraint: NSLayoutConstraint?
@@ -149,13 +168,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if let uiTestProjectPath = AppLaunchContext.uiTestProjectPath {
             workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
+            setUITestReadiness(.projectOpening)
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 750_000_000)
-                guard let self else { return }
-                self.openLocalWorkspace(path: uiTestProjectPath, terminalMode: .persistent)
+                await self?.openUITestProjectWorkspace(path: uiTestProjectPath)
             }
         } else {
             workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
+            setUITestReadiness(.terminalReady)
         }
 
         // Build menu bar
@@ -443,6 +462,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.minSize = NSSize(width: 800, height: 500)
 
         guard let windowContent = win.contentView else { return }
+        installUITestReadinessView(in: windowContent)
 
         // Root placeholder pane
         let (_, rootPane) = PaneFactory.makeWelcome()
@@ -491,6 +511,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Status bar
         statusBar = StatusBar()
         statusBar?.onSessionsClicked = { [weak self] in self?.showSessionManager() }
+        statusBar?.onBrowserToggle = { [weak self] in self?.toggleBrowserDrawer() }
         if let sessionStore {
             statusBar?.bindSessionStore(sessionStore)
         }
@@ -510,6 +531,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
         let sidebarBacking = ThemedSidebarBackingView()
+        sidebarBacking.setAccessibilityIdentifier("sidebar.view")
         sidebarBacking.addSubview(sidebarHost)
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
 
@@ -2100,7 +2122,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: 1))
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        container.setAccessibilityElement(true)
         container.setAccessibilityIdentifier("openWorkspace.dialog")
         container.addSubview(contentStack)
 
@@ -2150,10 +2171,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let isDefault = keyEquivalent == "\r"
 
         let button = NSButton(title: "", target: self, action: #selector(handleOpenWorkspaceDialogAction(_:)))
+        button.title = title
         button.identifier = NSUserInterfaceItemIdentifier(identifier)
         button.isBordered = false
         button.keyEquivalent = keyEquivalent
         button.keyEquivalentModifierMask = []
+        button.setAccessibilityLabel(title)
         button.setAccessibilityIdentifier("openWorkspace.\(identifier)")
         button.translatesAutoresizingMaskIntoConstraints = false
 
@@ -2314,9 +2337,61 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         closeButton.setFrameOrigin(origin)
     }
 
-    private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) {
+    private func installUITestReadinessView(in windowContent: NSView) {
+        guard AppLaunchContext.isUITesting else { return }
+        guard uiTestReadinessView == nil else { return }
+
+        let readinessView = UITestReadinessView(frame: .zero)
+        readinessView.translatesAutoresizingMaskIntoConstraints = false
+        windowContent.addSubview(readinessView)
+        NSLayoutConstraint.activate([
+            readinessView.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
+            readinessView.topAnchor.constraint(equalTo: windowContent.topAnchor),
+            readinessView.widthAnchor.constraint(equalToConstant: 1),
+            readinessView.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        uiTestReadinessView = readinessView
+    }
+
+    private func setUITestReadiness(_ state: UITestReadinessState, detail: String? = nil) {
+        guard AppLaunchContext.isUITesting, let uiTestReadinessView else { return }
+        uiTestReadinessView.state = state.rawValue
+        uiTestReadinessView.detail = detail
+    }
+
+    private func openUITestProjectWorkspace(path: String) async {
+        guard let workspace = openLocalWorkspace(path: path, terminalMode: .persistent) else {
+            setUITestReadiness(.projectOpenFailed, detail: "workspace manager unavailable")
+            return
+        }
+
+        do {
+            _ = try await workspaceManager?.ensureWorkspaceReady(
+                workspace.id,
+                timeoutNanoseconds: 15_000_000_000
+            )
+            setUITestReadiness(.projectReady)
+        } catch {
+            Log.workspace.error(
+                "UI test project bootstrap failed for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            setUITestReadiness(.projectOpenFailed, detail: error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) -> Workspace? {
+        guard let workspaceManager else {
+            ToastManager.shared.show(
+                "Workspace manager unavailable",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return nil
+        }
+
         let name = URL(fileURLWithPath: path).lastPathComponent
-        workspaceManager?.createLocalProjectWorkspace(
+        let workspace = workspaceManager.createLocalProjectWorkspace(
             name: name,
             projectPath: path,
             terminalMode: terminalMode
@@ -2326,6 +2401,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: "folder.badge.checkmark",
             style: .success
         )
+        return workspace
     }
 
     private func openRemoteWorkspace(target: WorkspaceRemoteTarget, terminalMode: WorkspaceTerminalMode) {

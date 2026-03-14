@@ -1,8 +1,8 @@
 use super::{
     append_event, load_redaction_secrets, read_keychain_secret, register_project_redaction_secrets,
-    store_keychain_secret, ProjectSecretDeleteInput,
-    ProjectSecretExportTemplateInput, ProjectSecretExportTemplateResult, ProjectSecretImportInput,
-    ProjectSecretImportResult, ProjectSecretUpsertInput, ProjectSecretView,
+    store_keychain_secret, ProjectSecretDeleteInput, ProjectSecretExportTemplateInput,
+    ProjectSecretExportTemplateResult, ProjectSecretImportInput, ProjectSecretImportResult,
+    ProjectSecretUpsertInput, ProjectSecretView,
 };
 use crate::event_emitter::EventEmitter;
 use crate::state::AppState;
@@ -81,7 +81,9 @@ pub async fn upsert_project_secret(
             && row.project_id == project_scope_id
             && existing.as_ref().map(|current| current.id.as_str()) != Some(row.id.as_str())
     }) {
-        return Err(format!("{name} is already configured for this {scope} scope"));
+        return Err(format!(
+            "{name} is already configured for this {scope} scope"
+        ));
     }
 
     let value = match (input.value.as_deref(), existing.as_ref()) {
@@ -467,7 +469,10 @@ pub(crate) fn visible_secret_names(rows: &[SecretRefRow]) -> Vec<String> {
     rows.iter().map(|row| row.name.clone()).collect()
 }
 
-pub(crate) async fn available_secret_names(db: &Db, project_id: Uuid) -> Result<Vec<String>, String> {
+pub(crate) async fn available_secret_names(
+    db: &Db,
+    project_id: Uuid,
+) -> Result<Vec<String>, String> {
     let rows = dedupe_secret_refs(
         db.list_secret_refs(&project_id.to_string(), None)
             .await
@@ -530,11 +535,9 @@ fn normalize_secret_name(name: &str) -> Result<String, String> {
     if trimmed.len() > 128 {
         return Err("secret name exceeds 128 characters".to_string());
     }
-    if !trimmed
-        .chars()
-        .enumerate()
-        .all(|(idx, ch)| ch == '_' || ch.is_ascii_alphanumeric() && (idx > 0 || !ch.is_ascii_digit()))
-    {
+    if !trimmed.chars().enumerate().all(|(idx, ch)| {
+        ch == '_' || ch.is_ascii_alphanumeric() && (idx > 0 || !ch.is_ascii_digit())
+    }) {
         return Err("secret name must be a valid environment variable name".to_string());
     }
     Ok(trimmed.to_string())
@@ -561,7 +564,8 @@ fn project_keychain_service(scope: &str, project_id: Uuid) -> String {
 }
 
 fn ensure_secret_belongs_to_project(row: &SecretRefRow, project_id: Uuid) -> Result<(), String> {
-    if row.scope == PROJECT_SCOPE && row.project_id.as_deref() != Some(project_id.to_string().as_str())
+    if row.scope == PROJECT_SCOPE
+        && row.project_id.as_deref() != Some(project_id.to_string().as_str())
     {
         return Err("secret belongs to a different project".to_string());
     }
@@ -677,7 +681,11 @@ async fn upsert_env_file_secret(
     write_env_file(&path, &updated).await
 }
 
-async fn read_env_file_secret(project_path: &Path, rel_path: &str, name: &str) -> Result<String, String> {
+async fn read_env_file_secret(
+    project_path: &Path,
+    rel_path: &str,
+    name: &str,
+) -> Result<String, String> {
     let path = project_path.join(rel_path);
     let content = fs::read_to_string(&path)
         .await
@@ -689,7 +697,11 @@ async fn read_env_file_secret(project_path: &Path, rel_path: &str, name: &str) -
     decode_env_value(encoded)
 }
 
-async fn delete_env_file_secret(project_path: &Path, rel_path: &str, name: &str) -> Result<(), String> {
+async fn delete_env_file_secret(
+    project_path: &Path,
+    rel_path: &str,
+    name: &str,
+) -> Result<(), String> {
     let path = project_path.join(rel_path);
     if fs::metadata(&path).await.is_err() {
         return Ok(());
@@ -760,7 +772,10 @@ fn managed_block_sections(content: &str) -> Option<(String, String)> {
         + start
         + MANAGED_BLOCK_BEGIN.len();
     let suffix_start = end + MANAGED_BLOCK_END.len();
-    Some((content[..start].to_string(), content[suffix_start..].to_string()))
+    Some((
+        content[..start].to_string(),
+        content[suffix_start..].to_string(),
+    ))
 }
 
 fn managed_block_range(content: &str) -> Option<(usize, usize)> {
@@ -807,7 +822,9 @@ async fn ensure_env_file_git_ignored(project_path: &Path, rel_path: &str) -> Res
     if git_check_ignored(project_path, rel_path).await? {
         Ok(())
     } else {
-        Err(format!("{rel_path} must be ignored by git before Pnevma can manage it"))
+        Err(format!(
+            "{rel_path} must be ignored by git before Pnevma can manage it"
+        ))
     }
 }
 

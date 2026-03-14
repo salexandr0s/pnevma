@@ -10,11 +10,14 @@ final class StatusBar: NSView {
     private let agentsLabel = NSTextField(labelWithString: "")
     let sessionsButton = NSButton(frame: .zero)
     private let paneLabel = NSTextField(labelWithString: "")
+    private let browserToggleButton = NSButton(frame: .zero)
     private let separator1 = NSBox()
     private let separator2 = NSBox()
     private let separator3 = NSBox()
+    private let separator4 = NSBox()
 
     var onSessionsClicked: (() -> Void)?
+    var onBrowserToggle: (() -> Void)?
 
     // MARK: - Init
 
@@ -68,7 +71,20 @@ final class StatusBar: NSView {
         sessionsButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(sessionsButton)
 
-        for sep in [separator1, separator2, separator3] {
+        // Browser toggle button
+        browserToggleButton.bezelStyle = .inline
+        browserToggleButton.isBordered = false
+        browserToggleButton.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Toggle Browser")
+        browserToggleButton.imagePosition = .imageOnly
+        browserToggleButton.contentTintColor = secondaryColor
+        browserToggleButton.target = self
+        browserToggleButton.action = #selector(browserToggleClicked)
+        browserToggleButton.setAccessibilityLabel("Toggle Browser")
+        browserToggleButton.toolTip = "Toggle Browser (⌥⌘B)"
+        browserToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(browserToggleButton)
+
+        for sep in [separator1, separator2, separator3, separator4] {
             sep.boxType = .separator
             sep.translatesAutoresizingMaskIntoConstraints = false
             addSubview(sep)
@@ -111,8 +127,17 @@ final class StatusBar: NSView {
             separator3.heightAnchor.constraint(equalToConstant: 14),
 
             paneLabel.leadingAnchor.constraint(greaterThanOrEqualTo: separator3.trailingAnchor, constant: 10),
-            paneLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             paneLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            separator4.leadingAnchor.constraint(equalTo: paneLabel.trailingAnchor, constant: 10),
+            separator4.centerYAnchor.constraint(equalTo: centerYAnchor),
+            separator4.widthAnchor.constraint(equalToConstant: 1),
+            separator4.heightAnchor.constraint(equalToConstant: 14),
+
+            browserToggleButton.leadingAnchor.constraint(equalTo: separator4.trailingAnchor, constant: 8),
+            browserToggleButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            browserToggleButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            browserToggleButton.widthAnchor.constraint(equalToConstant: 24),
         ])
 
         // Accessibility
@@ -143,12 +168,17 @@ final class StatusBar: NSView {
             label.textColor = fgColor
         }
         sessionsButton.contentTintColor = fgColor
+        browserToggleButton.contentTintColor = fgColor
         layer?.backgroundColor = theme.backgroundColor.cgColor
         needsDisplay = true
     }
 
     @objc private func sessionsClicked() {
         onSessionsClicked?()
+    }
+
+    @objc private func browserToggleClicked() {
+        onBrowserToggle?()
     }
 
     // MARK: - Updates

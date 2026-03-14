@@ -1189,6 +1189,7 @@ private struct InspectorFilePreviewOverlay: View {
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .accessibilityLabel(viewModel.selectedFilePath ?? "File Preview")
                             .accessibilityIdentifier("right-inspector-overlay-title")
 
                         if viewModel.isDirty {
@@ -1323,6 +1324,7 @@ private struct InspectorChangePreviewOverlay: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .accessibilityLabel(viewModel.selectedPath ?? "Change Preview")
                     .accessibilityIdentifier("right-inspector-overlay-title")
 
                 Spacer()
@@ -1380,6 +1382,7 @@ private struct InspectorReviewOverlay: View {
                     Text(viewModel.selectedTaskTitle ?? "Review")
                         .font(.headline)
                         .lineLimit(1)
+                        .accessibilityLabel(viewModel.selectedTaskTitle ?? "Review")
                         .accessibilityIdentifier("right-inspector-overlay-title")
                     if let taskID = viewModel.selectedTaskID {
                         Text(taskID)

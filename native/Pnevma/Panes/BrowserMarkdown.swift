@@ -273,6 +273,7 @@ final class BrowserMarkdownConverter {
 
 struct BrowserReaderModeView: View {
     let result: MarkdownResult
+    let searchController: BrowserReaderFindController
     let onClose: () -> Void
     let onCopyMarkdown: () -> Void
     let onSaveMarkdown: () -> Void
@@ -309,17 +310,10 @@ struct BrowserReaderModeView: View {
             Divider()
 
             // Markdown content
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(LocalizedStringKey(formatMarkdownForDisplay(result.markdown)))
-                        .textSelection(.enabled)
-                        .font(.body)
-                        .lineSpacing(4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(24)
-                .frame(maxWidth: 720)
-            }
+            BrowserReaderDocumentView(
+                markdown: formatMarkdownForDisplay(result.markdown),
+                searchController: searchController
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.clear)
         }

@@ -71,3 +71,25 @@ if (typeof cur === "object") {
 }
 ' "$raw_json" "$expression"
 }
+
+require_control_socket() {
+  if [[ ! -S "$SOCKET_PATH" ]]; then
+    echo "error: control socket not found at $SOCKET_PATH" >&2
+    echo "Launch the app first or use ./scripts/run-ipc-e2e-with-app.sh." >&2
+    exit 1
+  fi
+}
+
+require_project_status() {
+  local output
+  set +e
+  output="$(pnevma_ctl project.status 2>&1)"
+  local status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    echo "error: project.status failed. Open a project first or use ./scripts/run-ipc-e2e-with-app.sh." >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  printf '%s\n' "$output"
+}

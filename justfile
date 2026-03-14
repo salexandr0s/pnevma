@@ -130,7 +130,7 @@ spm-test-clean: rust-build
     {{clean_log}} --log {{native_log_dir}}/swift-test.log -- zsh -lc 'cd native && swift test'
     @echo "SPM tests complete"
 
-ghostty-smoke: ghostty-build xcode-build
+ghostty-smoke:
     @echo "Running Ghostty runtime smoke..."
     ./scripts/run-ghostty-smoke.sh
     @echo "Ghostty smoke passed"
@@ -159,10 +159,8 @@ test: rust-test xcode-test
 
 # Run all tests including E2E
 test-all: rust-test xcode-test
-    @echo "Running E2E smoke test..."
-    ./scripts/ipc-e2e-smoke.sh
-    @echo "Running E2E recovery test..."
-    ./scripts/ipc-e2e-recovery.sh
+    @echo "Running self-bootstrapping IPC E2E harness..."
+    ./scripts/run-ipc-e2e-with-app.sh
     @echo "All tests passed"
 
 workflow-check:

@@ -115,13 +115,13 @@ struct SidebarView: View {
                         paneType: "settings",
                         defaultPresentation: .tab
                     ),
-                    isActive: activeToolID == "settings"
+                    isActive: activeToolID == "settings",
+                    accessibilityID: "sidebar.tool.settings"
                 ) {
                     activeToolID = "settings"
                     onOpenSettings?()
                 }
                 .padding(.vertical, 4)
-                .accessibilityIdentifier("sidebar.settings")
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)

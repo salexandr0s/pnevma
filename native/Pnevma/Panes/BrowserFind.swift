@@ -169,12 +169,32 @@ final class BrowserFindState {
     var totalMatches: Int = 0
 }
 
+struct BrowserFindActions {
+    let search: (String) async -> Int
+    let navigate: (_ forward: Bool) async -> (current: Int, total: Int)
+    let clear: () -> Void
+
+    static func webView(_ webView: WKWebView) -> Self {
+        Self(
+            search: { query in
+                await BrowserFindJavaScript.search(in: webView, query: query)
+            },
+            navigate: { forward in
+                await BrowserFindJavaScript.navigate(in: webView, forward: forward)
+            },
+            clear: {
+                BrowserFindJavaScript.clear(in: webView)
+            }
+        )
+    }
+}
+
 // MARK: - BrowserFindOverlay
 
 struct BrowserFindOverlay: View {
     @Bindable var state: BrowserFindState
     @Environment(GhosttyThemeProvider.self) var theme
-    let webView: WKWebView
+    let actions: BrowserFindActions
     let onClose: () -> Void
 
     @State private var searchTask: Task<Void, Never>?
@@ -220,10 +240,7 @@ struct BrowserFindOverlay: View {
             .accessibilityLabel("Next match")
 
             // Close
-            Button(action: {
-                BrowserFindJavaScript.clear(in: webView)
-                onClose()
-            }) {
+            Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.medium))
             }
@@ -234,8 +251,12 @@ struct BrowserFindOverlay: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: theme.foregroundColor).opacity(0.06))
-                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+                .fill(Color(nsColor: theme.backgroundColor).opacity(0.92))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.12))
+                )
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
         )
     }
 
@@ -246,7 +267,7 @@ struct BrowserFindOverlay: View {
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled else { return }
 
-            let total = await BrowserFindJavaScript.search(in: webView, query: query)
+            let total = await actions.search(query)
             state.totalMatches = total
             state.currentMatch = total > 0 ? 1 : 0
         }
@@ -254,7 +275,7 @@ struct BrowserFindOverlay: View {
 
     private func navigateNext() {
         Task { @MainActor in
-            let result = await BrowserFindJavaScript.navigate(in: webView, forward: true)
+            let result = await actions.navigate(true)
             state.currentMatch = result.current
             state.totalMatches = result.total
         }
@@ -262,7 +283,7 @@ struct BrowserFindOverlay: View {
 
     private func navigatePrev() {
         Task { @MainActor in
-            let result = await BrowserFindJavaScript.navigate(in: webView, forward: false)
+            let result = await actions.navigate(false)
             state.currentMatch = result.current
             state.totalMatches = result.total
         }

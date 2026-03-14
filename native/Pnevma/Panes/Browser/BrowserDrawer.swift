@@ -88,13 +88,14 @@ struct BrowserDrawerOverlayView: View {
     let onVisibilityChanged: (Bool) -> Void
     let onHitRectChanged: (CGRect) -> Void
 
+    @State private var isMaximized = false
+    @State private var heightBeforeMaximize: CGFloat?
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
                 if chromeState.isPresented, let session {
                     drawerCard(for: session, in: geometry.size)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 10)
                         .background(
                             GeometryReader { proxy in
                                 Color.clear.preference(
@@ -134,14 +135,16 @@ struct BrowserDrawerOverlayView: View {
     private func drawerCard(for session: BrowserWorkspaceSession, in size: CGSize) -> some View {
         let drawerHeight = session.resolvedDrawerHeight(for: size.height)
         let maxDrawerHeight = BrowserDrawerSizing.maxHeight(for: size.height)
-        let cardBackgroundOpacity = min(1.0, max(0.96, theme.backgroundOpacity))
-        let cardBackgroundColor = Color(nsColor: theme.backgroundColor).opacity(cardBackgroundOpacity)
+        let cardBackgroundColor = Color(nsColor: theme.backgroundColor)
 
         VStack(spacing: 0) {
             BrowserDrawerResizeHandle(
                 currentHeight: drawerHeight,
                 availableHeight: size.height,
-                onHeightChanged: { session.setDrawerHeight($0) }
+                onHeightChanged: {
+                    session.setDrawerHeight($0)
+                    isMaximized = false
+                }
             )
             .padding(.top, 8)
 
@@ -159,32 +162,21 @@ struct BrowserDrawerOverlayView: View {
                 Spacer()
 
                 Button(action: {
-                    session.adjustDrawerHeight(
-                        by: -BrowserDrawerSizing.keyboardStep,
-                        availableHeight: size.height
-                    )
+                    if isMaximized {
+                        session.setDrawerHeight(heightBeforeMaximize)
+                        isMaximized = false
+                    } else {
+                        heightBeforeMaximize = session.preferredDrawerHeight
+                        session.setDrawerHeight(maxDrawerHeight)
+                        isMaximized = true
+                    }
                 }) {
-                    Image(systemName: "rectangle.compress.vertical")
+                    Image(systemName: isMaximized ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 12, weight: .medium))
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .disabled(drawerHeight <= BrowserDrawerSizing.minHeight + 1)
-                .accessibilityLabel("Make browser drawer shorter")
-
-                Button(action: {
-                    session.adjustDrawerHeight(
-                        by: BrowserDrawerSizing.keyboardStep,
-                        availableHeight: size.height
-                    )
-                }) {
-                    Image(systemName: "rectangle.expand.vertical")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .disabled(drawerHeight >= maxDrawerHeight - 1)
-                .accessibilityLabel("Make browser drawer taller")
+                .accessibilityLabel(isMaximized ? "Restore browser drawer" : "Maximize browser drawer")
 
                 Button("Open as Tab", action: onOpenAsTab)
                     .buttonStyle(.bordered)
@@ -212,13 +204,25 @@ struct BrowserDrawerOverlayView: View {
         .frame(maxWidth: .infinity)
         .frame(height: drawerHeight)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(cardBackgroundColor)
+            UnevenRoundedRectangle(
+                topLeadingRadius: 16,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 16,
+                style: .continuous
+            )
+            .fill(cardBackgroundColor)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
+            UnevenRoundedRectangle(
+                topLeadingRadius: 16,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 16,
+                style: .continuous
+            )
+            .strokeBorder(Color.primary.opacity(0.08))
         )
-        .shadow(color: Color.black.opacity(0.18), radius: 20, y: 12)
+        .shadow(color: Color.black.opacity(0.18), radius: 12, y: -4)
     }
 }

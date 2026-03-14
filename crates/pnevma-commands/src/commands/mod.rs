@@ -48,8 +48,8 @@ use pnevma_core::{
 use pnevma_db::{
     sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, Db, EventQueryFilter,
     EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow, OnboardingStateRow,
-    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SessionRow, SshProfileRow,
-    TaskRow, TelemetryEventRow, TrustRecord, WorkflowInstanceRow, WorkflowRow,
+    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SessionRow, SshProfileRow, TaskRow,
+    TelemetryEventRow, TrustRecord, WorkflowInstanceRow, WorkflowRow,
 };
 use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
 use pnevma_redaction::{

@@ -12,6 +12,8 @@ SESSION_NAME="${SESSION_NAME:-ipc-recovery-smoke}"
 SESSION_CWD="${SESSION_CWD:-.}"
 SESSION_COMMAND="${SESSION_COMMAND:-zsh}"
 
+require_control_socket
+
 echo "[1/8] environment.readiness"
 READINESS_JSON="$(pnevma_ctl environment.readiness "$(jq -n --arg path "${PROJECT_PATH:-.}" '{"path": $path}')")"
 echo "$READINESS_JSON"
@@ -23,8 +25,8 @@ else
   echo "[2/8] skip scaffold init (PROJECT_PATH not provided)"
 fi
 
-echo "[3/8] project.status (requires an already-open project in running app)"
-pnevma_ctl project.status
+echo "[3/8] project.status"
+require_project_status
 
 echo "[4/8] task.create"
 TASK_JSON="$(pnevma_ctl task.create "$(jq -n --arg title "$TITLE" --arg goal "$GOAL" '{"title": $title, "goal": $goal, "priority": "P1", "acceptance_criteria": ["manual review"]}')")"

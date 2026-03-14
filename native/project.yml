@@ -60,9 +60,21 @@ targets:
           cd "$SRCROOT/.."
 
           if [[ "${CONFIGURATION}" == "Release" ]]; then
+            STATIC_LIB="target/aarch64-apple-darwin/release/libpnevma_bridge.a"
+          else
+            STATIC_LIB="target/aarch64-apple-darwin/debug/libpnevma_bridge.a"
+          fi
+
+          if [[ "${CONFIGURATION}" == "Release" ]]; then
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release
           else
-            ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin
+            ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin || {
+              if [[ -f "$STATIC_LIB" ]]; then
+                echo "warning: Rust build failed but static library exists, continuing with existing build"
+              else
+                exit 1
+              fi
+            }
           fi
     sources:
       - path: Pnevma

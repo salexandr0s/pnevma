@@ -5,6 +5,7 @@ import SwiftUI
 struct SidebarToolButton: View {
     let tool: SidebarToolItem
     var isActive: Bool = false
+    var accessibilityID: String?
     var onOpenAsTab: (() -> Void)?
     var onOpenAsPane: (() -> Void)?
     let action: () -> Void
@@ -45,6 +46,7 @@ struct SidebarToolButton: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 5))
         .onHover { isHovering = $0 }
+        .accessibilityElement(children: .ignore)
         .contextMenu {
             if !tool.isStub {
                 Button {
@@ -60,6 +62,6 @@ struct SidebarToolButton: View {
             }
         }
         .accessibilityLabel(tool.title + (tool.isStub ? ", coming soon" : ""))
-        .accessibilityIdentifier("sidebar.tool.\(tool.id)")
+        .accessibilityIdentifier(accessibilityID ?? "sidebar.tool.\(tool.id)")
     }
 }

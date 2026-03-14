@@ -9,6 +9,8 @@ PROJECT_PATH="${PROJECT_PATH:-}"
 TITLE="${TITLE:-IPC Smoke Task}"
 GOAL="${GOAL:-Validate control-plane end-to-end path}"
 
+require_control_socket
+
 echo "[1/7] environment.readiness"
 READINESS_JSON="$(pnevma_ctl environment.readiness "$(jq -n --arg path "${PROJECT_PATH:-.}" '{"path": $path}')")"
 echo "$READINESS_JSON"
@@ -20,8 +22,8 @@ else
   echo "[2/7] skip scaffold init (PROJECT_PATH not provided)"
 fi
 
-echo "[3/7] project.status (requires an already-open project in running app)"
-pnevma_ctl project.status
+echo "[3/7] project.status"
+require_project_status
 
 echo "[4/7] task.create"
 CREATE_JSON="$(pnevma_ctl task.create "$(jq -n --arg title "$TITLE" --arg goal "$GOAL" '{"title": $title, "goal": $goal, "priority": "P1", "acceptance_criteria": ["manual review"]}')")"

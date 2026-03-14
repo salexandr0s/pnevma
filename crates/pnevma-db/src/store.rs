@@ -2949,8 +2949,8 @@ mod tests {
     use super::*;
     use crate::models::{
         AutomationRunRow, ContextRuleUsageRow, CostRow, FeedbackRow, NotificationRow,
-        OnboardingStateRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, TaskRow, TelemetryEventRow,
-        WorkflowInstanceRow, WorktreeRow,
+        OnboardingStateRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, TaskRow,
+        TelemetryEventRow, WorkflowInstanceRow, WorktreeRow,
     };
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -3141,9 +3141,7 @@ mod tests {
             created_at: now,
             updated_at: now,
         };
-        db.upsert_secret_ref(&row)
-            .await
-            .expect("insert secret ref");
+        db.upsert_secret_ref(&row).await.expect("insert secret ref");
 
         row.name = "ANTHROPIC_API_KEY".to_string();
         row.keychain_account = Some("ANTHROPIC_API_KEY".to_string());
@@ -3157,7 +3155,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, row.id);
         assert_eq!(rows[0].name, "ANTHROPIC_API_KEY");
-        assert_eq!(rows[0].keychain_account.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            rows[0].keychain_account.as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
     }
 
     #[tokio::test]

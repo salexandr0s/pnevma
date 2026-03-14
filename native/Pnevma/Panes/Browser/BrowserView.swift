@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import WebKit
 
@@ -9,6 +8,7 @@ struct BrowserView: View {
     @Environment(GhosttyThemeProvider.self) var theme
     @State private var readerState = BrowserReaderState()
     @State private var findState: BrowserFindState?
+    @State private var readerFindController = BrowserReaderFindController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,6 +37,7 @@ struct BrowserView: View {
                 if readerState.isActive, let result = readerState.result {
                     BrowserReaderModeView(
                         result: result,
+                        searchController: readerFindController,
                         onClose: { readerState.isActive = false },
                         onCopyMarkdown: copyReaderMarkdown,
                         onSaveMarkdown: savePageAsMarkdown
@@ -57,19 +58,16 @@ struct BrowserView: View {
                         )
                 }
 
-                // Find overlay
+                // Find overlay (centered)
                 if let findState {
                     VStack {
-                        HStack {
-                            Spacer()
-                            BrowserFindOverlay(
-                                state: findState,
-                                webView: viewModel.webView,
-                                onClose: { self.findState = nil }
-                            )
-                            .frame(width: 320)
-                            .padding(8)
-                        }
+                        BrowserFindOverlay(
+                            state: findState,
+                            actions: activeFindActions,
+                            onClose: closeFindOverlay
+                        )
+                        .frame(width: 320)
+                        .padding(.top, 8)
                         Spacer()
                     }
                 }
@@ -86,8 +84,7 @@ struct BrowserView: View {
             if findState == nil {
                 findState = BrowserFindState()
             } else {
-                findState = nil
-                BrowserFindJavaScript.clear(in: viewModel.webView)
+                closeFindOverlay()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .browserToggleReaderMode)) { _ in
@@ -97,13 +94,20 @@ struct BrowserView: View {
             if let findState {
                 findState.totalMatches = 0
                 findState.currentMatch = 0
-                BrowserFindJavaScript.clear(in: viewModel.webView)
+                clearAllFindHighlights()
             }
+        }
+        .onChange(of: readerState.isActive) { _, _ in
+            refreshFindResultsForCurrentTarget()
         }
     }
 
     private var viewModel: BrowserViewModel {
         session.viewModel
+    }
+
+    private var activeFindActions: BrowserFindActions {
+        readerState.isActive ? readerFindController.actions : .webView(viewModel.webView)
     }
 
     private var omnibar: some View {
@@ -201,6 +205,40 @@ struct BrowserView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Find in page")
             .keyboardShortcut("f", modifiers: .command)
+        }
+    }
+
+    private func clearAllFindHighlights() {
+        BrowserFindJavaScript.clear(in: viewModel.webView)
+        readerFindController.clear()
+    }
+
+    private func closeFindOverlay() {
+        clearAllFindHighlights()
+        findState = nil
+    }
+
+    private func refreshFindResultsForCurrentTarget() {
+        guard let findState else {
+            clearAllFindHighlights()
+            return
+        }
+
+        clearAllFindHighlights()
+
+        let query = findState.needle
+        guard !query.isEmpty else {
+            findState.totalMatches = 0
+            findState.currentMatch = 0
+            return
+        }
+
+        let actions = activeFindActions
+        Task { @MainActor [findState] in
+            let total = await actions.search(query)
+            guard self.findState === findState else { return }
+            self.findState?.totalMatches = total
+            self.findState?.currentMatch = total > 0 ? 1 : 0
         }
     }
 

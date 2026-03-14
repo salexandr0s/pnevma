@@ -564,8 +564,10 @@ pub async fn prepare(
                 .join("\n")
         )
     };
-    let redacted_context_markdown =
-        redact_text(&format!("{}{}", ctx_result.markdown, secret_names_section), &secret_values);
+    let redacted_context_markdown = redact_text(
+        &format!("{}{}", ctx_result.markdown, secret_names_section),
+        &secret_values,
+    );
     compiler
         .write_markdown(&redacted_context_markdown, &context_path)
         .map_err(|e| RunnerError::Internal(e.to_string()))?;

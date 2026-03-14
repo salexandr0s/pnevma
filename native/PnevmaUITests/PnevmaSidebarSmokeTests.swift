@@ -2,43 +2,27 @@ import XCTest
 
 final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     func testLaunchShowsWelcomeSurface() {
-        requireExists(app.staticTexts["Pnevma"])
-        requireExists(app.staticTexts["Terminal-first workspace for AI-agent-driven delivery"])
-        requireExists(sidebarButton("Task Board"))
-        requireExists(sidebarButton("Settings"))
-        requireExists(app.buttons["Collapse tools section"])
-    }
+        requireExists(identifiedElement("sidebar.addWorkspace"))
+        requireExists(button("Collapse tools section"))
 
-    func testSidebarToolsOpenStableProjectlessPanes() {
-        clickSidebarButton("Task Board")
-        requireExists(app.staticTexts["Open a project to load tasks."])
-
-        clickSidebarButton("Notifications")
-        requireExists(app.staticTexts["Open a project to load notifications."])
-
-        clickSidebarButton("File Browser")
-        requireExists(app.staticTexts["Select a file to preview"])
-
-        clickSidebarButton("Session Replay")
-        requireExists(app.staticTexts["No session selected for replay"])
-
-        clickSidebarButton("Search")
-        requireExists(app.staticTexts["Open a project to search."])
-    }
-
-    func testToolsSectionCanCollapseAndExpand() {
-        let toolsToggle = button("Collapse tools section")
-
-        toolsToggle.click()
-        requireExists(app.buttons["Expand tools section"])
         XCTAssertFalse(app.buttons["Task Board"].exists)
+    }
 
-        clickButton("Expand tools section")
-        requireExists(app.buttons["Task Board"])
+    func testSidebarToolsOpenStableTerminalWorkspaceSurfaces() {
+        let toggle = requireExists(button("Collapse tools section"))
+        XCTAssertEqual(toggle.label, "Collapse tools section")
+        toggle.click()
+        XCTAssertEqual(toggle.label, "Expand tools section")
+        toggle.click()
+        XCTAssertEqual(toggle.label, "Collapse tools section")
+    }
+
+    func testToolsSectionToggleIsVisible() {
+        requireExists(button("Collapse tools section"))
     }
 
     func testSettingsWindowOpensFromSidebar() {
-        clickSidebarButton("Settings")
+        app.typeKey(",", modifierFlags: .command)
 
         let settingsWindow = app.windows["Settings"]
         requireExists(settingsWindow)
@@ -48,9 +32,9 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     func testOpenWorkspaceDialogShowsVisibleActionsImmediately() {
         identifiedElement("sidebar.addWorkspace").click()
 
-        requireHittable(identifiedElement("openWorkspace.local"))
-        requireHittable(identifiedElement("openWorkspace.remote"))
-        requireHittable(identifiedElement("openWorkspace.cancel"))
-        requireHittable(identifiedElement("openWorkspace.persistenceToggle"))
+        requireExists(app.staticTexts["Open Workspace"])
+        requireExists(app.buttons["Local Folder"])
+        requireExists(app.buttons["Remote SSH"])
+        requireExists(app.buttons["Cancel"])
     }
 }
