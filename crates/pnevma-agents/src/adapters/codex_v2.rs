@@ -48,6 +48,10 @@ fn build_initialize_params() -> serde_json::Value {
 
 fn build_thread_start_params(config: &AgentConfig) -> serde_json::Value {
     let sandbox = if config.auto_approve {
+        tracing::warn!(
+            agent_id = %config.working_dir,
+            "Codex v2 auto_approve enabled — using danger-full-access sandbox (unrestricted system access)"
+        );
         "danger-full-access"
     } else {
         "workspace-write"

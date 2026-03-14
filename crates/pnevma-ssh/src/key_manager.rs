@@ -281,17 +281,21 @@ pub async fn generate_key(
     let passphrase = generate_passphrase();
 
     // Step 1: Generate key with an empty passphrase (no secret in process args).
+    let mut args = vec![
+        "-t",
+        effective_type,
+        "-f",
+        &key_path_str,
+        "-C",
+        comment,
+        "-N",
+        "",
+    ];
+    if effective_type == "rsa" {
+        args.extend(["-b", "4096"]);
+    }
     let output = tokio::process::Command::new("ssh-keygen")
-        .args([
-            "-t",
-            effective_type,
-            "-f",
-            &key_path_str,
-            "-C",
-            comment,
-            "-N",
-            "",
-        ])
+        .args(&args)
         .output()
         .await?;
 
@@ -299,6 +303,24 @@ pub async fn generate_key(
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(SshError::Command(stderr.to_string()));
     }
+
+    // Cleanup guard: remove unencrypted key files on any subsequent failure
+    struct KeyCleanup<'a> {
+        path: &'a str,
+        armed: bool,
+    }
+    impl Drop for KeyCleanup<'_> {
+        fn drop(&mut self) {
+            if self.armed {
+                let _ = std::fs::remove_file(self.path);
+                let _ = std::fs::remove_file(format!("{}.pub", self.path));
+            }
+        }
+    }
+    let mut cleanup = KeyCleanup {
+        path: &key_path_str,
+        armed: true,
+    };
 
     // Step 2: Re-encrypt with the real passphrase via stdin so it never
     // appears in `ps` output. `ssh-keygen -p -f <key>` in interactive mode
@@ -342,6 +364,8 @@ pub async fn generate_key(
     store_passphrase_in_keychain(name, &passphrase).map_err(|e| {
         SshError::PassphraseApplicationFailed(format!("keychain storage failed: {e}"))
     })?;
+
+    cleanup.armed = false;
 
     // Set restrictive permissions on the private key file
     #[cfg(unix)]

@@ -48,6 +48,14 @@ pub struct PnevmaResult {
     pub len: usize,
 }
 
+/// Monotonically increasing generation counter for handle identity.
+///
+/// Each `PnevmaHandle` receives a unique generation at creation time.
+/// Async callbacks record this generation so that stale callbacks from a
+/// destroyed handle cannot be invoked on a new handle allocated at the
+/// same memory address.
+static GLOBAL_HANDLE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Opaque handle holding all Pnevma runtime state.
 pub struct PnevmaHandle {
     runtime: Runtime,
@@ -57,6 +65,7 @@ pub struct PnevmaHandle {
     project_service_generation: Arc<AtomicU64>,
     pending_async_callbacks: Arc<ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>>,
     next_async_callback_id: AtomicU64,
+    handle_generation: u64,
     shutting_down: Arc<AtomicBool>,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
@@ -89,11 +98,26 @@ struct SessionOutputCallbackRegistration {
 unsafe impl Send for SessionOutputCallbackRegistration {}
 unsafe impl Sync for SessionOutputCallbackRegistration {}
 
+/// Wraps an async FFI callback with its context pointer.
+///
+/// # Safety invariants
+///
+/// 1. **Retained ownership**: The `ctx` pointer is exclusively owned by this
+///    wrapper from creation until release. No other code may alias or free it.
+/// 2. **Exactly-once release**: `release_cb(ctx)` is called exactly once — either
+///    after the completion callback fires, or on cancellation/shutdown — never both.
+/// 3. **Generation guard**: `handle_generation` must match the generation of the
+///    `PnevmaHandle` that created this wrapper. If a callback survives handle
+///    destruction and recreation at the same address, the generation mismatch
+///    prevents invoking a stale callback on a new handle's context.
+/// 4. **Shutdown guard**: When `shutting_down` is true, the completion callback
+///    is never invoked — only `release_cb` is called.
 #[derive(Clone, Copy)]
 struct AsyncCallbackWrapper {
     cb: AsyncCallback,
     ctx: *mut (),
     release_cb: AsyncContextRelease,
+    handle_generation: u64,
 }
 unsafe impl Send for AsyncCallbackWrapper {}
 unsafe impl Sync for AsyncCallbackWrapper {}
@@ -157,9 +181,10 @@ fn release_async_context(callback: AsyncCallbackWrapper) {
 }
 
 fn finish_async_callback(callback: AsyncCallbackWrapper, result: *mut PnevmaResult) {
-    (callback.cb)(result, callback.ctx);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        (callback.cb)(result, callback.ctx);
+    }));
     release_async_context(callback);
-    // Free the result after callback returns.
     unsafe { pnevma_free_result(result) };
 }
 
@@ -167,11 +192,23 @@ fn finish_pending_async_callback(
     callbacks: &ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>,
     shutting_down: &AtomicBool,
     callback_id: u64,
+    expected_generation: u64,
     result: Option<*mut PnevmaResult>,
 ) {
     let callback = callbacks.lock().remove(&callback_id);
     match (callback, result) {
         (Some(callback), Some(result)) => {
+            if callback.handle_generation != expected_generation {
+                tracing::warn!(
+                    callback_id,
+                    expected = expected_generation,
+                    actual = callback.handle_generation,
+                    "stale async callback — generation mismatch; releasing without invoking"
+                );
+                release_async_context(callback);
+                unsafe { pnevma_free_result(result) };
+                return;
+            }
             if shutting_down.load(Ordering::SeqCst) {
                 release_async_context(callback);
                 unsafe { pnevma_free_result(result) };
@@ -181,6 +218,16 @@ fn finish_pending_async_callback(
         }
         (None, Some(result)) => unsafe { pnevma_free_result(result) },
         (Some(callback), None) => {
+            if callback.handle_generation != expected_generation {
+                tracing::warn!(
+                    callback_id,
+                    expected = expected_generation,
+                    actual = callback.handle_generation,
+                    "stale async callback — generation mismatch; releasing without invoking"
+                );
+                release_async_context(callback);
+                return;
+            }
             if shutting_down.load(Ordering::SeqCst) {
                 release_async_context(callback);
             } else {
@@ -198,6 +245,7 @@ struct PendingAsyncCallbackGuard {
     callbacks: Arc<ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>>,
     shutting_down: Arc<AtomicBool>,
     callback_id: u64,
+    expected_generation: u64,
     active: bool,
 }
 
@@ -207,12 +255,14 @@ impl PendingAsyncCallbackGuard {
         shutting_down: Arc<AtomicBool>,
         callback_id: u64,
         callback: AsyncCallbackWrapper,
+        expected_generation: u64,
     ) -> Self {
         callbacks.lock().insert(callback_id, callback);
         Self {
             callbacks,
             shutting_down,
             callback_id,
+            expected_generation,
             active: true,
         }
     }
@@ -223,6 +273,7 @@ impl PendingAsyncCallbackGuard {
             &self.callbacks,
             self.shutting_down.as_ref(),
             self.callback_id,
+            self.expected_generation,
             Some(result),
         );
     }
@@ -237,6 +288,7 @@ impl Drop for PendingAsyncCallbackGuard {
             &self.callbacks,
             self.shutting_down.as_ref(),
             self.callback_id,
+            self.expected_generation,
             None,
         );
     }
@@ -252,7 +304,12 @@ fn snapshot_session_output_callback(
 fn wait_for_session_output_callback_quiescence(
     registration: Arc<SessionOutputCallbackRegistration>,
 ) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while Arc::strong_count(&registration) > 1 {
+        if std::time::Instant::now() > deadline {
+            tracing::warn!("session output callback quiescence timed out after 5s");
+            break;
+        }
         std::thread::yield_now();
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -535,6 +592,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             project_service_generation,
             pending_async_callbacks,
             next_async_callback_id: AtomicU64::new(1),
+            handle_generation: GLOBAL_HANDLE_GENERATION.fetch_add(1, Ordering::SeqCst),
             shutting_down,
             shutdown: shutdown_tx,
         }))
@@ -553,9 +611,12 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        // Mark as shutting down BEFORE reclaiming ownership — narrows the
+        // concurrent-destroy / concurrent-call race window.
+        unsafe { &*handle }
+            .shutting_down
+            .store(true, Ordering::SeqCst);
         let handle = unsafe { Box::from_raw(handle) };
-        // Signal all tasks to shut down
-        handle.shutting_down.store(true, Ordering::SeqCst);
         let _ = handle.shutdown.send(true);
         if let Ok(mut task_guard) = handle.session_output_task.lock() {
             if let Some(task) = task_guard.take() {
@@ -602,6 +663,10 @@ pub extern "C" fn pnevma_call(
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &*handle };
+
+        if handle.shutting_down.load(Ordering::SeqCst) {
+            return make_error_result("handle is shutting down");
+        }
 
         let method_str = match unsafe { CStr::from_ptr(method) }.to_str() {
             Ok(s) => s,
@@ -688,6 +753,19 @@ pub extern "C" fn pnevma_call_async(
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &*handle };
 
+        if handle.shutting_down.load(Ordering::SeqCst) {
+            finish_async_callback(
+                AsyncCallbackWrapper {
+                    cb,
+                    ctx: cb_ctx,
+                    release_cb,
+                    handle_generation: 0,
+                },
+                make_error_result("handle is shutting down"),
+            );
+            return;
+        }
+
         let method_str = match unsafe { CStr::from_ptr(method) }.to_str() {
             Ok(s) => s.to_owned(),
             Err(_) => {
@@ -697,6 +775,7 @@ pub extern "C" fn pnevma_call_async(
                         cb,
                         ctx: cb_ctx,
                         release_cb,
+                        handle_generation: 0,
                     },
                     r,
                 );
@@ -709,6 +788,7 @@ pub extern "C" fn pnevma_call_async(
                     cb,
                     ctx: cb_ctx,
                     release_cb,
+                    handle_generation: 0,
                 },
                 r,
             );
@@ -723,6 +803,7 @@ pub extern "C" fn pnevma_call_async(
                         cb,
                         ctx: cb_ctx,
                         release_cb,
+                        handle_generation: 0,
                     },
                     r,
                 );
@@ -742,7 +823,9 @@ pub extern "C" fn pnevma_call_async(
                 cb,
                 ctx: cb_ctx,
                 release_cb,
+                handle_generation: handle.handle_generation,
             },
+            handle.handle_generation,
         );
         let project_service_generation = Arc::clone(&handle.project_service_generation);
         handle.runtime.spawn(async move {
@@ -1199,7 +1282,9 @@ mod tests {
                         cb: test_async_cb,
                         ctx: async_callback_ctx(&state),
                         release_cb: test_async_release_cb,
+                        handle_generation: 1,
                     },
+                    1,
                 );
                 panic!("simulate panic after pending callback registration");
             }
@@ -1358,5 +1443,84 @@ mod tests {
             "matching generations must remove and return the handle"
         );
         assert!(slot.is_none(), "slot should be empty after a matching take");
+    }
+
+    #[test]
+    fn generation_mismatch_releases_without_invoking() {
+        let callbacks = Arc::new(ParkingMutex::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AsyncCallbackState::default());
+
+        // Insert a callback with generation 1
+        callbacks.lock().insert(
+            42,
+            AsyncCallbackWrapper {
+                cb: test_async_cb,
+                ctx: async_callback_ctx(&state),
+                release_cb: test_async_release_cb,
+                handle_generation: 1,
+            },
+        );
+
+        // Finish with expected_generation=2 (mismatch)
+        let result = make_result(true, "ok");
+        finish_pending_async_callback(&callbacks, &shutting_down, 42, 2, Some(result));
+
+        assert_eq!(
+            state.called.load(Ordering::SeqCst),
+            0,
+            "callback must not be invoked on generation mismatch"
+        );
+        assert_eq!(
+            state.released.load(Ordering::SeqCst),
+            1,
+            "context must still be released on generation mismatch"
+        );
+        assert!(
+            callbacks.lock().is_empty(),
+            "callback must be removed from pending map"
+        );
+    }
+
+    #[test]
+    fn generation_match_invokes_callback() {
+        let callbacks = Arc::new(ParkingMutex::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AsyncCallbackState::default());
+
+        callbacks.lock().insert(
+            43,
+            AsyncCallbackWrapper {
+                cb: test_async_cb,
+                ctx: async_callback_ctx(&state),
+                release_cb: test_async_release_cb,
+                handle_generation: 5,
+            },
+        );
+
+        let result = make_result(true, "hello");
+        finish_pending_async_callback(&callbacks, &shutting_down, 43, 5, Some(result));
+
+        assert_eq!(
+            state.called.load(Ordering::SeqCst),
+            1,
+            "callback must be invoked when generations match"
+        );
+        assert_eq!(
+            state.released.load(Ordering::SeqCst),
+            1,
+            "context must be released after invocation"
+        );
+    }
+
+    #[test]
+    fn global_handle_generation_is_monotonic() {
+        let g1 = GLOBAL_HANDLE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let g2 = GLOBAL_HANDLE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let g3 = GLOBAL_HANDLE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            g1 < g2 && g2 < g3,
+            "global generation must be strictly increasing"
+        );
     }
 }

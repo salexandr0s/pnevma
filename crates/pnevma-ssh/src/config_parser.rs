@@ -39,15 +39,21 @@ fn parse_config_content(content: &str) -> Vec<SshProfile> {
                  port: Option<u16>,
                  identity_file: Option<String>,
                  proxy_jump: Option<String>|
-     -> SshProfile {
+     -> Option<SshProfile> {
         let host = hostname.unwrap_or_else(|| pattern.to_string());
-        let mut profile = SshProfile::new(pattern, host, "ssh_config");
+        let mut profile = match SshProfile::new(pattern, host, "ssh_config") {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(pattern, error = %e, "skipping SSH config host with invalid hostname");
+                return None;
+            }
+        };
         profile.user = user;
         profile.port = port.unwrap_or(22);
         profile.identity_file = identity_file;
         profile.proxy_jump = proxy_jump;
         profile.tags = vec!["ssh_config".to_string()];
-        profile
+        Some(profile)
     };
 
     for line in content.lines() {
@@ -70,14 +76,16 @@ fn parse_config_content(content: &str) -> Vec<SshProfile> {
         if key == "host" {
             if let Some(ref pattern) = current_host_pattern.take() {
                 if pattern != "*" {
-                    profiles.push(flush(
+                    if let Some(p) = flush(
                         pattern,
                         current_hostname.take(),
                         current_user.take(),
                         current_port.take(),
                         current_identity_file.take(),
                         current_proxy_jump.take(),
-                    ));
+                    ) {
+                        profiles.push(p);
+                    }
                 } else {
                     current_hostname = None;
                     current_user = None;
@@ -112,14 +120,16 @@ fn parse_config_content(content: &str) -> Vec<SshProfile> {
     // Flush last block
     if let Some(ref pattern) = current_host_pattern {
         if pattern != "*" {
-            profiles.push(flush(
+            if let Some(p) = flush(
                 pattern,
                 current_hostname,
                 current_user,
                 current_port,
                 current_identity_file,
                 current_proxy_jump,
-            ));
+            ) {
+                profiles.push(p);
+            }
         }
     }
 
