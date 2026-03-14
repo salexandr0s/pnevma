@@ -3,6 +3,7 @@
 //! This crate provides a staticlib that Swift code links against.
 //! All public functions are `extern "C"` with `catch_unwind` safety.
 
+use parking_lot::Mutex as ParkingMutex;
 use pnevma_commands::event_emitter::EventEmitter;
 use pnevma_commands::state::AppState;
 use pnevma_commands::state::ManagedService;
@@ -53,7 +54,7 @@ pub struct PnevmaHandle {
     session_output_cb: Arc<std::sync::Mutex<Option<SessionOutputCallbackWrapper>>>,
     session_output_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     project_service_generation: Arc<AtomicU64>,
-    pending_async_callbacks: Arc<std::sync::Mutex<HashMap<u64, AsyncCallbackWrapper>>>,
+    pending_async_callbacks: Arc<ParkingMutex<HashMap<u64, AsyncCallbackWrapper>>>,
     next_async_callback_id: AtomicU64,
     shutting_down: Arc<AtomicBool>,
     shutdown: tokio::sync::watch::Sender<bool>,
@@ -374,7 +375,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         // Register self_arc so internal code can clone it (e.g. AutomationCoordinator).
         let _ = state.self_arc.set(Arc::clone(&state));
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-        let pending_async_callbacks = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let pending_async_callbacks = Arc::new(ParkingMutex::new(HashMap::new()));
         let shutting_down = Arc::new(AtomicBool::new(false));
         let project_service_generation = Arc::new(AtomicU64::new(0));
 
@@ -417,14 +418,12 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
         if let Ok(mut cb_guard) = handle.session_output_cb.lock() {
             *cb_guard = None;
         }
-        let pending_callbacks = if let Ok(mut callbacks) = handle.pending_async_callbacks.lock() {
-            callbacks
-                .drain()
-                .map(|(_, callback)| callback)
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
+        let pending_callbacks = handle
+            .pending_async_callbacks
+            .lock()
+            .drain()
+            .map(|(_, callback)| callback)
+            .collect::<Vec<_>>();
         for callback in pending_callbacks {
             release_async_context(callback);
         }
@@ -595,27 +594,14 @@ pub extern "C" fn pnevma_call_async(
         let callback_id = handle
             .next_async_callback_id
             .fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut callbacks) = handle.pending_async_callbacks.lock() {
-            callbacks.insert(
-                callback_id,
-                AsyncCallbackWrapper {
-                    cb,
-                    ctx: cb_ctx,
-                    release_cb,
-                },
-            );
-        } else {
-            let r = make_error_result("async callback registry poisoned");
-            finish_async_callback(
-                AsyncCallbackWrapper {
-                    cb,
-                    ctx: cb_ctx,
-                    release_cb,
-                },
-                r,
-            );
-            return;
-        }
+        handle.pending_async_callbacks.lock().insert(
+            callback_id,
+            AsyncCallbackWrapper {
+                cb,
+                ctx: cb_ctx,
+                release_cb,
+            },
+        );
         let callbacks = Arc::clone(&handle.pending_async_callbacks);
         let shutting_down = Arc::clone(&handle.shutting_down);
         let project_service_generation = Arc::clone(&handle.project_service_generation);
@@ -649,16 +635,11 @@ pub extern "C" fn pnevma_call_async(
                 Err((_code, msg)) => make_error_result(&msg),
             };
             if shutting_down.load(Ordering::SeqCst) {
-                if let Ok(mut callbacks) = callbacks.lock() {
-                    callbacks.remove(&callback_id);
-                }
+                callbacks.lock().remove(&callback_id);
                 unsafe { pnevma_free_result(r) };
                 return;
             }
-            let callback = callbacks
-                .lock()
-                .ok()
-                .and_then(|mut callbacks| callbacks.remove(&callback_id));
+            let callback = callbacks.lock().remove(&callback_id);
             if let Some(callback) = callback {
                 finish_async_callback(callback, r);
             } else {
@@ -1029,7 +1010,7 @@ mod tests {
         );
         let h = unsafe { &*handle };
         assert_eq!(
-            h.pending_async_callbacks.lock().unwrap().len(),
+            h.pending_async_callbacks.lock().len(),
             1,
             "callback should be pending before destroy"
         );
