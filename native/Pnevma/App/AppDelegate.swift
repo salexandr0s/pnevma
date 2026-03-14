@@ -84,14 +84,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
     private var isRightInspectorVisible = true
+    private var sidebarTransitionGeneration: UInt64 = 0
+    private var rightInspectorTransitionGeneration: UInt64 = 0
     private var rightInspectorStoredWidth = DesignTokens.Layout.rightInspectorDefaultWidth
     private var restoredCommandCenterWindowFrame: NSRect?
     private var restoredCommandCenterVisible = false
     private let rightInspectorChromeState = RightInspectorChromeState()
     private let browserDrawerChromeState = BrowserDrawerChromeState()
+    private let browserDrawerPresentationModel = BrowserDrawerPresentationModel()
     private var browserToolBridge: BrowserToolBridge?
     private var terminalOpenURLObserver: NSObjectProtocol?
     private var browserSessions: [UUID: BrowserWorkspaceSession] = [:]
+    private var browserSessionPrewarmTask: Task<Void, Never>?
     private weak var browserDrawerPreviousFirstResponder: NSResponder?
     private lazy var rightInspectorFileBrowserViewModel = FileBrowserViewModel(
         commandBus: commandBus ?? CommandBus.shared
@@ -224,6 +228,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        ChromeTransitionCoordinator.shared.reset()
         persistence?.stopAutoSave()
         if !AppLaunchContext.isTesting {
             persistence?.save(state: buildSessionState())
@@ -329,6 +334,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self?.syncRightInspectorPresentation(animated: false)
             self?.refreshBrowserDrawerOverlayRootView()
+            if let workspace = self?.workspaceManager?.activeWorkspace {
+                self?.scheduleBrowserSessionPrewarm(for: workspace)
+            }
             self?.updateNotificationBadge()
         }
         workspaceManager?.onNotificationCountChanged = { [weak self] _ in
@@ -373,6 +381,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func shutdownRuntime() {
         smokeTimeoutWorkItem?.cancel()
         smokeTimeoutWorkItem = nil
+        browserSessionPrewarmTask?.cancel()
+        browserSessionPrewarmTask = nil
+        for session in browserSessions.values {
+            session.cancelPendingDrawerRestore()
+        }
         if let terminalOpenURLObserver {
             NotificationCenter.default.removeObserver(terminalOpenURLObserver)
             self.terminalOpenURLObserver = nil
@@ -608,11 +621,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         browserDrawerBlocker.capturesPointerEvents = false
         self.browserDrawerOverlayBlockerView = browserDrawerBlocker
 
-        let browserSession = workspaceManager.activeWorkspace.flatMap { self.browserSession(for: $0) }
-            ?? BrowserWorkspaceSession()
+        let browserSession = workspaceManager.activeWorkspace.flatMap { self.existingBrowserSession(for: $0) }
+        browserDrawerPresentationModel.session = browserSession
         let browserDrawerOverlay = BrowserDrawerOverlayView(
             chromeState: browserDrawerChromeState,
-            session: browserSession,
+            presentationModel: browserDrawerPresentationModel,
             onClose: { [weak self] in self?.closeBrowserDrawer() },
             onPinToPane: { [weak self] in self?.pinBrowserToPane() },
             onOpenAsTab: { [weak self] in self?.openBrowserAsTab() },
@@ -628,6 +641,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let browserDrawerHost = BrowserDrawerOverlayHostingView(
             rootView: AnyView(browserDrawerOverlay.environment(GhosttyThemeProvider.shared))
         )
+        PerformanceDiagnostics.shared.recordBrowserDrawerRootViewAssignment()
         browserDrawerHost.capturesPointerEvents = false
         self.browserDrawerOverlayHostView = browserDrawerHost
 
@@ -889,12 +903,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         rightInspectorBacking.isHidden = !isRightInspectorPresented
         rightInspectorResizer.isHidden = !isRightInspectorPresented
-        browserDrawerChromeState.isPresented = browserSession.isDrawerVisible
-        browserDrawerBlocker.capturesPointerEvents = browserSession.isDrawerVisible
-        browserDrawerHost.capturesPointerEvents = browserSession.isDrawerVisible
+        let isBrowserDrawerVisible = browserSession?.isDrawerVisible ?? false
+        browserDrawerChromeState.isPresented = isBrowserDrawerVisible
+        browserDrawerBlocker.capturesPointerEvents = isBrowserDrawerVisible
+        browserDrawerHost.capturesPointerEvents = isBrowserDrawerVisible
         updateWindowMinWidth()
         updateRightInspectorOverlayAlignment()
         refreshBrowserDrawerOverlayRootView()
+        if let workspace = workspaceManager.activeWorkspace {
+            scheduleBrowserSessionPrewarm(for: workspace)
+        }
         updateUsageToolbarStatus()
 
         // For terminal transparency (background-opacity < 1.0), the window must
@@ -1499,7 +1517,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleSidebar() {
         isSidebarVisible.toggle()
         rightInspectorChromeState.overlayShouldAnimateAlignment = true
+        sidebarTransitionGeneration &+= 1
+        let transitionGeneration = sidebarTransitionGeneration
         let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
+        let signpost = PerformanceDiagnostics.shared.beginInterval("sidebar.toggle")
+        ChromeTransitionCoordinator.shared.begin(.sidebar)
         if isSidebarVisible { sidebarHostView?.isHidden = false }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.Motion.normal
@@ -1508,6 +1530,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }, completionHandler: {
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                ChromeTransitionCoordinator.shared.end(.sidebar)
+                PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
+                guard self.sidebarTransitionGeneration == transitionGeneration else { return }
                 if !self.isSidebarVisible { self.sidebarHostView?.isHidden = true }
                 self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
             }
@@ -1544,6 +1569,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func syncRightInspectorPresentation(animated: Bool) {
+        rightInspectorTransitionGeneration &+= 1
+        let transitionGeneration = rightInspectorTransitionGeneration
         let shouldPresent = isRightInspectorPresented
         rightInspectorChromeState.isVisible = shouldPresent
         rightInspectorChromeState.overlayShouldAnimateAlignment = animated
@@ -1558,6 +1585,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.rightInspectorWidthConstraint?.animator().constant = targetWidth
         }
         if animated {
+            let signpost = PerformanceDiagnostics.shared.beginInterval("right_inspector.toggle")
+            ChromeTransitionCoordinator.shared.begin(.rightInspector)
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = DesignTokens.Motion.normal
                 ctx.allowsImplicitAnimation = true
@@ -1565,8 +1594,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }, completionHandler: {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    ChromeTransitionCoordinator.shared.end(.rightInspector)
+                    PerformanceDiagnostics.shared.endInterval("right_inspector.toggle", signpost)
+                    guard self.rightInspectorTransitionGeneration == transitionGeneration else { return }
                     self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
-                    if !shouldPresent {
+                    if !self.isRightInspectorPresented {
                         hostView?.isHidden = true
                         resizerView?.isHidden = true
                     }
@@ -2494,6 +2526,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         case automation
     }
 
+    private func existingBrowserSession(for workspace: Workspace) -> BrowserWorkspaceSession? {
+        browserSessions[workspace.id]
+    }
+
     private func browserSession(for workspace: Workspace) -> BrowserWorkspaceSession {
         if let existing = browserSessions[workspace.id] {
             existing.updateRestoredURL(workspace.browserLastURL.flatMap(URL.init(string:)))
@@ -2527,11 +2563,32 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return browserSession(for: workspace)
     }
 
+    private func existingActiveBrowserSession() -> BrowserWorkspaceSession? {
+        guard let workspace = workspaceManager?.activeWorkspace else { return nil }
+        return existingBrowserSession(for: workspace)
+    }
+
+    private func scheduleBrowserSessionPrewarm(for workspace: Workspace) {
+        browserSessionPrewarmTask?.cancel()
+        let workspaceID = workspace.id
+        browserSessionPrewarmTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let self else { return }
+            guard self.workspaceManager?.activeWorkspace?.id == workspaceID else { return }
+            guard let activeWorkspace = self.workspaceManager?.activeWorkspace else { return }
+            guard self.existingBrowserSession(for: activeWorkspace) == nil else { return }
+            _ = self.browserSession(for: activeWorkspace)
+            self.refreshBrowserDrawerOverlayRootView()
+        }
+    }
+
     private func refreshBrowserDrawerOverlayRootView() {
         guard let host = browserDrawerOverlayHostView else { return }
+        let previousSession = browserDrawerPresentationModel.session
 
         guard let workspace = workspaceManager?.activeWorkspace else {
-            host.rootView = AnyView(EmptyView())
+            previousSession?.cancelPendingDrawerRestore()
+            browserDrawerPresentationModel.session = nil
             browserDrawerChromeState.isPresented = false
             host.capturesPointerEvents = false
             browserDrawerOverlayBlockerView?.capturesPointerEvents = false
@@ -2541,27 +2598,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let session = browserSession(for: workspace)
-        let root = BrowserDrawerOverlayView(
-            chromeState: browserDrawerChromeState,
-            session: session,
-            onClose: { [weak self] in self?.closeBrowserDrawer() },
-            onPinToPane: { [weak self] in self?.pinBrowserToPane() },
-            onOpenAsTab: { [weak self] in self?.openBrowserAsTab() },
-            onVisibilityChanged: { [weak self] isVisible in
-                self?.browserDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
-                self?.browserDrawerOverlayHostView?.capturesPointerEvents = isVisible
-            },
-            onHitRectChanged: { [weak self] rect in
-                self?.browserDrawerOverlayBlockerView?.overlayHitRect = rect
-                self?.browserDrawerOverlayHostView?.overlayHitRect = rect
-            }
-        )
-        host.rootView = AnyView(root.environment(GhosttyThemeProvider.shared))
-        let captures = session.isDrawerVisible
+        let session = existingBrowserSession(for: workspace)
+        if let previousSession, previousSession !== session {
+            previousSession.cancelPendingDrawerRestore()
+        }
+        browserDrawerPresentationModel.session = session
+        let captures = session?.isDrawerVisible ?? false
         browserDrawerChromeState.isPresented = captures
         host.capturesPointerEvents = captures
         browserDrawerOverlayBlockerView?.capturesPointerEvents = captures
+        if !captures {
+            browserDrawerChromeState.drawerHitRect = .zero
+            host.overlayHitRect = .zero
+            browserDrawerOverlayBlockerView?.overlayHitRect = .zero
+        }
     }
 
     private func focusExistingBrowserPaneIfPresent() -> Bool {
@@ -2592,7 +2642,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func closeBrowserDrawer() {
-        guard let session = activeBrowserSession(), session.isDrawerVisible else { return }
+        guard let session = existingActiveBrowserSession(), session.isDrawerVisible else { return }
         session.hideDrawer()
         browserDrawerChromeState.drawerHitRect = .zero
         refreshBrowserDrawerOverlayRootView()
@@ -2688,7 +2738,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func copyBrowserSelectionWithSource() async {
-        guard let session = activeBrowserSession() else {
+        guard let session = existingActiveBrowserSession() else {
             showBrowserCaptureError(BrowserCaptureError.noActivePage)
             return
         }
@@ -2706,7 +2756,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func saveBrowserPageAsMarkdown() async {
-        guard let session = activeBrowserSession() else {
+        guard let session = existingActiveBrowserSession() else {
             showBrowserCaptureError(BrowserCaptureError.noActivePage)
             return
         }
@@ -2732,7 +2782,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func copyBrowserLinkListAsMarkdown() async {
-        guard let session = activeBrowserSession() else {
+        guard let session = existingActiveBrowserSession() else {
             showBrowserCaptureError(BrowserCaptureError.noActivePage)
             return
         }

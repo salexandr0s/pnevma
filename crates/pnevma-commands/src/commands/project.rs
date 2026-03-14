@@ -2478,18 +2478,7 @@ pub async fn list_project_files(
                 .get(&path)
                 .cloned()
                 .unwrap_or_else(|| "  ".to_string());
-            let staged = status.chars().next().is_some_and(|c| c != ' ' && c != '?');
-            let modified = status.chars().nth(1).is_some_and(|c| c != ' ' && c != '?');
-            let conflicted = status.contains('U');
-            let untracked = status.starts_with("??");
-            ProjectFileView {
-                path,
-                status,
-                modified,
-                staged,
-                conflicted,
-                untracked,
-            }
+            project_file_view(path, status)
         })
         .collect::<Vec<_>>();
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -2511,23 +2500,26 @@ pub async fn list_workspace_changes(state: &AppState) -> Result<Vec<ProjectFileV
     let porcelain = git_output(&project_path, &["status", "--porcelain", "-z", "-uall"]).await?;
     let mut files = parse_porcelain_status_z(&porcelain)
         .into_iter()
-        .map(|(path, status)| {
-            let staged = status.chars().next().is_some_and(|c| c != ' ' && c != '?');
-            let modified = status.chars().nth(1).is_some_and(|c| c != ' ' && c != '?');
-            let conflicted = status.contains('U');
-            let untracked = status.starts_with("??");
-            ProjectFileView {
-                path,
-                status,
-                modified,
-                staged,
-                conflicted,
-                untracked,
-            }
-        })
+        .map(|(path, status)| project_file_view(path, status))
         .collect::<Vec<_>>();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
+}
+
+async fn workspace_change_for_path(
+    project_path: &Path,
+    rel: &str,
+) -> Result<Option<ProjectFileView>, String> {
+    let porcelain = git_output(
+        project_path,
+        &["status", "--porcelain", "-z", "-uall", "--", rel],
+    )
+    .await?;
+
+    Ok(parse_porcelain_status_z(&porcelain)
+        .into_iter()
+        .map(|(path, status)| project_file_view(path, status))
+        .find(|item| item.path == rel))
 }
 
 pub async fn get_workspace_change_diff(
@@ -2548,10 +2540,9 @@ pub async fn get_workspace_change_diff(
         return Err("invalid path".to_string());
     }
 
-    let changes = list_workspace_changes(state).await?;
-    let file = changes
-        .iter()
-        .find(|item| item.path == rel)
+    let file_opt = workspace_change_for_path(&project_path, rel).await?;
+    let file = file_opt
+        .as_ref()
         .ok_or_else(|| format!("changed file not found: {}", input.path))?;
 
     let mut patch_chunks = Vec::new();
@@ -2595,6 +2586,21 @@ pub async fn get_workspace_change_diff(
         }
     }
     Ok(Some(merged))
+}
+
+fn project_file_view(path: String, status: String) -> ProjectFileView {
+    let staged = status.chars().next().is_some_and(|c| c != ' ' && c != '?');
+    let modified = status.chars().nth(1).is_some_and(|c| c != ' ' && c != '?');
+    let conflicted = status.contains('U');
+    let untracked = status.starts_with("??");
+    ProjectFileView {
+        path,
+        status,
+        modified,
+        staged,
+        conflicted,
+        untracked,
+    }
 }
 
 pub async fn list_project_file_tree(

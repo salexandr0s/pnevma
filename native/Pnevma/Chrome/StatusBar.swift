@@ -38,7 +38,7 @@ final class StatusBar: NSView {
     }
 
     private var themeObserver: NSObjectProtocol?
-    private var sessionObservationTask: Task<Void, Never>?
+    private var sessionObservationGeneration: UInt64 = 0
 
     override var isOpaque: Bool { true }
 
@@ -188,23 +188,21 @@ final class StatusBar: NSView {
     }
 
     func bindSessionStore(_ store: SessionStore) {
-        sessionObservationTask?.cancel()
-
+        sessionObservationGeneration &+= 1
         updateSessions(store.activeCount)
+        observeSessionStore(store, generation: sessionObservationGeneration)
+    }
 
-        sessionObservationTask = Task { @MainActor [weak self, weak store] in
-            while !Task.isCancelled {
+    private func observeSessionStore(_ store: SessionStore, generation: UInt64) {
+        withObservationTracking {
+            _ = store.sessions
+            _ = store.availability
+        } onChange: { [weak self, weak store] in
+            Task { @MainActor [weak self, weak store] in
                 guard let self, let store else { return }
-                withObservationTracking {
-                    _ = store.sessions
-                    _ = store.availability
-                } onChange: {
-                    Task { @MainActor [weak self, weak store] in
-                        guard let self, let store else { return }
-                        self.updateSessions(store.activeCount)
-                    }
-                }
-                try? await Task.sleep(for: .milliseconds(50))
+                guard self.sessionObservationGeneration == generation else { return }
+                self.updateSessions(store.activeCount)
+                self.observeSessionStore(store, generation: generation)
             }
         }
     }

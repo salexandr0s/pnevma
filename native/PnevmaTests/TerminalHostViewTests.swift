@@ -228,4 +228,55 @@ final class TerminalHostViewTests: XCTestCase {
 
         XCTAssertEqual(terminalCloseSignal, false)
     }
+
+    func testChromeTransitionCoordinatorOnlyEmitsEndWhenLastReasonCompletes() {
+        let center = NotificationCenter.default
+        var endNotificationCount = 0
+        let observer = center.addObserver(
+            forName: .chromeTransitionDidEnd,
+            object: nil,
+            queue: .main
+        ) { _ in
+            endNotificationCount += 1
+        }
+        defer {
+            center.removeObserver(observer)
+            ChromeTransitionCoordinator.shared.reset()
+        }
+
+        ChromeTransitionCoordinator.shared.begin(.sidebar)
+        ChromeTransitionCoordinator.shared.begin(.rightInspector)
+        ChromeTransitionCoordinator.shared.end(.sidebar)
+        XCTAssertEqual(endNotificationCount, 0)
+
+        ChromeTransitionCoordinator.shared.end(.rightInspector)
+        XCTAssertEqual(endNotificationCount, 1)
+        XCTAssertFalse(ChromeTransitionCoordinator.shared.isActive)
+    }
+
+    func testChromeTransitionCoordinatorWaitsForOverlappingTransitionsOfSameReason() {
+        let center = NotificationCenter.default
+        var endNotificationCount = 0
+        let observer = center.addObserver(
+            forName: .chromeTransitionDidEnd,
+            object: nil,
+            queue: .main
+        ) { _ in
+            endNotificationCount += 1
+        }
+        defer {
+            center.removeObserver(observer)
+            ChromeTransitionCoordinator.shared.reset()
+        }
+
+        ChromeTransitionCoordinator.shared.begin(.sidebar)
+        ChromeTransitionCoordinator.shared.begin(.sidebar)
+        ChromeTransitionCoordinator.shared.end(.sidebar)
+        XCTAssertEqual(endNotificationCount, 0)
+        XCTAssertTrue(ChromeTransitionCoordinator.shared.isActive)
+
+        ChromeTransitionCoordinator.shared.end(.sidebar)
+        XCTAssertEqual(endNotificationCount, 1)
+        XCTAssertFalse(ChromeTransitionCoordinator.shared.isActive)
+    }
 }

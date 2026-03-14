@@ -69,6 +69,7 @@ final class BrowserViewModel: NSObject {
         config.userContentController.addUserScript(darkModeHint)
 
         webView = PnevmaWebView(frame: .zero, configuration: config)
+        PerformanceDiagnostics.shared.recordBrowserWebViewCreation()
         webView.appearance = NSAppearance(named: .darkAqua)
         webView.underPageBackgroundColor = NSColor(white: 0.15, alpha: 1.0)
         webView.allowsBackForwardNavigationGestures = true
@@ -90,36 +91,26 @@ final class BrowserViewModel: NSObject {
 
         observations = [
             webView.observe(\.url) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    self?.currentURL = wv.url
-                    self?.omnibarText = wv.url?.absoluteString ?? ""
-                    self?.onURLChanged?(wv.url)
+                self?.applyObservedUpdate {
+                    $0.currentURL = wv.url
+                    $0.omnibarText = wv.url?.absoluteString ?? ""
+                    $0.onURLChanged?(wv.url)
                 }
             },
             webView.observe(\.title) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    self?.pageTitle = wv.title ?? ""
-                }
+                self?.applyObservedUpdate { $0.pageTitle = wv.title ?? "" }
             },
             webView.observe(\.isLoading) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    self?.isLoading = wv.isLoading
-                }
+                self?.applyObservedUpdate { $0.isLoading = wv.isLoading }
             },
             webView.observe(\.canGoBack) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    self?.canGoBack = wv.canGoBack
-                }
+                self?.applyObservedUpdate { $0.canGoBack = wv.canGoBack }
             },
             webView.observe(\.canGoForward) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    self?.canGoForward = wv.canGoForward
-                }
+                self?.applyObservedUpdate { $0.canGoForward = wv.canGoForward }
             },
             webView.observe(\.estimatedProgress) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    self?.estimatedProgress = wv.estimatedProgress
-                }
+                self?.applyObservedUpdate { $0.estimatedProgress = wv.estimatedProgress }
             },
         ]
     }
@@ -192,6 +183,13 @@ final class BrowserViewModel: NSObject {
     private func isLocalhostURL(_ url: URL) -> Bool {
         guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
         return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0"
+    }
+
+    nonisolated private func applyObservedUpdate(_ update: @escaping @MainActor (BrowserViewModel) -> Void) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            update(self)
+        }
     }
 }
 

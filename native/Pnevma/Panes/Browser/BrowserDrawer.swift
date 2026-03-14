@@ -1,4 +1,5 @@
 import Observation
+import os
 import SwiftUI
 
 enum BrowserDrawerSizing {
@@ -28,6 +29,11 @@ enum BrowserDrawerSizing {
 final class BrowserDrawerChromeState {
     var isPresented = false
     var drawerHitRect: CGRect = .zero
+}
+
+@Observable @MainActor
+final class BrowserDrawerPresentationModel {
+    var session: BrowserWorkspaceSession?
 }
 
 private struct BrowserDrawerFramePreferenceKey: PreferenceKey {
@@ -81,7 +87,7 @@ private struct BrowserDrawerResizeHandle: View {
 struct BrowserDrawerOverlayView: View {
     @Environment(GhosttyThemeProvider.self) private var theme
     @Bindable var chromeState: BrowserDrawerChromeState
-    let session: BrowserWorkspaceSession?
+    @Bindable var presentationModel: BrowserDrawerPresentationModel
     let onClose: () -> Void
     let onPinToPane: () -> Void
     let onOpenAsTab: () -> Void
@@ -90,12 +96,16 @@ struct BrowserDrawerOverlayView: View {
 
     @State private var isMaximized = false
     @State private var heightBeforeMaximize: CGFloat?
+    @State private var transitionSignpostState: OSSignpostIntervalState?
+    @State private var transitionCompletionTask: Task<Void, Never>?
+    @State private var transitionGeneration = 0
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
-                if chromeState.isPresented, let session {
+                if let session = presentationModel.session {
                     drawerCard(for: session, in: geometry.size)
+                        .id(session.workspaceID)
                         .background(
                             GeometryReader { proxy in
                                 Color.clear.preference(
@@ -104,7 +114,9 @@ struct BrowserDrawerOverlayView: View {
                                 )
                             }
                         )
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .offset(y: chromeState.isPresented ? 0 : geometry.size.height + 24)
+                        .opacity(chromeState.isPresented ? 1 : 0)
+                        .allowsHitTesting(chromeState.isPresented)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -119,14 +131,48 @@ struct BrowserDrawerOverlayView: View {
         }
         .onChange(of: chromeState.isPresented) { _, isVisible in
             if !isVisible {
+                presentationModel.session?.cancelPendingDrawerRestore()
                 chromeState.drawerHitRect = .zero
                 onHitRectChanged(.zero)
+            } else if let session = presentationModel.session {
+                session.scheduleDrawerRestoreIfNeeded(after: .seconds(DesignTokens.Motion.normal))
+            }
+            if let transitionSignpostState {
+                PerformanceDiagnostics.shared.endInterval("browser_drawer.toggle", transitionSignpostState)
+                self.transitionSignpostState = nil
+            }
+            transitionCompletionTask?.cancel()
+            transitionGeneration &+= 1
+            let generation = transitionGeneration
+            let signpost = PerformanceDiagnostics.shared.beginInterval("browser_drawer.toggle")
+            transitionSignpostState = signpost
+            transitionCompletionTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(Int(DesignTokens.Motion.normal * 1_000)))
+                guard !Task.isCancelled,
+                      transitionGeneration == generation else { return }
+                PerformanceDiagnostics.shared.endInterval("browser_drawer.toggle", signpost)
+                transitionSignpostState = nil
             }
             onVisibilityChanged(isVisible)
+        }
+        .onChange(of: presentationModel.session?.workspaceID) { _, _ in
+            isMaximized = false
+            heightBeforeMaximize = nil
+            if chromeState.isPresented,
+               let session = presentationModel.session {
+                session.scheduleDrawerRestoreIfNeeded(after: .seconds(DesignTokens.Motion.normal))
+            }
         }
         .onAppear {
             onVisibilityChanged(chromeState.isPresented)
             onHitRectChanged(chromeState.isPresented ? chromeState.drawerHitRect : .zero)
+        }
+        .onDisappear {
+            transitionCompletionTask?.cancel()
+            if let transitionSignpostState {
+                PerformanceDiagnostics.shared.endInterval("browser_drawer.toggle", transitionSignpostState)
+                self.transitionSignpostState = nil
+            }
         }
         .accessibilityIdentifier("browser.drawer.overlay")
     }
@@ -199,7 +245,14 @@ struct BrowserDrawerOverlayView: View {
 
             Divider()
 
-            BrowserView(session: session)
+            if chromeState.isPresented {
+                BrowserView(session: session)
+                    .id(session.workspaceID)
+            } else {
+                // Keep the drawer chrome mounted while hidden, but avoid attaching the
+                // shared WKWebView when a browser pane could already be presenting it.
+                Color.clear
+            }
         }
         .frame(maxWidth: .infinity)
         .frame(height: drawerHeight)
