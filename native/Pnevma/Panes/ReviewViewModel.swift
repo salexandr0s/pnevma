@@ -5,6 +5,7 @@ import Observation
 
 @Observable @MainActor
 final class ReviewViewModel {
+    private let initialTaskID: String?
 
     private enum ViewState: Equatable {
         case waiting(String)
@@ -74,9 +75,13 @@ final class ReviewViewModel {
     @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
     @ObservationIgnored
+    private let notificationCenter: NotificationCenter
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
     @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
+    private var deepLinkObserver: NSObjectProtocol?
     @ObservationIgnored
     private var loadTask: Task<Void, Never>?
     @ObservationIgnored
@@ -89,13 +94,17 @@ final class ReviewViewModel {
     private var diffLoadToken: UInt64 = 0
 
     init(
+        initialTaskID: String? = nil,
         commandBus: (any CommandCalling)? = CommandBus.shared,
         bridgeEventHub: BridgeEventHub = .shared,
-        activationHub: ActiveWorkspaceActivationHub = .shared
+        activationHub: ActiveWorkspaceActivationHub = .shared,
+        notificationCenter: NotificationCenter = .default
     ) {
+        self.initialTaskID = initialTaskID
         self.commandBus = commandBus
         self.bridgeEventHub = bridgeEventHub
         self.activationHub = activationHub
+        self.notificationCenter = notificationCenter
 
         bridgeObserverID = bridgeEventHub.addObserver { [weak self] event in
             guard event.name == "task_updated" else { return }
@@ -109,6 +118,16 @@ final class ReviewViewModel {
                 self?.handleActivationState(state)
             }
         }
+
+        deepLinkObserver = notificationCenter.addObserver(
+            forName: .commandCenterDeepLinkDidChange,
+            object: CommandCenterDeepLinkStore.shared,
+            queue: nil
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                self?.handleDeepLinkNotification(notification)
+            }
+        }
     }
 
     deinit {
@@ -117,6 +136,9 @@ final class ReviewViewModel {
         }
         if let activationObserverID {
             activationHub.removeObserver(activationObserverID)
+        }
+        if let deepLinkObserver {
+            notificationCenter.removeObserver(deepLinkObserver)
         }
     }
 
@@ -342,6 +364,16 @@ final class ReviewViewModel {
     private func finishLoading(_ tasks: [ReviewTaskItem], reloadSelectionDetail: Bool) {
         reviewTasks = tasks
         viewState = .ready
+        let availableTaskIDs = Set(tasks.map(\.id))
+        if applyPendingDeepLinkIfAvailable(availableTaskIDs: availableTaskIDs) {
+            return
+        }
+        if selectedTaskID == nil,
+           let initialTaskID,
+           tasks.contains(where: { $0.id == initialTaskID }) {
+            selectedTaskID = initialTaskID
+            return
+        }
         // Preserve local checklist/notes edits for the current selection on background refreshes.
         // Only clear the selection if the task truly disappeared from the list.
         if let id = selectedTaskID, !tasks.contains(where: { $0.id == id }) {
@@ -385,5 +417,31 @@ final class ReviewViewModel {
         actionError = nil
         diffError = nil
         selectedTaskID = nil
+    }
+
+    private func handleDeepLinkNotification(_ notification: Notification) {
+        guard let target = notification.userInfo?["target"] as? String,
+              target == CommandCenterDeepLinkTarget.review.rawValue else {
+            return
+        }
+
+        if applyPendingDeepLinkIfAvailable(availableTaskIDs: Set(reviewTasks.map(\.id))) {
+            return
+        }
+
+        guard activationHub.currentState.isOpen else { return }
+        load(reloadSelectionDetail: false)
+    }
+
+    @discardableResult
+    private func applyPendingDeepLinkIfAvailable(availableTaskIDs: Set<String>) -> Bool {
+        guard let taskID = CommandCenterDeepLinkStore.shared.consumePendingTaskID(
+            for: .review,
+            availableTaskIDs: availableTaskIDs
+        ) else {
+            return false
+        }
+        selectedTaskID = taskID
+        return true
     }
 }

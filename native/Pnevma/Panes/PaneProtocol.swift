@@ -193,7 +193,7 @@ extension RestoredPaneContainer: TerminalPaneControlling {
 /// Registry of known pane types and their factory methods.
 @MainActor
 enum PaneFactory {
-    static var sessionBridge: SessionBridge?
+    static var sessionBridge: (any SessionBridging)?
     static var activeWorkspaceProvider: (() -> Workspace?)?
 
     private static func paneTuple(_ view: NSView & PaneContent) -> (PaneID, NSView & PaneContent) {
@@ -254,8 +254,8 @@ enum PaneFactory {
         paneTuple(TaskBoardPaneView(frame: .zero))
     }
 
-    static func makeReplay() -> (PaneID, NSView & PaneContent) {
-        paneTuple(ReplayPaneView(frame: .zero))
+    static func makeReplay(sessionID: String? = nil) -> (PaneID, NSView & PaneContent) {
+        paneTuple(ReplayPaneView(frame: .zero, sessionID: sessionID))
     }
 
     static func makeFileBrowser() -> (PaneID, NSView & PaneContent) {
@@ -270,12 +270,12 @@ enum PaneFactory {
         paneTuple(WorkflowPaneView(frame: .zero))
     }
 
-    static func makeReview() -> (PaneID, NSView & PaneContent) {
-        paneTuple(ReviewPaneView(frame: .zero))
+    static func makeReview(initialTaskID: String? = nil) -> (PaneID, NSView & PaneContent) {
+        paneTuple(ReviewPaneView(frame: .zero, initialTaskID: initialTaskID))
     }
 
-    static func makeDiff() -> (PaneID, NSView & PaneContent) {
-        paneTuple(DiffPaneView(frame: .zero))
+    static func makeDiff(initialTaskID: String? = nil) -> (PaneID, NSView & PaneContent) {
+        paneTuple(DiffPaneView(frame: .zero, initialTaskID: initialTaskID))
     }
 
     static func makeAnalytics() -> (PaneID, NSView & PaneContent) {

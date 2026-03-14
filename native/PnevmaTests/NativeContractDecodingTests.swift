@@ -118,4 +118,17 @@ final class NativeContractDecodingTests: XCTestCase {
         )
         XCTAssertEqual(rules.first?.scope, "rule")
     }
+
+    func testCommandCenterContractsDecodeWorktreeFileFallbacks() throws {
+        let snapshot = try decoder.decode(
+            CommandCenterSnapshot.self,
+            from: Data(
+                #"{"project_id":"project-1","project_name":"Pnevma","project_path":"/tmp/pnevma","generated_at":"2026-03-14T08:00:00Z","summary":{"active_count":1,"queued_count":0,"idle_count":0,"stuck_count":0,"review_needed_count":0,"failed_count":0,"retrying_count":0,"slot_limit":4,"slot_in_use":1,"cost_today_usd":1.25},"runs":[{"id":"run-1","task_id":"task-1","task_title":"Scoped task","task_status":"InProgress","session_id":"session-1","session_name":"Agent","session_status":"running","session_health":"active","provider":"codex","model":"gpt-5","agent_profile":"default","branch":"task/scoped","worktree_id":"wt-1","primary_file_path":"src/main.rs","scope_paths":["src/main.rs"],"worktree_path":"worktrees/task-scoped","state":"running","started_at":"2026-03-14T07:55:00Z","last_activity_at":"2026-03-14T07:59:00Z","retry_count":0,"cost_usd":0.5,"tokens_in":100,"tokens_out":200,"available_actions":["open_files"]},{"id":"run-2","task_id":"task-2","task_title":"Worktree task","task_status":"Review","session_id":null,"session_name":null,"session_status":null,"session_health":null,"provider":"codex","model":"gpt-5","agent_profile":"default","branch":"task/worktree","worktree_id":"wt-2","primary_file_path":null,"scope_paths":[],"worktree_path":"worktrees/task-worktree","state":"review_needed","started_at":"2026-03-14T07:40:00Z","last_activity_at":"2026-03-14T07:58:00Z","retry_count":0,"cost_usd":0.75,"tokens_in":150,"tokens_out":300,"available_actions":["open_files"]}]}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(snapshot.runs.first?.relatedFilesPath, "src/main.rs")
+        XCTAssertEqual(snapshot.runs.last?.worktreePath, "worktrees/task-worktree")
+        XCTAssertEqual(snapshot.runs.last?.relatedFilesPath, "worktrees/task-worktree")
+    }
 }

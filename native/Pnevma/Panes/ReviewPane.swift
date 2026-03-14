@@ -7,6 +7,11 @@ import Cocoa
 struct ReviewView: View {
     @State private var viewModel = ReviewViewModel()
 
+    @MainActor
+    init(initialTaskID: String? = nil) {
+        _viewModel = State(wrappedValue: ReviewViewModel(initialTaskID: initialTaskID))
+    }
+
     var body: some View {
         Group {
             if let statusMessage = viewModel.statusMessage {
@@ -180,10 +185,12 @@ final class ReviewPaneView: NSView, PaneContent {
     let paneType = "review"
     let shouldPersist = true
     var title: String { "Review" }
+    private let initialTaskID: String?
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, initialTaskID: String? = nil) {
+        self.initialTaskID = initialTaskID
         super.init(frame: frame)
-        _ = addSwiftUISubview(ReviewView())
+        _ = addSwiftUISubview(ReviewView(initialTaskID: initialTaskID))
     }
 
     required init?(coder: NSCoder) { fatalError() }

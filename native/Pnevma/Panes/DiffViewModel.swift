@@ -10,6 +10,7 @@ final class DiffViewModel {
     var selectedFile: String?
     var isLoadingDiff = false
     var diffError: String?
+    private let initialTaskID: String?
 
     // didSet is used intentionally for side-effects: selecting a task triggers loadDiff().
     // In @Observable classes, didSet runs outside observation tracking but the side-effect
@@ -41,17 +42,35 @@ final class DiffViewModel {
     private let activationHub: ActiveWorkspaceActivationHub
     @ObservationIgnored
     private var activationObserverID: UUID?
+    @ObservationIgnored
+    private let notificationCenter: NotificationCenter
+    @ObservationIgnored
+    private var deepLinkObserver: NSObjectProtocol?
 
     init(
+        initialTaskID: String? = nil,
         commandBus: (any CommandCalling)? = CommandBus.shared,
-        activationHub: ActiveWorkspaceActivationHub = .shared
+        activationHub: ActiveWorkspaceActivationHub = .shared,
+        notificationCenter: NotificationCenter = .default
     ) {
+        self.initialTaskID = initialTaskID
         self.commandBus = commandBus
         self.activationHub = activationHub
+        self.notificationCenter = notificationCenter
 
         activationObserverID = activationHub.addObserver { [weak self] state in
             Task { @MainActor [weak self] in
                 self?.handleActivationState(state)
+            }
+        }
+
+        deepLinkObserver = notificationCenter.addObserver(
+            forName: .commandCenterDeepLinkDidChange,
+            object: CommandCenterDeepLinkStore.shared,
+            queue: nil
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                self?.handleDeepLinkNotification(notification)
             }
         }
     }
@@ -59,6 +78,9 @@ final class DiffViewModel {
     deinit {
         if let activationObserverID {
             activationHub.removeObserver(activationObserverID)
+        }
+        if let deepLinkObserver {
+            notificationCenter.removeObserver(deepLinkObserver)
         }
     }
 
@@ -103,6 +125,16 @@ final class DiffViewModel {
                     .filter { ["Review", "InProgress", "Done"].contains($0.status) }
                     .map { DiffTaskItem(id: $0.id, title: $0.title, status: $0.status) }
                 self.tasks = filtered
+                let availableTaskIDs = Set(filtered.map(\.id))
+                if self.applyPendingDeepLinkIfAvailable(availableTaskIDs: availableTaskIDs) {
+                    self.viewState = .ready
+                    return
+                }
+                if self.selectedTaskId == nil,
+                   let initialTaskID = self.initialTaskID,
+                   filtered.contains(where: { $0.id == initialTaskID }) {
+                    self.selectedTaskId = initialTaskID
+                }
                 self.viewState = .ready
             } catch {
                 guard !Task.isCancelled else { return }
@@ -169,5 +201,31 @@ final class DiffViewModel {
             return
         }
         viewState = .failed(error.localizedDescription)
+    }
+
+    private func handleDeepLinkNotification(_ notification: Notification) {
+        guard let target = notification.userInfo?["target"] as? String,
+              target == CommandCenterDeepLinkTarget.diff.rawValue else {
+            return
+        }
+
+        if applyPendingDeepLinkIfAvailable(availableTaskIDs: Set(tasks.map(\.id))) {
+            return
+        }
+
+        guard activationHub.currentState.isOpen else { return }
+        load(showLoadingState: false)
+    }
+
+    @discardableResult
+    private func applyPendingDeepLinkIfAvailable(availableTaskIDs: Set<String>) -> Bool {
+        guard let taskID = CommandCenterDeepLinkStore.shared.consumePendingTaskID(
+            for: .diff,
+            availableTaskIDs: availableTaskIDs
+        ) else {
+            return false
+        }
+        selectedTaskId = taskID
+        return true
     }
 }

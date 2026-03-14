@@ -102,8 +102,26 @@ enum SessionBridgeError: LocalizedError {
 }
 
 /// Native coordinator for backend-managed terminal sessions.
-final class SessionBridge {
-    static var shared: SessionBridge?
+protocol SessionBridging {
+    func createSession(
+        name: String,
+        workingDirectory requestedWorkingDirectory: String?,
+        command requestedCommand: String?
+    ) async throws -> SessionBindingDescriptor
+    func binding(for sessionID: String) async throws -> SessionBindingDescriptor
+    func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice
+    func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult
+    func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async
+}
+
+extension SessionBridging {
+    func scrollback(for sessionID: String) async throws -> SessionScrollbackSlice {
+        try await scrollback(for: sessionID, limit: 128 * 1024)
+    }
+}
+
+final class SessionBridge: SessionBridging {
+    static var shared: (any SessionBridging)?
 
     private let commandBus: any CommandCalling
     private let activeWorkspacePath: () -> String?
@@ -174,5 +192,53 @@ final class SessionBridge {
                 "Ignoring terminal resize update for session \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
         }
+    }
+}
+
+actor ActiveSessionBridge: SessionBridging {
+    private var current: (any SessionBridging)?
+
+    func setCurrent(_ current: (any SessionBridging)?) {
+        self.current = current
+    }
+
+    func createSession(
+        name: String,
+        workingDirectory requestedWorkingDirectory: String?,
+        command requestedCommand: String?
+    ) async throws -> SessionBindingDescriptor {
+        guard let current else {
+            throw SessionBridgeError.missingProjectPath
+        }
+        return try await current.createSession(
+            name: name,
+            workingDirectory: requestedWorkingDirectory,
+            command: requestedCommand
+        )
+    }
+
+    func binding(for sessionID: String) async throws -> SessionBindingDescriptor {
+        guard let current else {
+            throw SessionBridgeError.missingProjectPath
+        }
+        return try await current.binding(for: sessionID)
+    }
+
+    func scrollback(for sessionID: String, limit: Int = 128 * 1024) async throws -> SessionScrollbackSlice {
+        guard let current else {
+            throw SessionBridgeError.missingProjectPath
+        }
+        return try await current.scrollback(for: sessionID, limit: limit)
+    }
+
+    func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult {
+        guard let current else {
+            throw SessionBridgeError.missingProjectPath
+        }
+        return try await current.recover(sessionID: sessionID, action: action)
+    }
+
+    func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async {
+        await current?.sendResize(sessionID: sessionID, columns: columns, rows: rows)
     }
 }

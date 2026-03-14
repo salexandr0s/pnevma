@@ -189,6 +189,28 @@ final class WorkspaceManagerTests: XCTestCase {
         return (workspaceID, generation)
     }
 
+    func testPrimaryInitializerCreatesDistinctRuntimeAndCommandBusPerWorkspace() throws {
+        let manager = WorkspaceManager()
+        defer { manager.shutdown() }
+
+        let workspaceA = manager.createWorkspace(name: "A", projectPath: "/tmp/runtime-a")
+        let runtimeA = try XCTUnwrap(manager.activeRuntime)
+        let busA = runtimeA.commandBus as AnyObject
+
+        let workspaceB = manager.createWorkspace(name: "B", projectPath: "/tmp/runtime-b")
+        let runtimeB = try XCTUnwrap(manager.activeRuntime)
+        let busB = runtimeB.commandBus as AnyObject
+
+        XCTAssertNotEqual(ObjectIdentifier(runtimeA), ObjectIdentifier(runtimeB))
+        XCTAssertNotEqual(ObjectIdentifier(busA), ObjectIdentifier(busB))
+
+        manager.switchToWorkspace(workspaceA.id)
+        XCTAssertTrue(manager.activeRuntime === runtimeA)
+
+        manager.switchToWorkspace(workspaceB.id)
+        XCTAssertTrue(manager.activeRuntime === runtimeB)
+    }
+
     func testLatestWorkspaceOpenWinsAfterRapidSwitch() async throws {
         let bus = MockCommandBus(specs: [
             .init(
@@ -279,7 +301,7 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(reopenCount, 2)
     }
 
-    func testClosingActiveWorkspaceRebindsBackendToNextWorkspace() async throws {
+    func testClosingActiveWorkspaceDestroysOnlyThatRuntimeAndLeavesReplacementOpen() async throws {
         let bus = MockCommandBus(specs: [
             .init(
                 projectID: "project-a",
@@ -308,25 +330,24 @@ final class WorkspaceManagerTests: XCTestCase {
         let workspaceA = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
         let workspaceB = manager.createWorkspace(name: "B", projectPath: "/tmp/b")
         try await waitUntil {
-            await bus.currentProjectID() == "project-b"
+            manager.runtime(for: workspaceA.id)?.projectID == "project-a"
+                && manager.runtime(for: workspaceB.id)?.projectID == "project-b"
         }
 
         manager.switchToWorkspace(workspaceA.id)
-        try await waitUntil {
-            await bus.currentProjectID() == "project-a"
-        }
         manager.closeWorkspace(workspaceA.id)
         try await waitUntil {
-            let currentProjectID = await bus.currentProjectID()
-            return manager.activeWorkspaceID == workspaceB.id && currentProjectID == "project-b"
+            manager.activeWorkspaceID == workspaceB.id
+                && manager.runtime(for: workspaceA.id) == nil
+                && manager.runtime(for: workspaceB.id)?.projectID == "project-b"
         }
-        let currentProjectID = await bus.currentProjectID()
 
         XCTAssertEqual(manager.activeWorkspaceID, workspaceB.id)
-        XCTAssertEqual(currentProjectID, "project-b")
+        XCTAssertNil(manager.runtime(for: workspaceA.id))
+        XCTAssertEqual(manager.runtime(for: workspaceB.id)?.projectID, "project-b")
     }
 
-    func testTerminalWorkspaceClosesBackendAndShowsTerminalPane() async throws {
+    func testSwitchingToTerminalKeepsProjectRuntimeOpenAndShowsTerminalPane() async throws {
         let bus = MockCommandBus(specs: [
             .init(
                 projectID: "project-a",
@@ -342,9 +363,9 @@ final class WorkspaceManagerTests: XCTestCase {
         let bridge = PnevmaBridge()
         let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
 
-        _ = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        let projectWorkspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
         try await waitUntil {
-            await bus.currentProjectID() == "project-a"
+            manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
         }
 
         let terminal = manager.ensureTerminalWorkspace()
@@ -352,9 +373,8 @@ final class WorkspaceManagerTests: XCTestCase {
         try await waitUntil {
             let rootPaneID = terminal.layoutEngine.root?.allPaneIDs.first
             let rootPane = rootPaneID.flatMap { terminal.layoutEngine.persistedPane(for: $0) }
-            let closeCount = await bus.closeCount()
             return manager.activeWorkspaceID == terminal.id
-                && closeCount == 1
+                && manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
                 && rootPane?.type == "terminal"
         }
 
@@ -363,7 +383,8 @@ final class WorkspaceManagerTests: XCTestCase {
         let rootPane = rootPaneID.flatMap { terminal.layoutEngine.persistedPane(for: $0) }
 
         XCTAssertEqual(manager.activeWorkspaceID, terminal.id)
-        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(manager.runtime(for: projectWorkspace.id)?.projectID, "project-a")
         XCTAssertEqual(rootPane?.type, "terminal")
     }
 
@@ -383,15 +404,15 @@ final class WorkspaceManagerTests: XCTestCase {
         let bridge = PnevmaBridge()
         let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
 
-        _ = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        let projectWorkspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
         try await waitUntil {
-            await bus.currentProjectID() == "project-a"
+            manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
         }
 
         let terminal = manager.ensureTerminalWorkspace()
         manager.switchToWorkspace(terminal.id)
         try await waitUntil {
-            await bus.closeCount() == 1
+            manager.activeWorkspaceID == terminal.id
         }
 
         manager.switchToWorkspace(terminal.id)
@@ -399,7 +420,8 @@ final class WorkspaceManagerTests: XCTestCase {
 
         let closeCount = await bus.closeCount()
         XCTAssertEqual(manager.activeWorkspaceID, terminal.id)
-        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(manager.runtime(for: projectWorkspace.id)?.projectID, "project-a")
     }
 
     func testProjectWorkspaceSeedsTerminalPaneAfterOpen() async throws {
@@ -460,14 +482,12 @@ final class WorkspaceManagerTests: XCTestCase {
 
         let projectWorkspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
         try await waitUntil {
-            await bus.currentProjectID() == "project-a"
+            manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
         }
 
         let terminal = manager.ensureTerminalWorkspace()
         manager.switchToWorkspace(terminal.id)
-        try await waitUntil {
-            await bus.closeCount() == 1
-        }
+        try await waitUntil { manager.activeWorkspaceID == terminal.id }
 
         let secondWorkspace = manager.createLocalProjectWorkspace(
             name: "B",
@@ -476,13 +496,13 @@ final class WorkspaceManagerTests: XCTestCase {
         )
 
         try await waitUntil {
-            let currentProjectID = await bus.currentProjectID()
             let rootPaneID = secondWorkspace.layoutEngine.root?.allPaneIDs.first
             let rootPane = rootPaneID.flatMap { secondWorkspace.layoutEngine.persistedPane(for: $0) }
             let projectWorkspaceCount = manager.workspaces.filter { $0.projectPath != nil }.count
             return manager.activeWorkspaceID == secondWorkspace.id
-                && currentProjectID == "project-b"
                 && projectWorkspaceCount == 2
+                && manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
+                && manager.runtime(for: secondWorkspace.id)?.projectID == "project-b"
                 && rootPane?.type == "terminal"
                 && rootPane?.workingDirectory == "/tmp/b"
         }
@@ -492,7 +512,9 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspace.projectPath, "/tmp/b")
         XCTAssertTrue(manager.workspaces.contains(where: { $0.id == projectWorkspace.id }))
         XCTAssertTrue(manager.workspaces.contains(where: { $0.id == secondWorkspace.id }))
+        let closeCount = await bus.closeCount()
         let secondWorkspaceOpenCount = await bus.openCount(for: "/tmp/b")
+        XCTAssertEqual(closeCount, 0)
         XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
@@ -536,11 +558,10 @@ final class WorkspaceManagerTests: XCTestCase {
         )
 
         try await waitUntil {
-            let currentProjectID = await bus.currentProjectID()
             return activationHub.currentState == .open(
                 workspaceID: workspace.id,
                 projectID: "project-remote"
-            ) && currentProjectID == "project-remote"
+            ) && manager.runtime(for: workspace.id)?.projectID == "project-remote"
         }
 
         XCTAssertEqual(workspace.projectPath, mountPath)
@@ -702,7 +723,7 @@ final class WorkspaceManagerTests: XCTestCase {
         }
     }
 
-    func testStaleProjectOpenedEventWithOldGenerationIsIgnoredForSameWorkspacePath() async throws {
+    func testSwitchingBackToAlreadyOpenWorkspaceReusesExistingRuntime() async throws {
         let bus = MockCommandBus(specs: [
             .init(
                 projectID: "project-a",
@@ -724,39 +745,24 @@ final class WorkspaceManagerTests: XCTestCase {
         )
 
         let workspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
-        let staleOpening = openingState(activationHub)
+        let initialOpening = openingState(activationHub)
+        try await waitUntil {
+            activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
+        }
+        let initialOpenCount = await bus.openCount(for: "/tmp/a")
         let terminal = manager.ensureTerminalWorkspace()
         manager.switchToWorkspace(terminal.id)
-        try await waitUntil {
-            await bus.closeCount() == 1
-        }
+        XCTAssertEqual(activationHub.currentState, .closed(workspaceID: terminal.id))
 
         manager.switchToWorkspace(workspace.id)
-        let currentOpening = openingState(activationHub)
-        XCTAssertNotEqual(staleOpening.generation, currentOpening.generation)
-
-        BridgeEventHub.shared.post(
-            BridgeEvent(
-                name: "project_opened",
-                payloadJSON: """
-                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspace.id, generation: staleOpening.generation))"}
-                """
-            )
-        )
-
-        try await Task.sleep(nanoseconds: 75_000_000)
-        XCTAssertEqual(
-            activationHub.currentState,
-            .opening(workspaceID: workspace.id, generation: currentOpening.generation)
-        )
-
         try await waitUntil {
-            let currentProjectID = await bus.currentProjectID()
-            return activationHub.currentState == .open(
-                workspaceID: workspace.id,
-                projectID: "project-a"
-            ) && currentProjectID == "project-a"
+            activationHub.currentState == .open(workspaceID: workspace.id, projectID: "project-a")
         }
+
+        let openCount = await bus.openCount(for: "/tmp/a")
+        XCTAssertEqual(initialOpening.workspaceID, workspace.id)
+        XCTAssertEqual(manager.runtime(for: workspace.id)?.projectID, "project-a")
+        XCTAssertEqual(openCount, initialOpenCount)
     }
 
     func testProjectOpenFailurePostsActionableEvent() async throws {

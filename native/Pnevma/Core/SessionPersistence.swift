@@ -10,6 +10,8 @@ final class SessionPersistence {
 
     struct SessionState: Codable {
         let windowFrame: CodableRect?
+        let commandCenterWindowFrame: CodableRect?
+        let commandCenterVisible: Bool
         let workspaces: [Workspace.Snapshot]
         let activeWorkspaceID: UUID?
         let sidebarVisible: Bool
@@ -18,6 +20,8 @@ final class SessionPersistence {
 
         init(
             windowFrame: CodableRect?,
+            commandCenterWindowFrame: CodableRect? = nil,
+            commandCenterVisible: Bool = false,
             workspaces: [Workspace.Snapshot],
             activeWorkspaceID: UUID?,
             sidebarVisible: Bool,
@@ -25,6 +29,8 @@ final class SessionPersistence {
             rightInspectorWidth: Double? = nil
         ) {
             self.windowFrame = windowFrame
+            self.commandCenterWindowFrame = commandCenterWindowFrame
+            self.commandCenterVisible = commandCenterVisible
             self.workspaces = workspaces
             self.activeWorkspaceID = activeWorkspaceID
             self.sidebarVisible = sidebarVisible
@@ -34,6 +40,8 @@ final class SessionPersistence {
 
         private enum CodingKeys: String, CodingKey {
             case windowFrame
+            case commandCenterWindowFrame
+            case commandCenterVisible
             case workspaces
             case activeWorkspaceID
             case sidebarVisible
@@ -44,6 +52,8 @@ final class SessionPersistence {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             windowFrame = try container.decodeIfPresent(CodableRect.self, forKey: .windowFrame)
+            commandCenterWindowFrame = try container.decodeIfPresent(CodableRect.self, forKey: .commandCenterWindowFrame)
+            commandCenterVisible = try container.decodeIfPresent(Bool.self, forKey: .commandCenterVisible) ?? false
             workspaces = try container.decode([Workspace.Snapshot].self, forKey: .workspaces)
             activeWorkspaceID = try container.decodeIfPresent(UUID.self, forKey: .activeWorkspaceID)
             sidebarVisible = try container.decode(Bool.self, forKey: .sidebarVisible)

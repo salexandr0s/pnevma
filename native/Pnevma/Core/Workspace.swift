@@ -326,7 +326,7 @@ final class Workspace: Identifiable {
     }
 
     var supportsBackendProject: Bool {
-        kind == .project && projectPath != nil
+        kind == .project
     }
 
     var supportsProjectTools: Bool {

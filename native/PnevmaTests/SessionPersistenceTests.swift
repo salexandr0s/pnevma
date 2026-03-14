@@ -28,6 +28,8 @@ final class SessionPersistenceTests: XCTestCase {
     func testSaveAndRestoreRoundTrip() {
         let state = SessionPersistence.SessionState(
             windowFrame: SessionPersistence.CodableRect(NSRect(x: 100, y: 200, width: 1400, height: 900)),
+            commandCenterWindowFrame: SessionPersistence.CodableRect(NSRect(x: 400, y: 500, width: 1200, height: 800)),
+            commandCenterVisible: true,
             workspaces: [],
             activeWorkspaceID: nil,
             sidebarVisible: true,
@@ -40,6 +42,9 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNotNil(restored)
         XCTAssertEqual(restored?.windowFrame?.x, 100)
         XCTAssertEqual(restored?.windowFrame?.width, 1400)
+        XCTAssertEqual(restored?.commandCenterWindowFrame?.x, 400)
+        XCTAssertEqual(restored?.commandCenterWindowFrame?.width, 1200)
+        XCTAssertEqual(restored?.commandCenterVisible, true)
         XCTAssertEqual(restored?.sidebarVisible, true)
         XCTAssertEqual(restored?.rightInspectorVisible, true)
         XCTAssertEqual(restored?.rightInspectorWidth, 340)
@@ -129,6 +134,8 @@ final class SessionPersistenceTests: XCTestCase {
         )
 
         XCTAssertFalse(decoded.sidebarVisible)
+        XCTAssertNil(decoded.commandCenterWindowFrame)
+        XCTAssertFalse(decoded.commandCenterVisible)
         XCTAssertTrue(decoded.rightInspectorVisible)
         XCTAssertNil(decoded.rightInspectorWidth)
     }

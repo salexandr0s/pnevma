@@ -20,6 +20,7 @@ private struct FileTreeParams: Encodable {
     let recursive: Bool?
 }
 
+
 // MARK: - FileBrowserView
 
 struct FileBrowserView: View {
@@ -483,6 +484,10 @@ final class FileBrowserViewModel {
     private var searchLoadToken: UInt64 = 0
     @ObservationIgnored
     private var searchLoadTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var deepLinkTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var pendingDeepLinkPath: String?
 
     init(
         commandBus: (any CommandCalling)? = CommandBus.shared,
@@ -515,6 +520,24 @@ final class FileBrowserViewModel {
         if hasActiveSearch {
             searchQueryDidChange(immediate: true)
         }
+    }
+
+    func openFile(at path: String) {
+        let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalizedPath.isEmpty else { return }
+        pendingDeepLinkPath = normalizedPath
+
+        deepLinkTask?.cancel()
+        deepLinkTask = Task { [weak self] in
+            await self?.openFileWhenReady(at: normalizedPath)
+        }
+    }
+
+    func clearPendingOpenFile() {
+        deepLinkTask?.cancel()
+        deepLinkTask = nil
+        pendingDeepLinkPath = nil
     }
 
     func select(_ node: FileNode) {
@@ -752,6 +775,9 @@ final class FileBrowserViewModel {
                 self.rootNodes = nodes
                 self.expandedPaths = []
                 self.actionError = nil
+                self.deepLinkTask = Task { [weak self] in
+                    await self?.retryPendingDeepLinkSelectionIfNeeded()
+                }
             } catch {
                 guard self.activationGeneration == generation, self.rootLoadToken == loadToken else {
                     return
@@ -928,6 +954,9 @@ final class FileBrowserViewModel {
         isLoadingPreview = false
         isSearching = false
         loadingDirectories.removeAll()
+        deepLinkTask?.cancel()
+        deepLinkTask = nil
+        pendingDeepLinkPath = nil
     }
 
     private func clearContentState() {
@@ -995,6 +1024,74 @@ final class FileBrowserViewModel {
             try? await Task.sleep(for: .seconds(5))
             self?.actionError = nil
         }
+    }
+
+    private func retryPendingDeepLinkSelectionIfNeeded() async {
+        guard let path = pendingDeepLinkPath else { return }
+        await openFileWhenReady(at: path)
+    }
+
+    private func openFileWhenReady(at path: String) async {
+        guard isProjectOpen else {
+            actionError = "Waiting for project activation..."
+            scheduleDismissActionError()
+            return
+        }
+
+        if rootNodes.isEmpty {
+            loadRoot()
+        }
+
+        for _ in 0..<60 {
+            guard !Task.isCancelled else { return }
+            if isLoadingRoot {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                continue
+            }
+            break
+        }
+
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return }
+
+        var currentPath = ""
+        for parent in components.dropLast() {
+            currentPath = currentPath.isEmpty ? parent : "\(currentPath)/\(parent)"
+            guard !Task.isCancelled else { return }
+            if children(for: currentPath) == nil {
+                loadDirectory(path: currentPath)
+            }
+            for _ in 0..<40 {
+                guard !Task.isCancelled else { return }
+                if !isLoadingDirectory(currentPath) {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 25_000_000)
+            }
+            expandedPaths.insert(currentPath)
+        }
+
+        guard let node = findNode(path, in: rootNodes), !node.isDirectory else {
+            actionError = "File not found: \(path)"
+            scheduleDismissActionError()
+            return
+        }
+
+        pendingDeepLinkPath = nil
+        select(node)
+    }
+
+    private func findNode(_ path: String, in nodes: [FileNode]) -> FileNode? {
+        for node in nodes {
+            if node.path == path {
+                return node
+            }
+            if let children = node.children,
+               let match = findNode(path, in: children) {
+                return match
+            }
+        }
+        return nil
     }
 }
 

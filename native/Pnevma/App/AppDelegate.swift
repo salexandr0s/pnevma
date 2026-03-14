@@ -22,10 +22,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     var window: NSWindow?
     private var bridge: PnevmaBridge?
-    private var commandBus: CommandBus?
+    private var commandBus: (any CommandCalling)?
+    private var fallbackCommandBus: CommandBus?
+    private var activeCommandBus: ActiveWorkspaceCommandBus?
     private var sessionBridge: SessionBridge?
     private var sessionStore: SessionStore?
     private var workspaceManager: WorkspaceManager?
+    private var commandCenterStore: CommandCenterStore?
+    private var commandCenterWindowController: CommandCenterWindowController?
     private var contentAreaView: ContentAreaView?
     private var tabBarView: TabBarView?
     private var statusBar: StatusBar?
@@ -60,6 +64,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isSidebarVisible = true
     private var isRightInspectorVisible = true
     private var rightInspectorStoredWidth = DesignTokens.Layout.rightInspectorDefaultWidth
+    private var restoredCommandCenterWindowFrame: NSRect?
+    private var restoredCommandCenterVisible = false
     private let rightInspectorChromeState = RightInspectorChromeState()
     private lazy var rightInspectorFileBrowserViewModel = FileBrowserViewModel(
         commandBus: commandBus ?? CommandBus.shared
@@ -131,6 +137,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let restoredState {
             applyRestoredState(restoredState)
+            if restoredCommandCenterVisible {
+                showCommandCenter(makeKey: false)
+            }
         } else if let uiTestProjectPath = AppLaunchContext.uiTestProjectPath {
             workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
             Task { @MainActor [weak self] in
@@ -168,6 +177,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else {
                 return SessionPersistence.SessionState(
                     windowFrame: nil,
+                    commandCenterWindowFrame: nil,
+                    commandCenterVisible: false,
                     workspaces: [],
                     activeWorkspaceID: nil,
                     sidebarVisible: true,
@@ -211,8 +222,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         bridge = PnevmaBridge()
         if let bridge = bridge {
-            commandBus = CommandBus(bridge: bridge)
-            CommandBus.shared = commandBus
+            let fallbackCommandBus = CommandBus(bridge: bridge)
+            self.fallbackCommandBus = fallbackCommandBus
+            let activeCommandBus = ActiveWorkspaceCommandBus(
+                fallback: fallbackCommandBus,
+                activeCommandBusProvider: { [weak self] in
+                    self?.workspaceManager?.activeRuntime?.commandBus
+                }
+            )
+            self.activeCommandBus = activeCommandBus
+            commandBus = activeCommandBus
+            CommandBus.shared = activeCommandBus
         }
 
         Task { [weak bridge] in
@@ -223,9 +243,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         TerminalSurface.initializeGhostty()
 
-        if let bridge = bridge, let bus = commandBus {
-            workspaceManager = WorkspaceManager(bridge: bridge, commandBus: bus)
-            let sessionBridge = SessionBridge(commandBus: bus) { [weak self] in
+        if let fallbackCommandBus {
+            workspaceManager = WorkspaceManager()
+            if let workspaceManager {
+                let commandCenterStore = CommandCenterStore(workspaceManager: workspaceManager)
+                commandCenterStore.onPerformAction = { [weak self] action, run in
+                    self?.performCommandCenterAction(action, run: run)
+                }
+                self.commandCenterStore = commandCenterStore
+            }
+            let sessionBridge = SessionBridge(commandBus: self.commandBus ?? fallbackCommandBus) { [weak self] in
                 self?.workspaceManager?.activeWorkspace?.defaultWorkingDirectory
             }
             self.sessionBridge = sessionBridge
@@ -234,7 +261,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             PaneFactory.activeWorkspaceProvider = { [weak self] in
                 self?.workspaceManager?.activeWorkspace
             }
-            let sessionStore = SessionStore(commandBus: bus)
+            let sessionStore = SessionStore(commandBus: self.commandBus ?? fallbackCommandBus)
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
             _ = NotificationsViewModel.shared // Initialize the singleton early
@@ -431,13 +458,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Sidebar
-        guard let bridge = bridge, let commandBus = commandBus else {
-            Log.general.error("bridge or commandBus not initialized — cannot create sidebar")
+        guard let workspaceManager else {
+            Log.general.error("workspaceManager not initialized — cannot create sidebar")
             return
         }
-        let mgr = workspaceManager ?? WorkspaceManager(bridge: bridge, commandBus: commandBus)
         let sidebarView = SidebarView(
-            workspaceManager: mgr,
+            workspaceManager: workspaceManager,
             onAddWorkspace: { [weak self] in self?.openWorkspace() },
             onOpenSettings: { [weak self] in self?.openSettingsPane() },
             onOpenTool: { [weak self] (toolID: String) in self?.openToolWithDefaultPresentation(toolID) },
@@ -462,7 +488,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.sidebarContentView = sidebarHost
 
         let rightInspectorView = RightInspectorView(
-            workspaceManager: mgr,
+            workspaceManager: workspaceManager,
             onStateChanged: { [weak self] in self?.persistence?.markDirty() },
             fileBrowserViewModel: rightInspectorFileBrowserViewModel,
             workspaceChangesViewModel: rightInspectorWorkspaceChangesViewModel,
@@ -490,7 +516,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.rightInspectorResizerView = rightInspectorResizer
 
         let rightInspectorOverlayView = RightInspectorOverlayView(
-            workspaceManager: mgr,
+            workspaceManager: workspaceManager,
             chromeState: rightInspectorChromeState,
             fileBrowserViewModel: rightInspectorFileBrowserViewModel,
             workspaceChangesViewModel: rightInspectorWorkspaceChangesViewModel,
@@ -934,6 +960,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         toggleRightInspectorItem.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(toggleRightInspectorItem)
+        let commandCenterItem = NSMenuItem(
+            title: "Toggle Command Center",
+            action: #selector(toggleCommandCenter),
+            keyEquivalent: "C"
+        )
+        commandCenterItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(commandCenterItem)
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "Layout Templates\u{2026}", action: #selector(titlebarTemplateAction), keyEquivalent: "")
         viewMenu.addItem(NSMenuItem.separator())
@@ -1254,6 +1287,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         setRightInspectorVisible(!isRightInspectorVisible, animated: true)
     }
 
+    @objc private func toggleCommandCenter() {
+        if commandCenterWindowController?.isWindowVisible == true {
+            commandCenterWindowController?.closeWindow()
+        } else {
+            showCommandCenter(makeKey: true)
+        }
+    }
+
     private func openRightInspector(section: RightInspectorSection) {
         guard activeWorkspaceSupportsRightInspector else { return }
         workspaceManager?.activeWorkspace?.rightInspectorSection = section
@@ -1421,6 +1462,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             CommandItem(id: "view.right_inspector", title: "Toggle Right Inspector", category: "view", shortcut: "Shift+Cmd+B", description: "Show or hide the project inspector") { [weak self] in
                 self?.toggleRightInspector()
+            },
+            CommandItem(id: "view.command_center", title: "Toggle Command Center", category: "view", shortcut: "Shift+Cmd+C", description: "Open the fleet command center window") { [weak self] in
+                self?.toggleCommandCenter()
             },
             CommandItem(id: "inspector.files", title: "Show Files Inspector", category: "view", shortcut: nil, description: "Reveal the right inspector and select Files") { [weak self] in
                 self?.openRightInspector(section: .files)
@@ -2235,11 +2279,244 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         persistence?.markDirty()
     }
 
+    private func showCommandCenter(makeKey: Bool) {
+        let controller = ensureCommandCenterWindowController()
+        controller.present(makeKey: makeKey)
+    }
+
+    private func ensureCommandCenterWindowController() -> CommandCenterWindowController {
+        if let commandCenterWindowController {
+            if let restoredCommandCenterWindowFrame {
+                commandCenterWindowController.applyRestoredFrame(restoredCommandCenterWindowFrame)
+                self.restoredCommandCenterWindowFrame = nil
+            }
+            return commandCenterWindowController
+        }
+
+        let store: CommandCenterStore
+        if let commandCenterStore {
+            store = commandCenterStore
+        } else if let workspaceManager {
+            let newStore = CommandCenterStore(workspaceManager: workspaceManager)
+            newStore.onPerformAction = { [weak self] action, run in
+                self?.performCommandCenterAction(action, run: run)
+            }
+            commandCenterStore = newStore
+            store = newStore
+        } else {
+            fatalError("Workspace manager must be initialized before Command Center")
+        }
+
+        let controller = CommandCenterWindowController(
+            store: store,
+            onVisibilityChanged: { [weak self] isVisible in
+                guard let self else { return }
+                self.restoredCommandCenterVisible = isVisible
+                if isVisible, let frame = self.commandCenterWindowController?.currentFrame() {
+                    self.restoredCommandCenterWindowFrame = frame
+                }
+                self.persistence?.markDirty()
+            },
+            onFrameChanged: { [weak self] frame in
+                self?.restoredCommandCenterWindowFrame = frame
+                self?.persistence?.markDirty()
+            }
+        )
+
+        if let restoredCommandCenterWindowFrame {
+            controller.applyRestoredFrame(restoredCommandCenterWindowFrame)
+            self.restoredCommandCenterWindowFrame = nil
+        }
+
+        commandCenterWindowController = controller
+        return controller
+    }
+
+    private func performCommandCenterAction(
+        _ action: CommandCenterAction,
+        run: CommandCenterFleetRun
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.performCommandCenterUIAction(action, run: run)
+            } catch {
+                self.presentCommandCenterActionError(error)
+            }
+        }
+    }
+
+    private func performCommandCenterUIAction(
+        _ action: CommandCenterAction,
+        run: CommandCenterFleetRun
+    ) async throws {
+        let readiness = try await activateWorkspaceForCommandCenter(run.workspaceID)
+
+        switch action {
+        case .openTerminal:
+            openCommandCenterTerminal(run, workspace: readiness.workspace)
+        case .openReplay:
+            openCommandCenterReplay(run)
+        case .openDiff:
+            openCommandCenterDiff(run)
+        case .openReview:
+            openCommandCenterReview(run)
+        case .openFiles:
+            openCommandCenterFiles(run)
+        case .killSession:
+            guard let runtime = readiness.runtime else {
+                throw WorkspaceActionError.runtimeNotReady
+            }
+            try await killCommandCenterSession(run, runtime: runtime)
+        case .restartSession:
+            guard let runtime = readiness.runtime else {
+                throw WorkspaceActionError.runtimeNotReady
+            }
+            try await recoverCommandCenterSession(run, action: "restart", runtime: runtime)
+        case .reattachSession:
+            guard let runtime = readiness.runtime else {
+                throw WorkspaceActionError.runtimeNotReady
+            }
+            try await recoverCommandCenterSession(run, action: "reattach", runtime: runtime)
+        }
+
+        commandCenterStore?.refreshNow()
+    }
+
+    private func activateWorkspaceForCommandCenter(
+        _ workspaceID: UUID
+    ) async throws -> (workspace: Workspace, runtime: WorkspaceRuntime?) {
+        guard let workspaceManager else {
+            throw WorkspaceActionError.workspaceUnavailable
+        }
+        return try await workspaceManager.ensureWorkspaceReady(workspaceID)
+    }
+
+    private func openCommandCenterTerminal(_ run: CommandCenterFleetRun, workspace: Workspace) {
+        let pane = PaneFactory.makeTerminal(
+            workingDirectory: run.preferredTerminalWorkingDirectory(
+                fallback: workspace.defaultWorkingDirectory
+            ),
+            sessionID: run.run.sessionID,
+            autoStartIfNeeded: run.run.sessionID == nil,
+            launchMetadata: workspace.defaultTerminalMetadata()
+        ).1
+        insertCommandCenterPane(pane, title: "Terminal", presentation: .pane)
+    }
+
+    private func openCommandCenterReplay(_ run: CommandCenterFleetRun) {
+        let pane = ReplayPaneView(frame: .zero, sessionID: run.run.sessionID)
+        insertCommandCenterPane(pane, title: "Replay", presentation: .tab)
+    }
+
+    private func openCommandCenterDiff(_ run: CommandCenterFleetRun) {
+        if let taskID = run.run.taskID {
+            CommandCenterDeepLinkStore.shared.setPendingTaskID(taskID, for: .diff)
+        }
+        let pane = DiffPaneView(frame: .zero, initialTaskID: run.run.taskID)
+        insertCommandCenterPane(pane, title: "Diff", presentation: .tab)
+    }
+
+    private func openCommandCenterReview(_ run: CommandCenterFleetRun) {
+        if let taskID = run.run.taskID {
+            CommandCenterDeepLinkStore.shared.setPendingTaskID(taskID, for: .review)
+        }
+        openRightInspector(section: .review)
+    }
+
+    private func openCommandCenterFiles(_ run: CommandCenterFleetRun) {
+        let targetPath = run.run.relatedFilesPath
+        openRightInspector(section: .files)
+        if let targetPath {
+            rightInspectorFileBrowserViewModel.openFile(at: targetPath)
+        } else {
+            rightInspectorFileBrowserViewModel.clearPendingOpenFile()
+        }
+    }
+
+    private func presentCommandCenterActionError(_ error: Error) {
+        Log.workspace.error(
+            "Command Center action failed: \(error.localizedDescription, privacy: .public)"
+        )
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Command Center Action Failed"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window)
+    }
+
+    private func killCommandCenterSession(
+        _ run: CommandCenterFleetRun,
+        runtime: WorkspaceRuntime
+    ) async throws {
+        struct SessionKillParams: Encodable {
+            let sessionID: String
+        }
+
+        guard let sessionID = run.run.sessionID else { return }
+        let _: SessionKillResult = try await runtime.commandBus.call(
+            method: "session.kill",
+            params: SessionKillParams(sessionID: sessionID)
+        )
+    }
+
+    private func recoverCommandCenterSession(
+        _ run: CommandCenterFleetRun,
+        action: String,
+        runtime: WorkspaceRuntime
+    ) async throws {
+        struct SessionRecoveryParams: Encodable {
+            let sessionID: String
+            let action: String
+        }
+
+        struct SessionRecoveryResult: Decodable {
+            let ok: Bool
+            let action: String
+            let newSessionID: String?
+        }
+
+        guard let sessionID = run.run.sessionID else { return }
+        let _: SessionRecoveryResult = try await runtime.commandBus.call(
+            method: "session.recovery.execute",
+            params: SessionRecoveryParams(sessionID: sessionID, action: action)
+        )
+    }
+
+    private func insertCommandCenterPane(
+        _ pane: NSView & PaneContent,
+        title: String,
+        presentation: SidebarToolDefaultPresentation
+    ) {
+        switch presentation {
+        case .pane:
+            if contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane) == nil,
+               contentAreaView?.activePaneView == nil {
+                contentAreaView?.setRootPane(pane)
+            }
+        case .tab:
+            guard let workspace = workspaceManager?.activeWorkspace else { return }
+            contentAreaView?.syncPersistedPanes()
+            _ = workspace.addTab(title: title)
+            workspace.ensureActiveTabHasDisplayableRootPane()
+            contentAreaView?.setLayoutEngine(workspace.layoutEngine)
+            updateTabBar()
+            if contentAreaView?.replaceActivePane(with: pane) == nil {
+                contentAreaView?.setRootPane(pane)
+            }
+        }
+        persistence?.markDirty()
+    }
+
     private func buildSessionState() -> SessionPersistence.SessionState {
         contentAreaView?.syncPersistedPanes()
         let frame = window.map { SessionPersistence.CodableRect($0.frame) }
         return SessionPersistence.SessionState(
             windowFrame: frame,
+            commandCenterWindowFrame: commandCenterWindowController?.currentFrame().map(SessionPersistence.CodableRect.init)
+                ?? restoredCommandCenterWindowFrame.map(SessionPersistence.CodableRect.init),
+            commandCenterVisible: commandCenterWindowController?.isWindowVisible ?? restoredCommandCenterVisible,
             workspaces: workspaceManager?.workspaces.map { $0.snapshot() } ?? [],
             activeWorkspaceID: workspaceManager?.activeWorkspaceID,
             sidebarVisible: isSidebarVisible,
@@ -2253,6 +2530,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarWidthConstraint?.constant = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
         sidebarHostView?.isHidden = !isSidebarVisible
         isRightInspectorVisible = state.rightInspectorVisible
+        restoredCommandCenterWindowFrame = state.commandCenterWindowFrame?.nsRect
+        restoredCommandCenterVisible = state.commandCenterVisible
         rightInspectorChromeState.isVisible = isRightInspectorPresented
         rightInspectorStoredWidth = min(
             max(

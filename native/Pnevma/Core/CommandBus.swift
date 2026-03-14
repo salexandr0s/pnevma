@@ -2,12 +2,18 @@ import Foundation
 
 /// Convenience wrapper for making typed calls to the Rust backend.
 /// All calls are dispatched to a background queue to avoid blocking the main thread.
-protocol CommandCalling {
+protocol CommandCalling: Sendable {
     func call<T: Decodable>(method: String, params: Encodable?) async throws -> T
 }
 
+extension CommandCalling {
+    func call<T: Decodable>(method: String) async throws -> T {
+        try await call(method: method, params: nil)
+    }
+}
+
 actor CommandBus: CommandCalling {
-    static var shared: CommandBus?
+    static var shared: (any CommandCalling)?
 
     private let bridge: PnevmaBridge
 
@@ -91,6 +97,25 @@ actor CommandBus: CommandCalling {
                 }
             }
         }
+    }
+}
+
+@MainActor
+final class ActiveWorkspaceCommandBus: CommandCalling, @unchecked Sendable {
+    private let fallback: any CommandCalling
+    private let activeCommandBusProvider: @MainActor () -> (any CommandCalling)?
+
+    init(
+        fallback: any CommandCalling,
+        activeCommandBusProvider: @escaping @MainActor () -> (any CommandCalling)?
+    ) {
+        self.fallback = fallback
+        self.activeCommandBusProvider = activeCommandBusProvider
+    }
+
+    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+        let bus = activeCommandBusProvider() ?? fallback
+        return try await bus.call(method: method, params: params)
     }
 }
 

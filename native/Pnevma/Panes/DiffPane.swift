@@ -5,7 +5,11 @@ import Cocoa
 // MARK: - DiffView
 
 struct DiffView: View {
-    @State private var viewModel = DiffViewModel()
+    @State private var viewModel: DiffViewModel
+
+    init(initialTaskID: String? = nil) {
+        _viewModel = State(initialValue: DiffViewModel(initialTaskID: initialTaskID))
+    }
 
     var body: some View {
         Group {
@@ -197,10 +201,12 @@ final class DiffPaneView: NSView, PaneContent {
     let paneType = "diff"
     let shouldPersist = true
     var title: String { "Diff" }
+    private let initialTaskID: String?
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, initialTaskID: String? = nil) {
+        self.initialTaskID = initialTaskID
         super.init(frame: frame)
-        _ = addSwiftUISubview(DiffView())
+        _ = addSwiftUISubview(DiffView(initialTaskID: initialTaskID))
     }
 
     required init?(coder: NSCoder) { fatalError() }

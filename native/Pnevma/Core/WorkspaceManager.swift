@@ -4,10 +4,12 @@ import Observation
 import os
 
 /// Manages workspace lifecycle — creation, switching, persistence, and teardown.
-/// Only the selected workspace is bound to the backend at any time.
+/// Project workspaces keep their own backend runtime while selection only controls UI focus.
 @Observable
 @MainActor
 final class WorkspaceManager {
+
+    typealias RuntimeFactory = @MainActor (UUID) -> WorkspaceRuntime
 
     private(set) var workspaces: [Workspace] = []
     private(set) var activeWorkspaceID: UUID?
@@ -17,28 +19,29 @@ final class WorkspaceManager {
         return workspaces.first { $0.id == id }
     }
 
-    /// Called when the active workspace changes, providing the new workspace's layout engine.
+    var activeRuntime: WorkspaceRuntime? {
+        guard let id = activeWorkspaceID else { return nil }
+        return workspaceRuntimes[id]
+    }
+
+    var activeCommandBus: (any CommandCalling)? {
+        activeRuntime?.commandBus
+    }
+
     @ObservationIgnored
     var onActiveWorkspaceChanged: ((PaneLayoutEngine) -> Void)?
 
-    /// Called when unread or terminal notification counts change on the active workspace.
     @ObservationIgnored
     var onNotificationCountChanged: ((Int) -> Void)?
 
-    @ObservationIgnored
-    private let commandBus: any CommandCalling
     @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
     @ObservationIgnored
     private let projectPathResolver: any WorkspaceProjectPathResolving
     @ObservationIgnored
+    private let runtimeFactory: RuntimeFactory
+    @ObservationIgnored
     private var bridgeObserverID: UUID?
-
-    private struct PendingActivationTarget {
-        let workspaceID: UUID?
-        let generation: UInt64
-    }
-
     @ObservationIgnored
     private var nextRequestGeneration: UInt64 = 0
     @ObservationIgnored
@@ -46,20 +49,18 @@ final class WorkspaceManager {
     @ObservationIgnored
     private var workspaceProjectIDs: [UUID: String] = [:]
     @ObservationIgnored
-    private var desiredActivationTarget: PendingActivationTarget?
+    private var workspaceRuntimes: [UUID: WorkspaceRuntime] = [:]
     @ObservationIgnored
-    private var activationTask: Task<Void, Never>?
+    private var runtimeOpenTasks: [UUID: Task<Void, Never>] = [:]
 
     init(
-        bridge: PnevmaBridge,
-        commandBus: any CommandCalling,
         activationHub: ActiveWorkspaceActivationHub = .shared,
-        projectPathResolver: any WorkspaceProjectPathResolving = DefaultWorkspaceProjectPathResolver()
+        projectPathResolver: any WorkspaceProjectPathResolving = DefaultWorkspaceProjectPathResolver(),
+        runtimeFactory: @escaping RuntimeFactory = { WorkspaceRuntime(workspaceID: $0) }
     ) {
-        _ = bridge
-        self.commandBus = commandBus
         self.activationHub = activationHub
         self.projectPathResolver = projectPathResolver
+        self.runtimeFactory = runtimeFactory
         bridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleBridgeEvent(event)
@@ -67,25 +68,54 @@ final class WorkspaceManager {
         }
     }
 
+    convenience init(
+        bridge: PnevmaBridge,
+        commandBus: any CommandCalling,
+        activationHub: ActiveWorkspaceActivationHub = .shared,
+        projectPathResolver: any WorkspaceProjectPathResolving = DefaultWorkspaceProjectPathResolver()
+    ) {
+        // Shared-bus convenience path for tests or intentionally single-runtime
+        // scenarios only. Production app wiring should prefer the primary
+        // initializer so each workspace runtime gets its own bridge/command bus.
+        _ = bridge
+        self.init(
+            activationHub: activationHub,
+            projectPathResolver: projectPathResolver,
+            runtimeFactory: { workspaceID in
+                WorkspaceRuntime(workspaceID: workspaceID, commandBus: commandBus)
+            }
+        )
+    }
+
     deinit {
-        activationTask?.cancel()
+        runtimeOpenTasks.values.forEach { $0.cancel() }
         if let bridgeObserverID {
             BridgeEventHub.shared.removeObserver(bridgeObserverID)
+        }
+        let runtimes = Array(workspaceRuntimes.values)
+        Task { @MainActor in
+            runtimes.forEach { $0.destroy() }
         }
     }
 
     func shutdown() {
+        runtimeOpenTasks.values.forEach { $0.cancel() }
+        runtimeOpenTasks.removeAll()
+        let runtimes = Array(workspaceRuntimes.values)
+        workspaceRuntimes.removeAll()
+        runtimes.forEach { $0.destroy() }
         projectPathResolver.cleanupAll(workspaces: workspaces)
     }
 
     func prepareForShutdown() async {
-        if activeWorkspace?.kind == .project {
-            do {
-                let _: OkResponse = try await commandBus.call(method: "project.close", params: EmptyParams())
-            } catch {
-                Log.workspace.error("Failed to close backend project during shutdown: \(error.localizedDescription, privacy: .public)")
-            }
+        let runtimes = Array(workspaceRuntimes.values)
+        runtimeOpenTasks.values.forEach { $0.cancel() }
+        runtimeOpenTasks.removeAll()
+        for runtime in runtimes {
+            await runtime.closeProject()
+            runtime.destroy()
         }
+        workspaceRuntimes.removeAll()
     }
 
     @discardableResult
@@ -107,6 +137,9 @@ final class WorkspaceManager {
         )
         ensurePlaceholderPaneIfNeeded(for: workspace)
         insertWorkspace(workspace)
+        if workspace.supportsBackendProject {
+            _ = ensureRuntime(for: workspace)
+        }
         activateWorkspace(id: workspace.id)
         Log.workspace.info("Created workspace '\(name)' id=\(workspace.id)")
         return workspace
@@ -207,6 +240,7 @@ final class WorkspaceManager {
         guard !workspaces[index].isPermanent else { return }
         let closingWasActive = activeWorkspaceID == id
         let workspace = workspaces.remove(at: index)
+        teardownRuntime(for: id)
         invalidateRequestState(for: id)
         Log.workspace.info("Closed workspace '\(workspace.name)'")
 
@@ -234,6 +268,10 @@ final class WorkspaceManager {
         normalizeWorkspaceCollection()
         for workspace in workspaces {
             ensurePlaceholderPaneIfNeeded(for: workspace)
+            if workspace.supportsBackendProject {
+                _ = ensureRuntime(for: workspace)
+                bootstrapRuntime(for: workspace)
+            }
         }
 
         if workspaces.isEmpty {
@@ -248,7 +286,79 @@ final class WorkspaceManager {
         }
     }
 
-    /// Refresh workspace metadata from the Rust backend.
+    func runtime(for workspaceID: UUID) -> WorkspaceRuntime? {
+        workspaceRuntimes[workspaceID]
+    }
+
+    func commandCenterSnapshot(
+        for workspaceID: UUID,
+        timeoutNanoseconds: UInt64 = 250_000_000
+    ) async throws -> CommandCenterSnapshot {
+        let readiness = try await ensureRuntimeReady(
+            workspaceID,
+            timeoutNanoseconds: timeoutNanoseconds,
+            activateIfNeeded: false
+        )
+        guard let runtime = readiness.runtime else {
+            throw WorkspaceActionError.runtimeNotReady
+        }
+        return try await runtime.fetchCommandCenterSnapshot()
+    }
+
+    func ensureWorkspaceReady(
+        _ workspaceID: UUID,
+        timeoutNanoseconds: UInt64 = 5_000_000_000
+    ) async throws -> (workspace: Workspace, runtime: WorkspaceRuntime?) {
+        try await ensureRuntimeReady(
+            workspaceID,
+            timeoutNanoseconds: timeoutNanoseconds,
+            activateIfNeeded: true
+        )
+    }
+
+    private func ensureRuntimeReady(
+        _ workspaceID: UUID,
+        timeoutNanoseconds: UInt64,
+        activateIfNeeded: Bool
+    ) async throws -> (workspace: Workspace, runtime: WorkspaceRuntime?) {
+        guard let workspace = workspace(withID: workspaceID) else {
+            throw WorkspaceRuntimeReadinessError.workspaceMissing
+        }
+
+        if activateIfNeeded, activeWorkspaceID != workspaceID {
+            activateWorkspace(id: workspaceID)
+        }
+
+        guard workspace.supportsBackendProject else {
+            return (workspace, nil)
+        }
+
+        bootstrapRuntime(for: workspace)
+        guard let runtime = workspaceRuntimes[workspaceID] else {
+            throw WorkspaceRuntimeReadinessError.runtimeUnavailable(workspace.name)
+        }
+
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            switch runtime.state {
+            case .open:
+                if activateIfNeeded {
+                    publishActivationState(for: workspace)
+                }
+                return (workspace, runtime)
+            case .failed(_, let message):
+                throw WorkspaceRuntimeReadinessError.activationFailed(workspace.name, message)
+            case .closed:
+                bootstrapRuntime(for: workspace)
+            case .opening:
+                break
+            }
+            try? await Task.sleep(nanoseconds: 75_000_000)
+        }
+
+        throw WorkspaceRuntimeReadinessError.timedOut(workspace.name)
+    }
+
     func refreshMetadata(for workspace: Workspace) {
         guard workspace.supportsBackendProject else {
             resetMetadata(for: workspace)
@@ -256,7 +366,8 @@ final class WorkspaceManager {
             return
         }
         guard let generation = workspaceGenerations[workspace.id],
-              let expectedProjectID = workspaceProjectIDs[workspace.id] else {
+              let expectedProjectID = workspaceProjectIDs[workspace.id],
+              let runtime = workspaceRuntimes[workspace.id] else {
             return
         }
 
@@ -264,7 +375,7 @@ final class WorkspaceManager {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let summary: ProjectSummary = try await self.commandBus.call(
+                let summary: ProjectSummary = try await runtime.commandBus.call(
                     method: "project.summary",
                     params: EmptyParams()
                 )
@@ -276,7 +387,7 @@ final class WorkspaceManager {
                 )
             } catch {
                 Log.workspace.error(
-                    "Failed to refresh metadata: \(error.localizedDescription, privacy: .public)"
+                    "Failed to refresh metadata for workspace \(workspace.name, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
             }
         }
@@ -287,95 +398,90 @@ final class WorkspaceManager {
 
         if let workspace = workspace(withID: id) {
             ensurePlaceholderPaneIfNeeded(for: workspace)
-            scheduleActivation(for: workspace)
+            if workspace.supportsProjectTools {
+                _ = ensureRuntime(for: workspace)
+                bootstrapRuntime(for: workspace)
+            }
+            publishActivationState(for: workspace)
             onActiveWorkspaceChanged?(workspace.layoutEngine)
+            onNotificationCountChanged?(workspace.unreadNotifications + workspace.terminalNotificationCount)
         } else {
-            scheduleBackendClose()
+            activationHub.update(.closed(workspaceID: nil))
+            onNotificationCountChanged?(0)
         }
     }
 
-    private func scheduleActivation(for workspace: Workspace) {
-        workspace.activationFailureMessage = nil
-        let generation = issueGeneration(for: workspace.id)
-        desiredActivationTarget = PendingActivationTarget(
-            workspaceID: workspace.id,
-            generation: generation
-        )
-        if workspace.supportsProjectTools {
-            activationHub.update(
-                .opening(workspaceID: workspace.id, generation: generation)
-            )
-        } else {
-            activationHub.update(.closed(workspaceID: workspace.id))
-        }
-        startActivationLoopIfNeeded()
-    }
+    private func bootstrapRuntime(for workspace: Workspace, forceReopen: Bool = false) {
+        guard workspace.supportsBackendProject else { return }
+        let runtime = ensureRuntime(for: workspace)
 
-    private func scheduleBackendClose() {
-        nextRequestGeneration += 1
-        desiredActivationTarget = PendingActivationTarget(
-            workspaceID: nil,
-            generation: nextRequestGeneration
-        )
-        activationHub.update(.closed(workspaceID: nil))
-        startActivationLoopIfNeeded()
-    }
-
-    private func startActivationLoopIfNeeded() {
-        guard activationTask == nil else { return }
-        activationTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.runActivationLoop()
-        }
-    }
-
-    private func runActivationLoop() async {
-        defer { activationTask = nil }
-
-        while let target = desiredActivationTarget {
-            desiredActivationTarget = nil
-
-            if let workspaceID = target.workspaceID,
-               let workspace = workspace(withID: workspaceID) {
-                if workspace.supportsProjectTools {
-                    do {
-                        guard let path = try await projectPathResolver.resolveProjectPath(for: workspace) else {
-                            throw WorkspaceProjectTransportError.projectPathUnavailable
-                        }
-                        guard workspaceGenerations[workspace.id] == target.generation,
-                              activeWorkspaceID == workspace.id else {
-                            continue
-                        }
-                        workspace.projectPath = path
-                        await openWorkspaceProject(path: path, for: workspace, generation: target.generation)
-                    } catch {
-                        await handleWorkspaceProjectOpenFailure(
-                            for: workspace,
-                            generation: target.generation,
-                            error: error
-                        )
-                    }
-                } else {
-                    await closeWorkspaceProject(for: workspace, generation: target.generation)
-                }
-            } else {
-                await closeActiveBackendProject()
+        if !forceReopen {
+            switch runtime.state {
+            case .open, .opening:
+                return
+            case .closed, .failed:
+                break
             }
         }
+
+        runtimeOpenTasks[workspace.id]?.cancel()
+        let generation = issueGeneration(for: workspace.id)
+        runtime.markOpening(generation: generation, projectPath: workspace.projectPath)
+        if activeWorkspaceID == workspace.id {
+            activationHub.update(.opening(workspaceID: workspace.id, generation: generation))
+        }
+
+        runtimeOpenTasks[workspace.id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.runtimeOpenTasks[workspace.id] = nil }
+            await self.openWorkspaceRuntime(workspaceID: workspace.id, generation: generation)
+        }
     }
 
-    private func openWorkspaceProject(path: String, for workspace: Workspace, generation: UInt64) async {
+    private func ensureRuntime(for workspace: Workspace) -> WorkspaceRuntime {
+        if let runtime = workspaceRuntimes[workspace.id] {
+            return runtime
+        }
+        let runtime = runtimeFactory(workspace.id)
+        workspaceRuntimes[workspace.id] = runtime
+        return runtime
+    }
+
+    private func teardownRuntime(for workspaceID: UUID) {
+        runtimeOpenTasks[workspaceID]?.cancel()
+        runtimeOpenTasks.removeValue(forKey: workspaceID)
+        guard let runtime = workspaceRuntimes.removeValue(forKey: workspaceID) else { return }
+        Task { @MainActor in
+            await runtime.closeProject()
+            runtime.destroy()
+        }
+    }
+
+    private func openWorkspaceRuntime(workspaceID: UUID, generation: UInt64) async {
+        guard let workspace = workspace(withID: workspaceID),
+              workspace.supportsBackendProject,
+              let runtime = workspaceRuntimes[workspaceID] else {
+            return
+        }
+
         do {
-            let response: ProjectOpenResponse = try await openOrTrust(
+            guard let path = try await projectPathResolver.resolveProjectPath(for: workspace) else {
+                throw WorkspaceProjectTransportError.projectPathUnavailable
+            }
+            guard workspaceGenerations[workspace.id] == generation else { return }
+            workspace.projectPath = path
+            runtime.markOpening(generation: generation, projectPath: path)
+
+            let response = try await openOrTrust(
                 path: path,
                 activationToken: Self.clientActivationToken(
                     workspaceID: workspace.id,
                     generation: generation
-                )
+                ),
+                commandBus: runtime.commandBus
             )
 
             guard workspaceGenerations[workspace.id] == generation,
-                  activeWorkspaceID == workspace.id,
                   let liveWorkspace = self.workspace(withID: workspace.id) else {
                 return
             }
@@ -383,16 +489,24 @@ final class WorkspaceManager {
             liveWorkspace.projectPath = response.status.projectPath
             liveWorkspace.activationFailureMessage = nil
             workspaceProjectIDs[workspace.id] = response.projectID
-            activationHub.update(
-                .open(workspaceID: workspace.id, projectID: response.projectID)
-            )
+            runtime.markOpen(projectID: response.projectID, projectPath: response.status.projectPath)
 
-            if seedInitialTerminalIfNeeded(for: liveWorkspace) {
+            if activeWorkspaceID == workspace.id {
+                activationHub.update(
+                    .open(workspaceID: workspace.id, projectID: response.projectID)
+                )
+            }
+
+            if seedInitialTerminalIfNeeded(for: liveWorkspace), activeWorkspaceID == workspace.id {
                 onActiveWorkspaceChanged?(liveWorkspace.layoutEngine)
             }
             refreshMetadata(for: liveWorkspace)
         } catch {
-            await handleWorkspaceProjectOpenFailure(for: workspace, generation: generation, error: error)
+            await handleWorkspaceProjectOpenFailure(
+                for: workspace,
+                generation: generation,
+                error: error
+            )
         }
     }
 
@@ -402,21 +516,26 @@ final class WorkspaceManager {
         error: Error
     ) async {
         guard workspaceGenerations[workspace.id] == generation,
-              activeWorkspaceID == workspace.id,
               let liveWorkspace = self.workspace(withID: workspace.id) else {
             return
         }
 
         workspaceProjectIDs.removeValue(forKey: workspace.id)
+        workspaceRuntimes[workspace.id]?.markFailed(
+            generation: generation,
+            message: error.localizedDescription
+        )
         resetMetadata(for: liveWorkspace)
         liveWorkspace.activationFailureMessage = error.localizedDescription
-        activationHub.update(
-            .failed(
-                workspaceID: workspace.id,
-                generation: generation,
-                message: error.localizedDescription
+        if activeWorkspaceID == workspace.id {
+            activationHub.update(
+                .failed(
+                    workspaceID: workspace.id,
+                    generation: generation,
+                    message: error.localizedDescription
+                )
             )
-        )
+        }
         Log.workspace.error(
             "Failed to open project for workspace \(workspace.id, privacy: .public): \(error.localizedDescription, privacy: .public)"
         )
@@ -427,8 +546,11 @@ final class WorkspaceManager {
         )
     }
 
-    /// Try to open a project; if trust is required, auto-trust and retry once.
-    private func openOrTrust(path: String, activationToken: String) async throws -> ProjectOpenResponse {
+    private func openOrTrust(
+        path: String,
+        activationToken: String,
+        commandBus: any CommandCalling
+    ) async throws -> ProjectOpenResponse {
         do {
             return try await commandBus.call(
                 method: "project.open",
@@ -460,62 +582,43 @@ final class WorkspaceManager {
         }
     }
 
-    private func closeWorkspaceProject(for workspace: Workspace, generation: UInt64) async {
-        do {
-            let _: OkResponse = try await commandBus.call(method: "project.close", params: EmptyParams())
-        } catch {
-            Log.workspace.error("Failed to close backend project: \(error.localizedDescription, privacy: .public)")
-        }
-
-        guard workspaceGenerations[workspace.id] == generation,
-              activeWorkspaceID == workspace.id,
-              let liveWorkspace = self.workspace(withID: workspace.id) else {
-            return
-        }
-
-        workspaceProjectIDs.removeValue(forKey: workspace.id)
-        resetMetadata(for: liveWorkspace)
-        liveWorkspace.activationFailureMessage = nil
-        activationHub.update(.closed(workspaceID: workspace.id))
-        if ensurePlaceholderPaneIfNeeded(for: liveWorkspace) {
-            onActiveWorkspaceChanged?(liveWorkspace.layoutEngine)
-        }
-    }
-
-    private func closeActiveBackendProject() async {
-        do {
-            let _: OkResponse = try await commandBus.call(method: "project.close", params: EmptyParams())
-        } catch {
-            Log.workspace.error("Failed to close backend project: \(error.localizedDescription, privacy: .public)")
-        }
-        activationHub.update(.closed(workspaceID: activeWorkspaceID))
-    }
-
     private func handleBridgeEvent(_ event: BridgeEvent) {
-        guard let workspace = activeWorkspace else { return }
         switch event.name {
         case "project_opened":
-            handleProjectOpened(event, for: workspace)
+            handleProjectOpened(event)
         case "task_updated", "cost_updated", "notification_created",
              "notification_cleared", "notification_updated":
-            refreshMetadata(for: workspace)
+            for workspace in workspaces where workspace.supportsBackendProject {
+                refreshMetadata(for: workspace)
+            }
         default:
             break
         }
     }
 
-    private func handleProjectOpened(_ event: BridgeEvent, for workspace: Workspace) {
+    private func handleProjectOpened(_ event: BridgeEvent) {
         guard let payload = decodeProjectOpenedPayload(from: event.payloadJSON),
-              projectOpenedPayloadAppliesToActiveWorkspace(payload, workspace: workspace) else {
+              let (workspaceID, generation) = Self.parseClientActivationToken(payload.clientActivationToken),
+              workspaceGenerations[workspaceID] == generation,
+              let workspace = workspace(withID: workspaceID),
+              let runtime = workspaceRuntimes[workspaceID] else {
+            return
+        }
+
+        if let expectedPath = workspace.projectPath,
+           !expectedPath.isEmpty,
+           payload.projectPath != expectedPath {
+            Log.workspace.debug(
+                "Ignoring mismatched project_opened for workspace \(workspace.id, privacy: .public); expected path \(expectedPath, privacy: .public), got \(payload.projectPath, privacy: .public)"
+            )
             return
         }
 
         workspace.projectPath = payload.projectPath
         workspaceProjectIDs[workspace.id] = payload.projectID
+        runtime.markOpen(projectID: payload.projectID, projectPath: payload.projectPath)
 
-        if case .opening(let workspaceID, let generation) = activationHub.currentState,
-           workspaceID == workspace.id,
-           workspaceGenerations[workspace.id] == generation {
+        if activeWorkspaceID == workspace.id {
             activationHub.update(
                 .open(workspaceID: workspace.id, projectID: payload.projectID)
             )
@@ -532,33 +635,44 @@ final class WorkspaceManager {
         return try? PnevmaJSON.decoder().decode(ProjectOpenedEventPayload.self, from: data)
     }
 
-    private func projectOpenedPayloadAppliesToActiveWorkspace(
-        _ payload: ProjectOpenedEventPayload,
-        workspace: Workspace
-    ) -> Bool {
-        guard case .opening(let workspaceID, let generation) = activationHub.currentState,
-              workspaceID == workspace.id,
-              workspaceGenerations[workspace.id] == generation,
-              workspace.supportsBackendProject,
-              let workspacePath = workspace.projectPath,
-              payload.clientActivationToken == Self.clientActivationToken(
-                  workspaceID: workspace.id,
-                  generation: generation
-              ) else {
-            return false
+    private func publishActivationState(for workspace: Workspace) {
+        guard activeWorkspaceID == workspace.id else { return }
+        guard workspace.supportsProjectTools else {
+            activationHub.update(.closed(workspaceID: workspace.id))
+            return
         }
-        return Self.normalizedProjectPath(workspacePath) == Self.normalizedProjectPath(payload.projectPath)
+        guard let runtime = workspaceRuntimes[workspace.id] else {
+            activationHub.update(.closed(workspaceID: workspace.id))
+            return
+        }
+
+        switch runtime.state {
+        case .closed:
+            activationHub.update(.closed(workspaceID: workspace.id))
+        case .opening(let generation):
+            activationHub.update(.opening(workspaceID: workspace.id, generation: generation))
+        case .open(let projectID):
+            activationHub.update(.open(workspaceID: workspace.id, projectID: projectID))
+        case .failed(let generation, let message):
+            activationHub.update(
+                .failed(workspaceID: workspace.id, generation: generation, message: message)
+            )
+        }
     }
 
     static func clientActivationToken(workspaceID: UUID, generation: UInt64) -> String {
         "\(workspaceID.uuidString):\(generation)"
     }
 
-    private static func normalizedProjectPath(_ path: String) -> String {
-        URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
+    private static func parseClientActivationToken(_ token: String?) -> (UUID, UInt64)? {
+        guard let token else { return nil }
+        let parts = token.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let workspaceID = UUID(uuidString: parts[0]),
+              let generation = UInt64(parts[1]) else {
+            return nil
+        }
+        return (workspaceID, generation)
     }
 
     private func applySummary(
@@ -568,7 +682,6 @@ final class WorkspaceManager {
         expectedProjectID: String
     ) {
         guard workspaceGenerations[workspaceID] == expectedGeneration,
-              activeWorkspaceID == workspaceID,
               let workspace = workspace(withID: workspaceID) else {
             return
         }
@@ -577,7 +690,7 @@ final class WorkspaceManager {
             Log.workspace.debug(
                 "Dropping stale summary for workspace \(workspaceID, privacy: .public); expected project \(expectedProjectID, privacy: .public), got \(summary.projectID, privacy: .public)"
             )
-            scheduleActivation(for: workspace)
+            bootstrapRuntime(for: workspace, forceReopen: true)
             return
         }
 
@@ -587,7 +700,9 @@ final class WorkspaceManager {
         workspace.costToday = summary.costToday
         workspace.unreadNotifications = summary.unreadNotifications
         workspace.gitDirty = summary.gitDirty ?? false
-        onNotificationCountChanged?(workspace.unreadNotifications + workspace.terminalNotificationCount)
+        if activeWorkspaceID == workspaceID {
+            onNotificationCountChanged?(workspace.unreadNotifications + workspace.terminalNotificationCount)
+        }
     }
 
     @discardableResult
@@ -727,9 +842,6 @@ final class WorkspaceManager {
     private func invalidateRequestState(for workspaceID: UUID) {
         workspaceGenerations.removeValue(forKey: workspaceID)
         workspaceProjectIDs.removeValue(forKey: workspaceID)
-        if desiredActivationTarget?.workspaceID == workspaceID {
-            desiredActivationTarget = nil
-        }
     }
 
     private func workspace(withID id: UUID?) -> Workspace? {
@@ -738,7 +850,44 @@ final class WorkspaceManager {
     }
 }
 
+enum WorkspaceRuntimeReadinessError: LocalizedError {
+    case workspaceMissing
+    case runtimeUnavailable(String)
+    case activationFailed(String, String)
+    case timedOut(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .workspaceMissing:
+            return "The selected workspace is no longer available."
+        case .runtimeUnavailable(let workspaceName):
+            return "The backend runtime for \(workspaceName) is unavailable."
+        case .activationFailed(_, let message):
+            return message
+        case .timedOut(let workspaceName):
+            return "Timed out waiting for \(workspaceName) to become ready."
+        }
+    }
+}
+
 // MARK: - Project Path Resolution
+
+enum WorkspaceActionError: LocalizedError {
+    case workspaceUnavailable
+    case runtimeFailed(String)
+    case runtimeNotReady
+
+    var errorDescription: String? {
+        switch self {
+        case .workspaceUnavailable:
+            return "The target workspace is unavailable."
+        case .runtimeFailed(let message):
+            return message
+        case .runtimeNotReady:
+            return "The target workspace is still opening. Please try again."
+        }
+    }
+}
 
 protocol WorkspaceProjectPathResolving {
     func resolveProjectPath(for workspace: Workspace) async throws -> String?
