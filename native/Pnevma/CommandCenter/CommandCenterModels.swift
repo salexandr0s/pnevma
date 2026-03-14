@@ -41,6 +41,65 @@ struct CommandCenterRun: Decodable, Hashable {
     let tokensOut: Int
     let availableActions: [String]
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case taskID
+        case taskTitle
+        case taskStatus
+        case sessionID
+        case sessionName
+        case sessionStatus
+        case sessionHealth
+        case provider
+        case model
+        case agentProfile
+        case branch
+        case worktreeID
+        case primaryFilePath
+        case scopePaths
+        case worktreePath
+        case state
+        case attentionReason
+        case startedAt
+        case lastActivityAt
+        case retryCount
+        case retryAfter
+        case costUsd
+        case tokensIn
+        case tokensOut
+        case availableActions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        taskID = try container.decodeIfPresent(String.self, forKey: .taskID)
+        taskTitle = try container.decodeIfPresent(String.self, forKey: .taskTitle)
+        taskStatus = try container.decodeIfPresent(String.self, forKey: .taskStatus)
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        sessionName = try container.decodeIfPresent(String.self, forKey: .sessionName)
+        sessionStatus = try container.decodeIfPresent(String.self, forKey: .sessionStatus)
+        sessionHealth = try container.decodeIfPresent(String.self, forKey: .sessionHealth)
+        provider = try container.decodeIfPresent(String.self, forKey: .provider)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        agentProfile = try container.decodeIfPresent(String.self, forKey: .agentProfile)
+        branch = try container.decodeIfPresent(String.self, forKey: .branch)
+        worktreeID = try container.decodeIfPresent(String.self, forKey: .worktreeID)
+        primaryFilePath = try container.decodeIfPresent(String.self, forKey: .primaryFilePath)
+        scopePaths = try container.decodeIfPresent([String].self, forKey: .scopePaths) ?? []
+        worktreePath = try container.decodeIfPresent(String.self, forKey: .worktreePath)
+        state = try container.decode(String.self, forKey: .state)
+        attentionReason = try container.decodeIfPresent(String.self, forKey: .attentionReason)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        lastActivityAt = try container.decode(Date.self, forKey: .lastActivityAt)
+        retryCount = try container.decode(Int.self, forKey: .retryCount)
+        retryAfter = try container.decodeIfPresent(Date.self, forKey: .retryAfter)
+        costUsd = try container.decode(Double.self, forKey: .costUsd)
+        tokensIn = try container.decode(Int.self, forKey: .tokensIn)
+        tokensOut = try container.decode(Int.self, forKey: .tokensOut)
+        availableActions = try container.decodeIfPresent([String].self, forKey: .availableActions) ?? []
+    }
+
     var relatedFilesPath: String? {
         primaryFilePath ?? scopePaths.first ?? worktreePath
     }
