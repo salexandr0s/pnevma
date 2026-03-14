@@ -2,7 +2,7 @@ import SwiftUI
 import Observation
 import AppKit
 
-struct ProjectSecret: Identifiable, Decodable {
+struct ProjectSecret: Identifiable, Codable {
     let id: String
     let projectID: String?
     var scope: String
@@ -37,6 +37,52 @@ private extension ProjectSecret {
         default:
             return .error
         }
+    }
+}
+
+enum SecretsSectionKind: String, CaseIterable {
+    case project
+    case global
+
+    var title: String {
+        switch self {
+        case .project: return "Project"
+        case .global: return "Global"
+        }
+    }
+
+    var accessibilityIdentifier: String {
+        "secrets.section.\(rawValue)"
+    }
+}
+
+struct SecretsListPresentation {
+    let projectSecrets: [ProjectSecret]
+    let globalSecrets: [ProjectSecret]
+
+    init(secrets: [ProjectSecret]) {
+        projectSecrets = secrets
+            .filter { $0.scope != "global" }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        globalSecrets = secrets
+            .filter { $0.scope == "global" }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var hasShadowedGlobals: Bool {
+        let projectNames = Set(projectSecrets.map(\.name))
+        return globalSecrets.contains { projectNames.contains($0.name) }
+    }
+
+    var orderedSections: [SecretsSectionKind] {
+        var sections: [SecretsSectionKind] = []
+        if !projectSecrets.isEmpty {
+            sections.append(.project)
+        }
+        if !globalSecrets.isEmpty {
+            sections.append(.global)
+        }
+        return sections
     }
 }
 
@@ -79,29 +125,104 @@ private struct ProjectSecretExportResult: Decodable {
     let count: Int
 }
 
+private struct SecretsHeaderWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+enum SecretsHeaderActionLayout: Equatable {
+    case expanded
+    case compact
+
+    static func from(width: CGFloat) -> Self {
+        width < 760 ? .compact : .expanded
+    }
+}
+
+private struct SecretsHeaderActions: View {
+    let layout: SecretsHeaderActionLayout
+    let isProjectOpen: Bool
+    let isLoading: Bool
+    let onImport: () -> Void
+    let onExport: () -> Void
+    let onAdd: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            if layout == .expanded {
+                Button {
+                    onImport()
+                } label: {
+                    Label("Import .env", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!isProjectOpen || isLoading)
+                .help("Import secrets from an existing .env-style file")
+                .accessibilityIdentifier("secrets.header.import")
+
+                Button {
+                    onExport()
+                } label: {
+                    Label("Export Template", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!isProjectOpen || isLoading)
+                .help("Create a blank .env.local template using known secret names")
+                .accessibilityIdentifier("secrets.header.export")
+            } else {
+                Menu {
+                    Button("Import .env", action: onImport)
+                        .disabled(!isProjectOpen || isLoading)
+                    Button("Export Template", action: onExport)
+                        .disabled(!isProjectOpen || isLoading)
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .controlSize(.small)
+                .disabled(!isProjectOpen || isLoading)
+                .accessibilityIdentifier("secrets.header.more")
+            }
+
+            Button {
+                onAdd()
+            } label: {
+                Label("Add Secret", systemImage: "plus")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!isProjectOpen || isLoading)
+            .keyboardShortcut("n", modifiers: .command)
+            .accessibilityIdentifier("secrets.header.add")
+        }
+    }
+}
+
 struct SecretsManagerView: View {
     @State private var viewModel = SecretsManagerViewModel()
     @State private var showingDeleteAlert = false
     @State private var pendingDeleteSecret: ProjectSecret?
+    @State private var headerLayout: SecretsHeaderActionLayout = .expanded
 
-    private var projectSecrets: [ProjectSecret] {
-        viewModel.secrets
-            .filter { $0.scope != "global" }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
+    init() {}
 
-    private var globalSecrets: [ProjectSecret] {
-        viewModel.secrets
-            .filter { $0.scope == "global" }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    private var hasShadowedGlobals: Bool {
-        let projectNames = Set(projectSecrets.map(\.name))
-        return globalSecrets.contains { projectNames.contains($0.name) }
+    init(viewModel: SecretsManagerViewModel) {
+        _viewModel = State(initialValue: viewModel)
     }
 
     var body: some View {
+        let presentation = SecretsListPresentation(secrets: viewModel.secrets)
+
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -112,39 +233,22 @@ struct SecretsManagerView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if viewModel.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Button {
-                    viewModel.importSecretsFromPanel()
-                } label: {
-                    Label("Import .env", systemImage: "square.and.arrow.down")
-                }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!viewModel.isProjectOpen || viewModel.isLoading)
-                    .help("Import secrets from an existing .env-style file")
-                Button {
-                    viewModel.exportTemplate()
-                } label: {
-                    Label("Export Template", systemImage: "square.and.arrow.up")
-                }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!viewModel.isProjectOpen || viewModel.isLoading)
-                    .help("Create a blank .env.local template using known secret names")
-                Button {
-                    viewModel.presentAddSheet()
-                } label: {
-                    Label("Add Secret", systemImage: "plus")
-                }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!viewModel.isProjectOpen || viewModel.isLoading)
-                    .keyboardShortcut("n", modifiers: .command)
+                SecretsHeaderActions(
+                    layout: headerLayout,
+                    isProjectOpen: viewModel.isProjectOpen,
+                    isLoading: viewModel.isLoading,
+                    onImport: { viewModel.importSecretsFromPanel() },
+                    onExport: { viewModel.exportTemplate() },
+                    onAdd: { viewModel.presentAddSheet() }
+                )
             }
             .padding(12)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: SecretsHeaderWidthPreferenceKey.self, value: proxy.size.width)
+                }
+            )
 
             Divider()
 
@@ -160,19 +264,19 @@ struct SecretsManagerView: View {
                 EmptyStateView(
                     icon: "key.slash",
                     title: "No project open",
-                    message: "Open a project to manage project-scoped secrets"
+                    message: "Open a project to manage project and global secrets"
                 )
             } else if viewModel.secrets.isEmpty {
                 EmptyStateView(
                     icon: "key",
                     title: "No secrets configured",
-                    message: "Add keychain-backed or .env.local-backed secrets for this project",
+                    message: "Add keychain-backed or .env.local-backed secrets for this project or across projects",
                     actionTitle: "Add Secret",
                     action: { viewModel.presentAddSheet() }
                 )
             } else {
                 List {
-                    if hasShadowedGlobals {
+                    if presentation.hasShadowedGlobals {
                         Section {
                             Text("Project secrets override global secrets with the same name.")
                                 .font(.caption)
@@ -181,9 +285,9 @@ struct SecretsManagerView: View {
                         }
                     }
 
-                    if !projectSecrets.isEmpty {
-                        Section("Project") {
-                            ForEach(projectSecrets) { secret in
+                    if !presentation.projectSecrets.isEmpty {
+                        Section {
+                            ForEach(presentation.projectSecrets) { secret in
                                 SecretRow(
                                     secret: secret,
                                     onEdit: { viewModel.presentEditSheet(secret) },
@@ -194,12 +298,15 @@ struct SecretsManagerView: View {
                                 )
                                 .accessibilityElement(children: .contain)
                             }
+                        } header: {
+                            Text(SecretsSectionKind.project.title)
+                                .accessibilityIdentifier(SecretsSectionKind.project.accessibilityIdentifier)
                         }
                     }
 
-                    if !globalSecrets.isEmpty {
-                        Section("Global") {
-                            ForEach(globalSecrets) { secret in
+                    if !presentation.globalSecrets.isEmpty {
+                        Section {
+                            ForEach(presentation.globalSecrets) { secret in
                                 SecretRow(
                                     secret: secret,
                                     onEdit: { viewModel.presentEditSheet(secret) },
@@ -210,11 +317,13 @@ struct SecretsManagerView: View {
                                 )
                                 .accessibilityElement(children: .contain)
                             }
+                        } header: {
+                            Text(SecretsSectionKind.global.title)
+                                .accessibilityIdentifier(SecretsSectionKind.global.accessibilityIdentifier)
                         }
                     }
                 }
                 .listStyle(.plain)
-                .animation(.default, value: viewModel.secrets.map(\.id))
             }
         }
         .overlay(alignment: .bottom) {
@@ -242,6 +351,9 @@ struct SecretsManagerView: View {
         }
         .accessibilityIdentifier("pane.secrets")
         .task { await viewModel.activate() }
+        .onPreferenceChange(SecretsHeaderWidthPreferenceKey.self) { width in
+            headerLayout = SecretsHeaderActionLayout.from(width: width)
+        }
     }
 }
 
@@ -350,7 +462,29 @@ struct SecretEditorDraft {
     var isEditing = false
 }
 
-private struct SecretEditorSheet: View {
+extension SecretEditorDraft {
+    var storageSelectionDisabled: Bool {
+        scope == "global"
+    }
+
+    var storageHelperText: String? {
+        storageSelectionDisabled ? "Global secrets are always stored in Keychain." : nil
+    }
+
+    var valueHelperText: String? {
+        isEditing
+            ? "Existing secret values are never shown again. Leave the field blank to keep the current value."
+            : nil
+    }
+
+    var backendHelperText: String {
+        backend == "env_file"
+            ? "File-backed secrets are stored in a Pnevma-managed .env.local block."
+            : "Keychain-backed secrets stay out of the project working tree."
+    }
+}
+
+struct SecretEditorSheet: View {
     @State var draft: SecretEditorDraft
     let isSaving: Bool
     let onCancel: () -> Void
@@ -376,17 +510,19 @@ private struct SecretEditorSheet: View {
                 Text(".env.local").tag("env_file")
             }
             .pickerStyle(.segmented)
-            .disabled(draft.scope == "global")
+            .disabled(draft.storageSelectionDisabled)
             .onChange(of: draft.scope) { _, newScope in
                 if newScope == "global" {
                     draft.backend = "keychain"
                 }
             }
+            .accessibilityIdentifier("secrets.editor.storage")
 
-            if draft.scope == "global" {
-                Text("Global secrets are always stored in Keychain.")
+            if let storageHelperText = draft.storageHelperText {
+                Text(storageHelperText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("secrets.editor.storageHelper")
             }
 
             SecureField(
@@ -396,21 +532,17 @@ private struct SecretEditorSheet: View {
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
 
-            if draft.isEditing {
-                Text("Existing secret values are never shown again. Leave the field blank to keep the current value.")
+            if let valueHelperText = draft.valueHelperText {
+                Text(valueHelperText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("secrets.editor.valueHelper")
             }
 
-            if draft.backend == "env_file" {
-                Text("File-backed secrets are stored in a Pnevma-managed .env.local block.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Keychain-backed secrets stay out of the project working tree.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(draft.backendHelperText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("secrets.editor.backendHelper")
 
             HStack {
                 Button("Cancel", action: onCancel)
