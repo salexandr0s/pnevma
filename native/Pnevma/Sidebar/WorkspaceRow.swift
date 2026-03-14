@@ -169,11 +169,7 @@ struct WorkspaceRow: View {
             // Notification badge (backend + terminal notifications combined)
             if totalNotifications > 0 {
                 NotificationBadge(count: totalNotifications)
-            }
-
-            // Close button on hover
-            if isHovering && !workspace.isPermanent {
-                CloseButton(action: onClose)
+                    .opacity(isHovering && !workspace.isPermanent ? 0 : 1)
             }
         }
         .padding(.horizontal, 8)
@@ -182,6 +178,12 @@ struct WorkspaceRow: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActive ? indicatorColor.opacity(0.12) : Color.clear)
         )
+        .overlay(alignment: .trailing) {
+            if isHovering && !workspace.isPermanent {
+                CloseButton(action: onClose)
+                    .padding(.trailing, 4)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .accessibilityAddTraits(.isButton)

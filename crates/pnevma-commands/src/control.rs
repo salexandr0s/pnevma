@@ -1,4 +1,5 @@
 use crate::auth_secret::load_socket_password;
+use crate::command_registry::{default_registry, AccessLevel};
 use crate::commands;
 use crate::state::AppState;
 use pnevma_context::redact_secrets;
@@ -364,21 +365,7 @@ fn auth_mode_name(auth_mode: &ControlAuthMode) -> &'static str {
 }
 
 fn is_mutating_control_method(method: &str) -> bool {
-    let action = method.rsplit('.').next().unwrap_or(method);
-    !matches!(
-        action,
-        "get"
-            | "list"
-            | "status"
-            | "search"
-            | "read"
-            | "tail"
-            | "scrollback"
-            | "timeline"
-            | "daily-brief"
-            | "defs"
-            | "automation"
-    )
+    default_registry().access_level(method) != AccessLevel::ReadOnly
 }
 
 fn log_control_plane_request(
@@ -685,13 +672,21 @@ fn authorize_request(
             use subtle::ConstantTimeEq;
             let supplied_bytes = supplied.as_bytes();
             let password_bytes = password.as_bytes();
-            if supplied_bytes.len() == password_bytes.len()
-                && supplied_bytes.ct_eq(password_bytes).into()
-            {
-                Ok(())
-            } else {
-                Err("invalid password".to_string())
+            // Use fixed-length comparison to avoid leaking password length.
+            // ct_eq on slices of different lengths is not constant-time in subtle,
+            // so we hash both to a fixed size first.
+            use sha2::{Digest, Sha256};
+            let supplied_hash = Sha256::digest(supplied_bytes);
+            let password_hash = Sha256::digest(password_bytes);
+            if !bool::from(supplied_hash.ct_eq(&password_hash)) {
+                return Err("invalid password".to_string());
             }
+            // Password auth accepted — now check command access level.
+            let access_level = default_registry().access_level(&request.method);
+            if access_level == AccessLevel::Privileged {
+                return Err("privileged command requires same-user auth".to_string());
+            }
+            Ok(())
         }
     }
 }
@@ -2717,6 +2712,42 @@ mod tests {
         };
         let request = request_with_password(None);
         authorize_request(&request, &settings).expect("same-user mode should pass");
+    }
+
+    #[test]
+    fn authorize_password_mode_rejects_privileged_commands() {
+        let settings = password_settings("secret");
+        let mut request = request_with_password(Some("secret"));
+        // session.new is a privileged command
+        request.method = "session.new".to_string();
+        let err = authorize_request(&request, &settings)
+            .expect_err("privileged command should be rejected in password mode");
+        assert!(
+            err.contains("privileged"),
+            "error should mention 'privileged': {err}"
+        );
+    }
+
+    #[test]
+    fn authorize_password_mode_allows_standard_commands() {
+        let settings = password_settings("secret");
+        let mut request = request_with_password(Some("secret"));
+        // task.new is a standard command
+        request.method = "task.new".to_string();
+        authorize_request(&request, &settings).expect("standard command should pass");
+    }
+
+    #[test]
+    fn authorize_same_user_allows_privileged_commands() {
+        let settings = ControlPlaneSettings {
+            enabled: true,
+            socket_path: PathBuf::from(".pnevma/run/control.sock"),
+            auth_mode: ControlAuthMode::SameUser,
+            socket_rate_limit_rpm: 60,
+        };
+        let mut request = request_with_password(None);
+        request.method = "session.new".to_string();
+        authorize_request(&request, &settings).expect("same-user mode should allow privileged");
     }
 
     #[test]

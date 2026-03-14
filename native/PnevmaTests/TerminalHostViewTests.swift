@@ -45,6 +45,11 @@ final class TerminalHostViewTests: XCTestCase {
     }
 
     func testCommandWDefersToAppKitShortcutHandling() throws {
+        // Seed the keybinding manager with default bindings that include Cmd+W
+        AppKeybindingManager.shared.update(from: [
+            KeybindingEntry(action: "menu.close_pane", shortcut: "Cmd+W")
+        ])
+
         let event = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
@@ -62,6 +67,10 @@ final class TerminalHostViewTests: XCTestCase {
     }
 
     func testPlainWDoesNotDeferToAppKitShortcutHandling() throws {
+        AppKeybindingManager.shared.update(from: [
+            KeybindingEntry(action: "menu.close_pane", shortcut: "Cmd+W")
+        ])
+
         let event = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
@@ -73,6 +82,50 @@ final class TerminalHostViewTests: XCTestCase {
             charactersIgnoringModifiers: "w",
             isARepeat: false,
             keyCode: 13
+        ))
+
+        XCTAssertFalse(TerminalHostView.shouldDeferKeyEquivalentToAppKit(event))
+    }
+
+    func testCustomBindingDefersToAppKit() throws {
+        // Set a custom binding: Cmd+Shift+R should defer
+        AppKeybindingManager.shared.update(from: [
+            KeybindingEntry(action: "menu.split_right", shortcut: "Cmd+Shift+R")
+        ])
+
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .shift],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "R",
+            charactersIgnoringModifiers: "r",
+            isARepeat: false,
+            keyCode: 15
+        ))
+
+        XCTAssertTrue(TerminalHostView.shouldDeferKeyEquivalentToAppKit(event))
+    }
+
+    func testUnboundKeyDoesNotDeferToAppKit() throws {
+        // Only Cmd+W is registered
+        AppKeybindingManager.shared.update(from: [
+            KeybindingEntry(action: "menu.close_pane", shortcut: "Cmd+W")
+        ])
+
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "x",
+            charactersIgnoringModifiers: "x",
+            isARepeat: false,
+            keyCode: 7
         ))
 
         XCTAssertFalse(TerminalHostView.shouldDeferKeyEquivalentToAppKit(event))

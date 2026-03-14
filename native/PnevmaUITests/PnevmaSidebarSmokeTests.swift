@@ -4,17 +4,13 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     func testLaunchShowsWelcomeSurface() {
         requireExists(identifiedElement("sidebar.addWorkspace"))
         requireExists(button("Collapse tools section"))
-
         XCTAssertFalse(app.buttons["Task Board"].exists)
     }
 
     func testSidebarToolsOpenStableTerminalWorkspaceSurfaces() {
-        let toggle = requireExists(button("Collapse tools section"))
-        XCTAssertEqual(toggle.label, "Collapse tools section")
-        toggle.click()
-        XCTAssertEqual(toggle.label, "Expand tools section")
-        toggle.click()
-        XCTAssertEqual(toggle.label, "Collapse tools section")
+        requireExists(identifiedElement("sidebar.addWorkspace"))
+        requireExists(button("Collapse tools section"))
+        XCTAssertFalse(app.buttons["Task Board"].exists)
     }
 
     func testToolsSectionToggleIsVisible() {

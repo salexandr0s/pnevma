@@ -46,6 +46,7 @@ fi
 # Filter out known harmless system warnings before checking.
 filtered=$(grep -nE 'warning:|error:|IDERunDestination:' "$log_path" \
   | grep -v 'failed to load toolchain: toolchain .* already registered' \
+  | grep -v 'Metadata extraction skipped\. No AppIntents\.framework dependency found\.' \
   || true)
 
 if [[ -n "$filtered" ]]; then

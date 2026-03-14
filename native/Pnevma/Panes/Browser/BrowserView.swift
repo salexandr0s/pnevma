@@ -9,6 +9,7 @@ struct BrowserView: View {
     @State private var readerState = BrowserReaderState()
     @State private var findState: BrowserFindState?
     @State private var readerFindController = BrowserReaderFindController()
+    @State private var findTargetGeneration = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,8 +65,11 @@ struct BrowserView: View {
                         BrowserFindOverlay(
                             state: findState,
                             actions: activeFindActions,
+                            targetGeneration: findTargetGeneration,
+                            currentGeneration: { findTargetGeneration },
                             onClose: closeFindOverlay
                         )
+                        .id(findTargetGeneration)
                         .frame(width: 320)
                         .padding(.top, 8)
                         Spacer()
@@ -92,12 +96,14 @@ struct BrowserView: View {
         }
         .onChange(of: viewModel.currentURL) { _, _ in
             if let findState {
+                invalidateFindTarget()
                 findState.totalMatches = 0
                 findState.currentMatch = 0
                 clearAllFindHighlights()
             }
         }
         .onChange(of: readerState.isActive) { _, _ in
+            invalidateFindTarget()
             refreshFindResultsForCurrentTarget()
         }
     }
@@ -214,8 +220,13 @@ struct BrowserView: View {
     }
 
     private func closeFindOverlay() {
+        invalidateFindTarget()
         clearAllFindHighlights()
         findState = nil
+    }
+
+    private func invalidateFindTarget() {
+        findTargetGeneration &+= 1
     }
 
     private func refreshFindResultsForCurrentTarget() {
@@ -234,8 +245,10 @@ struct BrowserView: View {
         }
 
         let actions = activeFindActions
+        let generation = findTargetGeneration
         Task { @MainActor [findState] in
             let total = await actions.search(query)
+            guard generation == findTargetGeneration else { return }
             guard self.findState === findState else { return }
             self.findState?.totalMatches = total
             self.findState?.currentMatch = total > 0 ? 1 : 0

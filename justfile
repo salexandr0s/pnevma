@@ -132,7 +132,8 @@ spm-test-clean: rust-build
     {{clean_log}} --log {{native_log_dir}}/swift-test.log -- zsh -lc 'cd native && swift test'
     @echo "SPM tests complete"
 
-ghostty-smoke:
+ghostty-smoke: xcode-build
+    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then       echo "error: missing vendor/ghostty/macos/GhosttyKit.xcframework; run just ghostty-build first" >&2;       exit 1;     fi
     @echo "Running Ghostty runtime smoke..."
     ./scripts/run-ghostty-smoke.sh
     @echo "Ghostty smoke passed"

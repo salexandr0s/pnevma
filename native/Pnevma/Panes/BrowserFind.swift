@@ -195,6 +195,8 @@ struct BrowserFindOverlay: View {
     @Bindable var state: BrowserFindState
     @Environment(GhosttyThemeProvider.self) var theme
     let actions: BrowserFindActions
+    let targetGeneration: Int
+    let currentGeneration: () -> Int
     let onClose: () -> Void
 
     @State private var searchTask: Task<Void, Never>?
@@ -240,7 +242,7 @@ struct BrowserFindOverlay: View {
             .accessibilityLabel("Next match")
 
             // Close
-            Button(action: onClose) {
+            Button(action: closeOverlay) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.medium))
             }
@@ -258,34 +260,50 @@ struct BrowserFindOverlay: View {
                 )
                 .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
         )
+        .onDisappear {
+            searchTask?.cancel()
+        }
     }
 
     private func performSearch(_ query: String) {
         searchTask?.cancel()
+        let generation = targetGeneration
         searchTask = Task { @MainActor in
             // Small debounce
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled else { return }
+            guard generation == currentGeneration() else { return }
 
             let total = await actions.search(query)
+            guard !Task.isCancelled else { return }
+            guard generation == currentGeneration() else { return }
             state.totalMatches = total
             state.currentMatch = total > 0 ? 1 : 0
         }
     }
 
     private func navigateNext() {
+        let generation = targetGeneration
         Task { @MainActor in
             let result = await actions.navigate(true)
+            guard generation == currentGeneration() else { return }
             state.currentMatch = result.current
             state.totalMatches = result.total
         }
     }
 
     private func navigatePrev() {
+        let generation = targetGeneration
         Task { @MainActor in
             let result = await actions.navigate(false)
+            guard generation == currentGeneration() else { return }
             state.currentMatch = result.current
             state.totalMatches = result.total
         }
+    }
+
+    private func closeOverlay() {
+        searchTask?.cancel()
+        onClose()
     }
 }

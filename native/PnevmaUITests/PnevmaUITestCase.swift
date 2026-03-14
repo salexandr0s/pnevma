@@ -15,6 +15,8 @@ class PnevmaUITestCase: XCTestCase {
         try configureApp(app)
         app.launch()
         waitForReadinessState(expectedLaunchReadinessState)
+        app.activate()
+        dismissOpenWorkspaceDialogIfNeeded()
     }
 
     override func tearDownWithError() throws {
@@ -102,6 +104,28 @@ class PnevmaUITestCase: XCTestCase {
         )
     }
 
+    func waitForLabel(
+        _ element: XCUIElement,
+        toContain expectedSubstring: String,
+        timeout: TimeInterval? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let deadline = Date().addingTimeInterval(timeout ?? defaultTimeout)
+        repeat {
+            if element.exists && element.label.contains(expectedSubstring) {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+
+        XCTFail(
+            "Expected element label to contain \(expectedSubstring), got \(element.label)",
+            file: file,
+            line: line
+        )
+    }
+
     @discardableResult
     func button(
         _ label: String,
@@ -162,7 +186,14 @@ class PnevmaUITestCase: XCTestCase {
     }
 
     func clickSidebarTool(_ toolID: String) {
+        app.activate()
         sidebarTool(toolID).click()
+    }
+
+    func dismissOpenWorkspaceDialogIfNeeded() {
+        let cancelButton = app.descendants(matching: .any)["openWorkspace.cancel"]
+        guard cancelButton.waitForExistence(timeout: 1) else { return }
+        cancelButton.click()
     }
 
     @discardableResult

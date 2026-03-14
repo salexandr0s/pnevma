@@ -136,6 +136,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await AppRuntimeSettings.shared.load(commandBus: self.commandBus)
+            AppRuntimeSettings.shared.startWatchingConfigFile()
             self.applyRuntimeSettings()
             self.finishLaunchingAfterSettingsLoad()
         }
@@ -159,6 +160,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         TerminalSurface.applyGhosttyConfig(reloadedConfig)
         TerminalSurface.reapplyColorScheme()
         GhosttyConfigController.shared.updateConfigOwner(reloadedConfig)
+        GhosttyConfigController.shared.startWatchingConfigFile()
         GhosttyThemeProvider.shared.refresh()
 
         if let restoredState {
@@ -177,8 +179,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             setUITestReadiness(.terminalReady)
         }
 
-        // Build menu bar
+        // Build menu bar, then apply any custom keybindings from the loaded settings.
+        // (AppRuntimeSettings.apply() called applyToMenu before the menu existed.)
         NSApplication.shared.mainMenu = buildMainMenu()
+        AppKeybindingManager.shared.applyToMenu(NSApplication.shared.mainMenu!)
 
         // Initialize update coordinator
         if !AppLaunchContext.isTesting {
@@ -1032,13 +1036,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // File menu
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t"))
-        fileMenu.addItem(NSMenuItem(title: "New Terminal", action: #selector(newTerminal), keyEquivalent: "n"))
-        fileMenu.addItem(NSMenuItem(title: "Open Workspace...", action: #selector(openWorkspaceAction), keyEquivalent: "o"))
+        let newTabItem = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t")
+        newTabItem.identifier = NSUserInterfaceItemIdentifier("menu.new_tab")
+        fileMenu.addItem(newTabItem)
+        let newTerminalItem = NSMenuItem(title: "New Terminal", action: #selector(newTerminal), keyEquivalent: "n")
+        newTerminalItem.identifier = NSUserInterfaceItemIdentifier("menu.new_terminal")
+        fileMenu.addItem(newTerminalItem)
+        let openWorkspaceItem = NSMenuItem(title: "Open Workspace...", action: #selector(openWorkspaceAction), keyEquivalent: "o")
+        openWorkspaceItem.identifier = NSUserInterfaceItemIdentifier("menu.open_workspace")
+        fileMenu.addItem(openWorkspaceItem)
         fileMenu.addItem(.separator())
-        fileMenu.addItem(NSMenuItem(title: "Close Pane", action: #selector(closePaneAction), keyEquivalent: "w"))
+        let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closePaneAction), keyEquivalent: "w")
+        closePaneItem.identifier = NSUserInterfaceItemIdentifier("menu.close_pane")
+        fileMenu.addItem(closePaneItem)
         let closeWindow = NSMenuItem(title: "Close Window", action: #selector(closeWindowAction), keyEquivalent: "W")
         closeWindow.keyEquivalentModifierMask = [.command, .shift]
+        closeWindow.identifier = NSUserInterfaceItemIdentifier("menu.close_window")
         fileMenu.addItem(closeWindow)
         let fileMenuItem = NSMenuItem()
         fileMenuItem.submenu = fileMenu
@@ -1050,12 +1063,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         editMenu.addItem(.separator())
-        editMenu.addItem(NSMenuItem(title: "Find in Page", action: #selector(browserFindInPage), keyEquivalent: "f"))
+        let findInPageItem = NSMenuItem(title: "Find in Page", action: #selector(browserFindInPage), keyEquivalent: "f")
+        findInPageItem.identifier = NSUserInterfaceItemIdentifier("menu.find_in_page")
+        editMenu.addItem(findInPageItem)
         let browserOmnibarItem = NSMenuItem(
             title: "Focus Browser Address Bar",
             action: #selector(focusBrowserOmnibarAction),
             keyEquivalent: "l"
         )
+        browserOmnibarItem.identifier = NSUserInterfaceItemIdentifier("menu.focus_browser_address")
         editMenu.addItem(browserOmnibarItem)
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(NSMenuItem(
@@ -1079,13 +1095,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // View menu
         let viewMenu = NSMenu(title: "View")
-        viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
+        let toggleSidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
+        toggleSidebarItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_sidebar")
+        viewMenu.addItem(toggleSidebarItem)
         let toggleRightInspectorItem = NSMenuItem(
             title: "Toggle Right Inspector",
             action: #selector(toggleRightInspector),
             keyEquivalent: "B"
         )
         toggleRightInspectorItem.keyEquivalentModifierMask = [.command, .shift]
+        toggleRightInspectorItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_right_inspector")
         viewMenu.addItem(toggleRightInspectorItem)
         let commandCenterItem = NSMenuItem(
             title: "Toggle Command Center",
@@ -1093,6 +1112,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "C"
         )
         commandCenterItem.keyEquivalentModifierMask = [.command, .shift]
+        commandCenterItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_command_center")
         viewMenu.addItem(commandCenterItem)
         let browserDrawerItem = NSMenuItem(
             title: "Toggle Browser Drawer",
@@ -1100,6 +1120,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "b"
         )
         browserDrawerItem.keyEquivalentModifierMask = [.command, .option]
+        browserDrawerItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_browser_drawer")
         viewMenu.addItem(browserDrawerItem)
         let browserDrawerShorterItem = NSMenuItem(
             title: "Make Browser Drawer Shorter",
@@ -1107,6 +1128,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "-"
         )
         browserDrawerShorterItem.keyEquivalentModifierMask = [.command, .option]
+        browserDrawerShorterItem.identifier = NSUserInterfaceItemIdentifier("menu.browser_drawer_shorter")
         viewMenu.addItem(browserDrawerShorterItem)
         let browserDrawerTallerItem = NSMenuItem(
             title: "Make Browser Drawer Taller",
@@ -1114,19 +1136,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "="
         )
         browserDrawerTallerItem.keyEquivalentModifierMask = [.command, .option]
+        browserDrawerTallerItem.identifier = NSUserInterfaceItemIdentifier("menu.browser_drawer_taller")
         viewMenu.addItem(browserDrawerTallerItem)
         let pinBrowserItem = NSMenuItem(
             title: "Pin Browser to Pane",
             action: #selector(pinBrowserToPaneAction),
-            keyEquivalent: "\r"
+            keyEquivalent: "\\"
         )
         pinBrowserItem.keyEquivalentModifierMask = [.command, .shift]
+        pinBrowserItem.identifier = NSUserInterfaceItemIdentifier("menu.pin_browser")
         viewMenu.addItem(pinBrowserItem)
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "Layout Templates\u{2026}", action: #selector(titlebarTemplateAction), keyEquivalent: "")
         viewMenu.addItem(NSMenuItem.separator())
         let cmdPalette = NSMenuItem(title: "Command Palette", action: #selector(showCommandPalette), keyEquivalent: "P")
         cmdPalette.keyEquivalentModifierMask = [.command, .shift]
+        cmdPalette.identifier = NSUserInterfaceItemIdentifier("menu.command_palette")
         viewMenu.addItem(cmdPalette)
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
@@ -1134,28 +1159,36 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Pane menu
         let paneMenu = NSMenu(title: "Pane")
-        paneMenu.addItem(NSMenuItem(title: "Split Right", action: #selector(splitRightAction), keyEquivalent: "d"))
+        let splitRightItem = NSMenuItem(title: "Split Right", action: #selector(splitRightAction), keyEquivalent: "d")
+        splitRightItem.identifier = NSUserInterfaceItemIdentifier("menu.split_right")
+        paneMenu.addItem(splitRightItem)
 
         let splitDown = NSMenuItem(title: "Split Down", action: #selector(splitDownAction), keyEquivalent: "D")
         splitDown.keyEquivalentModifierMask = [.command, .shift]
+        splitDown.identifier = NSUserInterfaceItemIdentifier("menu.split_down")
         paneMenu.addItem(splitDown)
 
         paneMenu.addItem(.separator())
 
-        paneMenu.addItem(NSMenuItem(title: "Next Pane", action: #selector(nextPane), keyEquivalent: "]"))
-        paneMenu.addItem(NSMenuItem(title: "Previous Pane", action: #selector(previousPane), keyEquivalent: "["))
+        let nextPaneItem = NSMenuItem(title: "Next Pane", action: #selector(nextPane), keyEquivalent: "]")
+        nextPaneItem.identifier = NSUserInterfaceItemIdentifier("menu.next_pane")
+        paneMenu.addItem(nextPaneItem)
+        let prevPaneItem = NSMenuItem(title: "Previous Pane", action: #selector(previousPane), keyEquivalent: "[")
+        prevPaneItem.identifier = NSUserInterfaceItemIdentifier("menu.previous_pane")
+        paneMenu.addItem(prevPaneItem)
 
         paneMenu.addItem(.separator())
 
-        for (title, action, key) in [
-            ("Navigate Left",  #selector(navigateLeft),  NSLeftArrowFunctionKey),
-            ("Navigate Right", #selector(navigateRight), NSRightArrowFunctionKey),
-            ("Navigate Up",    #selector(navigateUp),    NSUpArrowFunctionKey),
-            ("Navigate Down",  #selector(navigateDown),  NSDownArrowFunctionKey),
-        ] as [(String, Selector, Int)] {
+        for (title, action, key, actionID) in [
+            ("Navigate Left",  #selector(navigateLeft),  NSLeftArrowFunctionKey,  "menu.navigate_left"),
+            ("Navigate Right", #selector(navigateRight), NSRightArrowFunctionKey, "menu.navigate_right"),
+            ("Navigate Up",    #selector(navigateUp),    NSUpArrowFunctionKey,    "menu.navigate_up"),
+            ("Navigate Down",  #selector(navigateDown),  NSDownArrowFunctionKey,  "menu.navigate_down"),
+        ] as [(String, Selector, Int, String)] {
             let item = NSMenuItem(title: title, action: action,
                                   keyEquivalent: String(Character(UnicodeScalar(key)!)))
             item.keyEquivalentModifierMask = [.option, .command]
+            item.identifier = NSUserInterfaceItemIdentifier(actionID)
             paneMenu.addItem(item)
         }
 
@@ -1163,10 +1196,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let zoomItem = NSMenuItem(title: "Toggle Split Zoom", action: #selector(toggleSplitZoom), keyEquivalent: "\r")
         zoomItem.keyEquivalentModifierMask = [.command, .shift]
+        zoomItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_split_zoom")
         paneMenu.addItem(zoomItem)
 
         let equalizeItem = NSMenuItem(title: "Equalize Splits", action: #selector(equalizeSplitsAction), keyEquivalent: "=")
         equalizeItem.keyEquivalentModifierMask = [.command, .control]
+        equalizeItem.identifier = NSUserInterfaceItemIdentifier("menu.equalize_splits")
         paneMenu.addItem(equalizeItem)
 
         paneMenu.addItem(.separator())
@@ -1175,9 +1210,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         for i in 1...8 {
             let item = NSMenuItem(title: "Pane \(i)", action: #selector(gotoPaneByTag(_:)), keyEquivalent: "\(i)")
             item.tag = i
+            item.identifier = NSUserInterfaceItemIdentifier("menu.goto_pane_\(i)")
             paneMenu.addItem(item)
         }
         let lastPaneItem = NSMenuItem(title: "Last Pane", action: #selector(gotoLastPane), keyEquivalent: "9")
+        lastPaneItem.identifier = NSUserInterfaceItemIdentifier("menu.goto_last_pane")
         paneMenu.addItem(lastPaneItem)
 
         let paneMenuItem = NSMenuItem()
@@ -1186,18 +1223,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Window menu
         let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m"))
+        let minimizeItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        minimizeItem.identifier = NSUserInterfaceItemIdentifier("menu.minimize")
+        windowMenu.addItem(minimizeItem)
         windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: ""))
         let fullscreen = NSMenuItem(title: "Toggle Full Screen", action: #selector(toggleFullScreenAction), keyEquivalent: "\r")
+        fullscreen.identifier = NSUserInterfaceItemIdentifier("menu.toggle_fullscreen")
         windowMenu.addItem(fullscreen)
         windowMenu.addItem(.separator())
 
         let nextWS = NSMenuItem(title: "Next Workspace", action: #selector(nextWorkspace), keyEquivalent: "]")
         nextWS.keyEquivalentModifierMask = [.command, .shift]
+        nextWS.identifier = NSUserInterfaceItemIdentifier("menu.next_workspace")
         windowMenu.addItem(nextWS)
 
         let prevWS = NSMenuItem(title: "Previous Workspace", action: #selector(previousWorkspace), keyEquivalent: "[")
         prevWS.keyEquivalentModifierMask = [.command, .shift]
+        prevWS.identifier = NSUserInterfaceItemIdentifier("menu.previous_workspace")
         windowMenu.addItem(prevWS)
 
         let windowMenuItem = NSMenuItem()
@@ -2675,7 +2717,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if let workspace = workspaceManager?.activeWorkspace,
                let projectPath = workspace.projectPath {
                 let projectURL = URL(fileURLWithPath: projectPath, isDirectory: true)
-                message = saved.outputURL.path.replacingOccurrences(of: projectURL.path + "/", with: "")
+                message = saved.outputURL.path.replacing(projectURL.path + "/", with: "")
             } else {
                 message = saved.outputURL.lastPathComponent
             }

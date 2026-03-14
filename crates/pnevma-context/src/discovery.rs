@@ -37,12 +37,19 @@ impl Default for DiscoveryConfig {
                 "*.p12".to_string(),
                 "*.pfx".to_string(),
                 "id_rsa*".to_string(),
+                "id_ed25519*".to_string(),
+                "id_ecdsa*".to_string(),
+                "id_dsa*".to_string(),
                 "*.secret".to_string(),
                 "credentials*".to_string(),
                 "*.keystore".to_string(),
                 "*.jks".to_string(),
                 ".npmrc".to_string(),
                 ".pypirc".to_string(),
+                ".aws/credentials".to_string(),
+                ".kube/config".to_string(),
+                ".docker/config.json".to_string(),
+                "*.age".to_string(),
             ],
         }
     }
@@ -754,6 +761,12 @@ mod tests {
         assert!(fd.is_excluded("creds.pem"));
         assert!(fd.is_excluded("path/.npmrc"));
         assert!(fd.is_excluded("path/.pypirc"));
+        // New patterns added for broader secret coverage
+        assert!(fd.is_excluded("some/path/id_ed25519"));
+        assert!(fd.is_excluded("some/path/id_ed25519.pub"));
+        assert!(fd.is_excluded("some/path/id_ecdsa"));
+        assert!(fd.is_excluded("some/path/id_dsa"));
+        assert!(fd.is_excluded("secrets.age"));
     }
 
     #[test]

@@ -86,6 +86,7 @@
 		A2A544ABE917368E81A3D33F /* NotificationsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B834396916F6473B7B5042 /* NotificationsPane.swift */; };
 		A2B98519DA1DCC49FCD28CCB /* GhosttySchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E07A33C5E1E99D9B5FE8B1 /* GhosttySchema.swift */; };
 		A2ECD69DE25BD824FE81AFEF /* WorkflowInstanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82087C6DBD0F9BEC48904E77 /* WorkflowInstanceView.swift */; };
+		A789DC844CEBAEAFC56F9139 /* BrowserReaderFindControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 340A7573D78B7EA97DE4A317 /* BrowserReaderFindControllerTests.swift */; };
 		A97FE8193DB7871ABDE7B0D7 /* WorkflowAgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E9AA7146B1E25EFB67A0270 /* WorkflowAgentsView.swift */; };
 		AB8931CB72A0F6891CBA5D56 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B09EA1F6E0490ED9FB92B0 /* BrowserModels.swift */; };
 		AC13ED60E20DA7B5F2C71041 /* BrowserViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A07E1279159400943EB739 /* BrowserViewModel.swift */; };
@@ -204,6 +205,7 @@
 		31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceTests.swift; sourceTree = "<group>"; };
 		33144636D34279689CD4BE76 /* TaskBoardModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskBoardModels.swift; sourceTree = "<group>"; };
 		333D11EDDE0496EAC9BAEE47 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		340A7573D78B7EA97DE4A317 /* BrowserReaderFindControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserReaderFindControllerTests.swift; sourceTree = "<group>"; };
 		357C5525F6B86FE8572AE917 /* SecretsManagerPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretsManagerPaneTests.swift; sourceTree = "<group>"; };
 		3B3B8C4EEF207DAB4E090F10 /* WorkspaceRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRuntime.swift; sourceTree = "<group>"; };
 		3D300A6B296B827DF919689F /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
@@ -517,6 +519,7 @@
 				B6800D33AEB839FC8E6DE560 /* AppLaunchContextTests.swift */,
 				2002D27CB3C59FEB276F8AB3 /* AppUpdateCoordinatorTests.swift */,
 				7BBEC10B146E35132D529E43 /* BrowserCaptureTests.swift */,
+				340A7573D78B7EA97DE4A317 /* BrowserReaderFindControllerTests.swift */,
 				268F69B878A8B48B916445F3 /* BrowserToolBridgeTests.swift */,
 				00AC90491564E38CEE6DD40F /* CommandBusTests.swift */,
 				AB524B1D4F6CF562179D357F /* CommandCenterStoreTests.swift */,
@@ -773,7 +776,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  STATIC_LIB=\"target/aarch64-apple-darwin/release/libpnevma_bridge.a\"\nelse\n  STATIC_LIB=\"target/aarch64-apple-darwin/debug/libpnevma_bridge.a\"\nfi\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin || {\n    if [[ -f \"$STATIC_LIB\" ]]; then\n      echo \"warning: Rust build failed but static library exists, continuing with existing build\"\n    else\n      exit 1\n    fi\n  }\nfi\n";
+			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -786,6 +789,7 @@
 				67151FA13A049289D08BFECD /* AppLaunchContextTests.swift in Sources */,
 				E5BD329D9EC1AC7BFA66175C /* AppUpdateCoordinatorTests.swift in Sources */,
 				E129A7F11DF1287F80BE1953 /* BrowserCaptureTests.swift in Sources */,
+				A789DC844CEBAEAFC56F9139 /* BrowserReaderFindControllerTests.swift in Sources */,
 				6689FF6358E1837188069A2E /* BrowserToolBridgeTests.swift in Sources */,
 				C835AD707B86071BCC2AA70C /* CommandBusTests.swift in Sources */,
 				D561A97A18035990A8AE042F /* CommandCenterStoreTests.swift in Sources */,

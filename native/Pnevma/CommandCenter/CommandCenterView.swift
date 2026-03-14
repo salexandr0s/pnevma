@@ -58,11 +58,6 @@ struct CommandCenterView: View {
 
                 HStack(spacing: DesignTokens.Spacing.sm) {
                     LiveStateBadge(isRefreshing: store.isRefreshing, isStale: store.isStale)
-                    if let lastRefreshAt = store.lastRefreshAt {
-                        Text(lastRefreshAt, style: .relative)
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
                     Button(store.isRefreshing ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise") {
                         store.refreshNow()
                     }
