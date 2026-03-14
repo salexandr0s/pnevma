@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 GHOSTTY_DIR="${GHOSTTY_DIR:-$ROOT_DIR/vendor/ghostty}"
 GHOSTTY_REPO_URL="${GHOSTTY_REPO_URL:-https://github.com/ghostty-org/ghostty.git}"
-GHOSTTY_REF="${GHOSTTY_REF:-v1.2.0}"
-GHOSTTY_COMMIT="${GHOSTTY_COMMIT:-3e38e284ca593b601fb70e877c3155fedf42e2e5}"
+GHOSTTY_REF="${GHOSTTY_REF:-v1.3.1}"
+GHOSTTY_COMMIT="${GHOSTTY_COMMIT:-332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28}"
 PATCH_DIR="$ROOT_DIR/patches/ghostty"
 
 fail() {

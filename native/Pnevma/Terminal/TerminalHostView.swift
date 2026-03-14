@@ -344,22 +344,22 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        guard Self.shouldTreatAsMiddleMouseButton(event.buttonNumber) else {
+        guard let button = Self.ghosttyMouseButton(for: event.buttonNumber) else {
             super.otherMouseDown(with: event)
             return
         }
         claimFirstResponderIfNeeded()
         forwardMousePosition(event)
-        _ = forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
+        _ = forwardMouseButton(state: GHOSTTY_MOUSE_PRESS, button: button, event: event)
     }
 
     override func otherMouseUp(with event: NSEvent) {
-        guard Self.shouldTreatAsMiddleMouseButton(event.buttonNumber) else {
+        guard let button = Self.ghosttyMouseButton(for: event.buttonNumber) else {
             super.otherMouseUp(with: event)
             return
         }
         forwardMousePosition(event)
-        _ = forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE, event: event)
+        _ = forwardMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: button, event: event)
     }
     #endif
 
@@ -713,6 +713,23 @@ final class TerminalHostView: NSView, NSTextInputClient {
     static func shouldTreatAsMiddleMouseButton(_ buttonNumber: Int) -> Bool {
         buttonNumber == 2
     }
+
+    #if canImport(GhosttyKit)
+    static func ghosttyMouseButton(for buttonNumber: Int) -> ghostty_input_mouse_button_e? {
+        switch buttonNumber {
+        case 2: return GHOSTTY_MOUSE_MIDDLE
+        case 3: return GHOSTTY_MOUSE_FOUR
+        case 4: return GHOSTTY_MOUSE_FIVE
+        case 5: return GHOSTTY_MOUSE_SIX
+        case 6: return GHOSTTY_MOUSE_SEVEN
+        case 7: return GHOSTTY_MOUSE_EIGHT
+        case 8: return GHOSTTY_MOUSE_NINE
+        case 9: return GHOSTTY_MOUSE_TEN
+        case 10: return GHOSTTY_MOUSE_ELEVEN
+        default: return nil
+        }
+    }
+    #endif
 
     static func shouldDeferKeyEquivalentToAppKit(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown else { return false }

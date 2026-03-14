@@ -135,6 +135,7 @@ enum GhosttySchema {
         "bold-color": "?BoldColor",
         "class": "?[:0]const u8",
         "click-repeat-interval": "u32",
+        "clipboard-codepoint-map": "RepeatableClipboardCodepointMap",
         "clipboard-paste-bracketed-safe": "bool",
         "clipboard-paste-protection": "bool",
         "clipboard-read": "ClipboardAccess",
@@ -197,6 +198,7 @@ enum GhosttySchema {
         "initial-command": "?Command",
         "initial-window": "bool",
         "input": "RepeatableReadableIO",
+        "key-remap": "KeyRemapSet",
         "keybind": "Keybinds",
         "link": "RepeatableLink",
         "link-previews": "LinkPreviews",
@@ -206,6 +208,7 @@ enum GhosttySchema {
         "linux-cgroup-memory-limit": "?u64",
         "linux-cgroup-processes-limit": "?u64",
         "macos-auto-secure-input": "bool",
+        "macos-applescript": "bool",
         "macos-custom-icon": "?[]const u8",
         "macos-dock-drop-behavior": "MacOSDockDropBehavior",
         "macos-hidden": "MacHidden",
@@ -224,10 +227,17 @@ enum GhosttySchema {
         "maximize": "bool",
         "minimum-contrast": "f64",
         "mouse-hide-while-typing": "bool",
+        "mouse-reporting": "bool",
         "mouse-scroll-multiplier": "f64",
         "mouse-shift-capture": "MouseShiftCapture",
+        "notify-on-command-finish": "NotifyOnCommandFinish",
+        "notify-on-command-finish-action": "NotifyOnCommandFinishAction",
+        "notify-on-command-finish-after": "Duration",
         "osc-color-report-format": "OSCColorReportFormat",
         "palette": "Palette",
+        "palette-generate": "bool",
+        "palette-harmonious": "bool",
+        "progress-style": "bool",
         "quick-terminal-animation-duration": "f64",
         "quick-terminal-autohide": "bool",
         "quick-terminal-keyboard-interactivity": "QuickTerminalKeyboardInteractivity",
@@ -243,13 +253,21 @@ enum GhosttySchema {
         "right-click-action": "RightClickAction",
         "scroll-to-bottom": "ScrollToBottom",
         "scrollback-limit": "usize",
+        "search-background": "TerminalColor",
+        "search-foreground": "TerminalColor",
+        "search-selected-background": "TerminalColor",
+        "search-selected-foreground": "TerminalColor",
         "selection-background": "?TerminalColor",
         "selection-clear-on-copy": "bool",
         "selection-clear-on-typing": "bool",
         "selection-foreground": "?TerminalColor",
+        "selection-word-chars": "SelectionWordChars",
         "shell-integration": "ShellIntegration",
         "shell-integration-features": "ShellIntegrationFeatures",
         "split-divider-color": "?Color",
+        "split-inherit-working-directory": "bool",
+        "split-preserve-zoom": "SplitPreserveZoom",
+        "tab-inherit-working-directory": "bool",
         "term": "[]const u8",
         "theme": "?Theme",
         "title": "?[:0]const u8",
@@ -313,6 +331,7 @@ enum GhosttySchema {
         "macos-titlebar-style": ["native", "transparent", "tabs", "hidden"],
         "macos-window-buttons": ["visible", "hidden"],
         "mouse-shift-capture": ["false", "true", "always", "never"],
+        "notify-on-command-finish": ["never", "unfocused", "always"],
         "osc-color-report-format": ["none", "8-bit", "16-bit"],
         "quick-terminal-keyboard-interactivity": ["none", "on-demand", "exclusive"],
         "quick-terminal-position": ["top", "bottom", "left", "right", "center"],
@@ -354,10 +373,16 @@ enum GhosttySchema {
         GhosttyKeybindActionDescriptor(name: "scroll_to_top", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "scroll_to_bottom", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "scroll_to_selection", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "scroll_to_row", parameterPlaceholder: "row"),
         GhosttyKeybindActionDescriptor(name: "scroll_page_up", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "scroll_page_down", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "scroll_page_fractional", parameterPlaceholder: "fraction"),
         GhosttyKeybindActionDescriptor(name: "scroll_page_lines", parameterPlaceholder: "line count"),
+        GhosttyKeybindActionDescriptor(name: "search", parameterPlaceholder: "text"),
+        GhosttyKeybindActionDescriptor(name: "navigate_search", parameterPlaceholder: "previous|next"),
+        GhosttyKeybindActionDescriptor(name: "search_selection", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "start_search", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "end_search", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "adjust_selection", parameterPlaceholder: "direction"),
         GhosttyKeybindActionDescriptor(name: "jump_to_prompt", parameterPlaceholder: "offset"),
         GhosttyKeybindActionDescriptor(name: "write_scrollback_file", parameterPlaceholder: "copy|paste|open"),
@@ -372,9 +397,14 @@ enum GhosttySchema {
         GhosttyKeybindActionDescriptor(name: "move_tab", parameterPlaceholder: "offset"),
         GhosttyKeybindActionDescriptor(name: "toggle_tab_overview", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "prompt_surface_title", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "prompt_tab_title", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "set_surface_title", parameterPlaceholder: "title"),
+        GhosttyKeybindActionDescriptor(name: "set_tab_title", parameterPlaceholder: "title"),
         GhosttyKeybindActionDescriptor(name: "new_split", parameterPlaceholder: "direction"),
         GhosttyKeybindActionDescriptor(name: "goto_split", parameterPlaceholder: "direction"),
+        GhosttyKeybindActionDescriptor(name: "goto_window", parameterPlaceholder: "previous|next"),
         GhosttyKeybindActionDescriptor(name: "toggle_split_zoom", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "toggle_readonly", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "resize_split", parameterPlaceholder: "left:10,right:10,..."),
         GhosttyKeybindActionDescriptor(name: "equalize_splits", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "reset_window_size", parameterPlaceholder: nil),
@@ -392,9 +422,16 @@ enum GhosttySchema {
         GhosttyKeybindActionDescriptor(name: "toggle_window_decorations", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "toggle_window_float_on_top", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "toggle_secure_input", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "toggle_mouse_reporting", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "toggle_background_opacity", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "toggle_command_palette", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "toggle_quick_terminal", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "toggle_visibility", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "activate_key_table", parameterPlaceholder: "name"),
+        GhosttyKeybindActionDescriptor(name: "activate_key_table_once", parameterPlaceholder: "name"),
+        GhosttyKeybindActionDescriptor(name: "deactivate_key_table", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "deactivate_all_key_tables", parameterPlaceholder: nil),
+        GhosttyKeybindActionDescriptor(name: "end_key_sequence", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "check_for_updates", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "undo", parameterPlaceholder: nil),
         GhosttyKeybindActionDescriptor(name: "redo", parameterPlaceholder: nil),
@@ -434,7 +471,12 @@ enum GhosttySchema {
         if key.hasPrefix("mouse") || key == "click-repeat-interval" {
             return .mouse
         }
-        if key.hasPrefix("scroll") || key == "image-storage-limit" || key == "resize-overlay" || key.hasPrefix("resize-overlay-") {
+        if key.hasPrefix("scroll")
+            || key.hasPrefix("search-")
+            || key == "image-storage-limit"
+            || key == "resize-overlay"
+            || key.hasPrefix("resize-overlay-")
+        {
             return .scrolling
         }
         if key.hasPrefix("clipboard") || key == "copy-on-select" || key == "right-click-action" || key == "link-previews" || key == "link-url" {
@@ -450,9 +492,13 @@ enum GhosttySchema {
             || key == "background"
             || key == "foreground"
             || key == "palette"
+            || key.hasPrefix("palette-")
             || key == "background-image"
             || key.hasPrefix("background-")
             || key == "split-divider-color"
+            || key == "split-inherit-working-directory"
+            || key == "split-preserve-zoom"
+            || key == "tab-inherit-working-directory"
             || key.hasPrefix("unfocused-") {
             return .window
         }
@@ -462,7 +508,13 @@ enum GhosttySchema {
         if key.hasPrefix("macos") || key.hasPrefix("gtk") || key.hasPrefix("linux") || key.hasPrefix("x11") || key == "desktop-notifications" {
             return .platform
         }
-        if key.hasPrefix("bell") || key.contains("notifications") || key == "auto-update" || key == "auto-update-channel" {
+        if key.hasPrefix("bell")
+            || key.hasPrefix("notify-on-command-finish")
+            || key.contains("notifications")
+            || key == "auto-update"
+            || key == "auto-update-channel"
+            || key == "progress-style"
+        {
             return .notifications
         }
         if key == "command"
@@ -497,10 +549,18 @@ enum GhosttySchema {
         if ["f32", "f64"].contains(rawType) {
             return .double
         }
-        if rawType.hasPrefix("Repeatable") || rawType == "Palette" || rawType == "QuickTerminalSize" {
+        if rawType.hasPrefix("Repeatable")
+            || rawType == "Palette"
+            || rawType == "QuickTerminalSize"
+            || rawType == "KeyRemapSet"
+        {
             return .multiLine
         }
-        if rawType == "Color" || rawType == "?Color" {
+        if rawType == "Color"
+            || rawType == "?Color"
+            || rawType == "TerminalColor"
+            || rawType == "?TerminalColor"
+        {
             return .color
         }
         if rawType.contains("const u8")
@@ -522,6 +582,8 @@ enum GhosttySchema {
             || rawType.contains("AsyncBackend")
             || rawType.contains("AutoUpdate")
             || rawType.contains("AlphaBlending")
+            || rawType.contains("NotifyOnCommandFinish")
+            || rawType.contains("SelectionWordChars")
             || rawType.contains("ScrollToBottom")
             || rawType.contains("OptionAsAlt")
             || rawType.contains("Bell") {
