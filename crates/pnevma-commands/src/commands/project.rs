@@ -3284,9 +3284,9 @@ fn keybinding_views_from_config(config: &GlobalConfig) -> Vec<KeybindingView> {
     let mut out: Vec<KeybindingView> = merged
         .into_iter()
         .map(|(action, shortcut)| {
-            let is_default = defaults.get(&action).map_or(false, |d| {
-                normalize_shortcut(d) == normalize_shortcut(&shortcut)
-            });
+            let is_default = defaults
+                .get(&action)
+                .is_some_and(|d| normalize_shortcut(d) == normalize_shortcut(&shortcut));
             let normalized = normalize_shortcut(&shortcut);
             let conflicts: Vec<String> = shortcut_to_actions
                 .get(&normalized)
@@ -7164,7 +7164,7 @@ enable_entropy_guard = false
 
         // Protected action should NOT be persisted
         let reloaded = load_global_config().expect("reload config");
-        assert!(reloaded.keybindings.get("menu.quit").is_none());
+        assert!(!reloaded.keybindings.contains_key("menu.quit"));
     }
 
     #[test]

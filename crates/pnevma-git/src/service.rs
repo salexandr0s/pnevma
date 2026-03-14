@@ -69,20 +69,19 @@ impl GitService {
                     if canonical.starts_with(&worktree_root_canonical) {
                         if let Some(dir_name) = canonical.file_name().and_then(|n| n.to_str()) {
                             if let Ok(task_id) = dir_name.parse::<Uuid>() {
-                                if !leases.contains_key(&task_id) {
+                                if let std::collections::hash_map::Entry::Vacant(e) =
+                                    leases.entry(task_id)
+                                {
                                     let branch = current_branch.clone().unwrap_or_default();
-                                    leases.insert(
+                                    e.insert(WorktreeLease {
+                                        id: Uuid::new_v4(),
                                         task_id,
-                                        WorktreeLease {
-                                            id: Uuid::new_v4(),
-                                            task_id,
-                                            branch,
-                                            path: canonical.to_string_lossy().to_string(),
-                                            started_at: Utc::now(),
-                                            last_active: Utc::now(),
-                                            status: LeaseStatus::Active,
-                                        },
-                                    );
+                                        branch,
+                                        path: canonical.to_string_lossy().to_string(),
+                                        started_at: Utc::now(),
+                                        last_active: Utc::now(),
+                                        status: LeaseStatus::Active,
+                                    });
                                     count += 1;
                                 }
                             }
