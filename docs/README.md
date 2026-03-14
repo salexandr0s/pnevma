@@ -41,6 +41,12 @@ documentation for Pnevma.
   release hardening is active.
 - [Keyboard Shortcuts](./keyboard-shortcuts.md): current app shortcuts and pane
   navigation.
+- [Agent Command Center Gap Analysis](./agent-command-center-gap-analysis.md):
+  what Pnevma still needs before it can honestly claim a true multi-agent
+  command-center experience.
+- [Agent Command Center Implementation Plan](./plans/agent-command-center-implementation-plan.md):
+  phased implementation plan for the native command-center window, store, and
+  action routing.
 - [Design Notes](./design/): remediation planning and supporting design
   material.
 - [Archived Planning Docs](./archive/): superseded comparisons and older
