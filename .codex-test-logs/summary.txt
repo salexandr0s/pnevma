@@ -1,0 +1,18 @@
+===== RUNNING: just rust-test =====
+EXIT=0 DURATION=27s CMD=just rust-test LOG=.codex-test-logs/just_rust-test.log
+
+===== RUNNING: just xcode-test =====
+EXIT=0 DURATION=30s CMD=just xcode-test LOG=.codex-test-logs/just_xcode-test.log
+
+===== RUNNING: just xcode-ui-test =====
+EXIT=65 DURATION=155s CMD=just xcode-ui-test LOG=.codex-test-logs/just_xcode-ui-test.log
+
+===== RUNNING: just spm-test-clean =====
+EXIT=0 DURATION=39s CMD=just spm-test-clean LOG=.codex-test-logs/just_spm-test-clean.log
+
+===== RUNNING: just test-all =====
+EXIT=1 DURATION=40s CMD=just test-all LOG=.codex-test-logs/just_test-all.log
+
+===== RUNNING: just ghostty-smoke =====
+EXIT=1 DURATION=3s CMD=just ghostty-smoke LOG=.codex-test-logs/just_ghostty-smoke.log
+

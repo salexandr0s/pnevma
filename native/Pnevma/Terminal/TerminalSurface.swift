@@ -67,6 +67,21 @@ class TerminalSurface {
         clipboardStringWriter(string)
     }
 
+    static func clipboardString(
+        from contents: UnsafePointer<ghostty_clipboard_content_s>?,
+        count: Int
+    ) -> String? {
+        guard let contents, count > 0 else { return nil }
+        let buffer = UnsafeBufferPointer(start: contents, count: count)
+        let selectedContent = buffer.first { entry in
+            guard let mime = entry.mime else { return false }
+            return String(cString: mime).lowercased().hasPrefix("text/plain")
+        } ?? buffer.first
+        guard let data = selectedContent?.data else { return nil }
+        let string = String(cString: data)
+        return string.isEmpty ? nil : string
+    }
+
     #if canImport(GhosttyKit)
 
     // MARK: - Static App Singleton
@@ -105,10 +120,11 @@ class TerminalSurface {
                 return TerminalSurface.handleAction(userdata: userdata, action: action, target: target)
             },
             read_clipboard_cb: { userdata, _, statePtr in
-                guard let surface = TerminalSurface.surface(from: userdata) else { return }
+                guard let surface = TerminalSurface.surface(from: userdata) else { return false }
                 Task { @MainActor in
                     surface.completeClipboardRead(state: statePtr, confirmed: false)
                 }
+                return true
             },
             confirm_read_clipboard_cb: { userdata, _, statePtr, _ in
                 guard let surface = TerminalSurface.surface(from: userdata) else { return }
@@ -116,9 +132,13 @@ class TerminalSurface {
                     surface.completeClipboardRead(state: statePtr, confirmed: true)
                 }
             },
-            write_clipboard_cb: { _, content, _, confirm in
-                guard !confirm, let content else { return }
-                let string = String(cString: content)
+            write_clipboard_cb: { _, _, contents, count, confirm in
+                guard !confirm,
+                      let string = TerminalSurface.clipboardString(
+                          from: contents,
+                          count: count
+                      )
+                else { return }
                 Task { @MainActor in
                     TerminalSurface.writeClipboardString(string)
                 }
@@ -206,6 +226,7 @@ class TerminalSurface {
             macos: ghostty_platform_macos_s(nsview: nsviewPtr)
         )
         surfaceConfig.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2.0)
+        surfaceConfig.context = GHOSTTY_SURFACE_CONTEXT_SPLIT
         // font_size = 0 means "inherit from ghostty config" (e.g. ~/.config/ghostty/config).
         // A positive value would override the user's configured font-size.
         surfaceConfig.font_size = 0
@@ -566,6 +587,7 @@ class TerminalSurface {
              GHOSTTY_ACTION_NEW_TAB,
              GHOSTTY_ACTION_NEW_SPLIT,
              GHOSTTY_ACTION_CLOSE_TAB,
+             GHOSTTY_ACTION_CLOSE_ALL_WINDOWS,
              GHOSTTY_ACTION_CLOSE_WINDOW,
              GHOSTTY_ACTION_TOGGLE_FULLSCREEN,
              GHOSTTY_ACTION_TOGGLE_MAXIMIZE,
@@ -575,6 +597,7 @@ class TerminalSurface {
              GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM,
              GHOSTTY_ACTION_MOVE_TAB,
              GHOSTTY_ACTION_GOTO_TAB,
+             GHOSTTY_ACTION_GOTO_WINDOW,
              GHOSTTY_ACTION_GOTO_SPLIT,
              GHOSTTY_ACTION_RESIZE_SPLIT,
              GHOSTTY_ACTION_EQUALIZE_SPLITS,

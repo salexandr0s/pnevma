@@ -63,7 +63,20 @@ pub fn is_blocked_agent_env_name(name: &str) -> bool {
     {
         return true;
     }
-    normalized.starts_with("PNEVMA_") && normalized.ends_with("_PASSWORD")
+    if normalized.starts_with("PNEVMA_") {
+        let sensitive_suffixes = [
+            "_PASSWORD",
+            "_SECRET",
+            "_TOKEN",
+            "_API_KEY",
+            "_KEY",
+            "_CREDENTIAL",
+        ];
+        if sensitive_suffixes.iter().any(|s| normalized.ends_with(s)) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn validate_agent_env_name(name: &str) -> Result<(), String> {
@@ -175,6 +188,19 @@ mod tests {
         assert!(validate_agent_env_name("GH_TOKEN").is_err());
         assert!(validate_agent_env_name("ANTHROPIC_API_KEY").is_err());
         assert!(validate_agent_env_name("OPENAI_API_KEY").is_err());
+    }
+
+    #[test]
+    fn rejects_pnevma_sensitive_suffixes() {
+        assert!(validate_agent_env_name("PNEVMA_REMOTE_PASSWORD").is_err());
+        assert!(validate_agent_env_name("PNEVMA_DB_SECRET").is_err());
+        assert!(validate_agent_env_name("PNEVMA_AUTH_TOKEN").is_err());
+        assert!(validate_agent_env_name("PNEVMA_LINEAR_API_KEY").is_err());
+        assert!(validate_agent_env_name("PNEVMA_SIGNING_KEY").is_err());
+        assert!(validate_agent_env_name("PNEVMA_SERVICE_CREDENTIAL").is_err());
+        // Non-sensitive PNEVMA_ vars should still pass
+        assert!(validate_agent_env_name("PNEVMA_LOG_LEVEL").is_ok());
+        assert!(validate_agent_env_name("PNEVMA_DEBUG").is_ok());
     }
 
     #[test]

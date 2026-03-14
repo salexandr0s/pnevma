@@ -28,6 +28,81 @@ impl GitService {
         }
     }
 
+    /// Reconcile in-memory leases from on-disk git worktrees.
+    ///
+    /// Rebuilds the lease map on startup by parsing `git worktree list --porcelain`
+    /// and matching paths under the expected worktree root directory. Worktrees
+    /// whose directory names parse as UUIDs are treated as pnevma-managed.
+    pub async fn reconcile_leases(&self) -> Result<usize, GitError> {
+        let output = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(&self.repo_root)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(GitError::Command(format!(
+                "git worktree list --porcelain failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut leases = self.leases.lock().await;
+        let mut count = 0usize;
+
+        let worktree_root_canonical = self
+            .worktree_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.worktree_root.clone());
+
+        let mut current_path: Option<String> = None;
+        let mut current_branch: Option<String> = None;
+
+        for line in stdout.lines().chain(std::iter::once("")) {
+            if line.is_empty() {
+                // End of a worktree block -- process it
+                if let Some(ref path) = current_path {
+                    let path_buf = std::path::PathBuf::from(path);
+                    let canonical = path_buf.canonicalize().unwrap_or_else(|_| path_buf.clone());
+                    if canonical.starts_with(&worktree_root_canonical) {
+                        if let Some(dir_name) = canonical.file_name().and_then(|n| n.to_str()) {
+                            if let Ok(task_id) = dir_name.parse::<Uuid>() {
+                                if let std::collections::hash_map::Entry::Vacant(e) =
+                                    leases.entry(task_id)
+                                {
+                                    let branch = current_branch.clone().unwrap_or_default();
+                                    e.insert(WorktreeLease {
+                                        id: Uuid::new_v4(),
+                                        task_id,
+                                        branch,
+                                        path: canonical.to_string_lossy().to_string(),
+                                        started_at: Utc::now(),
+                                        last_active: Utc::now(),
+                                        status: LeaseStatus::Active,
+                                    });
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                current_path = None;
+                current_branch = None;
+                continue;
+            }
+
+            if let Some(rest) = line.strip_prefix("worktree ") {
+                current_path = Some(rest.to_string());
+            } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
+                current_branch = Some(rest.to_string());
+            }
+        }
+
+        Ok(count)
+    }
+
     pub async fn create_worktree(
         &self,
         task_id: Uuid,
@@ -103,10 +178,14 @@ impl GitService {
         task_id: Uuid,
         delete_branch: bool,
     ) -> Result<(), GitError> {
-        let mut leases = self.leases.lock().await;
-        let Some(lease) = leases.remove(&task_id) else {
-            return Err(GitError::WorktreeNotFound(task_id.to_string()));
+        // Remove lease from the map first, then drop the lock before doing git I/O.
+        let lease = {
+            let mut leases = self.leases.lock().await;
+            leases
+                .remove(&task_id)
+                .ok_or_else(|| GitError::WorktreeNotFound(task_id.to_string()))?
         };
+        // Lock is dropped here -- safe to perform git operations.
 
         self.git(["worktree", "remove", "--force", &lease.path])
             .await?;
@@ -179,6 +258,60 @@ impl GitService {
             lease.mark_stale_if_needed(self.stale_after);
         }
         leases
+    }
+
+    /// Reap stale worktree leases whose `last_active` exceeds `stale_after`.
+    ///
+    /// Removes stale entries from the leases map first, then performs best-effort
+    /// git cleanup (worktree removal and branch deletion). The lock is released
+    /// before git I/O to avoid deadlocks.
+    pub async fn reap_stale_leases(&self) -> Vec<Uuid> {
+        let now = Utc::now();
+        let stale_leases: Vec<(Uuid, WorktreeLease)> = {
+            let mut leases = self.leases.lock().await;
+            let stale_ids: Vec<Uuid> = leases
+                .iter()
+                .filter(|(_, lease)| now - lease.last_active > self.stale_after)
+                .map(|(id, _)| *id)
+                .collect();
+            stale_ids
+                .into_iter()
+                .filter_map(|id| leases.remove(&id).map(|l| (id, l)))
+                .collect()
+        };
+        // Lock is dropped here — safe to perform git operations.
+
+        let mut reaped = Vec::new();
+        for (task_id, lease) in stale_leases {
+            // Best-effort git cleanup — worktree may already be gone.
+            if let Err(e) = self
+                .git(["worktree", "remove", "--force", &lease.path])
+                .await
+            {
+                tracing::warn!(%task_id, error = %e, "failed to remove stale worktree directory");
+            }
+            if let Err(e) = self.git(["branch", "-D", &lease.branch]).await {
+                tracing::warn!(%task_id, error = %e, "failed to delete stale worktree branch");
+            }
+            tracing::info!(%task_id, "reaped stale worktree");
+            reaped.push(task_id);
+        }
+        reaped
+    }
+
+    /// Spawn a background Tokio task that reaps stale leases every 30 minutes.
+    pub fn spawn_reaper(&self) -> tokio::task::JoinHandle<()> {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            loop {
+                interval.tick().await;
+                let reaped = service.reap_stale_leases().await;
+                if !reaped.is_empty() {
+                    tracing::info!(count = reaped.len(), "worktree reaper cycle complete");
+                }
+            }
+        })
     }
 
     pub async fn touch_lease(&self, task_id: Uuid) -> Result<(), GitError> {
@@ -478,5 +611,87 @@ mod tests {
         assert!(queue.enqueue(task_id).await);
         assert!(!queue.enqueue(task_id).await);
         assert_eq!(queue.size().await, 1);
+    }
+
+    // ── reap_stale_leases ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reap_stale_leases_cleans_old_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+
+        let stale_id = Uuid::new_v4();
+        let fresh_id = Uuid::new_v4();
+        let old_time = Utc::now() - Duration::hours(3);
+
+        // Insert a stale lease (last_active 3h ago, stale_after = 2h)
+        service.leases.lock().await.insert(
+            stale_id,
+            WorktreeLease {
+                id: Uuid::new_v4(),
+                task_id: stale_id,
+                branch: "pnevma/test/stale".to_string(),
+                path: "/tmp/stale".to_string(),
+                started_at: old_time,
+                last_active: old_time,
+                status: LeaseStatus::Active,
+            },
+        );
+
+        // Insert a fresh lease (just created)
+        service.leases.lock().await.insert(
+            fresh_id,
+            WorktreeLease {
+                id: Uuid::new_v4(),
+                task_id: fresh_id,
+                branch: "pnevma/test/fresh".to_string(),
+                path: "/tmp/fresh".to_string(),
+                started_at: Utc::now(),
+                last_active: Utc::now(),
+                status: LeaseStatus::Active,
+            },
+        );
+
+        // Reap stale leases. Git operations will fail (no real repo/worktree)
+        // but the stale lease is removed from the map before git I/O.
+        let reaped = service.reap_stale_leases().await;
+
+        assert_eq!(reaped.len(), 1, "should reap exactly one stale lease");
+        assert_eq!(reaped[0], stale_id, "reaped id should be the stale one");
+
+        let leases = service.leases.lock().await;
+        assert!(
+            !leases.contains_key(&stale_id),
+            "stale lease should be removed from the map"
+        );
+        assert!(
+            leases.contains_key(&fresh_id),
+            "fresh lease should remain in the map"
+        );
+    }
+
+    #[tokio::test]
+    async fn reap_stale_leases_returns_empty_when_nothing_stale() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+
+        // Insert only a fresh lease
+        let fresh_id = Uuid::new_v4();
+        service.leases.lock().await.insert(
+            fresh_id,
+            WorktreeLease {
+                id: Uuid::new_v4(),
+                task_id: fresh_id,
+                branch: "pnevma/test/fresh".to_string(),
+                path: "/tmp/fresh".to_string(),
+                started_at: Utc::now(),
+                last_active: Utc::now(),
+                status: LeaseStatus::Active,
+            },
+        );
+
+        let reaped = service.reap_stale_leases().await;
+        assert!(reaped.is_empty(), "nothing should be reaped");
+        assert_eq!(service.leases.lock().await.len(), 1);
     }
 }

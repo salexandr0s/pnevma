@@ -1,10 +1,14 @@
 use regex::Regex;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{OnceLock, RwLock};
 
 const REDACTED: &str = "[REDACTED]";
-const STREAM_REDACTION_TAIL_BYTES: usize = 4096;
+const STREAM_REDACTION_TAIL_BYTES: usize = 8192;
+
+/// Last time the built-in redaction patterns were reviewed and updated.
+pub const PATTERNS_LAST_REVIEWED: &str = "2026-03-14";
 const PEM_PRIVATE_KEY_LABELS: &[&str] = &[
     "RSA PRIVATE KEY",
     "EC PRIVATE KEY",
@@ -44,10 +48,17 @@ fn runtime_redaction_config() -> &'static RwLock<RuntimeRedactionConfig> {
     CONFIG.get_or_init(|| RwLock::new(RuntimeRedactionConfig::default()))
 }
 
+/// Max compiled regex size (64KB) to guard against ReDoS from user-supplied patterns.
+const MAX_REGEX_SIZE_BYTES: usize = 1 << 16;
+
 fn compile_extra_patterns(patterns: &[String]) -> Result<Vec<Regex>, regex::Error> {
     patterns
         .iter()
-        .map(|pattern| Regex::new(pattern))
+        .map(|pattern| {
+            regex::RegexBuilder::new(pattern)
+                .size_limit(MAX_REGEX_SIZE_BYTES)
+                .build()
+        })
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -271,49 +282,61 @@ fn current_runtime_redaction_config() -> RuntimeRedactionConfig {
         .clone()
 }
 
+/// Apply a single regex replacement, only allocating when the pattern matches.
+fn cow_replace_all<'a>(input: Cow<'a, str>, re: &Regex, rep: &str) -> Cow<'a, str> {
+    if !re.is_match(&input) {
+        return input;
+    }
+    Cow::Owned(re.replace_all(&input, rep).into_owned())
+}
+
 fn redact_patterns(input: &str) -> String {
     let runtime_config = current_runtime_redaction_config();
-    let mut result = redaction_authorization_regex()
-        .replace_all(input, format!("$1{REDACTED}"))
-        .to_string();
-    result = redaction_key_value_regex()
-        .replace_all(&result, format!("$1={REDACTED}"))
-        .to_string();
-    result = redaction_env_assignment_regex()
-        .replace_all(&result, format!("$1={REDACTED}"))
-        .to_string();
-    result = redaction_aws_key_regex()
-        .replace_all(&result, REDACTED)
-        .to_string();
-    result = redaction_github_token_regex()
-        .replace_all(&result, REDACTED)
-        .to_string();
-    result = redaction_provider_token_regex()
-        .replace_all(&result, REDACTED)
-        .to_string();
-    result = redaction_slack_token_regex()
-        .replace_all(&result, REDACTED)
-        .to_string();
-    result = redaction_pem_regex()
-        .replace_all(&result, REDACTED)
-        .to_string();
+
+    // Use a Cow chain so that each regex pass only allocates when it actually
+    // matches something.  When no patterns match (the common case for safe
+    // text), this function performs zero heap allocations beyond the final
+    // into_owned().
+    let result: Cow<'_, str> = Cow::Borrowed(input);
+    let result = cow_replace_all(
+        result,
+        redaction_authorization_regex(),
+        &format!("$1{REDACTED}"),
+    );
+    let result = cow_replace_all(
+        result,
+        redaction_key_value_regex(),
+        &format!("$1={REDACTED}"),
+    );
+    let result = cow_replace_all(
+        result,
+        redaction_env_assignment_regex(),
+        &format!("$1={REDACTED}"),
+    );
+    let result = cow_replace_all(result, redaction_aws_key_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_github_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_provider_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_slack_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_pem_regex(), REDACTED);
     // Redact any remaining PEM private-key headers that were not covered by a
     // complete block match above (i.e. unterminated / truncated blocks).
-    result = redaction_pem_open_header_regex()
-        .replace_all(&result, REDACTED)
-        .to_string();
-    result = redaction_connection_string_regex()
-        .replace_all(&result, format!("://{REDACTED}@"))
-        .to_string();
+    let result = cow_replace_all(result, redaction_pem_open_header_regex(), REDACTED);
+    let mut result = cow_replace_all(
+        result,
+        redaction_connection_string_regex(),
+        &format!("://{REDACTED}@"),
+    );
     for regex in &runtime_config.extra_patterns {
-        result = regex.replace_all(&result, REDACTED).to_string();
+        result = cow_replace_all(result, regex, REDACTED);
     }
     if runtime_config.enable_entropy_guard {
-        result = redaction_entropy_assignment_regex()
-            .replace_all(&result, format!("$1={REDACTED}"))
-            .to_string();
+        result = cow_replace_all(
+            result,
+            redaction_entropy_assignment_regex(),
+            &format!("$1={REDACTED}"),
+        );
     }
-    result
+    result.into_owned()
 }
 
 fn partial_redaction_regexes(config: &RuntimeRedactionConfig) -> Vec<Regex> {
@@ -963,5 +986,60 @@ mod tests {
             full_output.push_str(&out);
         }
         assert_eq!(full_output, format!("{chunk1}{chunk2}"));
+    }
+
+    #[test]
+    fn rejects_oversized_custom_regex() {
+        // A pattern that compiles to a very large NFA should be rejected
+        // by the size_limit guard on RegexBuilder.
+        let huge_pattern = format!("({})", "a|".repeat(100_000));
+        let result = compile_extra_patterns(&[huge_pattern]);
+        assert!(result.is_err(), "oversized regex should be rejected");
+    }
+
+    #[test]
+    fn secret_at_high_byte_offset_is_redacted() {
+        // Verify the increased tail buffer (8192) catches secrets at high offsets
+        let padding = "x".repeat(5000);
+        let secret = "my-deep-secret-value";
+        let input = format!("{padding}{secret} trailing");
+        let output = redact_text(&input, &[secret.to_string()]);
+        assert!(
+            !output.contains(secret),
+            "secret at byte offset 5000 should be redacted"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn stream_buffer_catches_secret_at_high_offset() {
+        let mut buffer = StreamRedactionBuffer::new();
+        let padding = "x".repeat(5000);
+        let secret = "high-offset-secret-val";
+        let secrets = vec![secret.to_string()];
+
+        // Push a large chunk with the secret near the end
+        let chunk = format!("{padding}{secret} end");
+        let mut full_output = String::new();
+        if let Some(out) = buffer.push_chunk(&chunk, &secrets) {
+            full_output.push_str(&out);
+        }
+        if let Some(out) = buffer.finish(&secrets) {
+            full_output.push_str(&out);
+        }
+        assert!(
+            !full_output.contains(secret),
+            "secret at high byte offset should be caught by stream buffer"
+        );
+    }
+
+    #[test]
+    fn patterns_last_reviewed_is_valid_date() {
+        // Ensure the constant parses as a valid date
+        let parsed = chrono::NaiveDate::parse_from_str(PATTERNS_LAST_REVIEWED, "%Y-%m-%d");
+        assert!(
+            parsed.is_ok(),
+            "PATTERNS_LAST_REVIEWED must be a valid YYYY-MM-DD date"
+        );
     }
 }

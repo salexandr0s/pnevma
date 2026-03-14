@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SshError;
@@ -49,10 +50,10 @@ fn validate_key_comment(comment: &str) -> Result<(), SshError> {
     Ok(())
 }
 
-fn generate_passphrase() -> String {
+fn generate_passphrase() -> SecretString {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    (0..32)
+    let raw: String = (0..32)
         .map(|_| {
             let idx = rng.gen_range(0..62);
             match idx {
@@ -61,16 +62,21 @@ fn generate_passphrase() -> String {
                 _ => (b'A' + idx - 36) as char,
             }
         })
-        .collect()
+        .collect();
+    SecretString::from(raw)
 }
 
-fn store_passphrase_in_keychain(key_name: &str, passphrase: &str) -> Result<(), SshError> {
+fn store_passphrase_in_keychain(key_name: &str, passphrase: &SecretString) -> Result<(), SshError> {
     #[cfg(target_os = "macos")]
     {
         use security_framework::passwords::set_generic_password;
 
-        set_generic_password("pnevma-ssh-key", key_name, passphrase.as_bytes())
-            .map_err(|e| SshError::Command(format!("failed to store passphrase in keychain: {e}")))
+        set_generic_password(
+            "pnevma-ssh-key",
+            key_name,
+            passphrase.expose_secret().as_bytes(),
+        )
+        .map_err(|e| SshError::Command(format!("failed to store passphrase in keychain: {e}")))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -82,7 +88,7 @@ fn store_passphrase_in_keychain(key_name: &str, passphrase: &str) -> Result<(), 
     }
 }
 
-pub fn retrieve_passphrase_from_keychain(key_name: &str) -> Result<String, SshError> {
+pub fn retrieve_passphrase_from_keychain(key_name: &str) -> Result<SecretString, SshError> {
     #[cfg(target_os = "macos")]
     {
         use security_framework::passwords::get_generic_password;
@@ -90,8 +96,9 @@ pub fn retrieve_passphrase_from_keychain(key_name: &str) -> Result<String, SshEr
         let bytes = get_generic_password("pnevma-ssh-key", key_name).map_err(|e| {
             SshError::Command(format!("failed to retrieve passphrase from keychain: {e}"))
         })?;
-        String::from_utf8(bytes)
-            .map_err(|e| SshError::Parse(format!("invalid UTF-8 in stored passphrase: {e}")))
+        let raw = String::from_utf8(bytes)
+            .map_err(|e| SshError::Parse(format!("invalid UTF-8 in stored passphrase: {e}")))?;
+        Ok(SecretString::from(raw))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -136,6 +143,96 @@ pub fn list_ssh_keys(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
     }
 
     Ok(keys)
+}
+
+/// Async version of `list_ssh_keys` that uses `tokio::process::Command` for
+/// fingerprinting and a `JoinSet` to limit concurrency to 10 tasks.
+pub async fn list_ssh_keys_async(ssh_dir: &Path) -> Result<Vec<SshKeyInfo>, SshError> {
+    let entries = match tokio::fs::read_dir(ssh_dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(SshError::Io(e)),
+    };
+
+    // Collect .pub paths first.
+    let mut pub_paths: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+    let mut entries = entries;
+    while let Some(entry) = entries.next_entry().await? {
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy().to_string();
+        if !name_str.ends_with(".pub") {
+            continue;
+        }
+        let path = entry.path();
+        let path_str = path.to_string_lossy().to_string();
+        let name = name_str.trim_end_matches(".pub").to_string();
+        pub_paths.push((name, path, path_str));
+    }
+
+    let ssh_dir_owned = ssh_dir.to_path_buf();
+    let mut join_set = tokio::task::JoinSet::new();
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+
+    for (name, path, path_str) in pub_paths {
+        let ssh_dir_clone = ssh_dir_owned.clone();
+        let permit = semaphore.clone();
+        join_set.spawn(async move {
+            let _permit = permit.acquire().await.map_err(|_| {
+                SshError::Command("semaphore closed during ssh key listing".to_string())
+            })?;
+            let (key_type, fingerprint) =
+                fingerprint_key_async(&path, Some(&ssh_dir_clone)).await?;
+            Ok::<SshKeyInfo, SshError>(SshKeyInfo {
+                name,
+                path: path_str,
+                key_type,
+                fingerprint,
+            })
+        });
+    }
+
+    let mut keys = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(info)) => keys.push(info),
+            Ok(Err(e)) => return Err(e),
+            Err(e) => return Err(SshError::Command(format!("task join error: {e}"))),
+        }
+    }
+
+    Ok(keys)
+}
+
+async fn fingerprint_key_async(
+    pub_path: &Path,
+    expected_parent: Option<&Path>,
+) -> Result<(String, String), SshError> {
+    // Validate path stays within expected directory
+    if let Some(parent) = expected_parent {
+        let canonical_parent = parent.canonicalize().map_err(SshError::Io)?;
+        let canonical_path = pub_path.canonicalize().map_err(SshError::Io)?;
+        if !canonical_path.starts_with(&canonical_parent) {
+            return Err(SshError::Parse(format!(
+                "key path {} escapes expected directory {}",
+                canonical_path.display(),
+                canonical_parent.display()
+            )));
+        }
+    }
+
+    let path_str = pub_path.to_string_lossy();
+    let output = tokio::process::Command::new("ssh-keygen")
+        .args(["-lf", &path_str])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SshError::Command(stderr.to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_keygen_output(stdout.trim())
 }
 
 pub async fn generate_key(
@@ -206,7 +303,7 @@ pub async fn generate_key(
     // Step 2: Re-encrypt with the real passphrase via stdin so it never
     // appears in `ps` output. `ssh-keygen -p -f <key>` in interactive mode
     // prompts for: new passphrase, confirm new passphrase (skips old when empty).
-    let rekey_succeeded = {
+    {
         use std::process::Stdio;
         use tokio::io::AsyncWriteExt as _;
 
@@ -221,36 +318,30 @@ pub async fn generate_key(
             // When the old passphrase is empty, ssh-keygen skips prompting
             // for it and goes straight to new + confirm.
             // New passphrase
-            stdin.write_all(passphrase.as_bytes()).await?;
+            stdin
+                .write_all(passphrase.expose_secret().as_bytes())
+                .await?;
             stdin.write_all(b"\n").await?;
             // Confirm new passphrase
-            stdin.write_all(passphrase.as_bytes()).await?;
+            stdin
+                .write_all(passphrase.expose_secret().as_bytes())
+                .await?;
             stdin.write_all(b"\n").await?;
         }
 
         let rekey_output = child.wait_with_output().await?;
-        if rekey_output.status.success() {
-            true
-        } else {
-            // If interactive re-keying fails (e.g. older OpenSSH version with
-            // different stdin protocol), fall back to the generated key with
-            // an empty passphrase and log a warning.
+        if !rekey_output.status.success() {
             let stderr = String::from_utf8_lossy(&rekey_output.stderr);
-            tracing::warn!(
-                key = %key_path_str,
-                stderr = %stderr,
-                "ssh-keygen -p via stdin failed; key has empty passphrase"
-            );
-            false
+            return Err(SshError::PassphraseApplicationFailed(format!(
+                "ssh-keygen -p failed: {stderr}"
+            )));
         }
-    };
-
-    // Store passphrase in macOS Keychain. Use the real passphrase only if
-    // re-keying succeeded; otherwise the key still has an empty passphrase.
-    let stored_passphrase = if rekey_succeeded { &passphrase } else { "" };
-    if let Err(e) = store_passphrase_in_keychain(name, stored_passphrase) {
-        tracing::warn!(key_name = %name, error = %e, "failed to store passphrase in keychain");
     }
+
+    // Store passphrase in macOS Keychain.
+    store_passphrase_in_keychain(name, &passphrase).map_err(|e| {
+        SshError::PassphraseApplicationFailed(format!("keychain storage failed: {e}"))
+    })?;
 
     // Set restrictive permissions on the private key file
     #[cfg(unix)]
@@ -402,5 +493,23 @@ mod tests {
         let result = list_ssh_keys(std::path::Path::new("/nonexistent/ssh/dir"));
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn secret_string_passphrase_not_in_debug_output() {
+        use secrecy::ExposeSecret;
+        let passphrase = generate_passphrase();
+        let raw_value = passphrase.expose_secret().to_string();
+        let debug_output = format!("{:?}", passphrase);
+        // SecretString's Debug impl should NOT expose the actual value
+        assert!(
+            !debug_output.contains(&raw_value),
+            "debug output must not contain the actual passphrase"
+        );
+        // secrecy::SecretString prints "SecretString([REDACTED])" or similar
+        assert!(
+            debug_output.contains("Secret"),
+            "debug output should indicate it's a secret type: {debug_output}"
+        );
     }
 }

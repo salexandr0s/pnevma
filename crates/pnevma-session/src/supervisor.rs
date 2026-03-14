@@ -2,6 +2,7 @@ use crate::error::SessionError;
 use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
 use chrono::{Duration, Utc};
 use pnevma_redaction::{normalize_secrets, StreamRedactionBuffer};
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,11 +19,11 @@ fn redact_stream_chunk(input: &str) -> String {
 #[derive(Debug, Clone)]
 struct StreamRedactor {
     buffer: StreamRedactionBuffer,
-    secrets: Arc<RwLock<Vec<String>>>,
+    secrets: Arc<RwLock<Vec<SecretString>>>,
 }
 
 impl StreamRedactor {
-    fn new(secrets: Arc<RwLock<Vec<String>>>) -> Self {
+    fn new(secrets: Arc<RwLock<Vec<SecretString>>>) -> Self {
         Self {
             buffer: StreamRedactionBuffer::new(),
             secrets,
@@ -30,13 +31,23 @@ impl StreamRedactor {
     }
 
     async fn push_chunk(&mut self, chunk: &str) -> Option<String> {
-        let secrets = self.secrets.read().await.clone();
-        self.buffer.push_chunk(chunk, &secrets)
+        let guard = self.secrets.read().await;
+        let exposed: Vec<String> = guard
+            .iter()
+            .map(|s| s.expose_secret().to_string())
+            .collect();
+        drop(guard);
+        self.buffer.push_chunk(chunk, &exposed)
     }
 
     async fn finish(&mut self) -> Option<String> {
-        let secrets = self.secrets.read().await.clone();
-        self.buffer.finish(&secrets)
+        let guard = self.secrets.read().await;
+        let exposed: Vec<String> = guard
+            .iter()
+            .map(|s| s.expose_secret().to_string())
+            .collect();
+        drop(guard);
+        self.buffer.finish(&exposed)
     }
 }
 
@@ -120,7 +131,7 @@ pub fn resolve_binary(name: &str) -> PathBuf {
 pub struct SessionSupervisor {
     sessions: Arc<RwLock<HashMap<Uuid, SessionMetadata>>>,
     inputs: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChildStdin>>>>>,
-    redaction_secrets: Arc<RwLock<Vec<String>>>,
+    redaction_secrets: Arc<RwLock<Vec<SecretString>>>,
     tx: broadcast::Sender<SessionEvent>,
     idle_after: Duration,
     stuck_after: Duration,
@@ -159,7 +170,9 @@ impl SessionSupervisor {
     }
 
     pub async fn set_redaction_secrets(&self, secrets: Vec<String>) {
-        *self.redaction_secrets.write().await = normalize_secrets(&secrets);
+        let normalized = normalize_secrets(&secrets);
+        *self.redaction_secrets.write().await =
+            normalized.into_iter().map(SecretString::from).collect();
     }
 
     pub async fn spawn_shell(
@@ -505,7 +518,7 @@ impl SessionSupervisor {
         mut reader: R,
         scrollback_path: PathBuf,
         scrollback_index_path: PathBuf,
-        redaction_secrets: Arc<RwLock<Vec<String>>>,
+        redaction_secrets: Arc<RwLock<Vec<SecretString>>>,
     ) where
         R: AsyncRead + Send + Unpin + 'static,
     {
@@ -719,7 +732,14 @@ impl SessionSupervisor {
         self.mark_activity(session_id).await
     }
 
-    pub async fn register_restored(&self, meta: SessionMetadata) {
+    pub async fn register_restored(&self, mut meta: SessionMetadata) {
+        // Derive scrollback path from session_id to prevent arbitrary file reads.
+        // Ignore caller-supplied scrollback_path.
+        let canonical = self
+            .data_dir
+            .join("scrollback")
+            .join(format!("{}.log", meta.id));
+        meta.scrollback_path = canonical.to_string_lossy().to_string();
         self.sessions.write().await.insert(meta.id, meta.clone());
         let _ = self.tx.send(SessionEvent::Spawned(meta));
     }
@@ -943,6 +963,7 @@ mod tests {
     use crate::error::SessionError;
     use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
     use chrono::Utc;
+    use secrecy::SecretString;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::sync::Arc;
@@ -961,7 +982,9 @@ mod tests {
 
     #[tokio::test]
     async fn stream_redactor_redacts_secret_split_across_chunks() {
-        let secrets = Arc::new(RwLock::new(vec!["supersecret123".to_string()]));
+        let secrets = Arc::new(RwLock::new(vec![SecretString::from(
+            "supersecret123".to_string(),
+        )]));
         let mut redactor = StreamRedactor::new(secrets);
 
         let first = redactor
@@ -979,7 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_redactor_redacts_pattern_split_across_chunks() {
-        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let secrets: Arc<RwLock<Vec<SecretString>>> = Arc::new(RwLock::new(Vec::new()));
         let mut redactor = StreamRedactor::new(secrets);
 
         assert!(
@@ -996,7 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_redactor_flushes_safe_marker_words_immediately() {
-        let secrets = Arc::new(RwLock::new(Vec::new()));
+        let secrets: Arc<RwLock<Vec<SecretString>>> = Arc::new(RwLock::new(Vec::new()));
         let mut redactor = StreamRedactor::new(secrets);
 
         let output = redactor

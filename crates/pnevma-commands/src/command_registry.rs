@@ -2,6 +2,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// Access tier for control-socket commands.
+///
+/// `Password` auth mode restricts access: `Privileged` commands are rejected
+/// outright, while `ReadOnly` and `Standard` commands are allowed after a
+/// valid password is supplied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccessLevel {
+    /// Pure reads — status, list, get, tail, etc.
+    ReadOnly,
+    /// Normal mutations — the default for most commands.
+    Standard,
+    /// Dangerous operations that require `SameUser` auth.
+    Privileged,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandArgumentDescriptor {
     pub name: String,
@@ -18,6 +33,7 @@ pub struct RegisteredCommand {
     pub label: String,
     pub description: String,
     pub args: Vec<CommandArgumentDescriptor>,
+    pub access_level: AccessLevel,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -45,6 +61,123 @@ impl CommandRegistry {
     pub fn contains(&self, id: &str) -> bool {
         self.index.contains_key(id)
     }
+
+    /// Return the access level for a command. For registered commands, the
+    /// stored level is returned. For unregistered methods, `infer_access_level`
+    /// is used — this classifies known-privileged and known-readonly actions,
+    /// defaulting remaining unknowns to `Privileged` (fail-closed).
+    pub fn access_level(&self, id: &str) -> AccessLevel {
+        self.index
+            .get(id)
+            .and_then(|&idx| self.commands.get(idx))
+            .map(|cmd| cmd.access_level)
+            .unwrap_or_else(|| infer_access_level(id))
+    }
+}
+
+impl RegisteredCommand {
+    /// Build a new command, deriving its access level from its id automatically.
+    fn new(id: &str, label: &str, description: &str, args: Vec<CommandArgumentDescriptor>) -> Self {
+        Self {
+            access_level: infer_access_level(id),
+            id: id.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            args,
+        }
+    }
+}
+
+/// Derive the access level for a command from its id.
+///
+/// Privileged commands are listed explicitly. Read-only commands are
+/// identified by their trailing action segment. Unregistered commands
+/// default to `Privileged` (fail-closed) so new methods must be
+/// explicitly categorised before Password-auth clients can invoke them.
+fn infer_access_level(id: &str) -> AccessLevel {
+    const PRIVILEGED: &[&str] = &[
+        // Session lifecycle
+        "session.new",
+        "session.kill",
+        "session.kill_all",
+        "session.send_input",
+        "session.recovery.execute",
+        "fleet.action",
+        // Agent execution triggers
+        "task.dispatch",
+        "task.dispatch_next_ready",
+        "task.claim",
+        "task.draft",
+        "workflow.dispatch",
+        "workflow.instantiate",
+        // Git / merge operations
+        "merge.queue.execute",
+        "checkpoint.restore",
+        // Review gates (can trigger merge)
+        "review.approve",
+        "review.approve_next",
+        // Config / secrets / settings
+        "harness.config.write",
+        "plan.write",
+        "plan.delete",
+        "project.trust",
+        "project.cleanup_data",
+        "project.secrets.upsert",
+        "project.secrets.delete",
+        "project.secrets.import_env",
+        "workspace.file.write",
+        "settings.app.set",
+        "usage.providers.settings.set",
+        "keybindings.set",
+        // SSH
+        "ssh.connect",
+        "ssh.disconnect",
+        "ssh.delete_profile",
+        // Resource creation/deletion (global scope)
+        "workflow.create",
+        "workflow.delete",
+        "global_workflow.create",
+        "global_workflow.delete",
+        "agent_profile.create",
+        "agent_profile.delete",
+        "global_agent.create",
+        "global_agent.delete",
+        "rules.delete",
+        "conventions.delete",
+        // Telemetry
+        "telemetry.clear",
+        "telemetry.set",
+    ];
+    if PRIVILEGED.contains(&id) {
+        return AccessLevel::Privileged;
+    }
+    let action = id.rsplit('.').next().unwrap_or(id);
+    if matches!(
+        action,
+        "get"
+            | "list"
+            | "list_live"
+            | "list_all"
+            | "status"
+            | "read"
+            | "search"
+            | "tail"
+            | "scrollback"
+            | "timeline"
+            | "daily-brief"
+            | "daily_brief"
+            | "defs"
+            | "automation"
+            | "readiness"
+            | "poll"
+            | "snapshot"
+            | "overview"
+            | "summary"
+            | "options"
+    ) {
+        return AccessLevel::ReadOnly;
+    }
+    AccessLevel::Standard
 }
 
 fn arg(
@@ -67,11 +200,11 @@ fn arg(
 
 fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
     registry
-        .register(RegisteredCommand {
-            id: "project.open".to_string(),
-            label: "Open Project".to_string(),
-            description: "Open a project by path.".to_string(),
-            args: vec![arg(
+        .register(RegisteredCommand::new(
+            "project.open",
+            "Open Project",
+            "Open a project by path.",
+            vec![arg(
                 "path",
                 "Project Path",
                 true,
@@ -79,12 +212,12 @@ fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
                 None,
                 Some("Absolute or relative path to a directory containing pnevma.toml."),
             )],
-        })
-        .register(RegisteredCommand {
-            id: "environment.readiness".to_string(),
-            label: "Environment Readiness".to_string(),
-            description: "Check git/agent/global-config/project-init readiness.".to_string(),
-            args: vec![arg(
+        ))
+        .register(RegisteredCommand::new(
+            "environment.readiness",
+            "Environment Readiness",
+            "Check git/agent/global-config/project-init readiness.",
+            vec![arg(
                 "path",
                 "Project Path",
                 false,
@@ -92,12 +225,12 @@ fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
                 None,
                 Some("Optional path used for project scaffold readiness checks."),
             )],
-        })
-        .register(RegisteredCommand {
-            id: "environment.init_global_config".to_string(),
-            label: "Initialize Global Config".to_string(),
-            description: "Create ~/.config/pnevma/config.toml if missing.".to_string(),
-            args: vec![arg(
+        ))
+        .register(RegisteredCommand::new(
+            "environment.init_global_config",
+            "Initialize Global Config",
+            "Create ~/.config/pnevma/config.toml if missing.",
+            vec![arg(
                 "default_provider",
                 "Default Provider",
                 false,
@@ -105,12 +238,12 @@ fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
                 None,
                 Some("Optional default provider written on first creation."),
             )],
-        })
-        .register(RegisteredCommand {
-            id: "project.initialize_scaffold".to_string(),
-            label: "Initialize Project Scaffold".to_string(),
-            description: "Create pnevma.toml and .pnevma scaffold for a project path.".to_string(),
-            args: vec![
+        ))
+        .register(RegisteredCommand::new(
+            "project.initialize_scaffold",
+            "Initialize Project Scaffold",
+            "Create pnevma.toml and .pnevma scaffold for a project path.",
+            vec![
                 arg("path", "Project Path", true, Some("."), None, None),
                 arg("project_name", "Project Name", false, None, None, None),
                 arg("project_brief", "Project Brief", false, None, None, None),
@@ -123,16 +256,16 @@ fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
                     None,
                 ),
             ],
-        })
+        ))
 }
 
 fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
     registry
-        .register(RegisteredCommand {
-            id: "session.new".to_string(),
-            label: "New Session".to_string(),
-            description: "Create a new terminal session and open a pane.".to_string(),
-            args: vec![
+        .register(RegisteredCommand::new(
+            "session.new",
+            "New Session",
+            "Create a new terminal session and open a pane.",
+            vec![
                 arg("name", "Session Name", true, Some("session"), None, None),
                 arg("cwd", "Working Directory", true, Some("."), None, None),
                 arg("command", "Command", true, Some("zsh"), None, None),
@@ -145,12 +278,12 @@ fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
                     Some("If present, the new pane is inserted after this pane."),
                 ),
             ],
-        })
-        .register(RegisteredCommand {
-            id: "session.reattach_active".to_string(),
-            label: "Reattach Active Session".to_string(),
-            description: "Reattach the current terminal session backend.".to_string(),
-            args: vec![arg(
+        ))
+        .register(RegisteredCommand::new(
+            "session.reattach_active",
+            "Reattach Active Session",
+            "Reattach the current terminal session backend.",
+            vec![arg(
                 "active_session_id",
                 "Active Session ID",
                 true,
@@ -158,12 +291,12 @@ fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
                 Some("active_session_id"),
                 None,
             )],
-        })
-        .register(RegisteredCommand {
-            id: "session.restart_active".to_string(),
-            label: "Restart Active Session".to_string(),
-            description: "Restart the active session and rebind the active pane.".to_string(),
-            args: vec![
+        ))
+        .register(RegisteredCommand::new(
+            "session.restart_active",
+            "Restart Active Session",
+            "Restart the active session and rebind the active pane.",
+            vec![
                 arg(
                     "active_session_id",
                     "Active Session ID",
@@ -181,15 +314,15 @@ fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
                     None,
                 ),
             ],
-        })
+        ))
 }
 
 fn pane_cmd(id: &str, label: &str, description: &str) -> RegisteredCommand {
-    RegisteredCommand {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: description.to_string(),
-        args: vec![arg(
+    RegisteredCommand::new(
+        id,
+        label,
+        description,
+        vec![arg(
             "active_pane_id",
             "Active Pane ID",
             false,
@@ -197,7 +330,7 @@ fn pane_cmd(id: &str, label: &str, description: &str) -> RegisteredCommand {
             Some("active_pane_id"),
             None,
         )],
-    }
+    )
 }
 
 fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
@@ -215,11 +348,11 @@ fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
     ] {
         registry = registry.register(pane_cmd(id, label, desc));
     }
-    registry = registry.register(RegisteredCommand {
-        id: "pane.close".to_string(),
-        label: "Close Pane".to_string(),
-        description: "Close the active pane if it is not the task board.".to_string(),
-        args: vec![arg(
+    registry = registry.register(RegisteredCommand::new(
+        "pane.close",
+        "Close Pane",
+        "Close the active pane if it is not the task board.",
+        vec![arg(
             "active_pane_id",
             "Active Pane ID",
             true,
@@ -227,7 +360,7 @@ fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
             Some("active_pane_id"),
             None,
         )],
-    });
+    ));
     for (id, label, desc) in [
         (
             "pane.open_review",
@@ -287,11 +420,11 @@ fn register_pane_commands(mut registry: CommandRegistry) -> CommandRegistry {
 
 fn register_task_commands(registry: CommandRegistry) -> CommandRegistry {
     registry
-        .register(RegisteredCommand {
-            id: "task.new".to_string(),
-            label: "New Task".to_string(),
-            description: "Create a task with default manual acceptance criteria.".to_string(),
-            args: vec![
+        .register(RegisteredCommand::new(
+            "task.new",
+            "New Task",
+            "Create a task with default manual acceptance criteria.",
+            vec![
                 arg(
                     "title",
                     "Task Title",
@@ -303,68 +436,67 @@ fn register_task_commands(registry: CommandRegistry) -> CommandRegistry {
                 arg("goal", "Task Goal", true, Some("Ship value"), None, None),
                 arg("priority", "Priority", true, Some("P1"), None, None),
             ],
-        })
-        .register(RegisteredCommand {
-            id: "task.dispatch_next_ready".to_string(),
-            label: "Dispatch Next Ready Task".to_string(),
-            description: "Dispatch the oldest task currently in Ready.".to_string(),
-            args: vec![],
-        })
-        .register(RegisteredCommand {
-            id: "task.delete_ready".to_string(),
-            label: "Delete Ready Task".to_string(),
-            description: "Delete the first task in Ready status.".to_string(),
-            args: vec![],
-        })
-        .register(RegisteredCommand {
-            id: "review.approve_next".to_string(),
-            label: "Approve Next Review Task".to_string(),
-            description: "Approve the oldest task currently in Review and enqueue merge."
-                .to_string(),
-            args: vec![],
-        })
-        .register(RegisteredCommand {
-            id: "review.approve_task".to_string(),
-            label: "Approve Review".to_string(),
-            description: "Approve a task review and enqueue merge.".to_string(),
-            args: vec![
+        ))
+        .register(RegisteredCommand::new(
+            "task.dispatch_next_ready",
+            "Dispatch Next Ready Task",
+            "Dispatch the oldest task currently in Ready.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "task.delete_ready",
+            "Delete Ready Task",
+            "Delete the first task in Ready status.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "review.approve_next",
+            "Approve Next Review Task",
+            "Approve the oldest task currently in Review and enqueue merge.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "review.approve_task",
+            "Approve Review",
+            "Approve a task review and enqueue merge.",
+            vec![
                 arg("task_id", "Task ID", true, None, None, None),
                 arg("note", "Reviewer Note", false, None, None, None),
             ],
-        })
-        .register(RegisteredCommand {
-            id: "review.reject_task".to_string(),
-            label: "Reject Review".to_string(),
-            description: "Reject a task review and return task to In Progress.".to_string(),
-            args: vec![
+        ))
+        .register(RegisteredCommand::new(
+            "review.reject_task",
+            "Reject Review",
+            "Reject a task review and return task to In Progress.",
+            vec![
                 arg("task_id", "Task ID", true, None, None, None),
                 arg("note", "Reviewer Note", false, None, None, None),
             ],
-        })
-        .register(RegisteredCommand {
-            id: "merge.execute_task".to_string(),
-            label: "Execute Merge".to_string(),
-            description: "Execute merge queue flow for a task.".to_string(),
-            args: vec![arg("task_id", "Task ID", true, None, None, None)],
-        })
-        .register(RegisteredCommand {
-            id: "checkpoint.create".to_string(),
-            label: "Create Checkpoint".to_string(),
-            description: "Create a git checkpoint snapshot.".to_string(),
-            args: vec![
+        ))
+        .register(RegisteredCommand::new(
+            "merge.execute_task",
+            "Execute Merge",
+            "Execute merge queue flow for a task.",
+            vec![arg("task_id", "Task ID", true, None, None, None)],
+        ))
+        .register(RegisteredCommand::new(
+            "checkpoint.create",
+            "Create Checkpoint",
+            "Create a git checkpoint snapshot.",
+            vec![
                 arg("description", "Description", false, None, None, None),
                 arg("task_id", "Task ID", false, None, None, None),
             ],
-        })
+        ))
 }
 
 fn register_tracker_commands(registry: CommandRegistry) -> CommandRegistry {
     registry
-        .register(RegisteredCommand {
-            id: "tracker.poll".to_string(),
-            label: "Poll Tracker".to_string(),
-            description: "Poll the external issue tracker for new or updated items.".to_string(),
-            args: vec![
+        .register(RegisteredCommand::new(
+            "tracker.poll",
+            "Poll Tracker",
+            "Poll the external issue tracker for new or updated items.",
+            vec![
                 arg(
                     "limit",
                     "Limit",
@@ -382,13 +514,13 @@ fn register_tracker_commands(registry: CommandRegistry) -> CommandRegistry {
                     Some("Comma-separated list of label names to filter by."),
                 ),
             ],
-        })
-        .register(RegisteredCommand {
-            id: "tracker.status".to_string(),
-            label: "Tracker Status".to_string(),
-            description: "Return the tracker configuration and active status.".to_string(),
-            args: vec![],
-        })
+        ))
+        .register(RegisteredCommand::new(
+            "tracker.status",
+            "Tracker Status",
+            "Return the tracker configuration and active status.",
+            vec![],
+        ))
 }
 
 pub fn default_registry() -> &'static CommandRegistry {
@@ -407,42 +539,42 @@ pub fn default_registry() -> &'static CommandRegistry {
 
 fn register_harness_config_commands(registry: CommandRegistry) -> CommandRegistry {
     registry
-        .register(RegisteredCommand {
-            id: "harness.config.list".to_string(),
-            label: "List Harness Configs".to_string(),
-            description: "List all available harness configuration files (MCP, settings, hooks, agents, skills, memory)".to_string(),
-            args: vec![],
-        })
-        .register(RegisteredCommand {
-            id: "harness.config.read".to_string(),
-            label: "Read Harness Config".to_string(),
-            description: "Read the content of a harness configuration file".to_string(),
-            args: vec![arg("key", "Config Key", true, None, None, Some("The config entry key (e.g. claude.mcp)"))],
-        })
-        .register(RegisteredCommand {
-            id: "harness.config.write".to_string(),
-            label: "Write Harness Config".to_string(),
-            description: "Write content to a harness configuration file".to_string(),
-            args: vec![
+        .register(RegisteredCommand::new(
+            "harness.config.list",
+            "List Harness Configs",
+            "List all available harness configuration files (MCP, settings, hooks, agents, skills, memory)",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.config.read",
+            "Read Harness Config",
+            "Read the content of a harness configuration file",
+            vec![arg("key", "Config Key", true, None, None, Some("The config entry key (e.g. claude.mcp)"))],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.config.write",
+            "Write Harness Config",
+            "Write content to a harness configuration file",
+            vec![
                 arg("key", "Config Key", true, None, None, Some("The config entry key")),
                 arg("content", "Content", true, None, None, Some("File content to write")),
             ],
-        })
+        ))
 }
 
 fn register_plan_commands(registry: CommandRegistry) -> CommandRegistry {
     registry
-        .register(RegisteredCommand {
-            id: "plan.list".to_string(),
-            label: "List Plans".to_string(),
-            description: "List all plan files for the current project".to_string(),
-            args: vec![],
-        })
-        .register(RegisteredCommand {
-            id: "plan.read".to_string(),
-            label: "Read Plan".to_string(),
-            description: "Read a specific plan file".to_string(),
-            args: vec![arg(
+        .register(RegisteredCommand::new(
+            "plan.list",
+            "List Plans",
+            "List all plan files for the current project",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "plan.read",
+            "Read Plan",
+            "Read a specific plan file",
+            vec![arg(
                 "id",
                 "Plan ID",
                 true,
@@ -450,12 +582,12 @@ fn register_plan_commands(registry: CommandRegistry) -> CommandRegistry {
                 None,
                 Some("The plan identifier"),
             )],
-        })
-        .register(RegisteredCommand {
-            id: "plan.write".to_string(),
-            label: "Write Plan".to_string(),
-            description: "Create or update a plan file".to_string(),
-            args: vec![
+        ))
+        .register(RegisteredCommand::new(
+            "plan.write",
+            "Write Plan",
+            "Create or update a plan file",
+            vec![
                 arg(
                     "id",
                     "Plan ID",
@@ -482,12 +614,12 @@ fn register_plan_commands(registry: CommandRegistry) -> CommandRegistry {
                     Some("Plan content in markdown"),
                 ),
             ],
-        })
-        .register(RegisteredCommand {
-            id: "plan.delete".to_string(),
-            label: "Delete Plan".to_string(),
-            description: "Remove a plan file".to_string(),
-            args: vec![arg(
+        ))
+        .register(RegisteredCommand::new(
+            "plan.delete",
+            "Delete Plan",
+            "Remove a plan file",
+            vec![arg(
                 "id",
                 "Plan ID",
                 true,
@@ -495,5 +627,5 @@ fn register_plan_commands(registry: CommandRegistry) -> CommandRegistry {
                 None,
                 Some("The plan identifier"),
             )],
-        })
+        ))
 }

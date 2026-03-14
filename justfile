@@ -43,6 +43,8 @@ ghostty-build: ghostty-check
       cd vendor/ghostty; \
       set -o pipefail; \
       zig build -Demit-xcframework=true -Dxcframework-target={{ghostty_xcframework_target}} -Doptimize=ReleaseFast 2>&1 | tee "$log"
+    python3 ./scripts/normalize-static-archive.py vendor/ghostty/macos/GhosttyKit.xcframework/macos-arm64/libghostty-fat.a
+    python3 ./scripts/normalize-ghostty-modulemap.py vendor/ghostty/macos/GhosttyKit.xcframework/macos-arm64/Headers/module.modulemap
     @echo "Ghostty xcframework built at vendor/ghostty/macos/GhosttyKit.xcframework"
 
 # ── Stage 2: Rust staticlib (Cargo) ──────────────────────────────────────────
@@ -130,7 +132,8 @@ spm-test-clean: rust-build
     {{clean_log}} --log {{native_log_dir}}/swift-test.log -- zsh -lc 'cd native && swift test'
     @echo "SPM tests complete"
 
-ghostty-smoke:
+ghostty-smoke: xcode-build
+    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then       echo "error: missing vendor/ghostty/macos/GhosttyKit.xcframework; run just ghostty-build first" >&2;       exit 1;     fi
     @echo "Running Ghostty runtime smoke..."
     ./scripts/run-ghostty-smoke.sh
     @echo "Ghostty smoke passed"

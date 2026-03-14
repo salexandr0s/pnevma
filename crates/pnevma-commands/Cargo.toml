@@ -37,4 +37,3 @@ subtle.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
-portable-pty.workspace = true

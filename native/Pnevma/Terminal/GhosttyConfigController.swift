@@ -282,10 +282,36 @@ enum GhosttyManagedConfigCodec {
 @MainActor
 final class GhosttyConfigController {
     static let shared = GhosttyConfigController()
+    static let configDidChangeNotification = Notification.Name("ghosttyConfigDidChange")
 
     private init() {}
 
     private var activeConfigOwner: TerminalConfig?
+    private var configFileWatcher: ConfigFileWatcher?
+
+    /// Start watching Ghostty config file for external changes.
+    func startWatchingConfigFile() {
+        let configURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/ghostty/config")
+        configFileWatcher = ConfigFileWatcher(url: configURL) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handleExternalConfigChange()
+            }
+        }
+        configFileWatcher?.start()
+    }
+
+    /// Stop watching the config file.
+    func stopWatchingConfigFile() {
+        configFileWatcher?.stop()
+        configFileWatcher = nil
+    }
+
+    private func handleExternalConfigChange() {
+        let newConfig = TerminalConfig()
+        updateConfigOwner(newConfig)
+        NotificationCenter.default.post(name: Self.configDidChangeNotification, object: self)
+    }
 
     func runtimeConfigOwner() -> TerminalConfig {
         if let activeConfigOwner {

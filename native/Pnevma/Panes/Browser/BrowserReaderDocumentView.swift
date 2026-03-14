@@ -54,7 +54,7 @@ final class BrowserReaderFindController {
         }
 
         if lastQuery.isEmpty {
-            clearHighlights()
+            restoreRenderedContent()
         } else {
             _ = search(query: lastQuery)
         }
@@ -65,12 +65,11 @@ final class BrowserReaderFindController {
         lastQuery = query
         matchRanges = []
         currentMatchIndex = nil
-        clearHighlights()
+        restoreRenderedContent()
 
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return 0 }
+        guard !query.isEmpty else { return 0 }
 
-        matchRanges = Self.matchRanges(in: plainText, query: trimmed)
+        matchRanges = Self.matchRanges(in: plainText, query: query)
         if !matchRanges.isEmpty {
             currentMatchIndex = 0
         }
@@ -92,18 +91,18 @@ final class BrowserReaderFindController {
         lastQuery = ""
         matchRanges = []
         currentMatchIndex = nil
-        clearHighlights()
+        restoreRenderedContent()
     }
 
-    private func clearHighlights() {
+    private func restoreRenderedContent() {
         guard let textView, let textStorage = textView.textStorage else { return }
-        textStorage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: textStorage.length))
+        textStorage.setAttributedString(renderedContent)
     }
 
     private func reapplyHighlights(scrollToCurrent: Bool = true) {
         guard let textView, let textStorage = textView.textStorage else { return }
 
-        clearHighlights()
+        restoreRenderedContent()
 
         for (index, range) in matchRanges.enumerated() {
             let color = index == currentMatchIndex ? currentMatchColor : matchColor

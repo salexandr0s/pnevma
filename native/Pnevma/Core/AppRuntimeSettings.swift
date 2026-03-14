@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 extension Notification.Name {
@@ -7,7 +8,38 @@ extension Notification.Name {
 struct KeybindingEntry: Identifiable, Codable, Equatable {
     var id: String { action }
     let action: String
-    let shortcut: String
+    var shortcut: String
+    var isDefault: Bool
+    var conflictsWith: [String]
+    var isProtected: Bool
+
+    init(action: String, shortcut: String, isDefault: Bool = true, conflictsWith: [String] = [], isProtected: Bool = false) {
+        self.action = action
+        self.shortcut = shortcut
+        self.isDefault = isDefault
+        self.conflictsWith = conflictsWith
+        self.isProtected = isProtected
+    }
+
+    /// Display name derived from action ID (e.g. "menu.split_right" → "Split Right")
+    var displayName: String {
+        // For non-menu actions, include the full dotted path as title-cased words
+        // e.g. "command_palette.toggle" → "Command Palette Toggle"
+        let base = action
+            .replacing("menu.", with: "")
+            .replacing("_", with: " ")
+            .replacing(".", with: " ")
+        return base
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    /// Category derived from action prefix
+    var category: String {
+        if action.hasPrefix("menu.") { return "Menu Shortcuts" }
+        return "Project Shortcuts"
+    }
 }
 
 struct AppSettingsSnapshot: Decodable, Equatable {
@@ -51,6 +83,11 @@ struct AppSettingsSnapshot: Decodable, Equatable {
     }
 }
 
+struct KeybindingOverrideSave: Encodable, Equatable {
+    let action: String
+    let shortcut: String
+}
+
 struct AppSettingsSaveRequest: Encodable, Equatable {
     let autoSaveWorkspaceOnQuit: Bool
     let restoreWindowsOnLaunch: Bool
@@ -66,6 +103,7 @@ struct AppSettingsSaveRequest: Encodable, Equatable {
     let focusBorderColor: String
     let telemetryEnabled: Bool
     let crashReports: Bool
+    let keybindings: [KeybindingOverrideSave]?
 }
 
 @MainActor
@@ -74,6 +112,7 @@ final class AppRuntimeSettings {
 
     private let notificationCenter: NotificationCenter
     private(set) var snapshot: AppSettingsSnapshot
+    private var configFileWatcher: ConfigFileWatcher?
 
     init(
         notificationCenter: NotificationCenter = .default,
@@ -81,6 +120,18 @@ final class AppRuntimeSettings {
     ) {
         self.notificationCenter = notificationCenter
         self.snapshot = initialSnapshot
+    }
+
+    /// Start watching the Pnevma config file for external changes.
+    func startWatchingConfigFile() {
+        let configURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/pnevma/config.toml")
+        configFileWatcher = ConfigFileWatcher(url: configURL) {
+            Task { @MainActor in
+                await AppRuntimeSettings.shared.load()
+            }
+        }
+        configFileWatcher?.start()
     }
 
     var autoSaveWorkspaceOnQuit: Bool {
@@ -117,6 +168,10 @@ final class AppRuntimeSettings {
 
     func apply(_ snapshot: AppSettingsSnapshot) {
         self.snapshot = snapshot
+        AppKeybindingManager.shared.update(from: snapshot.keybindings)
+        if let mainMenu = NSApp?.mainMenu {
+            AppKeybindingManager.shared.applyToMenu(mainMenu)
+        }
         notificationCenter.post(name: .appRuntimeSettingsDidChange, object: self)
     }
 }
