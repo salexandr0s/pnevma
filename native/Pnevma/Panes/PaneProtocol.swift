@@ -195,6 +195,7 @@ extension RestoredPaneContainer: TerminalPaneControlling {
 enum PaneFactory {
     static var sessionBridge: (any SessionBridging)?
     static var activeWorkspaceProvider: (() -> Workspace?)?
+    static var browserSessionProvider: ((Workspace) -> BrowserWorkspaceSession)?
 
     private static func paneTuple(_ view: NSView & PaneContent) -> (PaneID, NSView & PaneContent) {
         (view.paneID, view)
@@ -298,8 +299,15 @@ enum PaneFactory {
         paneTuple(RulesManagerPaneView(frame: .zero))
     }
 
+
     static func makeBrowser(url: URL? = nil) -> (PaneID, NSView & PaneContent) {
-        paneTuple(BrowserPaneView(frame: .zero, url: url))
+        let workspace = activeWorkspaceProvider?()
+        let session = workspace.flatMap { browserSessionProvider?($0) }
+            ?? BrowserWorkspaceSession(restoredURL: url)
+        if let url {
+            session.updateRestoredURL(url)
+        }
+        return paneTuple(BrowserPaneView(frame: .zero, session: session, url: url))
     }
 
     static func makeHarnessConfig() -> (PaneID, NSView & PaneContent) {

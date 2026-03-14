@@ -43,6 +43,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rightInspectorResizerView: NSView?
     private var rightInspectorOverlayBlockerView: RightInspectorOverlayBlockerView?
     private var rightInspectorOverlayHostView: RightInspectorOverlayHostingView<AnyView>?
+    private var browserDrawerOverlayBlockerView: BrowserDrawerOverlayBlockerView?
+    private var browserDrawerOverlayHostView: BrowserDrawerOverlayHostingView<AnyView>?
     private var contentLeadingConstraint: NSLayoutConstraint?
     private var statusLeadingConstraint: NSLayoutConstraint?
     private var tabBarLeadingConstraint: NSLayoutConstraint?
@@ -67,6 +69,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restoredCommandCenterWindowFrame: NSRect?
     private var restoredCommandCenterVisible = false
     private let rightInspectorChromeState = RightInspectorChromeState()
+    private let browserDrawerChromeState = BrowserDrawerChromeState()
+    private var browserToolBridge: BrowserToolBridge?
+    private var terminalOpenURLObserver: NSObjectProtocol?
+    private var browserSessions: [UUID: BrowserWorkspaceSession] = [:]
+    private weak var browserDrawerPreviousFirstResponder: NSResponder?
     private lazy var rightInspectorFileBrowserViewModel = FileBrowserViewModel(
         commandBus: commandBus ?? CommandBus.shared
     )
@@ -261,12 +268,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             PaneFactory.activeWorkspaceProvider = { [weak self] in
                 self?.workspaceManager?.activeWorkspace
             }
+            PaneFactory.browserSessionProvider = { [weak self] workspace in
+                self?.browserSession(for: workspace) ?? BrowserWorkspaceSession()
+            }
             let sessionStore = SessionStore(commandBus: self.commandBus ?? fallbackCommandBus)
             self.sessionStore = sessionStore
             Task { await sessionStore.activate() }
             _ = NotificationsViewModel.shared // Initialize the singleton early
             _ = ProviderUsageStore.shared
             Task { await ProviderUsageStore.shared.activate() }
+            browserToolBridge = BrowserToolBridge(
+                sessionProvider: { [weak self] in
+                    self?.workspaceManager?.activeWorkspace.flatMap { self?.browserSession(for: $0) }
+                },
+                commandBusProvider: { [weak self] in
+                    self?.workspaceManager?.activeRuntime?.commandBus
+                },
+                ensureBrowserVisible: { [weak self] url in
+                    self?.openBrowserInWorkspace(url: url, source: .automation)
+                }
+            )
         }
         workspaceManager?.onActiveWorkspaceChanged = { [weak self] engine in
             _ = engine
@@ -284,10 +305,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 workspace.terminalNotificationCount = self?.contentAreaView?.paneIDsWithNotificationRings.count ?? 0
             }
             self?.syncRightInspectorPresentation(animated: false)
+            self?.refreshBrowserDrawerOverlayRootView()
             self?.updateNotificationBadge()
         }
         workspaceManager?.onNotificationCountChanged = { [weak self] _ in
             self?.updateNotificationBadge()
+        }
+
+        terminalOpenURLObserver = NotificationCenter.default.addObserver(
+            forName: .ghosttyOpenURL,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let rawURL = notification.userInfo?["url"] as? String,
+                  let url = URL(string: rawURL) else { return }
+            Task { @MainActor [weak self] in
+                self?.openBrowserInWorkspace(url: url, source: .terminal)
+            }
         }
 
         persistence = SessionPersistence()
@@ -316,6 +350,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func shutdownRuntime() {
         smokeTimeoutWorkItem?.cancel()
         smokeTimeoutWorkItem = nil
+        if let terminalOpenURLObserver {
+            NotificationCenter.default.removeObserver(terminalOpenURLObserver)
+            self.terminalOpenURLObserver = nil
+        }
         if let runtimeSettingsObserver {
             NotificationCenter.default.removeObserver(runtimeSettingsObserver)
             self.runtimeSettingsObserver = nil
@@ -540,6 +578,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         rightInspectorOverlayHost.capturesPointerEvents = false
         self.rightInspectorOverlayHostView = rightInspectorOverlayHost
 
+        let browserDrawerBlocker = BrowserDrawerOverlayBlockerView(frame: .zero)
+        browserDrawerBlocker.capturesPointerEvents = false
+        self.browserDrawerOverlayBlockerView = browserDrawerBlocker
+
+        let browserSession = workspaceManager.activeWorkspace.flatMap { self.browserSession(for: $0) }
+            ?? BrowserWorkspaceSession()
+        let browserDrawerOverlay = BrowserDrawerOverlayView(
+            chromeState: browserDrawerChromeState,
+            session: browserSession,
+            onClose: { [weak self] in self?.closeBrowserDrawer() },
+            onPinToPane: { [weak self] in self?.pinBrowserToPane() },
+            onOpenAsTab: { [weak self] in self?.openBrowserAsTab() },
+            onVisibilityChanged: { [weak self] isVisible in
+                self?.browserDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
+                self?.browserDrawerOverlayHostView?.capturesPointerEvents = isVisible
+            },
+            onHitRectChanged: { [weak self] rect in
+                self?.browserDrawerOverlayBlockerView?.overlayHitRect = rect
+                self?.browserDrawerOverlayHostView?.overlayHitRect = rect
+            }
+        )
+        let browserDrawerHost = BrowserDrawerOverlayHostingView(
+            rootView: AnyView(browserDrawerOverlay.environment(GhosttyThemeProvider.shared))
+        )
+        browserDrawerHost.capturesPointerEvents = false
+        self.browserDrawerOverlayHostView = browserDrawerHost
+
         // Titlebar fill: themed background behind the transparent titlebar
         let titlebarFill = ThemedTitlebarFillView()
         titlebarFill.translatesAutoresizingMaskIntoConstraints = false
@@ -643,6 +708,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowContent.addSubview(rightInspectorOverlayBlocker)
         rightInspectorOverlayHost.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(rightInspectorOverlayHost)
+        browserDrawerBlocker.translatesAutoresizingMaskIntoConstraints = false
+        windowContent.addSubview(browserDrawerBlocker)
+        browserDrawerHost.translatesAutoresizingMaskIntoConstraints = false
+        windowContent.addSubview(browserDrawerHost)
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let statusHeight = DesignTokens.Layout.statusBarHeight
@@ -781,11 +850,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorOverlayHost.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
             rightInspectorOverlayHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
             rightInspectorOverlayHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
+
+            browserDrawerBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
+            browserDrawerBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
+            browserDrawerBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
+            browserDrawerBlocker.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
+
+            browserDrawerHost.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
+            browserDrawerHost.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
+            browserDrawerHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
+            browserDrawerHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
         ])
         rightInspectorBacking.isHidden = !isRightInspectorPresented
         rightInspectorResizer.isHidden = !isRightInspectorPresented
+        browserDrawerChromeState.isPresented = browserSession.isDrawerVisible
+        browserDrawerBlocker.capturesPointerEvents = browserSession.isDrawerVisible
+        browserDrawerHost.capturesPointerEvents = browserSession.isDrawerVisible
         updateWindowMinWidth()
         updateRightInspectorOverlayAlignment()
+        refreshBrowserDrawerOverlayRootView()
         updateUsageToolbarStatus()
 
         // For terminal transparency (background-opacity < 1.0), the window must
@@ -946,6 +1029,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         editMenu.addItem(.separator())
         editMenu.addItem(NSMenuItem(title: "Find in Page", action: #selector(browserFindInPage), keyEquivalent: "f"))
+        let browserOmnibarItem = NSMenuItem(
+            title: "Focus Browser Address Bar",
+            action: #selector(focusBrowserOmnibarAction),
+            keyEquivalent: "l"
+        )
+        editMenu.addItem(browserOmnibarItem)
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -967,6 +1056,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         commandCenterItem.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(commandCenterItem)
+        let browserDrawerItem = NSMenuItem(
+            title: "Toggle Browser Drawer",
+            action: #selector(toggleBrowserDrawerAction),
+            keyEquivalent: "b"
+        )
+        browserDrawerItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(browserDrawerItem)
+        let pinBrowserItem = NSMenuItem(
+            title: "Pin Browser to Pane",
+            action: #selector(pinBrowserToPaneAction),
+            keyEquivalent: "\r"
+        )
+        pinBrowserItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(pinBrowserItem)
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "Layout Templates\u{2026}", action: #selector(titlebarTemplateAction), keyEquivalent: "")
         viewMenu.addItem(NSMenuItem.separator())
@@ -1230,6 +1333,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: .browserToggleFind, object: nil)
     }
 
+    @objc private func toggleBrowserDrawerAction() {
+        toggleBrowserDrawer()
+    }
+
+    @objc private func focusBrowserOmnibarAction() {
+        focusBrowserOmnibar()
+    }
+
+    @objc private func pinBrowserToPaneAction() {
+        pinBrowserToPane()
+    }
+
     @objc private func splitRightAction() { newTerminal() }
 
     @objc private func splitDownAction() {
@@ -1420,7 +1535,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Show Workflow", "tool", nil, "Show the workflow state machine", "workflow"),
             ("Show SSH Manager", "tool", nil, "Show SSH keys and remote profiles", "ssh"),
             ("Show Session Replay", "tool", nil, "Show past terminal session replays", "replay"),
-            ("Show Browser", "tool", nil, "Show the built-in web browser", "browser"),
+            ("Show Browser", "tool", "Opt+Cmd+B", "Show the built-in web browser drawer", "browser"),
         ]
 
         var commands: [CommandItem] = [
@@ -1477,6 +1592,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             CommandItem(id: "view.layout_templates", title: "Layout Templates", category: "view", shortcut: "", description: "Save or load pane layout templates") { [weak self] in
                 self?.titlebarTemplateAction()
+            },
+            CommandItem(id: "browser.focus_omnibar", title: "Focus Browser Omnibar", category: "view", shortcut: "Cmd+L", description: "Focus the built-in browser address bar") { [weak self] in
+                self?.focusBrowserOmnibar()
+            },
+            CommandItem(id: "browser.pin_to_pane", title: "Pin Browser to Pane", category: "view", shortcut: "Shift+Cmd+Return", description: "Promote the browser drawer into a persistent pane") { [weak self] in
+                self?.pinBrowserToPane()
             },
             CommandItem(id: "workspace.next", title: "Next Workspace", category: "view", shortcut: "Shift+Cmd+]", description: "Switch to the next workspace") { [weak self] in
                 self?.nextWorkspace()
@@ -2171,6 +2292,173 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow = win
     }
 
+    private enum BrowserOpenSource {
+        case command
+        case terminal
+        case automation
+    }
+
+    private func browserSession(for workspace: Workspace) -> BrowserWorkspaceSession {
+        if let existing = browserSessions[workspace.id] {
+            existing.updateRestoredURL(workspace.browserLastURL.flatMap(URL.init(string:)))
+            return existing
+        }
+
+        let session = BrowserWorkspaceSession(
+            restoredURL: workspace.browserLastURL.flatMap(URL.init(string:))
+        ) { [weak self, weak workspace] url in
+            guard let workspace else { return }
+            workspace.browserLastURL = url?.absoluteString
+            self?.persistence?.markDirty()
+        }
+        browserSessions[workspace.id] = session
+        return session
+    }
+
+    private func activeBrowserSession() -> BrowserWorkspaceSession? {
+        guard let workspace = workspaceManager?.activeWorkspace else { return nil }
+        return browserSession(for: workspace)
+    }
+
+    private func refreshBrowserDrawerOverlayRootView() {
+        guard let host = browserDrawerOverlayHostView else { return }
+
+        guard let workspace = workspaceManager?.activeWorkspace else {
+            host.rootView = AnyView(EmptyView())
+            browserDrawerChromeState.isPresented = false
+            host.capturesPointerEvents = false
+            browserDrawerOverlayBlockerView?.capturesPointerEvents = false
+            browserDrawerChromeState.drawerHitRect = .zero
+            host.overlayHitRect = .zero
+            browserDrawerOverlayBlockerView?.overlayHitRect = .zero
+            return
+        }
+
+        let session = browserSession(for: workspace)
+        let root = BrowserDrawerOverlayView(
+            chromeState: browserDrawerChromeState,
+            session: session,
+            onClose: { [weak self] in self?.closeBrowserDrawer() },
+            onPinToPane: { [weak self] in self?.pinBrowserToPane() },
+            onOpenAsTab: { [weak self] in self?.openBrowserAsTab() },
+            onVisibilityChanged: { [weak self] isVisible in
+                self?.browserDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
+                self?.browserDrawerOverlayHostView?.capturesPointerEvents = isVisible
+            },
+            onHitRectChanged: { [weak self] rect in
+                self?.browserDrawerOverlayBlockerView?.overlayHitRect = rect
+                self?.browserDrawerOverlayHostView?.overlayHitRect = rect
+            }
+        )
+        host.rootView = AnyView(root.environment(GhosttyThemeProvider.shared))
+        let captures = session.isDrawerVisible
+        browserDrawerChromeState.isPresented = captures
+        host.capturesPointerEvents = captures
+        browserDrawerOverlayBlockerView?.capturesPointerEvents = captures
+    }
+
+    private func focusExistingBrowserPaneIfPresent() -> Bool {
+        guard let browserTool = sidebarToolDefinition(id: "browser") else { return false }
+        return focusExistingTool(browserTool, scope: .anyTab)
+    }
+
+    private func toggleBrowserDrawer() {
+        guard workspaceManager?.activeWorkspace != nil else { return }
+        if focusExistingBrowserPaneIfPresent() {
+            closeBrowserDrawer()
+            return
+        }
+
+        guard let session = activeBrowserSession() else { return }
+        if session.isDrawerVisible {
+            closeBrowserDrawer()
+        } else {
+            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
+            session.showDrawer()
+            refreshBrowserDrawerOverlayRootView()
+            persistence?.markDirty()
+        }
+    }
+
+    private func closeBrowserDrawer() {
+        guard let session = activeBrowserSession(), session.isDrawerVisible else { return }
+        session.hideDrawer()
+        browserDrawerChromeState.drawerHitRect = .zero
+        refreshBrowserDrawerOverlayRootView()
+        if let previous = browserDrawerPreviousFirstResponder {
+            window?.makeFirstResponder(previous)
+        } else if let pane = contentAreaView?.activePaneView {
+            window?.makeFirstResponder(pane)
+        }
+        browserDrawerPreviousFirstResponder = nil
+        persistence?.markDirty()
+    }
+
+    private func focusBrowserOmnibar() {
+        if focusExistingBrowserPaneIfPresent() {
+            activeBrowserSession()?.requestOmnibarFocus()
+            return
+        }
+
+        guard let session = activeBrowserSession() else { return }
+        if !session.isDrawerVisible {
+            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
+        }
+        session.showDrawer()
+        session.requestOmnibarFocus()
+        refreshBrowserDrawerOverlayRootView()
+        persistence?.markDirty()
+    }
+
+    private func openBrowserInWorkspace(url: URL?, source: BrowserOpenSource) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        let session = browserSession(for: workspace)
+
+        if focusExistingBrowserPaneIfPresent() {
+            if let url {
+                session.navigate(to: url, revealInDrawer: false)
+            } else {
+                session.restoreIfNeeded()
+            }
+            persistence?.markDirty()
+            return
+        }
+
+        if !session.isDrawerVisible {
+            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
+        }
+        if let url {
+            session.navigate(to: url)
+        } else {
+            session.showDrawer()
+        }
+
+        if source == .command && url == nil {
+            session.requestOmnibarFocus()
+        }
+
+        refreshBrowserDrawerOverlayRootView()
+        persistence?.markDirty()
+    }
+
+    private func pinBrowserToPane() {
+        guard let session = activeBrowserSession() else { return }
+        session.hideDrawer()
+        refreshBrowserDrawerOverlayRootView()
+        DispatchQueue.main.async { [weak self] in
+            self?.openToolAsPane("browser")
+        }
+    }
+
+    private func openBrowserAsTab() {
+        guard let session = activeBrowserSession() else { return }
+        session.hideDrawer()
+        refreshBrowserDrawerOverlayRootView()
+        DispatchQueue.main.async { [weak self] in
+            self?.openToolAsTab("browser")
+        }
+    }
+
     private func makeToolPane(_ toolID: String) -> (NSView & PaneContent)? {
         guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else {
             return nil
@@ -2224,6 +2512,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openToolWithDefaultPresentation(_ toolID: String) {
+        if toolID == "browser" {
+            openBrowserInWorkspace(url: nil, source: .command)
+            return
+        }
         guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else {
             return
         }
@@ -2232,10 +2524,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             openToolAsPane(toolID)
         case .tab:
             openToolAsTab(toolID)
+        case .drawer:
+            openBrowserInWorkspace(url: nil, source: .command)
         }
     }
 
     private func openPaneTypeWithDefaultPresentation(_ paneType: String) {
+        if paneType == "browser" {
+            openBrowserInWorkspace(url: nil, source: .command)
+            return
+        }
         if let tool = sidebarToolDefinition(paneType: paneType) {
             openToolWithDefaultPresentation(tool.id)
             return
@@ -2253,6 +2551,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace),
               PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace) else { return }
+        if toolID == "browser" {
+            activeBrowserSession()?.hideDrawer()
+            refreshBrowserDrawerOverlayRootView()
+        }
         if focusExistingTool(tool, scope: .anyTab) {
             return
         }
@@ -2268,6 +2570,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openToolAsPane(_ toolID: String) {
         guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else { return }
+        if toolID == "browser" {
+            activeBrowserSession()?.hideDrawer()
+            refreshBrowserDrawerOverlayRootView()
+            if focusExistingTool(tool, scope: .anyTab) {
+                return
+            }
+        }
         if focusExistingTool(tool, scope: .activeTab) {
             return
         }
@@ -2505,6 +2814,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if contentAreaView?.replaceActivePane(with: pane) == nil {
                 contentAreaView?.setRootPane(pane)
             }
+        case .drawer:
+            openBrowserInWorkspace(url: nil, source: .command)
         }
         persistence?.markDirty()
     }
@@ -2565,6 +2876,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
         }
         syncRightInspectorPresentation(animated: false)
+        refreshBrowserDrawerOverlayRootView()
         updateTabBar()
     }
 
@@ -3458,6 +3770,26 @@ private final class RightInspectorOverlayHostingView<Content: View>: NSHostingVi
         // Delegate entirely to NSHostingView which bridges AppKit hit-testing
         // into SwiftUI's coordinate system correctly — no manual coordinate
         // conversion or overlayHitRect comparison needed.
+        return super.hitTest(point)
+    }
+}
+
+private final class BrowserDrawerOverlayBlockerView: NSView {
+    override var isFlipped: Bool { true }
+    var capturesPointerEvents = false
+    var overlayHitRect: CGRect = .zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private final class BrowserDrawerOverlayHostingView<Content: View>: NSHostingView<Content> {
+    var capturesPointerEvents = false
+    var overlayHitRect: CGRect = .zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard capturesPointerEvents else { return nil }
         return super.hitTest(point)
     }
 }

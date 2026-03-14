@@ -35,7 +35,7 @@ final class SidebarToolItemTests: XCTestCase {
             "ssh": .pane,
             "harness": .tab,
             "replay": .tab,
-            "browser": .pane,
+            "browser": .drawer,
             "review": .tab,
             "diff": .tab,
             "analytics": .tab,

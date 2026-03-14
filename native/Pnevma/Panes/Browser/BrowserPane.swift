@@ -7,14 +7,14 @@ final class BrowserPaneView: NSView, PaneContent {
     let paneID = PaneID()
     let paneType = "browser"
     let shouldPersist = true
-    var title: String { viewModel.pageTitle.isEmpty ? "Browser" : viewModel.pageTitle }
+    var title: String { session.viewModel.pageTitle.isEmpty ? "Browser" : session.viewModel.pageTitle }
 
-    private let viewModel = BrowserViewModel()
+    private let session: BrowserWorkspaceSession
     private var initialURL: URL?
     private var pendingActivation = false
 
     var metadataJSON: String? {
-        guard let url = viewModel.navigatedURL ?? viewModel.currentURL else { return nil }
+        guard let url = session.currentURL else { return nil }
         guard let data = try? JSONSerialization.data(
             withJSONObject: ["url": url.absoluteString],
             options: []
@@ -22,16 +22,17 @@ final class BrowserPaneView: NSView, PaneContent {
         return String(data: data, encoding: .utf8)
     }
 
-    convenience init(frame: NSRect, url: URL?) {
-        self.init(frame: frame)
+    convenience init(frame: NSRect, session: BrowserWorkspaceSession, url: URL?) {
+        self.init(frame: frame, session: session)
         if let url {
             initialURL = url
         }
     }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, session: BrowserWorkspaceSession) {
+        self.session = session
         super.init(frame: frame)
-        _ = addSwiftUISubview(BrowserView(viewModel: viewModel))
+        _ = addSwiftUISubview(BrowserView(viewModel: session.viewModel))
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -40,7 +41,9 @@ final class BrowserPaneView: NSView, PaneContent {
         super.viewDidMoveToWindow()
         if window != nil, let url = initialURL {
             initialURL = nil
-            viewModel.navigate(to: url)
+            session.navigate(to: url, revealInDrawer: false)
+        } else if window != nil {
+            session.restoreIfNeeded()
         }
         activateIfReady()
     }
@@ -51,33 +54,32 @@ final class BrowserPaneView: NSView, PaneContent {
     }
 
     func deactivate() {
-        viewModel.webView.allowsFirstResponderAcquisition = false
+        session.viewModel.webView.allowsFirstResponderAcquisition = false
         Task { @MainActor [weak self] in
-            self?.viewModel.webView.allowsFirstResponderAcquisition = true
+            self?.session.viewModel.webView.allowsFirstResponderAcquisition = true
         }
     }
 
-    func dispose() {
-        viewModel.webView.stopLoading()
-        viewModel.webView.navigationDelegate = nil
-        viewModel.webView.uiDelegate = nil
-    }
+    func dispose() {}
 
     /// Restore URL from persisted metadata
     static func fromMetadata(_ json: String?) -> BrowserPaneView {
-        let view = BrowserPaneView(frame: .zero)
+        let session = PaneFactory.activeWorkspaceProvider?().flatMap { PaneFactory.browserSessionProvider?($0) }
+            ?? BrowserWorkspaceSession()
+        let view = BrowserPaneView(frame: .zero, session: session)
         if let json, let data = json.data(using: .utf8),
            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String],
            let urlStr = dict["url"], let url = URL(string: urlStr) {
+            session.updateRestoredURL(url)
             view.initialURL = url
         }
         return view
     }
 
     private func activateIfReady() {
-        guard pendingActivation, viewModel.shouldRenderWebView else { return }
-        guard let window, viewModel.webView.window === window else { return }
+        guard pendingActivation, session.viewModel.shouldRenderWebView else { return }
+        guard let window, session.viewModel.webView.window === window else { return }
         pendingActivation = false
-        window.makeFirstResponder(viewModel.webView)
+        window.makeFirstResponder(session.viewModel.webView)
     }
 }

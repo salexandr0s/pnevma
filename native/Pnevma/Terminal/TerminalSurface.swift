@@ -513,10 +513,21 @@ class TerminalSurface {
                 let data = Data(bytes: urlPtr, count: Int(v.len))
                 if let urlString = String(data: data, encoding: .utf8),
                    let url = URL(string: urlString),
-                   let scheme = url.scheme?.lowercased(),
-                   ["http", "https", "mailto", "file"].contains(scheme) {
+                   let scheme = url.scheme?.lowercased() {
+                    let surfacePtr = target.target.surface
                     Task { @MainActor in
-                        NSWorkspace.shared.open(url)
+                        if ["http", "https"].contains(scheme) {
+                            NotificationCenter.default.post(
+                                name: .ghosttyOpenURL,
+                                object: nil,
+                                userInfo: [
+                                    "surface": surfacePtr as Any,
+                                    "url": url.absoluteString,
+                                ]
+                            )
+                        } else if ["mailto", "file"].contains(scheme) {
+                            NSWorkspace.shared.open(url)
+                        }
                     }
                 }
             }
@@ -650,4 +661,5 @@ extension Notification.Name {
     static let ghosttyPwdChanged = Notification.Name("ghosttyPwdChanged")
     static let ghosttyRingBell = Notification.Name("ghosttyRingBell")
     static let ghosttyMouseShape = Notification.Name("ghosttyMouseShape")
+    static let ghosttyOpenURL = Notification.Name("ghosttyOpenURL")
 }

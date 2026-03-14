@@ -228,6 +228,7 @@ final class Workspace: Identifiable {
     var gitDirty: Bool = false
     var activationFailureMessage: String?
     var rightInspectorSection: RightInspectorSection = .files
+    var browserLastURL: String?
 
     /// Tabs within this workspace.
     var tabs: [WorkspaceTab]
@@ -485,6 +486,7 @@ extension Workspace {
         var customColor: String?
         var isPinned: Bool?
         var rightInspectorSection: RightInspectorSection?
+        var browserLastURL: String?
     }
 
     func snapshot() -> Snapshot {
@@ -501,7 +503,8 @@ extension Workspace {
             layoutData: nil,
             customColor: customColor,
             isPinned: isPinned,
-            rightInspectorSection: rightInspectorSection
+            rightInspectorSection: rightInspectorSection,
+            browserLastURL: browserLastURL
         )
     }
 
@@ -550,5 +553,6 @@ extension Workspace {
         self.customColor = snapshot.customColor
         self.isPinned = snapshot.isPinned ?? false
         self.rightInspectorSection = snapshot.rightInspectorSection ?? .files
+        self.browserLastURL = snapshot.browserLastURL
     }
 }

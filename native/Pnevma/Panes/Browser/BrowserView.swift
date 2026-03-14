@@ -139,6 +139,7 @@ struct BrowserView: View {
 
                 OmnibarTextField(
                     text: $viewModel.omnibarText,
+                    focusToken: viewModel.omnibarFocusToken,
                     onCommit: {
                         viewModel.showSuggestions = false
                         viewModel.navigateSmart(viewModel.omnibarText)

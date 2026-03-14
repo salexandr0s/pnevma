@@ -18,6 +18,7 @@ final class BrowserViewModel: NSObject {
     var searchEngine: BrowserSearchEngine = .current
     var shouldRenderWebView: Bool = false
     var navigatedURL: URL?
+    var omnibarFocusToken: Int = 0
 
     var recentHistory: [BrowserHistoryStore.Entry] {
         Array(
@@ -28,6 +29,8 @@ final class BrowserViewModel: NSObject {
     }
 
     let webView: PnevmaWebView
+
+    var onURLChanged: ((URL?) -> Void)?
 
     private var observations: [NSKeyValueObservation] = []
 
@@ -90,6 +93,7 @@ final class BrowserViewModel: NSObject {
                 Task { @MainActor [weak self] in
                     self?.currentURL = wv.url
                     self?.omnibarText = wv.url?.absoluteString ?? ""
+                    self?.onURLChanged?(wv.url)
                 }
             },
             webView.observe(\.title) { [weak self] wv, _ in
@@ -125,7 +129,13 @@ final class BrowserViewModel: NSObject {
     func navigate(to url: URL) {
         navigatedURL = url
         shouldRenderWebView = true
+        omnibarText = url.absoluteString
         webView.load(URLRequest(url: url))
+    }
+
+    func setPendingURL(_ url: URL) {
+        navigatedURL = url
+        omnibarText = url.absoluteString
     }
 
     func navigateSmart(_ input: String) {
@@ -161,6 +171,10 @@ final class BrowserViewModel: NSObject {
         }
     }
 
+    func requestOmnibarFocus() {
+        omnibarFocusToken &+= 1
+    }
+
     func updateSuggestions(for query: String) {
         guard !query.isEmpty else {
             suggestions = []
@@ -169,6 +183,10 @@ final class BrowserViewModel: NSObject {
         }
         suggestions = BrowserHistoryStore.shared.suggestions(for: query)
         showSuggestions = !suggestions.isEmpty
+    }
+
+    var persistedURL: URL? {
+        currentURL ?? navigatedURL
     }
 
     private func isLocalhostURL(_ url: URL) -> Bool {

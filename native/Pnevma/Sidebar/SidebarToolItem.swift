@@ -3,6 +3,7 @@ import SwiftUI
 enum SidebarToolDefaultPresentation: Equatable {
     case pane
     case tab
+    case drawer
 }
 
 /// Sidebar tool items — each maps to a pane type and recommended default opening style.
@@ -94,7 +95,7 @@ private let allSidebarTools: [SidebarToolItem] = [
         title: "Browser",
         icon: "globe",
         paneType: "browser",
-        defaultPresentation: .pane
+        defaultPresentation: .drawer
     ),
     SidebarToolItem(
         id: "review",

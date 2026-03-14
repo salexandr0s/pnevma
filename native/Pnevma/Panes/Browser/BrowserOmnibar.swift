@@ -5,6 +5,7 @@ import SwiftUI
 
 struct OmnibarTextField: NSViewRepresentable {
     @Binding var text: String
+    var focusToken: Int = 0
     var onCommit: () -> Void
     var onChange: (String) -> Void
 
@@ -26,6 +27,14 @@ struct OmnibarTextField: NSViewRepresentable {
         if nsView.stringValue != text {
             nsView.stringValue = text
         }
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async {
+                guard nsView.window != nil else { return }
+                nsView.window?.makeFirstResponder(nsView)
+                nsView.selectText(nil)
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -34,9 +43,11 @@ struct OmnibarTextField: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         let parent: OmnibarTextField
+        var lastFocusToken: Int
 
         init(_ parent: OmnibarTextField) {
             self.parent = parent
+            self.lastFocusToken = parent.focusToken
         }
 
         func controlTextDidChange(_ obj: Notification) {

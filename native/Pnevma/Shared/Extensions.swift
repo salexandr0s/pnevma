@@ -4,8 +4,9 @@ import SwiftUI
 // MARK: - JSONValue (arbitrary backend JSON)
 
 /// Lightweight recursive JSON value type for fields whose schema is not fully known at
-/// compile time. Used by ReviewPane (pack blob) and DailyBriefPane (event payload).
-enum JSONValue: Decodable {
+/// compile time. Used by ReviewPane (pack blob), DailyBriefPane (event payload),
+/// and browser tool result payloads.
+enum JSONValue: Codable, Equatable {
     case null
     case bool(Bool)
     case int(Int)
@@ -33,6 +34,86 @@ enum JSONValue: Decodable {
         } else {
             self = .null
         }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null:
+            try container.encodeNil()
+        case .bool(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .array(let values):
+            try container.encode(values)
+        case .object(let values):
+            try container.encode(values)
+        }
+    }
+
+    init(any value: Any?) {
+        guard let value else {
+            self = .null
+            return
+        }
+
+        switch value {
+        case let value as JSONValue:
+            self = value
+        case let value as NSNull:
+            _ = value
+            self = .null
+        case let value as Bool:
+            self = .bool(value)
+        case let value as Int:
+            self = .int(value)
+        case let value as Int8:
+            self = .int(Int(value))
+        case let value as Int16:
+            self = .int(Int(value))
+        case let value as Int32:
+            self = .int(Int(value))
+        case let value as Int64:
+            self = .int(Int(value))
+        case let value as UInt:
+            self = .int(Int(value))
+        case let value as UInt8:
+            self = .int(Int(value))
+        case let value as UInt16:
+            self = .int(Int(value))
+        case let value as UInt32:
+            self = .int(Int(value))
+        case let value as UInt64:
+            self = .int(Int(value))
+        case let value as Double:
+            self = .double(value)
+        case let value as Float:
+            self = .double(Double(value))
+        case let value as String:
+            self = .string(value)
+        case let value as URL:
+            self = .string(value.absoluteString)
+        case let value as [Any]:
+            self = .array(value.map(JSONValue.init(any:)))
+        case let value as [String: Any]:
+            self = .object(value.mapValues(JSONValue.init(any:)))
+        case let value as [String: JSONValue]:
+            self = .object(value)
+        default:
+            self = .string(String(describing: value))
+        }
+    }
+
+    var stringValue: String? {
+        if case .string(let value) = self {
+            return value
+        }
+        return nil
     }
 
     /// Returns the array of string values under the given key if this is an object

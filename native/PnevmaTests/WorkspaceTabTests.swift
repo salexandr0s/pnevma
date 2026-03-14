@@ -299,6 +299,7 @@ final class WorkspaceTabTests: XCTestCase {
         workspace.addTab(title: "Tab 3")
         workspace.switchToTab(1)
         workspace.rightInspectorSection = .review
+        workspace.browserLastURL = "https://example.com/docs"
 
         let snapshot = workspace.snapshot()
         let restored = Workspace(snapshot: snapshot)
@@ -307,6 +308,7 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(restored.activeTabIndex, 1)
         XCTAssertEqual(restored.tabs[1].title, "Tab 2")
         XCTAssertEqual(restored.rightInspectorSection, .review)
+        XCTAssertEqual(restored.browserLastURL, "https://example.com/docs")
     }
 
     func testSnapshotRoundTripPreservesPersistedPanes() {
@@ -348,7 +350,8 @@ final class WorkspaceTabTests: XCTestCase {
             layoutData: layoutData,
             customColor: nil,
             isPinned: false,
-            rightInspectorSection: nil
+            rightInspectorSection: nil,
+            browserLastURL: nil
         )
 
         let restored = Workspace(snapshot: legacySnapshot)
