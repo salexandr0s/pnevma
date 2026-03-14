@@ -853,6 +853,9 @@ pub struct ArtifactView {
 pub struct KeybindingView {
     pub action: String,
     pub shortcut: String,
+    pub is_default: bool,
+    pub conflicts_with: Vec<String>,
+    pub is_protected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -944,6 +947,12 @@ pub struct AppSettingsView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeybindingOverride {
+    pub action: String,
+    pub shortcut: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetAppSettingsInput {
     pub auto_save_workspace_on_quit: bool,
     pub restore_windows_on_launch: bool,
@@ -959,6 +968,8 @@ pub struct SetAppSettingsInput {
     pub focus_border_color: String,
     pub telemetry_enabled: bool,
     pub crash_reports: bool,
+    #[serde(default)]
+    pub keybindings: Option<Vec<KeybindingOverride>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1145,25 +1156,142 @@ pub(crate) fn slugify_with_fallback(input: &str, fallback: &str) -> String {
     }
 }
 
-fn default_keybindings() -> HashMap<String, String> {
-    HashMap::from_iter([
-        ("command_palette.toggle".to_string(), "Mod+K".to_string()),
-        ("command_palette.next".to_string(), "ArrowDown".to_string()),
-        ("command_palette.prev".to_string(), "ArrowUp".to_string()),
-        ("command_palette.execute".to_string(), "Enter".to_string()),
-        ("pane.focus_next".to_string(), "Mod+]".to_string()),
-        ("pane.focus_prev".to_string(), "Mod+[".to_string()),
-        ("task.new".to_string(), "Mod+Shift+N".to_string()),
-        (
-            "task.dispatch_next_ready".to_string(),
-            "Mod+Shift+D".to_string(),
-        ),
-        ("review.approve_next".to_string(), "Mod+Shift+A".to_string()),
-    ])
+fn default_keybindings() -> &'static HashMap<String, String> {
+    static DEFAULTS: OnceLock<HashMap<String, String>> = OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        HashMap::from_iter([
+            // Project-level keybindings
+            ("command_palette.toggle".to_string(), "Cmd+K".to_string()),
+            ("command_palette.next".to_string(), "ArrowDown".to_string()),
+            ("command_palette.prev".to_string(), "ArrowUp".to_string()),
+            ("command_palette.execute".to_string(), "Enter".to_string()),
+            ("pane.focus_next".to_string(), "Cmd+]".to_string()),
+            ("pane.focus_prev".to_string(), "Cmd+[".to_string()),
+            ("task.new".to_string(), "Cmd+Shift+N".to_string()),
+            (
+                "task.dispatch_next_ready".to_string(),
+                "Cmd+Shift+Y".to_string(),
+            ),
+            ("review.approve_next".to_string(), "Cmd+Shift+A".to_string()),
+            // Menu keybindings — File
+            ("menu.new_tab".to_string(), "Cmd+T".to_string()),
+            ("menu.new_terminal".to_string(), "Cmd+N".to_string()),
+            ("menu.open_workspace".to_string(), "Cmd+O".to_string()),
+            ("menu.close_pane".to_string(), "Cmd+W".to_string()),
+            ("menu.close_window".to_string(), "Cmd+Shift+W".to_string()),
+            // Menu keybindings — View
+            ("menu.toggle_sidebar".to_string(), "Cmd+B".to_string()),
+            (
+                "menu.toggle_right_inspector".to_string(),
+                "Cmd+Shift+B".to_string(),
+            ),
+            (
+                "menu.toggle_command_center".to_string(),
+                "Cmd+Shift+C".to_string(),
+            ),
+            (
+                "menu.toggle_browser_drawer".to_string(),
+                "Cmd+Opt+B".to_string(),
+            ),
+            (
+                "menu.browser_drawer_shorter".to_string(),
+                "Cmd+Opt+-".to_string(),
+            ),
+            (
+                "menu.browser_drawer_taller".to_string(),
+                "Cmd+Opt+=".to_string(),
+            ),
+            ("menu.pin_browser".to_string(), "Cmd+Shift+\\".to_string()),
+            (
+                "menu.command_palette".to_string(),
+                "Cmd+Shift+P".to_string(),
+            ),
+            // Menu keybindings — Edit
+            ("menu.find_in_page".to_string(), "Cmd+F".to_string()),
+            (
+                "menu.focus_browser_address".to_string(),
+                "Cmd+L".to_string(),
+            ),
+            // Menu keybindings — Pane
+            ("menu.split_right".to_string(), "Cmd+D".to_string()),
+            ("menu.split_down".to_string(), "Cmd+Shift+D".to_string()),
+            ("menu.next_pane".to_string(), "Cmd+]".to_string()),
+            ("menu.previous_pane".to_string(), "Cmd+[".to_string()),
+            ("menu.navigate_left".to_string(), "Cmd+Opt+Left".to_string()),
+            (
+                "menu.navigate_right".to_string(),
+                "Cmd+Opt+Right".to_string(),
+            ),
+            ("menu.navigate_up".to_string(), "Cmd+Opt+Up".to_string()),
+            ("menu.navigate_down".to_string(), "Cmd+Opt+Down".to_string()),
+            (
+                "menu.toggle_split_zoom".to_string(),
+                "Cmd+Shift+Enter".to_string(),
+            ),
+            ("menu.equalize_splits".to_string(), "Cmd+Ctrl+=".to_string()),
+            // Menu keybindings — Pane jump
+            ("menu.goto_pane_1".to_string(), "Cmd+1".to_string()),
+            ("menu.goto_pane_2".to_string(), "Cmd+2".to_string()),
+            ("menu.goto_pane_3".to_string(), "Cmd+3".to_string()),
+            ("menu.goto_pane_4".to_string(), "Cmd+4".to_string()),
+            ("menu.goto_pane_5".to_string(), "Cmd+5".to_string()),
+            ("menu.goto_pane_6".to_string(), "Cmd+6".to_string()),
+            ("menu.goto_pane_7".to_string(), "Cmd+7".to_string()),
+            ("menu.goto_pane_8".to_string(), "Cmd+8".to_string()),
+            ("menu.goto_last_pane".to_string(), "Cmd+9".to_string()),
+            // Menu keybindings — Window
+            (
+                "menu.toggle_fullscreen".to_string(),
+                "Cmd+Enter".to_string(),
+            ),
+            ("menu.next_workspace".to_string(), "Cmd+Shift+]".to_string()),
+            (
+                "menu.previous_workspace".to_string(),
+                "Cmd+Shift+[".to_string(),
+            ),
+            ("menu.minimize".to_string(), "Cmd+M".to_string()),
+        ])
+    })
+}
+
+/// Actions whose shortcuts cannot be changed by the user.
+fn is_protected_action(action: &str) -> bool {
+    matches!(action, "menu.quit" | "menu.settings")
 }
 
 fn is_supported_keybinding_action(action: &str) -> bool {
-    default_keybindings().contains_key(action)
+    default_keybindings().contains_key(action) && !is_protected_action(action)
+}
+
+/// Normalize a shortcut string for comparison: sort modifiers, lowercase key.
+fn normalize_shortcut(shortcut: &str) -> String {
+    let parts: Vec<&str> = shortcut.split('+').map(|p| p.trim()).collect();
+    let mut mods: Vec<&str> = Vec::new();
+    let mut key = "";
+    for part in &parts {
+        match part.to_lowercase().as_str() {
+            "cmd" | "mod" | "super" => mods.push("cmd"),
+            "shift" => mods.push("shift"),
+            "opt" | "alt" => mods.push("opt"),
+            "ctrl" | "control" => mods.push("ctrl"),
+            _ => key = part,
+        }
+    }
+    mods.sort();
+    if !key.is_empty() {
+        mods.push(key);
+    }
+    let mut result = mods.join("+").to_lowercase();
+    // Canonicalize key name aliases (must match Swift ConflictDetector.canonicalKeyName).
+    // The key is always the last component after the final '+'.
+    if result.ends_with("return") {
+        let prefix_len = result.len() - "return".len();
+        result.replace_range(prefix_len.., "enter");
+    } else if result.ends_with("backspace") {
+        let prefix_len = result.len() - "backspace".len();
+        result.replace_range(prefix_len.., "delete");
+    }
+    result
 }
 
 fn is_git_available() -> bool {

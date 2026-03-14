@@ -159,33 +159,120 @@ struct GeneralSettingsTab: View {
 
 struct AppKeybindingsSettingsTab: View {
     @Bindable var viewModel: SettingsViewModel
+    @State private var searchText = ""
+    @State private var crossLayerConflicts: [KeybindingConflict] = []
+
+    private var filteredBindings: [KeybindingEntry] {
+        let bindings = viewModel.keybindings
+        guard !searchText.isEmpty else { return bindings }
+        let query = searchText.lowercased()
+        return bindings.filter {
+            $0.displayName.lowercased().contains(query)
+            || $0.action.lowercased().contains(query)
+            || $0.shortcut.lowercased().contains(query)
+        }
+    }
+
+    private var groupedBindings: [(String, [KeybindingEntry])] {
+        let grouped = Dictionary(grouping: filteredBindings, by: \.category)
+        return grouped.sorted { $0.key < $1.key }
+    }
+
+    private func crossLayerConflictActions(for shortcut: String) -> [String] {
+        let normalized = ConflictDetector.normalizeShortcut(shortcut)
+        for conflict in crossLayerConflicts where ConflictDetector.normalizeShortcut(conflict.shortcut) == normalized {
+            return conflict.claimants
+                .filter { $0.layer == "ghostty" }
+                .map { "ghostty: \($0.action)" }
+        }
+        return []
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Pnevma App Shortcuts")
-                .font(.headline)
+            HStack {
+                Text("Pnevma App Shortcuts")
+                    .font(.headline)
+                Spacer()
+                if viewModel.keybindings.contains(where: { !$0.isDefault }) {
+                    Button("Reset All") {
+                        viewModel.resetAllKeybindings()
+                    }
+                    .controlSize(.small)
+                }
+            }
 
             Text("These are Pnevma window and pane shortcuts. Ghostty terminal keybindings are edited in the Ghostty tab.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            List(viewModel.keybindings) { binding in
-                HStack {
-                    Text(binding.action)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(binding.shortcut)
-                        .font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                        )
+            TextField("Filter shortcuts…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+
+            List {
+                ForEach(groupedBindings, id: \.0) { category, bindings in
+                    Section(category) {
+                        ForEach(bindings) { binding in
+                            keybindingRow(binding)
+                        }
+                    }
                 }
             }
             .listStyle(.plain)
         }
         .padding()
+        .onAppear { refreshCrossLayerConflicts() }
+        .onChange(of: viewModel.keybindings) { refreshCrossLayerConflicts() }
+    }
+
+    @ViewBuilder
+    private func keybindingRow(_ binding: KeybindingEntry) -> some View {
+        HStack {
+            Text(binding.displayName)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Conflict indicators
+            let intraConflicts = binding.conflictsWith
+            let crossConflicts = crossLayerConflictActions(for: binding.shortcut)
+            let allConflicts = intraConflicts + crossConflicts
+
+            if !allConflicts.isEmpty {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .help("Conflicts with: \(allConflicts.joined(separator: ", "))")
+            }
+
+            ShortcutRecorderView(
+                shortcut: Binding(
+                    get: { binding.shortcut },
+                    set: { newValue in
+                        viewModel.updateKeybinding(action: binding.action, shortcut: newValue)
+                    }
+                ),
+                isProtected: binding.isProtected
+            )
+            .frame(width: 140, height: 22)
+
+            if !binding.isDefault {
+                Button {
+                    viewModel.resetKeybinding(action: binding.action)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Reset to default")
+            }
+        }
+    }
+
+    private func refreshCrossLayerConflicts() {
+        let ghosttyBindings = (try? GhosttyConfigController.shared.loadSnapshot().keybinds) ?? []
+        crossLayerConflicts = ConflictDetector.detect(
+            pnevmaBindings: viewModel.keybindings,
+            ghosttyBindings: ghosttyBindings
+        )
     }
 }
 
@@ -600,13 +687,11 @@ private struct GhosttyCompactFieldRow: View {
                     .frame(width: 100)
             }
         case .multiLine:
-            TextEditor(text: viewModel.rawTextBinding(for: descriptor.key, multiLine: true))
+            TextField("", text: viewModel.rawTextBinding(for: descriptor.key, multiLine: true), axis: .vertical)
                 .font(.system(.body, design: .monospaced))
-                .frame(minWidth: 200, minHeight: 60)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.2))
-                }
+                .lineLimit(3...6)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 200)
         case .string, .raw:
             TextField("", text: viewModel.rawTextBinding(for: descriptor.key))
                 .textFieldStyle(.roundedBorder)
@@ -621,6 +706,7 @@ private struct GhosttyCompactFieldRow: View {
 
 private struct GhosttyKeybindingsPanel: View {
     @Bindable var viewModel: GhosttySettingsViewModel
+    @State private var crossLayerConflicts: [KeybindingConflict] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -648,13 +734,40 @@ private struct GhosttyKeybindingsPanel: View {
                         GhosttyKeybindRow(
                             keybind: $viewModel.keybinds[index],
                             actionDescriptor: viewModel.keybindActionDescriptor(for: keybind.action),
-                            onRemove: { viewModel.removeKeybind(keybind.id) }
+                            onRemove: { viewModel.removeKeybind(keybind.id) },
+                            pnevmaConflict: pnevmaConflictForTrigger(keybind.trigger)
                         )
                     }
                 }
                 .listStyle(.plain)
             }
         }
+        .onAppear { refreshConflicts() }
+        .onChange(of: viewModel.keybinds) { refreshConflicts() }
+    }
+
+    private func pnevmaConflictForTrigger(_ trigger: String) -> String? {
+        let normalized = ConflictDetector.normalizeGhosttyTrigger(trigger)
+        for conflict in crossLayerConflicts {
+            if ConflictDetector.normalizeGhosttyTrigger(conflict.shortcut) == normalized
+                || ConflictDetector.normalizeShortcut(conflict.shortcut) == normalized {
+                let pnevmaActions = conflict.claimants
+                    .filter { $0.layer == "pnevma" }
+                    .map(\.action)
+                if !pnevmaActions.isEmpty {
+                    return pnevmaActions.joined(separator: ", ")
+                }
+            }
+        }
+        return nil
+    }
+
+    private func refreshConflicts() {
+        let pnevmaBindings = AppRuntimeSettings.shared.snapshot.keybindings
+        crossLayerConflicts = ConflictDetector.detect(
+            pnevmaBindings: pnevmaBindings,
+            ghosttyBindings: viewModel.keybinds
+        )
     }
 }
 
@@ -664,6 +777,7 @@ private struct GhosttyKeybindRow: View {
     @Binding var keybind: GhosttyManagedKeybind
     let actionDescriptor: GhosttyKeybindActionDescriptor?
     let onRemove: () -> Void
+    var pnevmaConflict: String?
     @State private var isHovering = false
 
     var body: some View {
@@ -672,6 +786,12 @@ private struct GhosttyKeybindRow: View {
                 TextField("Trigger", text: $keybind.trigger)
                     .textFieldStyle(.roundedBorder)
                     .frame(minWidth: 180)
+
+                if let conflict = pnevmaConflict {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                        .help("Conflicts with Pnevma: \(conflict)")
+                }
 
                 Picker("Action", selection: $keybind.action) {
                     ForEach(GhosttySchema.keybindActions) { action in
@@ -841,26 +961,69 @@ final class SettingsViewModel {
             scheduleSave()
         }
     }
-    var keybindings: [KeybindingEntry] = [
-        KeybindingEntry(action: "New Tab", shortcut: "Cmd+T"),
-        KeybindingEntry(action: "Split Right", shortcut: "Cmd+D"),
-        KeybindingEntry(action: "Split Down", shortcut: "Shift+Cmd+D"),
-        KeybindingEntry(action: "Next Pane", shortcut: "Cmd+]"),
-        KeybindingEntry(action: "Previous Pane", shortcut: "Cmd+["),
-        KeybindingEntry(action: "Close Pane", shortcut: "Cmd+W"),
-        KeybindingEntry(action: "Navigate Left", shortcut: "Opt+Cmd+Left"),
-        KeybindingEntry(action: "Navigate Right", shortcut: "Opt+Cmd+Right"),
-        KeybindingEntry(action: "Navigate Up", shortcut: "Opt+Cmd+Up"),
-        KeybindingEntry(action: "Navigate Down", shortcut: "Opt+Cmd+Down"),
-        KeybindingEntry(action: "Toggle Split Zoom", shortcut: "Shift+Cmd+Enter"),
-        KeybindingEntry(action: "Equalize Splits", shortcut: "Ctrl+Cmd+="),
-        KeybindingEntry(action: "Goto Pane 1–8", shortcut: "Cmd+1–8"),
-        KeybindingEntry(action: "Last Pane", shortcut: "Cmd+9"),
-        KeybindingEntry(action: "Command Palette", shortcut: "Shift+Cmd+P"),
-        KeybindingEntry(action: "Toggle Sidebar", shortcut: "Cmd+B"),
-        KeybindingEntry(action: "Toggle Full Screen", shortcut: "Cmd+Enter"),
-        KeybindingEntry(action: "Close Window", shortcut: "Shift+Cmd+W"),
-    ]
+    var keybindings: [KeybindingEntry] = [] {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
+
+    /// Track whether keybindings have been modified (to distinguish nil vs empty in save)
+    private var keybindingsModified = false
+
+    func updateKeybinding(action: String, shortcut: String) {
+        guard let index = keybindings.firstIndex(where: { $0.action == action }) else { return }
+        guard !keybindings[index].isProtected else { return }
+        isRestoring = true
+        keybindings[index].shortcut = shortcut
+        keybindings[index].isDefault = false
+        recalculateConflicts()
+        isRestoring = false
+        keybindingsModified = true
+        scheduleSave()
+    }
+
+    func resetKeybinding(action: String) {
+        guard let index = keybindings.firstIndex(where: { $0.action == action }) else { return }
+        guard !keybindings[index].isProtected else { return }
+        isRestoring = true
+        keybindings[index].isDefault = true
+        // Restore the shortcut from the stable defaults captured on first load.
+        if let defaultShortcut = defaultKeybindingShortcuts[action] {
+            keybindings[index].shortcut = defaultShortcut
+        }
+        recalculateConflicts()
+        isRestoring = false
+        keybindingsModified = true
+        scheduleSave()
+    }
+
+    func resetAllKeybindings() {
+        isRestoring = true
+        for i in keybindings.indices {
+            keybindings[i].isDefault = true
+            if let defaultShortcut = defaultKeybindingShortcuts[keybindings[i].action] {
+                keybindings[i].shortcut = defaultShortcut
+            }
+        }
+        recalculateConflicts()
+        isRestoring = false
+        keybindingsModified = true
+        scheduleSave()
+    }
+
+    private func recalculateConflicts() {
+        let normalized = keybindings.map { ($0.action, ConflictDetector.normalizeShortcut($0.shortcut)) }
+        var shortcutMap: [String: [String]] = [:]
+        for (action, norm) in normalized {
+            shortcutMap[norm, default: []].append(action)
+        }
+        for i in keybindings.indices {
+            let norm = ConflictDetector.normalizeShortcut(keybindings[i].shortcut)
+            keybindings[i].conflictsWith = shortcutMap[norm, default: []]
+                .filter { $0 != keybindings[i].action }
+        }
+    }
     var terminalFont = "SF Mono" {
         didSet {
             guard !isRestoring else { return }
@@ -956,6 +1119,9 @@ final class SettingsViewModel {
     private var saveTask: Task<Void, Never>?
     private var latestSaveGeneration: UInt64 = 0
     private var latestLoadedSnapshot: AppSettingsSnapshot?
+    /// Default shortcut strings from the initial backend load (action → shortcut).
+    /// Used by resetKeybinding to restore defaults without an async round-trip.
+    private var defaultKeybindingShortcuts: [String: String] = [:]
 
     init(commandBus: (any CommandCalling)? = CommandBus.shared) {
         self.commandBus = commandBus
@@ -978,6 +1144,12 @@ final class SettingsViewModel {
                 )
                 latestLoadedSnapshot = snapshot
                 didLoadFromBackend = true
+                // Capture default shortcuts on first load for reset support.
+                if defaultKeybindingShortcuts.isEmpty {
+                    for kb in snapshot.keybindings where kb.isDefault {
+                        defaultKeybindingShortcuts[kb.action] = kb.shortcut
+                    }
+                }
                 AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
                 if self.updateCoordinator == nil,
@@ -1004,6 +1176,18 @@ final class SettingsViewModel {
     private func persistSettings(generation: UInt64) {
         guard didLoadFromBackend, let commandBus else { return }
 
+        // Build keybinding overrides:
+        // - nil = don't touch keybindings (normal non-keybinding settings saves)
+        // - [] = clear all overrides (reset all)
+        // - [overrides] = set specific overrides
+        let keybindingOverrides: [KeybindingOverrideSave]? = {
+            guard keybindingsModified else { return nil }
+            let nonDefaults = keybindings.filter { !$0.isDefault && !$0.isProtected }
+            return nonDefaults.map {
+                KeybindingOverrideSave(action: $0.action, shortcut: $0.shortcut)
+            }
+        }()
+
         let request = AppSettingsSaveRequest(
             autoSaveWorkspaceOnQuit: autoSave,
             restoreWindowsOnLaunch: restoreWindows,
@@ -1020,7 +1204,8 @@ final class SettingsViewModel {
                 ? "accent"
                 : (NSColor(focusBorderColor).usingColorSpace(.sRGB)?.hexString ?? "accent"),
             telemetryEnabled: telemetryEnabled,
-            crashReports: crashReports
+            crashReports: crashReports,
+            keybindings: keybindingOverrides
         )
 
         Task {
@@ -1031,6 +1216,7 @@ final class SettingsViewModel {
                 )
                 guard generation == latestSaveGeneration else { return }
                 latestLoadedSnapshot = snapshot
+                keybindingsModified = false
                 AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
             } catch {

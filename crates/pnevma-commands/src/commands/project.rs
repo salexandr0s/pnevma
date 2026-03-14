@@ -320,6 +320,28 @@ pub async fn set_app_settings(
     config.telemetry_opt_in = input.telemetry_enabled;
     config.crash_reports_opt_in = input.crash_reports;
 
+    // Persist keybinding overrides — only store entries that differ from defaults
+    if let Some(overrides) = input.keybindings {
+        let defaults = default_keybindings();
+        config.keybindings.clear();
+        for kb in overrides {
+            let action = kb.action.trim().to_string();
+            let shortcut = kb.shortcut.trim().to_string();
+            if action.is_empty() || shortcut.is_empty() {
+                continue;
+            }
+            if is_protected_action(&action) {
+                continue;
+            }
+            if defaults
+                .get(&action)
+                .is_none_or(|d| normalize_shortcut(d) != normalize_shortcut(&shortcut))
+            {
+                config.keybindings.insert(action, shortcut);
+            }
+        }
+    }
+
     save_global_config(&config).map_err(|e| e.to_string())?;
 
     let mut current = state.current.lock().await;
@@ -454,7 +476,7 @@ pub async fn open_project(
         .set_redaction_secrets(redaction_secrets.clone())
         .await;
     let redaction_secrets = Arc::new(RwLock::new(redaction_secrets));
-    let adapters = pnevma_agents::AdapterRegistry::detect();
+    let adapters = pnevma_agents::AdapterRegistry::detect().await;
     let pool = DispatchPool::new(cfg.agents.max_concurrent);
     let git = Arc::new(GitService::new(&path_buf));
 
@@ -3239,7 +3261,8 @@ pub async fn list_artifacts(state: &AppState) -> Result<Vec<ArtifactView>, Strin
 }
 
 fn keybinding_views_from_config(config: &GlobalConfig) -> Vec<KeybindingView> {
-    let mut merged = default_keybindings();
+    let defaults = default_keybindings();
+    let mut merged = defaults.clone();
     for (action, shortcut) in &config.keybindings {
         let action = action.trim();
         let shortcut = shortcut.trim();
@@ -3247,10 +3270,37 @@ fn keybinding_views_from_config(config: &GlobalConfig) -> Vec<KeybindingView> {
             merged.insert(action.to_string(), shortcut.to_string());
         }
     }
-    let mut out = merged
+
+    // Build normalized-shortcut -> actions index for conflict detection
+    let mut shortcut_to_actions: HashMap<String, Vec<String>> = HashMap::new();
+    for (action, shortcut) in &merged {
+        let normalized = normalize_shortcut(shortcut);
+        shortcut_to_actions
+            .entry(normalized)
+            .or_default()
+            .push(action.clone());
+    }
+
+    let mut out: Vec<KeybindingView> = merged
         .into_iter()
-        .map(|(action, shortcut)| KeybindingView { action, shortcut })
-        .collect::<Vec<_>>();
+        .map(|(action, shortcut)| {
+            let is_default = defaults.get(&action).map_or(false, |d| {
+                normalize_shortcut(d) == normalize_shortcut(&shortcut)
+            });
+            let normalized = normalize_shortcut(&shortcut);
+            let conflicts: Vec<String> = shortcut_to_actions
+                .get(&normalized)
+                .map(|actions| actions.iter().filter(|a| **a != action).cloned().collect())
+                .unwrap_or_default();
+            KeybindingView {
+                is_protected: is_protected_action(&action),
+                action,
+                shortcut,
+                is_default,
+                conflicts_with: conflicts,
+            }
+        })
+        .collect();
     out.sort_by(|a, b| a.action.cmp(&b.action));
     out
 }
@@ -3268,7 +3318,7 @@ pub async fn get_environment_readiness(
         None => current_project_path,
     };
     let git_available = is_git_available();
-    let detected_adapters = pnevma_agents::AdapterRegistry::detect().available();
+    let detected_adapters = pnevma_agents::AdapterRegistry::detect().await.available();
     let global_path = global_config_path();
     let global_config_exists = global_path.exists();
     let project_initialized = requested_path
@@ -6945,6 +6995,7 @@ enable_entropy_guard = false
                 focus_border_color: "#336699".to_string(),
                 telemetry_enabled: true,
                 crash_reports: true,
+                keybindings: None,
             },
             &state,
         )
@@ -6979,6 +7030,178 @@ enable_entropy_guard = false
         assert_eq!(reloaded.focus_border_color.as_deref(), Some("#336699"));
         assert!(reloaded.telemetry_opt_in);
         assert!(reloaded.crash_reports_opt_in);
+    }
+
+    #[tokio::test]
+    async fn set_app_settings_persists_keybinding_overrides() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PNEVMA_GLOBAL_CONFIG", temp.path().join("config.toml"));
+        let initial = GlobalConfig::default();
+        save_global_config(&initial).expect("save initial config");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+
+        // Set an override
+        let updated = set_app_settings(
+            SetAppSettingsInput {
+                auto_save_workspace_on_quit: true,
+                restore_windows_on_launch: true,
+                auto_update: true,
+                default_shell: "".to_string(),
+                terminal_font: "SF Mono".to_string(),
+                terminal_font_size: 13,
+                scrollback_lines: 10_000,
+                sidebar_background_offset: 0.05,
+                focus_border_enabled: true,
+                focus_border_opacity: 0.4,
+                focus_border_width: 2.0,
+                focus_border_color: "accent".to_string(),
+                telemetry_enabled: false,
+                crash_reports: false,
+                keybindings: Some(vec![KeybindingOverride {
+                    action: "menu.split_right".to_string(),
+                    shortcut: "Cmd+Shift+R".to_string(),
+                }]),
+            },
+            &state,
+        )
+        .await
+        .expect("set app settings with override");
+
+        // Verify the override is reflected in the view
+        let split_right = updated
+            .keybindings
+            .iter()
+            .find(|k| k.action == "menu.split_right")
+            .expect("menu.split_right should exist");
+        assert_eq!(split_right.shortcut, "Cmd+Shift+R");
+        assert!(!split_right.is_default);
+
+        // Verify it persisted to disk
+        let reloaded = load_global_config().expect("reload config");
+        assert_eq!(
+            reloaded
+                .keybindings
+                .get("menu.split_right")
+                .map(String::as_str),
+            Some("Cmd+Shift+R")
+        );
+
+        // Now clear all overrides by sending an empty array
+        let cleared = set_app_settings(
+            SetAppSettingsInput {
+                auto_save_workspace_on_quit: true,
+                restore_windows_on_launch: true,
+                auto_update: true,
+                default_shell: "".to_string(),
+                terminal_font: "SF Mono".to_string(),
+                terminal_font_size: 13,
+                scrollback_lines: 10_000,
+                sidebar_background_offset: 0.05,
+                focus_border_enabled: true,
+                focus_border_opacity: 0.4,
+                focus_border_width: 2.0,
+                focus_border_color: "accent".to_string(),
+                telemetry_enabled: false,
+                crash_reports: false,
+                keybindings: Some(vec![]),
+            },
+            &state,
+        )
+        .await
+        .expect("set app settings with empty overrides");
+
+        // Verify it reverted to defaults
+        let split_right = cleared
+            .keybindings
+            .iter()
+            .find(|k| k.action == "menu.split_right")
+            .expect("menu.split_right should exist");
+        assert_eq!(split_right.shortcut, "Cmd+D");
+        assert!(split_right.is_default);
+
+        // Verify overrides cleared on disk
+        let reloaded = load_global_config().expect("reload after clear");
+        assert!(reloaded.keybindings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_app_settings_rejects_protected_keybinding_overrides() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PNEVMA_GLOBAL_CONFIG", temp.path().join("config.toml"));
+        let initial = GlobalConfig::default();
+        save_global_config(&initial).expect("save initial config");
+
+        let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+        let state = AppState::new(emitter);
+
+        let _ = set_app_settings(
+            SetAppSettingsInput {
+                auto_save_workspace_on_quit: true,
+                restore_windows_on_launch: true,
+                auto_update: true,
+                default_shell: "".to_string(),
+                terminal_font: "SF Mono".to_string(),
+                terminal_font_size: 13,
+                scrollback_lines: 10_000,
+                sidebar_background_offset: 0.05,
+                focus_border_enabled: true,
+                focus_border_opacity: 0.4,
+                focus_border_width: 2.0,
+                focus_border_color: "accent".to_string(),
+                telemetry_enabled: false,
+                crash_reports: false,
+                keybindings: Some(vec![KeybindingOverride {
+                    action: "menu.quit".to_string(),
+                    shortcut: "Cmd+Shift+Q".to_string(),
+                }]),
+            },
+            &state,
+        )
+        .await
+        .expect("set protected keybinding");
+
+        // Protected action should NOT be persisted
+        let reloaded = load_global_config().expect("reload config");
+        assert!(reloaded.keybindings.get("menu.quit").is_none());
+    }
+
+    #[test]
+    fn default_keybindings_have_no_unexpected_shortcut_conflicts() {
+        // pane.focus_next/prev share shortcuts with menu.next_pane/previous_pane
+        // intentionally — they're the same action exposed at two layers.
+        let allowed_pairs: HashSet<(&str, &str)> = HashSet::from([
+            ("pane.focus_next", "menu.next_pane"),
+            ("menu.next_pane", "pane.focus_next"),
+            ("pane.focus_prev", "menu.previous_pane"),
+            ("menu.previous_pane", "pane.focus_prev"),
+        ]);
+
+        let defaults = default_keybindings();
+        let mut shortcut_to_actions: HashMap<String, Vec<String>> = HashMap::new();
+        for (action, shortcut) in defaults.iter() {
+            let normalized = normalize_shortcut(shortcut);
+            shortcut_to_actions
+                .entry(normalized)
+                .or_default()
+                .push(action.clone());
+        }
+        for (shortcut, actions) in &shortcut_to_actions {
+            if actions.len() <= 1 {
+                continue;
+            }
+            let all_allowed = actions.iter().all(|a| {
+                actions
+                    .iter()
+                    .filter(|b| *b != a)
+                    .all(|b| allowed_pairs.contains(&(a.as_str(), b.as_str())))
+            });
+            assert!(
+                all_allowed,
+                "Unexpected default shortcut conflict: {shortcut} is used by: {actions:?}"
+            );
+        }
     }
 
     #[tokio::test]

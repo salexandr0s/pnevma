@@ -672,11 +672,8 @@ final class TerminalHostView: NSView, NSTextInputClient {
     }
 
     static func shouldDeferKeyEquivalentToAppKit(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown,
-              event.modifierFlags.contains(.command) else {
-            return false
-        }
-        return event.charactersIgnoringModifiers?.lowercased() == "w"
+        guard event.type == .keyDown else { return false }
+        return AppKeybindingManager.shared.isAppKeyEquivalent(event)
     }
 
     private func extractText(_ string: Any) -> String? {
