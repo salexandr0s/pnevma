@@ -11,8 +11,33 @@ struct ProjectSecret: Identifiable, Decodable {
     var locationDisplay: String
     var status: String
     var statusMessage: String?
-    let createdAt: String
-    let updatedAt: String
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+private extension ProjectSecret {
+    var scopeLabel: String {
+        scope == "global" ? "GLOBAL" : "PROJECT"
+    }
+
+    var backendLabel: String {
+        backend == "keychain" ? "KEYCHAIN" : ".ENV.LOCAL"
+    }
+
+    var updatedLabel: String {
+        updatedAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    var statusTone: SecretStatusPill.Tone {
+        switch status {
+        case "configured":
+            return .configured
+        case "missing":
+            return .missing
+        default:
+            return .error
+        }
+    }
 }
 
 private struct ProjectSecretsListParams: Encodable {
@@ -59,21 +84,65 @@ struct SecretsManagerView: View {
     @State private var showingDeleteAlert = false
     @State private var pendingDeleteSecret: ProjectSecret?
 
+    private var projectSecrets: [ProjectSecret] {
+        viewModel.secrets
+            .filter { $0.scope != "global" }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var globalSecrets: [ProjectSecret] {
+        viewModel.secrets
+            .filter { $0.scope == "global" }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var hasShadowedGlobals: Bool {
+        let projectNames = Set(projectSecrets.map(\.name))
+        return globalSecrets.contains { projectNames.contains($0.name) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Secrets")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Secrets")
+                        .font(.headline)
+                    Text("Project environment variables for agents and tools")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button("Import .env") { viewModel.importSecretsFromPanel() }
+                if viewModel.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button {
+                    viewModel.importSecretsFromPanel()
+                } label: {
+                    Label("Import .env", systemImage: "square.and.arrow.down")
+                }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .disabled(!viewModel.isProjectOpen || viewModel.isLoading)
-                Button("Export Template") { viewModel.exportTemplate() }
+                    .help("Import secrets from an existing .env-style file")
+                Button {
+                    viewModel.exportTemplate()
+                } label: {
+                    Label("Export Template", systemImage: "square.and.arrow.up")
+                }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .disabled(!viewModel.isProjectOpen || viewModel.isLoading)
-                Button("Add Secret") { viewModel.presentAddSheet() }
+                    .help("Create a blank .env.local template using known secret names")
+                Button {
+                    viewModel.presentAddSheet()
+                } label: {
+                    Label("Add Secret", systemImage: "plus")
+                }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!viewModel.isProjectOpen)
+                    .controlSize(.small)
+                    .disabled(!viewModel.isProjectOpen || viewModel.isLoading)
+                    .keyboardShortcut("n", modifiers: .command)
             }
             .padding(12)
 
@@ -97,22 +166,55 @@ struct SecretsManagerView: View {
                 EmptyStateView(
                     icon: "key",
                     title: "No secrets configured",
-                    message: "Add keychain-backed or .env.local-backed secrets for this project"
+                    message: "Add keychain-backed or .env.local-backed secrets for this project",
+                    actionTitle: "Add Secret",
+                    action: { viewModel.presentAddSheet() }
                 )
             } else {
                 List {
-                    ForEach(viewModel.secrets) { secret in
-                        SecretRow(
-                            secret: secret,
-                            onEdit: { viewModel.presentEditSheet(secret) },
-                            onDelete: {
-                                pendingDeleteSecret = secret
-                                showingDeleteAlert = true
+                    if hasShadowedGlobals {
+                        Section {
+                            Text("Project secrets override global secrets with the same name.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 2)
+                        }
+                    }
+
+                    if !projectSecrets.isEmpty {
+                        Section("Project") {
+                            ForEach(projectSecrets) { secret in
+                                SecretRow(
+                                    secret: secret,
+                                    onEdit: { viewModel.presentEditSheet(secret) },
+                                    onDelete: {
+                                        pendingDeleteSecret = secret
+                                        showingDeleteAlert = true
+                                    }
+                                )
+                                .accessibilityElement(children: .contain)
                             }
-                        )
+                        }
+                    }
+
+                    if !globalSecrets.isEmpty {
+                        Section("Global") {
+                            ForEach(globalSecrets) { secret in
+                                SecretRow(
+                                    secret: secret,
+                                    onEdit: { viewModel.presentEditSheet(secret) },
+                                    onDelete: {
+                                        pendingDeleteSecret = secret
+                                        showingDeleteAlert = true
+                                    }
+                                )
+                                .accessibilityElement(children: .contain)
+                            }
+                        }
                     }
                 }
                 .listStyle(.plain)
+                .animation(.default, value: viewModel.secrets.map(\.id))
             }
         }
         .overlay(alignment: .bottom) {
@@ -149,32 +251,36 @@ private struct SecretRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text(secret.name)
-                        .font(.body.weight(.medium))
-                    SecretTag(text: secret.scope.uppercased())
-                    SecretTag(text: secret.backend == "keychain" ? "KEYCHAIN" : ".ENV.LOCAL")
-                    SecretStatusPill(status: secret.status)
+                        .font(.system(.body, design: .monospaced))
+                        .bold()
+                    SecretTag(text: secret.scopeLabel)
+                    SecretTag(text: secret.backendLabel)
+                    SecretStatusPill(tone: secret.statusTone)
                 }
-                Text(secret.locationDisplay)
+                Text("\(secret.locationDisplay) • Updated \(secret.updatedLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let statusMessage = secret.statusMessage, !statusMessage.isEmpty {
                     Text(statusMessage)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(secret.status == "error" ? .red : .secondary)
                         .lineLimit(2)
                 }
             }
             Spacer()
-            Button("Edit", action: onEdit)
-                .buttonStyle(.plain)
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
+            HStack(spacing: 8) {
+                Button("Edit", action: onEdit)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("Delete", role: .destructive, action: onDelete)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityLabel("Delete \(secret.name)")
             }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, 4)
     }
@@ -185,7 +291,7 @@ private struct SecretTag: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2)
+            .font(.caption)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(Color.secondary.opacity(0.15)))
@@ -193,19 +299,41 @@ private struct SecretTag: View {
 }
 
 private struct SecretStatusPill: View {
-    let status: String
+    enum Tone {
+        case configured
+        case missing
+        case error
+    }
+
+    let tone: Tone
+
+    private var title: String {
+        switch tone {
+        case .configured: return "Configured"
+        case .missing: return "Missing"
+        case .error: return "Error"
+        }
+    }
+
+    private var icon: String {
+        switch tone {
+        case .configured: return "checkmark.circle.fill"
+        case .missing: return "exclamationmark.triangle.fill"
+        case .error: return "xmark.octagon.fill"
+        }
+    }
 
     private var color: Color {
-        switch status {
-        case "configured": return .green
-        case "missing": return .orange
-        default: return .red
+        switch tone {
+        case .configured: return .green
+        case .missing: return .orange
+        case .error: return .red
         }
     }
 
     var body: some View {
-        Text(status.capitalized)
-            .font(.caption2)
+        Label(title, systemImage: icon)
+            .font(.caption)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.18)))
@@ -234,6 +362,8 @@ private struct SecretEditorSheet: View {
                 .font(.headline)
 
             TextField("Name", text: $draft.name)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
 
             Picker("Scope", selection: $draft.scope) {
                 Text("Project").tag("project")
@@ -253,25 +383,48 @@ private struct SecretEditorSheet: View {
                 }
             }
 
+            if draft.scope == "global" {
+                Text("Global secrets are always stored in Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             SecureField(
                 draft.isEditing ? "Replacement value (leave blank to keep current value)" : "Value",
                 text: $draft.replacementValue
             )
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled()
+
+            if draft.isEditing {
+                Text("Existing secret values are never shown again. Leave the field blank to keep the current value.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if draft.backend == "env_file" {
                 Text("File-backed secrets are stored in a Pnevma-managed .env.local block.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Keychain-backed secrets stay out of the project working tree.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             HStack {
                 Button("Cancel", action: onCancel)
+                    .disabled(isSaving)
                 Spacer()
                 Button(draft.isEditing ? "Save" : "Add") {
                     onSave(draft)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!draft.isEditing && draft.replacementValue.isEmpty))
+                .disabled(
+                    isSaving
+                        || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || (!draft.isEditing && draft.replacementValue.isEmpty)
+                )
             }
         }
         .padding(20)
@@ -377,6 +530,11 @@ final class SecretsManagerViewModel {
                 let _: ProjectSecret = try await bus.call(method: "project.secrets.upsert", params: params)
                 self.isEditorPresented = false
                 await self.load()
+                self.showToast(
+                    draft.isEditing ? "Saved secret." : "Added secret.",
+                    icon: "key.fill",
+                    style: .success
+                )
             } catch {
                 self.showActionError(error.localizedDescription)
             }
@@ -397,7 +555,8 @@ final class SecretsManagerViewModel {
                     method: "project.secrets.delete",
                     params: ProjectSecretDeleteParams(id: secret.id)
                 )
-                self.secrets.removeAll { $0.id == secret.id }
+                await self.load()
+                self.showToast("Deleted \(secret.name).", icon: "trash", style: .success)
             } catch {
                 self.showActionError(error.localizedDescription)
             }
@@ -428,7 +587,7 @@ final class SecretsManagerViewModel {
                     )
                 )
                 await self.load()
-                self.showActionError(
+                self.showToast(
                     "Imported \(result.importedNames.count), skipped \(result.skippedNames.count), errors \(result.errorNames.count)."
                 )
             } catch {
@@ -451,7 +610,11 @@ final class SecretsManagerViewModel {
                     method: "project.secrets.export_env_template",
                     params: ProjectSecretExportParams(path: nil)
                 )
-                self.showActionError("Wrote template for \(result.count) secrets to \(result.path).")
+                self.showToast(
+                    "Wrote template for \(result.count) secrets to \(result.path).",
+                    icon: "doc.badge.plus",
+                    style: .success
+                )
             } catch {
                 self.showActionError(error.localizedDescription)
             }
@@ -519,6 +682,14 @@ final class SecretsManagerViewModel {
             try? await Task.sleep(for: .seconds(5))
             self?.actionError = nil
         }
+    }
+
+    private func showToast(
+        _ message: String,
+        icon: String? = nil,
+        style: ToastMessage.ToastStyle = .info
+    ) {
+        ToastManager.shared.show(message, icon: icon, style: style)
     }
 
     private static func pickOpenPath(title: String, message: String) -> String? {
