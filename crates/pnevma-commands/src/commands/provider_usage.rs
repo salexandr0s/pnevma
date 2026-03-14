@@ -346,6 +346,19 @@ async fn probe_codex(config: &UsageProviderConfig) -> Result<ProviderProbeOutput
         return Err("Codex source is set to local usage only.".to_string());
     }
 
+    // Try direct OAuth probe first (no CLI spawn, no notification sounds)
+    if config.source == "oauth" || config.source == "auto" {
+        match probe_codex_oauth().await {
+            Ok(output) => return Ok(output),
+            Err(error) => {
+                tracing::debug!("Codex OAuth probe failed, falling back to CLI: {error}");
+                if config.source == "oauth" {
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     let output = probe_codex_cli_rpc().await?;
     let account_email = output.account.as_ref().and_then(|account| {
         extract_string_at_paths(
@@ -430,17 +443,12 @@ async fn probe_claude(config: &UsageProviderConfig) -> Result<ProviderProbeOutpu
                 }
                 if is_transient_claude_live_error(&error) {
                     tracing::warn!("Claude OAuth usage probe failed (transient): {error}");
-                    let auth_status = probe_claude_auth_status().await.ok();
+                    let cred_meta = read_claude_auth_from_credentials();
                     let (status_message, repair_hint) = transient_error_user_message(&error);
                     return Ok(ProviderProbeOutput {
                         source: "oauth".to_string(),
-                        account_email: auth_status.as_ref().and_then(|status| status.email.clone()),
-                        plan_label: auth_status.as_ref().and_then(|status| {
-                            status
-                                .subscription_type
-                                .as_ref()
-                                .map(|value| humanize_plan_label(value))
-                        }),
+                        account_email: cred_meta.as_ref().and_then(|m| m.email.clone()),
+                        plan_label: cred_meta.as_ref().and_then(|m| m.plan_label.clone()),
                         status_message: Some(status_message),
                         repair_hint: Some(repair_hint),
                         session_window: None,
@@ -615,25 +623,18 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
 async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
     let token = read_claude_oauth_token().await?;
     let value = fetch_claude_usage_value(&token).await?;
-    let auth_status = probe_claude_auth_status().await.ok();
+    let cred_meta = read_claude_auth_from_credentials();
 
     let account_email = extract_string_at_paths(
         &value,
         &[&["email"], &["user", "email"], &["account", "email"]],
     )
-    .or_else(|| auth_status.as_ref().and_then(|status| status.email.clone()));
+    .or_else(|| cred_meta.as_ref().and_then(|m| m.email.clone()));
     let plan_label = extract_string_at_paths(
         &value,
         &[&["rate_limit_tier"], &["plan"], &["subscriptionType"]],
     )
-    .or_else(|| {
-        auth_status.as_ref().and_then(|status| {
-            status
-                .subscription_type
-                .as_ref()
-                .map(|value| humanize_plan_label(value))
-        })
-    });
+    .or_else(|| cred_meta.as_ref().and_then(|m| m.plan_label.clone()));
     let session_window = extract_named_window(&value, "five_hour", "Current session")
         .or_else(|| extract_named_window(&value, "current_session", "Current session"));
     let weekly_window = extract_named_window(&value, "seven_day", "All models")
@@ -742,27 +743,17 @@ async fn fetch_claude_usage_value_via_curl(token: &str) -> Result<Value, String>
         .map_err(|e| format!("failed to decode curl response: {e}"))
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct ClaudeAuthStatusResponse {
-    #[serde(rename = "loggedIn")]
-    logged_in: bool,
-    #[serde(rename = "authMethod")]
-    auth_method: Option<String>,
-    email: Option<String>,
-    #[serde(rename = "subscriptionType")]
-    subscription_type: Option<String>,
-}
-
 async fn refine_claude_auth_message(error: &str) -> Option<String> {
     if !error.to_lowercase().contains("credentials not found") {
         return None;
     }
 
-    match probe_claude_auth_status().await {
-        Ok(status) if !status.logged_in => {
+    // If no credential file contains a valid token, the user isn't signed in.
+    match read_claude_oauth_token().await {
+        Err(_) => {
             Some("Claude CLI is not signed in. Run `claude auth login` and retry.".to_string())
         }
-        _ => None,
+        Ok(_) => None,
     }
 }
 
@@ -802,23 +793,6 @@ fn is_transient_claude_live_error(error: &str) -> bool {
         || lower.contains("timeout")
         || lower.contains("temporarily unavailable")
         || lower.contains("connection reset")
-}
-
-async fn probe_claude_auth_status() -> Result<ClaudeAuthStatusResponse, String> {
-    let mut command = provider_probe_command(resolve_binary("claude"));
-    let output = command
-        .args(["auth", "status"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-        .map_err(|e| format!("failed to launch claude CLI: {e}"))?;
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| format!("failed to decode claude auth status output: {e}"))?;
-
-    serde_json::from_str::<ClaudeAuthStatusResponse>(&stdout)
-        .map_err(|e| format!("failed to parse claude auth status output: {e}"))
 }
 
 async fn build_local_usage_summary(provider: &str, days: u32) -> ProviderLocalUsageSummaryView {
@@ -1021,6 +995,152 @@ fn codex_cli_output_from_responses(
         account,
         rate_limits,
         error_message,
+    })
+}
+
+struct CodexOAuthAuth {
+    access_token: String,
+    account_id: Option<String>,
+}
+
+fn codex_auth_path() -> Result<PathBuf, String> {
+    if let Some(raw) = std::env::var_os("CODEX_HOME") {
+        return Ok(PathBuf::from(raw).join("auth.json"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME env var not set".to_string())?;
+    Ok(home.join(".codex").join("auth.json"))
+}
+
+fn read_codex_oauth_auth() -> Result<CodexOAuthAuth, String> {
+    let path = codex_auth_path()?;
+    if !path.is_file() {
+        return Err("Codex auth file not found".to_string());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read Codex auth file: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("failed to parse Codex auth file: {e}"))?;
+    let access_token = extract_string_at_paths(
+        &value,
+        &[
+            &["tokens", "access_token"],
+            &["tokens", "accessToken"],
+            &["access_token"],
+            &["accessToken"],
+        ],
+    )
+    .ok_or_else(|| "Codex auth file contains no access token".to_string())?;
+    let account_id = extract_string_at_paths(
+        &value,
+        &[
+            &["tokens", "account_id"],
+            &["tokens", "accountId"],
+            &["account_id"],
+            &["accountId"],
+        ],
+    );
+    Ok(CodexOAuthAuth {
+        access_token,
+        account_id,
+    })
+}
+
+async fn fetch_codex_usage_value(token: &str, account_id: Option<&str>) -> Result<Value, String> {
+    let mut headers = HeaderMap::new();
+    let auth = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| "invalid Codex OAuth token".to_string())?;
+    headers.insert(AUTHORIZATION, auth);
+    if let Some(id) = account_id {
+        if let Ok(hv) = HeaderValue::from_str(id) {
+            headers.insert("ChatGPT-Account-Id", hv);
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("failed to build Codex OAuth client: {e}"))?;
+    let response = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|e| format!("Codex usage request failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Codex usage request failed with {}",
+            response.status()
+        ));
+    }
+    response
+        .json()
+        .await
+        .map_err(|e| format!("failed to decode Codex usage response: {e}"))
+}
+
+async fn probe_codex_oauth() -> Result<ProviderProbeOutput, String> {
+    let auth = read_codex_oauth_auth()?;
+    let value = fetch_codex_usage_value(&auth.access_token, auth.account_id.as_deref()).await?;
+
+    let plan_label = extract_string_at_paths(&value, &[&["plan_type"], &["planType"]])
+        .map(|v| humanize_plan_label(&v));
+
+    // Parse structured rate_limit (WHAM/CodexBar format)
+    let rate_limit = value.get("rate_limit").or_else(|| value.get("rateLimit"));
+    let session_window = rate_limit
+        .and_then(|rl| rl.get("primary_window").or_else(|| rl.get("primaryWindow")))
+        .and_then(|w| {
+            let used = extract_percent_used(w)?;
+            Some(ProviderQuotaWindowView {
+                label: "Current session".to_string(),
+                percent_used: Some(used),
+                percent_remaining: Some((100.0 - used).clamp(0.0, 100.0)),
+                reset_at: extract_reset_at(w),
+            })
+        });
+    let weekly_window = rate_limit
+        .and_then(|rl| {
+            rl.get("secondary_window")
+                .or_else(|| rl.get("secondaryWindow"))
+        })
+        .and_then(|w| {
+            let used = extract_percent_used(w)?;
+            Some(ProviderQuotaWindowView {
+                label: "Current week".to_string(),
+                percent_used: Some(used),
+                percent_remaining: Some((100.0 - used).clamp(0.0, 100.0)),
+                reset_at: extract_reset_at(w),
+            })
+        });
+    let credit = extract_credit_view(&value, "Credits");
+
+    // Fall back to generic normalizer for other response shapes
+    if session_window.is_none() && weekly_window.is_none() && credit.is_none() {
+        let codex_usage = normalize_codex_rate_limits(&value);
+        return Ok(ProviderProbeOutput {
+            source: "oauth".to_string(),
+            account_email: None,
+            plan_label: plan_label.or(codex_usage.plan_label),
+            status_message: None,
+            repair_hint: None,
+            session_window: codex_usage.session_window,
+            weekly_window: codex_usage.weekly_window,
+            model_windows: codex_usage.model_windows,
+            credit: codex_usage.credit,
+        });
+    }
+
+    Ok(ProviderProbeOutput {
+        source: "oauth".to_string(),
+        account_email: None,
+        plan_label,
+        status_message: None,
+        repair_hint: None,
+        session_window,
+        weekly_window,
+        model_windows: vec![],
+        credit,
     })
 }
 
@@ -1324,6 +1444,11 @@ fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
 fn provider_probe_command(program: PathBuf) -> TokioCommand {
     let mut command = TokioCommand::new(program);
     command.env("PATH", provider_probe_path());
+    // Suppress notification sounds from CLI tools (Claude Code, Codex) that
+    // detect a non-interactive / CI environment and skip audio cues.
+    command.env("TERM", "dumb");
+    command.env("CI", "true");
+    command.env_remove("TERM_PROGRAM");
     command
 }
 
@@ -1353,6 +1478,42 @@ fn compose_provider_probe_path(current_path: Option<std::ffi::OsString>) -> Stri
         .filter(|segment| seen.insert(segment.clone()))
         .collect::<Vec<_>>()
         .join(":")
+}
+
+struct ClaudeCredentialsMetadata {
+    email: Option<String>,
+    plan_label: Option<String>,
+}
+
+/// Read account metadata (email, plan) from Claude credential files
+/// without spawning the CLI.
+fn read_claude_auth_from_credentials() -> Option<ClaudeCredentialsMetadata> {
+    let paths = claude_oauth_candidate_paths().ok()?;
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path).ok()?;
+        let value: Value = serde_json::from_str(&raw).ok()?;
+        let email = extract_string_at_paths(
+            &value,
+            &[&["email"], &["account", "email"], &["user", "email"]],
+        );
+        let plan_label = extract_string_at_paths(
+            &value,
+            &[
+                &["subscription_type"],
+                &["subscriptionType"],
+                &["plan"],
+                &["rate_limit_tier"],
+            ],
+        )
+        .map(|v| humanize_plan_label(&v));
+        if email.is_some() || plan_label.is_some() {
+            return Some(ClaudeCredentialsMetadata { email, plan_label });
+        }
+    }
+    None
 }
 
 async fn read_claude_oauth_token() -> Result<String, String> {
@@ -1642,6 +1803,17 @@ fn fallback_snapshot_from_cached_live(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct ClaudeAuthStatusResponse {
+        #[serde(rename = "loggedIn")]
+        logged_in: bool,
+        #[serde(rename = "authMethod")]
+        auth_method: Option<String>,
+        email: Option<String>,
+        #[serde(rename = "subscriptionType")]
+        subscription_type: Option<String>,
+    }
 
     #[test]
     fn percent_used_from_remaining_fields_is_supported() {
