@@ -23,10 +23,8 @@ final class RightInspectorOverlayUITests: PnevmaUITestCase {
         var changesTab = app.descendants(matching: .any)["right-inspector-tab-changes"]
         if !changesTab.waitForExistence(timeout: 1) {
             app.typeKey("B", modifierFlags: [.command, .shift])
-            changesTab = identifiedElement("right-inspector-tab-changes")
-        } else {
-            changesTab = identifiedElement("right-inspector-tab-changes")
         }
+        changesTab = identifiedElement("right-inspector-tab-changes")
         changesTab.click()
 
         let alphaChange = identifiedElement("right-inspector-change-row-alpha_txt")
@@ -40,7 +38,6 @@ final class RightInspectorOverlayUITests: PnevmaUITestCase {
 
         let betaChange = identifiedElement("right-inspector-change-row-beta_txt")
         betaChange.click()
-
         XCTAssertTrue(
             overlayTitle.waitForExistence(timeout: defaultTimeout),
             "Expected overlay title to remain visible after selecting a second change."
@@ -53,7 +50,6 @@ final class RightInspectorOverlayUITests: PnevmaUITestCase {
 
         let notesFile = identifiedElement("right-inspector-file-row-notes_md")
         notesFile.click()
-
         XCTAssertTrue(
             overlayTitle.waitForExistence(timeout: defaultTimeout),
             "Expected file overlay title to appear after selecting notes.md."
@@ -61,7 +57,6 @@ final class RightInspectorOverlayUITests: PnevmaUITestCase {
 
         changesTab.click()
         betaChange.click()
-
         XCTAssertTrue(
             overlayTitle.waitForExistence(timeout: defaultTimeout),
             "Expected diff overlay title to remain accessible after switching back to Changes."
