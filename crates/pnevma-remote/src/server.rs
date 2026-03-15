@@ -35,19 +35,26 @@ pub async fn build_router(
     token_store: Arc<TokenStore>,
     frontend_dir: Option<PathBuf>,
     tls_fingerprint: Option<String>,
+    cleanup_shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Router {
     let api_rate_limit = RateLimitState::new(config.rate_limit_rpm);
     let auth_rate_limit = RateLimitState::new(5); // 5 req/min for auth
 
     // Spawn background cleanup to prevent unbounded rate-limiter growth.
-    api_rate_limit.spawn_cleanup();
-    auth_rate_limit.spawn_cleanup();
+    api_rate_limit.spawn_cleanup(cleanup_shutdown_rx.clone());
+    auth_rate_limit.spawn_cleanup(cleanup_shutdown_rx.clone());
 
     // Auth route (rate-limited separately, no bearer token required)
+    let lockout = crate::routes::auth_routes::LoginLockoutState::new();
+    lockout.spawn_cleanup(cleanup_shutdown_rx.clone());
+    let auth_state = crate::routes::auth_routes::AuthState {
+        token_store: token_store.clone(),
+        lockout,
+    };
     let auth_router = Router::new()
         .route("/api/auth/token", post(auth_routes::create_token))
         .route("/api/auth/token", delete(auth_routes::revoke_token))
-        .with_state(token_store.clone())
+        .with_state(auth_state)
         .layer(middleware::from_fn_with_state(
             auth_rate_limit,
             crate::middleware::rate_limit::rate_limit,
@@ -107,7 +114,7 @@ pub async fn build_router(
 
     // Health check (no auth, rate-limited separately)
     let health_rate_limit = RateLimitState::new(120); // 120 req/min
-    health_rate_limit.spawn_cleanup();
+    health_rate_limit.spawn_cleanup(cleanup_shutdown_rx);
     let health_router =
         Router::new()
             .route("/health", get(health))
@@ -187,6 +194,7 @@ mod tests {
         let config = RemoteAccessConfig::default();
         let token_store = Arc::new(TokenStore::new("password".to_string(), 24).unwrap());
         let (events_tx, _) = broadcast::channel(8);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let _router = build_router(
             &config,
@@ -195,6 +203,7 @@ mod tests {
             token_store,
             None,
             None,
+            shutdown_rx,
         )
         .await;
     }
@@ -208,6 +217,7 @@ mod tests {
         let config = RemoteAccessConfig::default();
         let token_store = Arc::new(TokenStore::new("password".to_string(), 24).unwrap());
         let (events_tx, _) = broadcast::channel(8);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let fp = "a".repeat(64); // fake 64-char hex fingerprint
         let app = build_router(
@@ -217,6 +227,7 @@ mod tests {
             token_store,
             None,
             Some(fp.clone()),
+            shutdown_rx,
         )
         .await;
 
@@ -247,6 +258,7 @@ mod tests {
         let config = RemoteAccessConfig::default();
         let token_store = Arc::new(TokenStore::new("password".to_string(), 24).unwrap());
         let (events_tx, _) = broadcast::channel(8);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let app = build_router(
             &config,
@@ -255,6 +267,7 @@ mod tests {
             token_store,
             None,
             None,
+            shutdown_rx,
         )
         .await;
 

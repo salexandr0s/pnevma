@@ -37,6 +37,8 @@ pub trait CommandRouter: Send + Sync + 'static {
 /// Handle to the running remote server, used to trigger a graceful shutdown.
 pub struct RemoteServerHandle {
     shutdown_tx: oneshot::Sender<()>,
+    /// Dropping this sender signals all background cleanup tasks to stop.
+    _cleanup_shutdown_tx: tokio::sync::watch::Sender<bool>,
     _join: tokio::task::JoinHandle<()>,
 }
 
@@ -44,6 +46,7 @@ impl RemoteServerHandle {
     /// Signal the server to shut down gracefully.
     pub fn shutdown(self) {
         let _ = self.shutdown_tx.send(());
+        // _cleanup_shutdown_tx is dropped here, signaling cleanup tasks.
     }
 }
 
@@ -64,8 +67,16 @@ pub async fn start_remote_server(
         password.to_string(),
         config.token_ttl_hours,
     )?);
-    let (_cleanup_shutdown_tx, cleanup_shutdown_rx) = tokio::sync::watch::channel(false);
-    token_store.spawn_cleanup(cleanup_shutdown_rx);
+    if let Some(ref db_path) = config.token_audit_db_path {
+        match auth::open_audit_db(db_path).await {
+            Ok(pool) => token_store.set_audit_db(pool).await,
+            Err(e) => {
+                tracing::error!(error = %e, "token audit DB unavailable, audit events will not be persisted")
+            }
+        }
+    }
+    let (cleanup_shutdown_tx, cleanup_shutdown_rx) = tokio::sync::watch::channel(false);
+    token_store.spawn_cleanup(cleanup_shutdown_rx.clone());
 
     // Determine bind address — Tailscale is required; no insecure fallback.
     let ts_ip = match tailscale::get_tailscale_self_ip().await {
@@ -96,6 +107,7 @@ pub async fn start_remote_server(
         token_store,
         frontend_dir,
         tls_fingerprint,
+        cleanup_shutdown_rx,
     )
     .await;
 
@@ -113,6 +125,7 @@ pub async fn start_remote_server(
 
     Ok(RemoteServerHandle {
         shutdown_tx,
+        _cleanup_shutdown_tx: cleanup_shutdown_tx,
         _join: join,
     })
 }

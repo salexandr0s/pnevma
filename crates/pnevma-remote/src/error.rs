@@ -10,6 +10,8 @@ pub enum RemoteError {
     Server(String),
     #[error("Auth error: {0}")]
     Auth(String),
+    #[error("Database error: {0}")]
+    Database(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

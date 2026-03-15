@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 fn default_port() -> u16 {
@@ -52,6 +54,8 @@ pub struct RemoteAccessConfig {
     pub tls_allow_self_signed_fallback: bool,
     #[serde(default)]
     pub allow_session_input: bool,
+    #[serde(default)]
+    pub token_audit_db_path: Option<PathBuf>,
 }
 
 impl Default for RemoteAccessConfig {
@@ -68,6 +72,7 @@ impl Default for RemoteAccessConfig {
             allowed_origins: vec![],
             tls_allow_self_signed_fallback: false,
             allow_session_input: false,
+            token_audit_db_path: None,
         }
     }
 }

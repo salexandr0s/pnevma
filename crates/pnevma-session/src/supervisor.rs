@@ -71,6 +71,84 @@ async fn open_append_only_file(path: &Path) -> std::io::Result<tokio::fs::File> 
     }
 }
 
+/// Maximum scrollback file size for re-redaction (avoid unbounded memory).
+const MAX_RE_REDACT_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+
+/// Open a scrollback file in read+write+create mode for sharing between
+/// the reader task and re-redaction.
+async fn open_scrollback_rw(path: &Path) -> std::io::Result<tokio::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let path = path.to_path_buf();
+        let std_file = tokio::task::spawn_blocking(move || {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            Ok::<std::fs::File, std::io::Error>(file)
+        })
+        .await
+        .map_err(std::io::Error::other)??;
+        Ok(tokio::fs::File::from_std(std_file))
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .await
+    }
+}
+
+/// Retroactively redact secrets from a scrollback file.
+///
+/// Uses the SAME `Arc<Mutex<File>>` as the reader task, ensuring the
+/// reader is blocked during rewrite. After completion the file position
+/// is at the end so the reader can resume appending.
+async fn re_redact_scrollback(
+    file: Arc<Mutex<tokio::fs::File>>,
+    secrets: &[String],
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+    let mut f = file.lock().await;
+
+    // Skip large files to avoid unbounded memory usage.
+    let file_len = f.seek(std::io::SeekFrom::End(0)).await?;
+    if file_len > MAX_RE_REDACT_BYTES {
+        tracing::warn!(
+            file_len,
+            max = MAX_RE_REDACT_BYTES,
+            "scrollback too large for re-redaction, skipping"
+        );
+        return Ok(());
+    }
+
+    f.seek(std::io::SeekFrom::Start(0)).await?;
+    let mut content = String::new();
+    f.read_to_string(&mut content).await?;
+
+    let redacted = pnevma_redaction::redact_text(&content, secrets);
+    if redacted == content {
+        f.seek(std::io::SeekFrom::End(0)).await?;
+        return Ok(());
+    }
+
+    f.seek(std::io::SeekFrom::Start(0)).await?;
+    f.set_len(0).await?;
+    f.write_all(redacted.as_bytes()).await?;
+    f.flush().await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     Spawned(SessionMetadata),
@@ -180,6 +258,10 @@ pub struct SessionSupervisor {
     /// Lock-free heartbeat/health data parallel to `sessions`.
     atomic_states: Arc<RwLock<HashMap<Uuid, Arc<AtomicSessionState>>>>,
     inputs: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChildStdin>>>>>,
+    /// Shared scrollback file handles for re-redaction. The SAME handle is
+    /// used by reader tasks and `re_redact_scrollback`, ensuring mutual
+    /// exclusion via a single Mutex.
+    scrollback_files: Arc<RwLock<HashMap<Uuid, Arc<Mutex<tokio::fs::File>>>>>,
     redaction_secrets: Arc<RwLock<Vec<String>>>,
     tx: broadcast::Sender<SessionEvent>,
     idle_after: Duration,
@@ -199,6 +281,7 @@ impl SessionSupervisor {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             atomic_states: Arc::new(RwLock::new(HashMap::new())),
             inputs: Arc::new(RwLock::new(HashMap::new())),
+            scrollback_files: Arc::new(RwLock::new(HashMap::new())),
             redaction_secrets: Arc::new(RwLock::new(Vec::new())),
             tx,
             idle_after: Duration::minutes(2),
@@ -220,7 +303,41 @@ impl SessionSupervisor {
     }
 
     pub async fn set_redaction_secrets(&self, secrets: Vec<String>) {
-        *self.redaction_secrets.write().await = normalize_secrets(&secrets);
+        let new_secrets = normalize_secrets(&secrets);
+        let old_secrets = {
+            let mut guard = self.redaction_secrets.write().await;
+            let old = guard.clone();
+            *guard = new_secrets.clone();
+            old
+        };
+
+        // Only re-redact if new secrets were actually added.
+        let has_new = new_secrets.iter().any(|s| !old_secrets.contains(s));
+        if !has_new {
+            return;
+        }
+
+        // Collect file handles for active sessions.
+        let handles: Vec<Arc<Mutex<tokio::fs::File>>> = {
+            let sessions = self.sessions.read().await;
+            let files = self.scrollback_files.read().await;
+            sessions
+                .iter()
+                .filter(|(_, m)| {
+                    matches!(m.status, SessionStatus::Running | SessionStatus::Waiting)
+                })
+                .filter_map(|(id, _)| files.get(id).cloned())
+                .collect()
+        };
+
+        let all_secrets = new_secrets;
+        tokio::spawn(async move {
+            for handle in handles {
+                if let Err(e) = re_redact_scrollback(handle, &all_secrets).await {
+                    tracing::warn!(error = %e, "scrollback re-redaction failed");
+                }
+            }
+        });
     }
 
     fn canonical_scrollback_path(&self, session_id: Uuid) -> PathBuf {
@@ -300,6 +417,7 @@ impl SessionSupervisor {
             self.sessions.write().await.remove(&session_id);
             self.atomic_states.write().await.remove(&session_id);
             self.inputs.write().await.remove(&session_id);
+            self.scrollback_files.write().await.remove(&session_id);
             return Err(err);
         }
 
@@ -558,11 +676,38 @@ impl SessionSupervisor {
             tracing::debug!("no active subscribers for session heartbeat event");
         }
 
+        // Create a single shared scrollback file handle for both reader tasks
+        // and re-redaction. One handle + one Mutex = mutual exclusion.
+        let shared_scrollback = match open_scrollback_rw(&scrollback_path).await {
+            Ok(f) => {
+                let mut f = f;
+                let _ = f.seek(std::io::SeekFrom::End(0)).await;
+                let handle = Arc::new(Mutex::new(f));
+                self.scrollback_files
+                    .write()
+                    .await
+                    .insert(session_id, handle.clone());
+                handle
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    %session_id,
+                    "failed to open shared scrollback handle; re-redaction disabled for this session"
+                );
+                Arc::new(Mutex::new(
+                    open_append_only_file(&scrollback_path).await.map_err(|e| {
+                        SessionError::SpawnFailed(format!("scrollback open failed: {e}"))
+                    })?,
+                ))
+            }
+        };
+
         if let Some(stdout) = stdout {
             self.spawn_reader_task(
                 session_id,
                 stdout,
-                scrollback_path.clone(),
+                shared_scrollback.clone(),
                 scrollback_index_path.clone(),
                 self.redaction_secrets.clone(),
             );
@@ -571,7 +716,7 @@ impl SessionSupervisor {
             self.spawn_reader_task(
                 session_id,
                 stderr,
-                scrollback_path.clone(),
+                shared_scrollback,
                 scrollback_index_path.clone(),
                 self.redaction_secrets.clone(),
             );
@@ -585,7 +730,7 @@ impl SessionSupervisor {
         &self,
         session_id: Uuid,
         mut reader: R,
-        scrollback_path: PathBuf,
+        file: Arc<Mutex<tokio::fs::File>>,
         scrollback_index_path: PathBuf,
         redaction_secrets: Arc<RwLock<Vec<String>>>,
     ) where
@@ -595,31 +740,22 @@ impl SessionSupervisor {
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
-            if let Some(parent) = scrollback_path.parent() {
-                if tokio::fs::create_dir_all(parent).await.is_err() {
-                    return;
-                }
-            }
             if let Some(parent) = scrollback_index_path.parent() {
                 if tokio::fs::create_dir_all(parent).await.is_err() {
                     return;
                 }
             }
 
-            let file = open_append_only_file(scrollback_path.as_path()).await;
-            let Ok(file) = file else {
-                return;
-            };
-            let file = Arc::new(Mutex::new(file));
             let index = open_append_only_file(scrollback_index_path.as_path()).await;
             let Ok(index) = index else {
                 return;
             };
             let index = Arc::new(Mutex::new(index));
-            let mut total = tokio::fs::metadata(&scrollback_path)
-                .await
-                .map(|m| m.len())
-                .unwrap_or(0);
+            // Get initial file size from the shared handle.
+            let mut total = {
+                let mut f = file.lock().await;
+                f.seek(std::io::SeekFrom::End(0)).await.unwrap_or(0)
+            };
             let mut redactor = StreamRedactor::new(redaction_secrets);
 
             let mut buf = [0u8; 4096];
@@ -655,6 +791,10 @@ impl SessionSupervisor {
 
                     {
                         let mut out = file.lock().await;
+                        // Seek to end — not O_APPEND. Also re-syncs after re-redaction.
+                        if let Ok(pos) = out.seek(std::io::SeekFrom::End(0)).await {
+                            total = pos;
+                        }
                         if out.write_all(chunk_bytes).await.is_err() {
                             break;
                         }
@@ -677,6 +817,10 @@ impl SessionSupervisor {
                 let chunk_bytes = chunk.as_bytes();
                 {
                     let mut out = file.lock().await;
+                    // Seek to end — not O_APPEND. Also re-syncs after re-redaction.
+                    if let Ok(pos) = out.seek(std::io::SeekFrom::End(0)).await {
+                        total = pos;
+                    }
                     if out.write_all(chunk_bytes).await.is_ok() {
                         let _ = out.flush().await;
                     }
@@ -698,6 +842,7 @@ impl SessionSupervisor {
         let sessions = self.sessions.clone();
         let atomic_states = self.atomic_states.clone();
         let inputs = self.inputs.clone();
+        let scrollback_files = self.scrollback_files.clone();
         let tx = self.tx.clone();
         let tmux_tmpdir = self.tmux_tmpdir.clone();
         let tmux_bin = self.tmux_bin.clone();
@@ -744,6 +889,7 @@ impl SessionSupervisor {
             }
 
             inputs.write().await.remove(&session_id);
+            scrollback_files.write().await.remove(&session_id);
             if tx.send(SessionEvent::Exited { session_id, code }).is_err() {
                 tracing::debug!("no active subscribers for session exited event");
             }
@@ -1087,6 +1233,7 @@ impl SessionSupervisor {
         }
         self.atomic_states.write().await.remove(&session_id);
         self.inputs.write().await.remove(&session_id);
+        self.scrollback_files.write().await.remove(&session_id);
         if self
             .tx
             .send(SessionEvent::Exited { session_id, code })
@@ -1129,6 +1276,57 @@ impl SessionSupervisor {
 
     async fn tmux_has_session(&self, name: &str) -> bool {
         tmux_has_session_name(name, &self.tmux_tmpdir, &self.tmux_bin).await
+    }
+
+    /// Spawn a background task that periodically checks whether tmux sessions
+    /// are still alive. If a session is marked Running but tmux reports it
+    /// gone, mark it as Error and emit an Exited event.
+    pub fn spawn_health_probe(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+        let sessions = self.sessions.clone();
+        let tx = self.tx.clone();
+        let tmux_tmpdir = self.tmux_tmpdir.clone();
+        let tmux_bin = self.tmux_bin.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let snapshot: Vec<(Uuid, String)> = {
+                            let guard = sessions.read().await;
+                            guard.iter()
+                                .filter(|(_, m)| m.status == SessionStatus::Running)
+                                .map(|(id, _)| (*id, tmux_name(*id)))
+                                .collect()
+                        };
+                        for (id, name) in snapshot {
+                            if !tmux_has_session_name(&name, &tmux_tmpdir, &tmux_bin).await {
+                                tracing::warn!(
+                                    session_id = %id,
+                                    tmux_name = %name,
+                                    "tmux session lost — marking dead"
+                                );
+                                {
+                                    let mut guard = sessions.write().await;
+                                    if let Some(meta) = guard.get_mut(&id) {
+                                        if meta.status == SessionStatus::Running {
+                                            meta.status = SessionStatus::Error;
+                                        }
+                                    }
+                                }
+                                let _ = tx.send(SessionEvent::Exited {
+                                    session_id: id,
+                                    code: None,
+                                });
+                            }
+                        }
+                    }
+                    _ = shutdown.changed() => {
+                        break;
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -1901,11 +2099,21 @@ mod tests {
             })
             .await;
 
+        tokio::fs::create_dir_all(scrollback_path.parent().unwrap())
+            .await
+            .expect("create scrollback dir");
+        let shared_file = {
+            let f = super::open_scrollback_rw(&scrollback_path)
+                .await
+                .expect("open scrollback rw");
+            Arc::new(tokio::sync::Mutex::new(f))
+        };
+
         let (mut writer, reader) = tokio::io::duplex(512);
         supervisor.spawn_reader_task(
             session_id,
             reader,
-            scrollback_path.clone(),
+            shared_file,
             scrollback_index_path,
             Arc::new(RwLock::new(Vec::new())),
         );
@@ -2116,5 +2324,69 @@ mod tests {
             !matches!(err, SessionError::LimitReached(_)),
             "slot was freed, should not be LimitReached"
         );
+    }
+
+    #[tokio::test]
+    async fn re_redact_scrollback_replaces_secrets() {
+        use super::re_redact_scrollback;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        use tokio::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.log");
+        tokio::fs::write(&path, "hello API_KEY=mysecretkey123 world")
+            .await
+            .unwrap();
+
+        let file: tokio::fs::File = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .await
+            .unwrap();
+        let handle = Arc::new(Mutex::new(file));
+
+        let secrets = vec!["mysecretkey123".to_string()];
+        re_redact_scrollback(handle.clone(), &secrets)
+            .await
+            .expect("re-redaction should succeed");
+
+        let mut f = handle.lock().await;
+        f.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+        let mut content = String::new();
+        f.read_to_string(&mut content).await.unwrap();
+
+        assert!(
+            !content.contains("mysecretkey123"),
+            "secret should be redacted"
+        );
+        assert!(content.contains("[REDACTED]"), "redaction marker expected");
+    }
+
+    #[tokio::test]
+    async fn re_redact_scrollback_skips_when_unchanged() {
+        use super::re_redact_scrollback;
+        use tokio::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clean.log");
+        tokio::fs::write(&path, "nothing secret here")
+            .await
+            .unwrap();
+
+        let file: tokio::fs::File = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .await
+            .unwrap();
+        let handle = Arc::new(Mutex::new(file));
+
+        re_redact_scrollback(handle, &["unrelated".to_string()])
+            .await
+            .expect("should succeed");
+
+        let content: String = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(content, "nothing secret here");
     }
 }

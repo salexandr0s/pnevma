@@ -47,16 +47,22 @@ impl RateLimitState {
 
     /// Spawn a background task that evicts limiters not seen in the last 10 minutes.
     /// Prevents unbounded memory growth for long-running servers with many IPs.
-    pub fn spawn_cleanup(&self) {
+    pub fn spawn_cleanup(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         let limiters = self.limiters.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
             loop {
-                interval.tick().await;
-                let cutoff = Instant::now()
-                    .checked_sub(std::time::Duration::from_secs(600))
-                    .unwrap_or(Instant::now());
-                limiters.retain(|_, (_, last_seen)| *last_seen > cutoff);
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let cutoff = Instant::now()
+                            .checked_sub(std::time::Duration::from_secs(600))
+                            .unwrap_or(Instant::now());
+                        limiters.retain(|_, (_, last_seen)| *last_seen > cutoff);
+                    }
+                    _ = shutdown.changed() => {
+                        break;
+                    }
+                }
             }
         });
     }
