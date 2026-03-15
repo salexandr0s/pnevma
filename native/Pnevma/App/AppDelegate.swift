@@ -2513,10 +2513,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func layoutOpenWorkspaceWindowButtons(in panel: NSPanel) {
-        guard let closeButton = panel.standardWindowButton(.closeButton) else { return }
-        closeButton.superview?.layoutSubtreeIfNeeded()
-        let origin = NSPoint(x: 14, y: 14)
-        closeButton.setFrameOrigin(origin)
+        guard let closeButton = panel.standardWindowButton(.closeButton),
+              let superview = closeButton.superview else { return }
+        superview.layoutSubtreeIfNeeded()
+        let y = (superview.bounds.height - closeButton.frame.height) / 2
+        closeButton.setFrameOrigin(NSPoint(x: 7, y: y))
     }
 
     private func installUITestReadinessView(in windowContent: NSView) {
