@@ -45,22 +45,26 @@ struct ToolDockBarView: View {
                 .frame(height: DesignTokens.Layout.dividerWidth)
 
             GeometryReader { geometry in
-                ScrollView(.horizontal) {
-                    HStack(spacing: 6) {
-                        ForEach(tools) { tool in
-                            ToolDockItemButton(
-                                tool: tool,
-                                isActive: dockState.activeToolID == tool.id,
-                                badgeCount: badgeCount(for: tool),
-                                onOpenAsTab: { onOpenToolAsTab?(tool.id) },
-                                onOpenAsPane: { onOpenToolAsPane?(tool.id) }
-                            ) {
-                                onOpenTool?(tool.id)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        HStack(spacing: 6) {
+                            ForEach(tools) { tool in
+                                ToolDockItemButton(
+                                    tool: tool,
+                                    isActive: dockState.activeToolID == tool.id,
+                                    badgeCount: badgeCount(for: tool),
+                                    onOpenAsTab: { onOpenToolAsTab?(tool.id) },
+                                    onOpenAsPane: { onOpenToolAsPane?(tool.id) }
+                                ) {
+                                    onOpenTool?(tool.id)
+                                }
                             }
                         }
+                        Spacer(minLength: 0)
                     }
                     .padding(.vertical, 6)
-                    .frame(minWidth: geometry.size.width, alignment: .center)
+                    .frame(minWidth: geometry.size.width)
                 }
                 .scrollIndicators(.hidden)
             }

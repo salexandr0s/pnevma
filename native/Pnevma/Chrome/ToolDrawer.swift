@@ -211,13 +211,17 @@ struct ToolDrawerOverlayView: View {
 
     @ViewBuilder
     private func drawerCard(in size: CGSize) -> some View {
-        let drawerHeight = ToolDrawerSizing.resolvedHeight(availableHeight: size.height)
+        let effectiveHeight = ToolDrawerSizing.clamp(
+            contentModel.drawerHeight
+                ?? ToolDrawerSizing.resolvedHeight(availableHeight: size.height),
+            availableHeight: size.height
+        )
         let maxDrawerHeight = ToolDrawerSizing.maxHeight(for: size.height)
         let cardBackgroundColor = Color(nsColor: theme.backgroundColor)
 
         VStack(spacing: 0) {
             ToolDrawerResizeHandle(
-                currentHeight: contentModel.drawerHeight ?? drawerHeight,
+                currentHeight: effectiveHeight,
                 availableHeight: size.height,
                 onHeightChanged: { newHeight in
                     var t = Transaction()
@@ -239,13 +243,13 @@ struct ToolDrawerOverlayView: View {
                 Spacer()
 
                 Button(action: {
-                    let current = contentModel.drawerHeight ?? drawerHeight
                     if isMaximized {
-                        contentModel.drawerHeight = heightBeforeMaximize
-                        ToolDrawerSizing.setStoredHeight(heightBeforeMaximize ?? drawerHeight)
+                        let restored = heightBeforeMaximize ?? effectiveHeight
+                        contentModel.drawerHeight = restored
+                        ToolDrawerSizing.setStoredHeight(restored)
                         isMaximized = false
                     } else {
-                        heightBeforeMaximize = current
+                        heightBeforeMaximize = effectiveHeight
                         contentModel.drawerHeight = maxDrawerHeight
                         isMaximized = true
                     }
@@ -286,7 +290,7 @@ struct ToolDrawerOverlayView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: contentModel.drawerHeight ?? drawerHeight)
+        .frame(height: effectiveHeight)
         .background(
             UnevenRoundedRectangle(
                 topLeadingRadius: 16,
