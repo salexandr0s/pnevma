@@ -25,4 +25,4 @@ futures.workspace = true
 libc.workspace = true
 
 [build-dependencies]
-cbindgen = "0.27"
+cbindgen = "0.29"
