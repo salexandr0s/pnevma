@@ -95,6 +95,14 @@ struct ToolsSectionHeader: View {
 
 // MARK: - SidebarPreferences
 
+// MARK: - Background tint constants
+
+enum BackgroundTint {
+    static let defaultOffset: Double = 0.05
+    static let range: ClosedRange<Double> = 0.0...0.3
+    static func clamped(_ value: Double) -> Double { max(range.lowerBound, min(range.upperBound, value)) }
+}
+
 enum SidebarPreferences {
     private static let defaults = UserDefaults.standard
 
@@ -102,8 +110,8 @@ enum SidebarPreferences {
     /// 0.0 = exact terminal color, 0.05 = slight lightening (default).
     static var backgroundOffset: Double {
         get {
-            let raw = defaults.object(forKey: "sidebarBackgroundOffset") as? Double ?? 0.05
-            return max(0.0, min(0.3, raw))
+            let raw = defaults.object(forKey: "sidebarBackgroundOffset") as? Double ?? BackgroundTint.defaultOffset
+            return BackgroundTint.clamped(raw)
         }
         set { defaults.set(newValue, forKey: "sidebarBackgroundOffset") }
     }
@@ -115,11 +123,11 @@ enum ToolDockPreferences {
     private static let defaults = UserDefaults.standard
 
     /// How much to lighten the tool dock background relative to the terminal.
-    /// Uses the same scale as the sidebar. Default matches sidebar default (0.05).
+    /// Uses the same scale as the sidebar. Default matches sidebar default.
     static var backgroundOffset: Double {
         get {
-            let raw = defaults.object(forKey: "toolDockBackgroundOffset") as? Double ?? 0.05
-            return max(0.0, min(0.3, raw))
+            let raw = defaults.object(forKey: "toolDockBackgroundOffset") as? Double ?? BackgroundTint.defaultOffset
+            return BackgroundTint.clamped(raw)
         }
         set { defaults.set(newValue, forKey: "toolDockBackgroundOffset") }
     }
@@ -135,8 +143,12 @@ enum RightInspectorPreferences {
     static var backgroundOffset: Double {
         get {
             let raw = defaults.object(forKey: "rightInspectorBackgroundOffset") as? Double ?? 0.0
-            return max(0.0, min(0.3, raw))
+            return BackgroundTint.clamped(raw)
         }
         set { defaults.set(newValue, forKey: "rightInspectorBackgroundOffset") }
     }
+}
+
+extension Notification.Name {
+    static let backgroundTintDidChange = Notification.Name("backgroundTintDidChange")
 }

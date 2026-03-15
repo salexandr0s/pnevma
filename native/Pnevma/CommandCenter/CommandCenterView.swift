@@ -4,6 +4,7 @@ import Observation
 struct CommandCenterView: View {
     @Bindable var store: CommandCenterStore
     @Environment(GhosttyThemeProvider.self) var theme
+    @AppStorage("sidebarBackgroundOffset") private var sidebarOffset: Double = BackgroundTint.defaultOffset
     @FocusState private var searchFieldFocused: Bool
     @State private var hoveredRunID: String?
     @State private var boardFocusToken = 0
@@ -11,7 +12,7 @@ struct CommandCenterView: View {
     /// Background derived from the ghostty terminal theme, matching the main sidebar.
     private var sidebarBackground: Color {
         let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
+        let offset = BackgroundTint.clamped(sidebarOffset)
         if offset == 0 {
             return Color(nsColor: bg)
         }

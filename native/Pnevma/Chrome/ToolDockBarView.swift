@@ -13,6 +13,7 @@ struct ToolDockBarView: View {
     var workspaceManager: WorkspaceManager
     @Bindable var dockState: ToolDockState
     @Environment(GhosttyThemeProvider.self) private var theme
+    @AppStorage("toolDockBackgroundOffset") private var toolDockOffset: Double = BackgroundTint.defaultOffset
 
     var onOpenTool: ((String) -> Void)?
     var onOpenToolAsTab: ((String) -> Void)?
@@ -21,7 +22,7 @@ struct ToolDockBarView: View {
 
     private var backgroundColor: Color {
         let base = theme.backgroundColor
-        let offset = ToolDockPreferences.backgroundOffset
+        let offset = BackgroundTint.clamped(toolDockOffset)
         if offset == 0 {
             return Color(nsColor: base)
         }
@@ -43,24 +44,27 @@ struct ToolDockBarView: View {
                 .fill(borderColor)
                 .frame(height: DesignTokens.Layout.dividerWidth)
 
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    ForEach(tools) { tool in
-                        ToolDockItemButton(
-                            tool: tool,
-                            isActive: dockState.activeToolID == tool.id,
-                            badgeCount: badgeCount(for: tool),
-                            onOpenAsTab: { onOpenToolAsTab?(tool.id) },
-                            onOpenAsPane: { onOpenToolAsPane?(tool.id) }
-                        ) {
-                            onOpenTool?(tool.id)
+            GeometryReader { geo in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(tools) { tool in
+                            ToolDockItemButton(
+                                tool: tool,
+                                isActive: dockState.activeToolID == tool.id,
+                                badgeCount: badgeCount(for: tool),
+                                onOpenAsTab: { onOpenToolAsTab?(tool.id) },
+                                onOpenAsPane: { onOpenToolAsPane?(tool.id) }
+                            ) {
+                                onOpenTool?(tool.id)
+                            }
                         }
                     }
+                    .padding(.vertical, 6)
+                    .frame(minWidth: geo.size.width)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
+            .frame(height: 44)
         }
         .background(backgroundColor)
         .contentShape(Rectangle())

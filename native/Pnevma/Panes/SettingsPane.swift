@@ -1128,7 +1128,7 @@ final class SettingsViewModel {
         didSet {
             guard !isRestoring else { return }
             SidebarPreferences.backgroundOffset = sidebarBackgroundOffset
-            GhosttyThemeProvider.shared.refresh()
+            notifyBackgroundTintChanged()
             scheduleSave()
         }
     }
@@ -1175,14 +1175,14 @@ final class SettingsViewModel {
         didSet {
             guard !isRestoring else { return }
             ToolDockPreferences.backgroundOffset = toolDockBackgroundOffset
-            GhosttyThemeProvider.shared.refresh()
+            notifyBackgroundTintChanged()
         }
     }
     var rightInspectorBackgroundOffset: Double = RightInspectorPreferences.backgroundOffset {
         didSet {
             guard !isRestoring else { return }
             RightInspectorPreferences.backgroundOffset = rightInspectorBackgroundOffset
-            GhosttyThemeProvider.shared.refresh()
+            notifyBackgroundTintChanged()
         }
     }
     var focusBorderEnabled: Bool = FocusBorderPreferences.enabled {
@@ -1362,6 +1362,10 @@ final class SettingsViewModel {
                 Log.general.error("Failed to save app settings: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    private func notifyBackgroundTintChanged() {
+        NotificationCenter.default.post(name: .backgroundTintDidChange, object: nil)
     }
 
     private func notifyFocusBorderChanged() {

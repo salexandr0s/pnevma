@@ -6367,6 +6367,8 @@ enable_entropy_guard = false
 
     #[tokio::test]
     async fn open_project_returns_workspace_not_initialized_when_support_dir_is_missing() {
+        let home = tempdir().expect("temp home");
+        let _home = HomeOverride::new(home.path()).await;
         let project_root = tempdir().expect("temp project");
         write_test_project_config(project_root.path(), &[]);
         let global_db = GlobalDb::open().await.expect("open global db");

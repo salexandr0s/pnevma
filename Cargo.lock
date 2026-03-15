@@ -1798,7 +1798,6 @@ dependencies = [
  "security-framework 2.11.1",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "sqlx",
  "subtle",

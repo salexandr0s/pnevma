@@ -718,14 +718,6 @@ final class TerminalHostView: NSView, NSTextInputClient {
     static func ghosttyMouseButton(for buttonNumber: Int) -> ghostty_input_mouse_button_e? {
         switch buttonNumber {
         case 2: return GHOSTTY_MOUSE_MIDDLE
-        case 3: return GHOSTTY_MOUSE_FOUR
-        case 4: return GHOSTTY_MOUSE_FIVE
-        case 5: return GHOSTTY_MOUSE_SIX
-        case 6: return GHOSTTY_MOUSE_SEVEN
-        case 7: return GHOSTTY_MOUSE_EIGHT
-        case 8: return GHOSTTY_MOUSE_NINE
-        case 9: return GHOSTTY_MOUSE_TEN
-        case 10: return GHOSTTY_MOUSE_ELEVEN
         default: return nil
         }
     }
