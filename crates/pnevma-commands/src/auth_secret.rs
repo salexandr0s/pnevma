@@ -209,7 +209,7 @@ fn validate_password_file_metadata(
         }
 
         let owner = meta.uid();
-        let current_uid = unsafe { libc::geteuid() } as u32;
+        let current_uid = crate::platform::current_euid();
         if owner != current_uid {
             return Err(PasswordFileError::Insecure(format!(
                 "password file {} must be owned by uid {}",

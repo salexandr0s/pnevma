@@ -16,4 +16,7 @@ pub enum DbError {
 
     #[error("config error: {0}")]
     Config(String),
+
+    #[error("integrity check failed: {0}")]
+    Integrity(String),
 }

@@ -128,26 +128,18 @@ impl GlobalDb {
         .execute(&pool)
         .await?;
 
-        for stmt in &[
-            "ALTER TABLE global_agent_profiles ADD COLUMN source TEXT NOT NULL DEFAULT 'user'",
-            "ALTER TABLE global_agent_profiles ADD COLUMN source_path TEXT",
-            "ALTER TABLE global_agent_profiles ADD COLUMN user_modified INTEGER NOT NULL DEFAULT 0",
+        // Add columns if they don't exist (safe for both fresh and existing DBs).
+        for (column, col_def) in &[
+            ("source", "TEXT NOT NULL DEFAULT 'user'"),
+            ("source_path", "TEXT"),
+            ("user_modified", "INTEGER NOT NULL DEFAULT 0"),
         ] {
-            match sqlx::query(stmt).execute(&pool).await {
-                Ok(_) => {}
-                Err(sqlx::Error::Database(ref db_err))
-                    if db_err.message().contains("duplicate column") =>
-                {
-                    // Column already exists from a previous migration -- safe to ignore
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        stmt = %stmt,
-                        "unexpected error adding column to global_agent_profiles"
-                    );
-                    return Err(e.into());
-                }
+            if !Self::column_exists(&pool, "global_agent_profiles", column).await? {
+                let stmt = format!(
+                    "ALTER TABLE global_agent_profiles ADD COLUMN {} {}",
+                    column, col_def
+                );
+                sqlx::query(&stmt).execute(&pool).await?;
             }
         }
 
@@ -180,6 +172,13 @@ impl GlobalDb {
             pool,
             path: db_path,
         })
+    }
+
+    async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> Result<bool, DbError> {
+        let query = format!("PRAGMA table_info({})", table);
+        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as(&query).fetch_all(pool).await?;
+        Ok(rows.iter().any(|r| r.1 == column))
     }
 
     pub async fn is_path_trusted(&self, path: &str) -> Result<Option<TrustRecord>, DbError> {

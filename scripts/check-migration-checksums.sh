@@ -22,9 +22,9 @@ fi
 CURRENT=$(cat "$CHECKSUM_FILE")
 
 if [[ "$GENERATED" != "$CURRENT" ]]; then
-  echo "$GENERATED" > "$CHECKSUM_FILE"
-  echo "Updated checksum manifest (was out of date)."
-  echo "Re-run 'just check' to verify."
+  echo "ERROR: Migration checksums are out of date."
+  echo "Run 'just migration-checksums-update' to regenerate."
+  diff <(echo "$CURRENT") <(echo "$GENERATED") || true
   exit 1
 fi
 

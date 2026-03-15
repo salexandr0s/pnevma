@@ -36,3 +36,4 @@ subtle.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
+parking_lot.workspace = true

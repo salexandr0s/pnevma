@@ -82,58 +82,7 @@ fn fleet_machine_name() -> String {
         .unwrap_or_else(|| "local-machine".to_string())
 }
 
-fn process_alive(pid: libc::pid_t) -> bool {
-    let result = unsafe { libc::kill(pid, 0) };
-    if result == 0 {
-        return true;
-    }
-    matches!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EPERM)
-    )
-}
-
-/// On macOS, verify that `pid` still belongs to an expected pnevma-managed
-/// process before sending a signal. Guards against PID recycling races where
-/// the original process has exited and the PID has been reassigned.
-///
-/// Uses binary name prefix matching ("tmux*", "pnevma*") which accepts
-/// tmux-server, pnevma-bridge, etc. This is intentionally broader than exact
-/// name matching to cover platform variants without an exhaustive list.
-#[cfg(target_os = "macos")]
-fn verify_pid_identity(pid: libc::pid_t) -> bool {
-    extern "C" {
-        fn proc_pidpath(
-            pid: libc::c_int,
-            buffer: *mut libc::c_char,
-            buffersize: u32,
-        ) -> libc::c_int;
-    }
-    let mut buf = [0u8; libc::PATH_MAX as usize];
-    // SAFETY: proc_pidpath is a macOS system call that writes at most buffersize bytes.
-    let ret = unsafe { proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_char, buf.len() as u32) };
-    if ret <= 0 {
-        // Cannot determine path — treat as stale to be safe.
-        return false;
-    }
-    let path = String::from_utf8_lossy(&buf[..ret as usize]);
-    let binary_name = path.rsplit('/').next().unwrap_or("");
-    let is_known = binary_name.starts_with("tmux") || binary_name.starts_with("pnevma");
-    #[cfg(test)]
-    let is_known = is_known
-        || binary_name == "sleep"
-        || binary_name == "cat"
-        || binary_name == "sh"
-        || binary_name == "bash"
-        || binary_name == "zsh";
-    is_known
-}
-
-#[cfg(not(target_os = "macos"))]
-fn verify_pid_identity(_pid: libc::pid_t) -> bool {
-    // On non-macOS platforms, skip identity verification.
-    true
-}
+use crate::platform::{process_alive, send_sigkill, send_sigterm, verify_pid_identity};
 
 async fn terminate_helper_pid(pid: i64) {
     if pid <= 0 {
@@ -147,7 +96,7 @@ async fn terminate_helper_pid(pid: i64) {
         );
         return;
     }
-    let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+    send_sigterm(pid);
     for _ in 0..10 {
         if !process_alive(pid) {
             return;
@@ -155,7 +104,7 @@ async fn terminate_helper_pid(pid: i64) {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     if verify_pid_identity(pid) {
-        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+        send_sigkill(pid);
     } else {
         tracing::warn!(
             pid,
@@ -5575,7 +5524,7 @@ pub async fn execute_registered_command(
                 "pane.open_file_browser" => ("file_browser", "Files"),
                 "pane.open_rules_manager" => ("rules", "Rules"),
                 "pane.open_settings" => ("settings", "Settings"),
-                _ => unreachable!(),
+                _ => return Err(format!("unhandled pane method: {}", input.id)),
             };
             let pane = upsert_pane(
                 PaneInput {

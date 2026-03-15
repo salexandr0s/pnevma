@@ -54,6 +54,8 @@ final class WorkspaceRuntime {
         self.providedSessionBridge = sessionBridge
     }
 
+    // TODO(perf): Consider sharing a single Tokio runtime across workspaces
+    // to reduce thread pool overhead when running multiple workspaces.
     convenience init(workspaceID: UUID) {
         let bridge = PnevmaBridge()
         let commandBus = CommandBus(bridge: bridge)

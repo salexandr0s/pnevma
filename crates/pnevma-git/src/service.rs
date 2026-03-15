@@ -49,16 +49,25 @@ impl GitService {
     /// and matching paths under the expected worktree root directory. Worktrees
     /// whose directory names parse as UUIDs are treated as pnevma-managed.
     pub async fn reconcile_leases(&self) -> Result<usize, GitError> {
-        let output = Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
-            .current_dir(&self.repo_root)
-            .output()
-            .await?;
+        let cmd_desc = "worktree list --porcelain";
+        let timeout_dur = std::time::Duration::from_secs(Self::GIT_COMMAND_TIMEOUT_SECS);
+
+        let output = tokio::time::timeout(
+            timeout_dur,
+            Command::new("git")
+                .args(["worktree", "list", "--porcelain"])
+                .current_dir(&self.repo_root)
+                .output(),
+        )
+        .await
+        .map_err(|_| GitError::Timeout(Self::GIT_COMMAND_TIMEOUT_SECS, cmd_desc.to_string()))?
+        .map_err(GitError::Io)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             return Err(GitError::Command(format!(
-                "git worktree list --porcelain failed: {}",
+                "git {} failed: {}",
+                cmd_desc,
                 stderr.trim()
             )));
         }
@@ -370,17 +379,27 @@ impl GitService {
         Ok(())
     }
 
+    const GIT_COMMAND_TIMEOUT_SECS: u64 = 120;
+
     async fn git<I, S>(&self, args: I) -> Result<(), GitError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let args_vec: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
-        let out = Command::new("git")
-            .args(&args_vec)
-            .current_dir(&self.repo_root)
-            .output()
-            .await?;
+        let cmd_desc = args_vec.join(" ");
+        let timeout_dur = std::time::Duration::from_secs(Self::GIT_COMMAND_TIMEOUT_SECS);
+
+        let out = tokio::time::timeout(
+            timeout_dur,
+            Command::new("git")
+                .args(&args_vec)
+                .current_dir(&self.repo_root)
+                .output(),
+        )
+        .await
+        .map_err(|_| GitError::Timeout(Self::GIT_COMMAND_TIMEOUT_SECS, cmd_desc.clone()))?
+        .map_err(GitError::Io)?;
 
         if out.status.success() {
             return Ok(());
@@ -389,7 +408,7 @@ impl GitService {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         Err(GitError::Command(format!(
             "git {} failed: {}",
-            args_vec.join(" "),
+            cmd_desc,
             stderr.trim()
         )))
     }

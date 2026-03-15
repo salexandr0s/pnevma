@@ -32,12 +32,8 @@ pub async fn security_headers(
         "nosniff".parse().expect("valid header value"),
     );
 
-    // When serving a frontend, include WebSocket connect-src directives.
-    let csp = if config.serve_frontend {
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws:"
-    } else {
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:"
-    };
+    let csp =
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:";
     headers.insert(
         axum::http::HeaderName::from_static("content-security-policy"),
         csp.parse().expect("valid header value"),
@@ -115,7 +111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn csp_includes_ws_when_serving_frontend() {
+    async fn csp_uses_wss_only() {
         let config = test_config(true, true);
         let app = Router::new().route("/test", get(|| async { "ok" })).layer(
             axum::middleware::from_fn_with_state(config, security_headers),
@@ -132,13 +128,12 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
+        assert!(csp.contains("wss:"), "CSP should include wss:: {csp}");
+        // Ensure plain ws: is not allowed — only wss:
+        let without_wss = csp.replace("wss:", "");
         assert!(
-            csp.contains("ws:"),
-            "CSP should include ws: when serving frontend: {csp}"
-        );
-        assert!(
-            csp.contains("wss:"),
-            "CSP should include wss: when serving frontend: {csp}"
+            !without_wss.contains("ws:"),
+            "CSP should not include plain ws:: {csp}"
         );
     }
 }

@@ -348,8 +348,7 @@ fn verify_same_user_peer(peer_uid: u32, auth_mode: &ControlAuthMode) -> Result<(
     if !matches!(auth_mode, ControlAuthMode::SameUser) {
         return Ok(());
     }
-    // SAFETY: geteuid() is always safe — returns the effective UID of the calling process.
-    let self_uid = unsafe { libc::geteuid() } as u32;
+    let self_uid = crate::platform::current_euid();
     if peer_uid != self_uid {
         return Err("socket peer uid mismatch".to_string());
     }

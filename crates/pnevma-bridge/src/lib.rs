@@ -114,7 +114,6 @@ unsafe impl Sync for SessionOutputCallbackRegistration {}
 ///    prevents invoking a stale callback on a new handle's context.
 /// 4. **Shutdown guard**: When `shutting_down` is true, the completion callback
 ///    is never invoked — only `release_cb` is called.
-#[derive(Clone, Copy)]
 struct AsyncCallbackWrapper {
     cb: AsyncCallback,
     ctx: *mut (),
@@ -713,6 +712,15 @@ pub extern "C" fn pnevma_call(
         return make_error_result("null handle or method");
     }
 
+    #[cfg(debug_assertions)]
+    {
+        // SAFETY: pthread_main_np is available on macOS and returns 1 if main thread.
+        assert!(
+            unsafe { libc::pthread_main_np() } == 0,
+            "pnevma_call must not be called from the main thread"
+        );
+    }
+
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         // Increment Arc refcount so this call keeps the handle alive even if
         // pnevma_destroy runs concurrently.
@@ -759,7 +767,14 @@ pub extern "C" fn pnevma_call(
                     "project.close" => {
                         next_project_service_generation(&handle.project_service_generation);
                         let state = Arc::clone(state);
-                        handle.runtime.block_on(stop_project_services(state));
+                        // Spawn on the runtime and wait via a oneshot channel to avoid
+                        // nested block_on (the outer block_on at route_method above).
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        handle.runtime.spawn(async move {
+                            stop_project_services(state).await;
+                            let _ = tx.send(());
+                        });
+                        let _ = rx.blocking_recv();
                     }
                     _ => {}
                 }

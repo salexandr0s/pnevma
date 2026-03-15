@@ -16,4 +16,7 @@ pub enum GitError {
 
     #[error("hook error: {0}")]
     Hook(String),
+
+    #[error("git command timed out after {0}s: {1}")]
+    Timeout(u64, String),
 }

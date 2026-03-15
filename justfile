@@ -78,6 +78,9 @@ rust-audit:
 migration-checksums:
     ./scripts/check-migration-checksums.sh
 
+migration-checksums-update:
+    ./scripts/update-migration-checksums.sh
+
 # ── Stage 3: Xcode (Swift) ───────────────────────────────────────────────────
 
 # Generate .xcodeproj from native/project.yml using xcodegen
@@ -196,6 +199,11 @@ clean:
 ffi-coverage:
     @echo "Checking FFI command coverage..."
     @./scripts/check-ffi-coverage.sh
+
+# Code coverage report
+coverage:
+    cargo llvm-cov --workspace --html --output-dir target/coverage
+    @echo "Coverage report: target/coverage/html/index.html"
 
 # Format all code
 fmt:

@@ -140,7 +140,7 @@ pub async fn upsert_project_secret(
                 updated_at: now,
             }
         }
-        _ => unreachable!(),
+        _ => return Err(format!("unsupported secret backend: {backend}")),
     };
 
     if existing.is_some() {

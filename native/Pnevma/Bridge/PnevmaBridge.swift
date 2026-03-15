@@ -231,7 +231,7 @@ final class PnevmaBridge: @unchecked Sendable {
 
         return method.withCString { methodPtr in
             params.withCString { paramsPtr in
-                let result = pnevma_call(h, methodPtr, paramsPtr, UInt(strlen(paramsPtr)))
+                let result = pnevma_call(h, methodPtr, paramsPtr, UInt(params.utf8.count))
                 guard let result = result else { return nil as BridgeCallResult? }
                 defer { pnevma_free_result(result) }
 
@@ -287,7 +287,7 @@ final class PnevmaBridge: @unchecked Sendable {
                     h,
                     methodPtr,
                     paramsPtr,
-                    UInt(strlen(paramsPtr)),
+                    UInt(params.utf8.count),
                     callback,
                     context,
                     releaseContext

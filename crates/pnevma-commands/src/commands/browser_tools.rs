@@ -1,10 +1,8 @@
+use parking_lot::Mutex;
 use pnevma_agents::DynamicToolDef;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-// NOTE: std::sync::Mutex is intentional here — held briefly in sync event
-// emitter context, not across .await points. Does not have the poisoning
-// risk that std::sync::RwLock has in the agent adapters.
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -93,10 +91,7 @@ pub async fn handle_browser_tool_call(
     );
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    pending
-        .lock()
-        .expect("browser_tool_pending lock poisoned")
-        .insert(call_id.to_string(), tx);
+    pending.lock().insert(call_id.to_string(), tx);
 
     emitter.emit(
         "browser_tool_request",
@@ -114,10 +109,7 @@ pub async fn handle_browser_tool_call(
             json!({"error": "browser tool channel dropped", "success": false})
         }
         Err(_) => {
-            pending
-                .lock()
-                .expect("browser_tool_pending lock poisoned")
-                .remove(call_id);
+            pending.lock().remove(call_id);
             warn!(call_id = %call_id, "browser tool timed out after 30s");
             json!({"error": "browser tool timed out after 30s", "success": false})
         }
@@ -127,11 +119,7 @@ pub async fn handle_browser_tool_call(
 /// Complete a pending browser tool call with the result from Swift.
 /// Called when the `browser.tool_result` RPC arrives.
 pub fn complete_browser_tool_call(call_id: &str, result: Value, pending: &BrowserToolPending) {
-    if let Some(tx) = pending
-        .lock()
-        .expect("browser_tool_pending lock poisoned")
-        .remove(call_id)
-    {
+    if let Some(tx) = pending.lock().remove(call_id) {
         let _ = tx.send(result);
         debug!(call_id = %call_id, "browser tool call completed");
     } else {
@@ -168,13 +156,13 @@ mod tests {
     async fn test_complete_resumes_pending_call() {
         let pending = new_browser_tool_pending();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        pending.lock().unwrap().insert("call-1".to_string(), tx);
+        pending.lock().insert("call-1".to_string(), tx);
 
         complete_browser_tool_call("call-1", json!({"title": "Test Page"}), &pending);
 
         let result = rx.await.unwrap();
         assert_eq!(result.get("title").unwrap().as_str().unwrap(), "Test Page");
-        assert!(pending.lock().unwrap().is_empty());
+        assert!(pending.lock().is_empty());
     }
 
     #[tokio::test]
@@ -187,9 +175,9 @@ mod tests {
         // Use a very short timeout scenario: the channel will never be completed
         // so this would normally timeout. We can test the pending insertion.
         let (tx, _rx) = tokio::sync::oneshot::channel::<Value>();
-        pending.lock().unwrap().insert("pre-call".to_string(), tx);
+        pending.lock().insert("pre-call".to_string(), tx);
 
         // Verify the pending map contains our entry
-        assert!(pending.lock().unwrap().contains_key("pre-call"));
+        assert!(pending.lock().contains_key("pre-call"));
     }
 }

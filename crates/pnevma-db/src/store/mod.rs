@@ -105,6 +105,19 @@ impl Db {
             path: db_path,
         };
         db.migrate().await?;
+
+        // Defense-in-depth: verify database integrity after migration.
+        let (integrity,): (String,) = sqlx::query_as("PRAGMA quick_check")
+            .fetch_one(&db.pool)
+            .await
+            .map_err(DbError::Sql)?;
+        if integrity != "ok" {
+            return Err(DbError::Integrity(format!(
+                "database integrity check failed: {}",
+                integrity
+            )));
+        }
+
         Ok(db)
     }
 
