@@ -44,6 +44,10 @@ native/.build/
 native/DerivedData/
 native/build/
 native/native/
+native/TestResults/
+
+# Ephemeral test/agent logs
+.codex-test-logs/
 
 # Local release artifacts
 *.dmg
