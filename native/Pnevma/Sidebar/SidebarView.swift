@@ -5,6 +5,7 @@ import SwiftUI
 struct SidebarView: View {
     var workspaceManager: WorkspaceManager
     @Environment(GhosttyThemeProvider.self) var theme
+    @AppStorage("sidebarBackgroundOffset") private var sidebarOffset: Double = 0.05
 
     /// Called when the user wants to add a new workspace.
     var onAddWorkspace: (() -> Void)?
@@ -12,7 +13,7 @@ struct SidebarView: View {
     /// Sidebar background derived from the ghostty terminal theme.
     private var sidebarBackground: Color {
         let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
+        let offset = max(0.0, min(0.3, sidebarOffset))
         if offset == 0 {
             return Color(nsColor: bg)
         }

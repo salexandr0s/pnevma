@@ -2880,9 +2880,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Different tool while drawer is already open — swap content instantly
         let alreadyPresented = toolDrawerChromeState.isPresented
 
-        // Discard previous pane
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
-
         // Create a fresh pane for the new tool
         guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
               let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
@@ -2900,14 +2897,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 toolDrawerContentModel.activeToolTitle = tool.title
                 toolDrawerContentModel.activePaneView = paneView
                 toolDrawerContentModel.activePaneID = paneID
-                toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight(for: toolID)
             }
         } else {
             toolDrawerContentModel.activeToolID = toolID
             toolDrawerContentModel.activeToolTitle = tool.title
             toolDrawerContentModel.activePaneView = paneView
             toolDrawerContentModel.activePaneID = paneID
-            toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight(for: toolID)
+            toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
         }
         toolDockState.activeToolID = toolID

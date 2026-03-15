@@ -59,8 +59,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: [],
-            toolPresentationOverrides: [:]
+            crashReports: false, keybindings: []
         ))
 
         let checker = MockVersionChecker(result: .success(("99.0.0", releaseURL)))
@@ -87,8 +86,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: [],
-            toolPresentationOverrides: [:]
+            crashReports: false, keybindings: []
         ))
 
         let checker = MockVersionChecker(result: .success(("99.0.0", releaseURL)))
@@ -110,8 +108,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: [],
-            toolPresentationOverrides: [:]
+            crashReports: false, keybindings: []
         ))
 
         let checker = MockVersionChecker(result: .success(("99.0.0", releaseURL)))
@@ -185,8 +182,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
             focusBorderOpacity: 0.4, focusBorderWidth: 2.0,
             focusBorderColor: "accent", telemetryEnabled: false,
-            crashReports: false, keybindings: [],
-            toolPresentationOverrides: [:]
+            crashReports: false, keybindings: []
         ))
 
         let checker = MockVersionChecker(result: .success(("1.0.0", releaseURL)))

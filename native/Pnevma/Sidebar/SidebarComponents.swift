@@ -140,3 +140,7 @@ enum RightInspectorPreferences {
         set { defaults.set(newValue, forKey: "rightInspectorBackgroundOffset") }
     }
 }
+
+extension Notification.Name {
+    static let backgroundTintDidChange = Notification.Name("backgroundTintDidChange")
+}

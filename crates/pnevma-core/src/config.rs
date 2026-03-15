@@ -343,12 +343,6 @@ pub struct GlobalConfig {
     pub focus_border_color: Option<String>,
     #[serde(default)]
     pub usage_providers: UsageProvidersConfig,
-    /// Per-tool presentation overrides (tool_id → "pane"|"tab"|"drawer").
-    #[serde(default)]
-    pub tool_presentation_overrides: HashMap<String, String>,
-    /// Generation counter for tool presentation defaults migration.
-    #[serde(default)]
-    pub tool_presentation_generation: u32,
 }
 
 impl Default for GlobalConfig {
@@ -375,8 +369,6 @@ impl Default for GlobalConfig {
             focus_border_width: default_global_focus_border_width(),
             focus_border_color: None,
             usage_providers: UsageProvidersConfig::default(),
-            tool_presentation_overrides: HashMap::new(),
-            tool_presentation_generation: 0,
         }
     }
 }

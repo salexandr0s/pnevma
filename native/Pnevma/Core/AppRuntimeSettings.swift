@@ -59,7 +59,6 @@ struct AppSettingsSnapshot: Equatable {
     let telemetryEnabled: Bool
     let crashReports: Bool
     let keybindings: [KeybindingEntry]
-    let toolPresentationOverrides: [String: String]
 
     static let defaults = Self(
         autoSaveWorkspaceOnQuit: true,
@@ -77,8 +76,7 @@ struct AppSettingsSnapshot: Equatable {
         focusBorderColor: "accent",
         telemetryEnabled: false,
         crashReports: false,
-        keybindings: [],
-        toolPresentationOverrides: [:]
+        keybindings: []
     )
 
     var normalizedDefaultShell: String? {
@@ -93,7 +91,6 @@ extension AppSettingsSnapshot: Decodable {
         case terminalFont, terminalFontSize, scrollbackLines, sidebarBackgroundOffset
         case bottomToolBarAutoHide, focusBorderEnabled, focusBorderOpacity, focusBorderWidth
         case focusBorderColor, telemetryEnabled, crashReports, keybindings
-        case toolPresentationOverrides
     }
 
     init(from decoder: Decoder) throws {
@@ -114,7 +111,6 @@ extension AppSettingsSnapshot: Decodable {
         telemetryEnabled = try c.decode(Bool.self, forKey: .telemetryEnabled)
         crashReports = try c.decode(Bool.self, forKey: .crashReports)
         keybindings = try c.decode([KeybindingEntry].self, forKey: .keybindings)
-        toolPresentationOverrides = try c.decodeIfPresent([String: String].self, forKey: .toolPresentationOverrides) ?? [:]
     }
 }
 
@@ -140,7 +136,6 @@ struct AppSettingsSaveRequest: Encodable, Equatable {
     let telemetryEnabled: Bool
     let crashReports: Bool
     let keybindings: [KeybindingOverrideSave]?
-    let toolPresentationOverrides: [String: String]?
 }
 
 @MainActor
@@ -189,10 +184,6 @@ final class AppRuntimeSettings {
 
     var autoUpdate: Bool {
         snapshot.autoUpdate
-    }
-
-    var toolPresentationOverrides: [String: String] {
-        snapshot.toolPresentationOverrides
     }
 
     func load(commandBus: (any CommandCalling)? = CommandBus.shared) async {

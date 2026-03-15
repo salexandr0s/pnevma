@@ -945,8 +945,6 @@ pub struct AppSettingsView {
     pub telemetry_enabled: bool,
     pub crash_reports: bool,
     pub keybindings: Vec<KeybindingView>,
-    #[serde(default)]
-    pub tool_presentation_overrides: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -974,8 +972,6 @@ pub struct SetAppSettingsInput {
     pub crash_reports: bool,
     #[serde(default)]
     pub keybindings: Option<Vec<KeybindingOverride>>,
-    #[serde(default)]
-    pub tool_presentation_overrides: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

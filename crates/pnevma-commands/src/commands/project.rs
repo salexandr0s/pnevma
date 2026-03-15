@@ -269,12 +269,6 @@ fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
         telemetry_enabled: config.telemetry_opt_in,
         crash_reports: config.crash_reports_opt_in,
         keybindings: keybinding_views_from_config(config),
-        tool_presentation_overrides: config
-            .tool_presentation_overrides
-            .iter()
-            .filter(|(_, v)| v.as_str() == "pane" || v.as_str() == "tab" || v.as_str() == "drawer")
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
     }
 }
 
@@ -348,23 +342,6 @@ pub async fn set_app_settings(
                 config.keybindings.insert(action, shortcut);
             }
         }
-    }
-
-    // Persist tool presentation overrides — only store valid values
-    if let Some(overrides) = input.tool_presentation_overrides {
-        config.tool_presentation_overrides.clear();
-        for (tool_id, value) in overrides {
-            let tool_id = tool_id.trim().to_string();
-            let value = value.trim().to_lowercase();
-            if !tool_id.is_empty() && (value == "pane" || value == "tab" || value == "drawer") {
-                config.tool_presentation_overrides.insert(tool_id, value);
-            }
-        }
-    }
-
-    // Ensure generation is at least 1 for Phase 1
-    if config.tool_presentation_generation < 1 {
-        config.tool_presentation_generation = 1;
     }
 
     save_global_config(&config).map_err(|e| e.to_string())?;
@@ -7141,7 +7118,6 @@ enable_entropy_guard = false
                 telemetry_enabled: true,
                 crash_reports: true,
                 keybindings: None,
-                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7212,7 +7188,6 @@ enable_entropy_guard = false
                     action: "menu.split_right".to_string(),
                     shortcut: "Cmd+Shift+R".to_string(),
                 }]),
-                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7257,7 +7232,6 @@ enable_entropy_guard = false
                 telemetry_enabled: false,
                 crash_reports: false,
                 keybindings: Some(vec![]),
-                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7305,7 +7279,6 @@ enable_entropy_guard = false
                 telemetry_enabled: false,
                 crash_reports: false,
                 keybindings: None,
-                tool_presentation_overrides: None,
             },
             &state,
         )
@@ -7349,7 +7322,6 @@ enable_entropy_guard = false
                     action: "menu.quit".to_string(),
                     shortcut: "Cmd+Shift+Q".to_string(),
                 }]),
-                tool_presentation_overrides: None,
             },
             &state,
         )

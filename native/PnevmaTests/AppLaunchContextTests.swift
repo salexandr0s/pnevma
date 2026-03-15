@@ -27,8 +27,7 @@ final class AppLaunchContextTests: XCTestCase {
             focusBorderColor: "accent",
             telemetryEnabled: false,
             crashReports: false,
-            keybindings: [],
-            toolPresentationOverrides: [:]
+            keybindings: []
         ))
 
         XCTAssertFalse(AppLaunchContext.shouldRestoreWindowsOnLaunch)

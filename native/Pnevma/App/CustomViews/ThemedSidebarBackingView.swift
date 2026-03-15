@@ -5,6 +5,7 @@ import Cocoa
 /// the terminal's color scheme.
 final class ThemedSidebarBackingView: NSView {
     private var themeObserver: NSObjectProtocol?
+    private var tintObserver: NSObjectProtocol?
     private let rightSeparator = NSView()
 
     override init(frame: NSRect) {
@@ -32,6 +33,13 @@ final class ThemedSidebarBackingView: NSView {
         ) { [weak self] _ in
             self?.updateBackgroundColor()
         }
+        tintObserver = NotificationCenter.default.addObserver(
+            forName: .backgroundTintDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateBackgroundColor()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -39,6 +47,9 @@ final class ThemedSidebarBackingView: NSView {
     deinit {
         if let themeObserver {
             NotificationCenter.default.removeObserver(themeObserver)
+        }
+        if let tintObserver {
+            NotificationCenter.default.removeObserver(tintObserver)
         }
     }
 
@@ -74,6 +85,7 @@ final class ThemedSidebarBackingView: NSView {
 
 final class ThemedRightInspectorBackingView: NSView {
     private var themeObserver: NSObjectProtocol?
+    private var tintObserver: NSObjectProtocol?
     private let leftSeparator = NSView()
 
     override init(frame: NSRect) {
@@ -100,6 +112,13 @@ final class ThemedRightInspectorBackingView: NSView {
         ) { [weak self] _ in
             self?.updateBackgroundColor()
         }
+        tintObserver = NotificationCenter.default.addObserver(
+            forName: .backgroundTintDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateBackgroundColor()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -107,6 +126,9 @@ final class ThemedRightInspectorBackingView: NSView {
     deinit {
         if let themeObserver {
             NotificationCenter.default.removeObserver(themeObserver)
+        }
+        if let tintObserver {
+            NotificationCenter.default.removeObserver(tintObserver)
         }
     }
 
