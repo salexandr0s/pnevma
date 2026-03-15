@@ -129,6 +129,8 @@ impl GlobalDb {
         .await?;
 
         // Add columns if they don't exist (safe for both fresh and existing DBs).
+        // The column_exists check avoids noisy ALTER TABLE attempts; the error
+        // catch handles TOCTOU races when multiple processes open the same DB.
         for (column, col_def) in &[
             ("source", "TEXT NOT NULL DEFAULT 'user'"),
             ("source_path", "TEXT"),
@@ -139,7 +141,12 @@ impl GlobalDb {
                     "ALTER TABLE global_agent_profiles ADD COLUMN {} {}",
                     column, col_def
                 );
-                sqlx::query(&stmt).execute(&pool).await?;
+                match sqlx::query(&stmt).execute(&pool).await {
+                    Ok(_) => {}
+                    Err(sqlx::Error::Database(ref db_err))
+                        if db_err.message().contains("duplicate column") => {}
+                    Err(e) => return Err(e.into()),
+                }
             }
         }
 
