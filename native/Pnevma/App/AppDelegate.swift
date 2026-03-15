@@ -2619,6 +2619,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
+        win.isReleasedWhenClosed = false
         win.title = "Settings"
         win.appearance = NSAppearance(named: .darkAqua)
         win.minSize = NSSize(width: 600, height: 400)
@@ -2626,6 +2627,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.center()
         win.makeKeyAndOrderFront(nil)
         settingsWindow = win
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: win,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.settingsWindow = nil
+            }
+        }
     }
 
     private enum BrowserOpenSource {
@@ -2900,14 +2911,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 toolDrawerContentModel.activeToolTitle = tool.title
                 toolDrawerContentModel.activePaneView = paneView
                 toolDrawerContentModel.activePaneID = paneID
-                toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight(for: toolID)
+                // Keep current drawer height — don't reset on tool switch
             }
         } else {
             toolDrawerContentModel.activeToolID = toolID
             toolDrawerContentModel.activeToolTitle = tool.title
             toolDrawerContentModel.activePaneView = paneView
             toolDrawerContentModel.activePaneID = paneID
-            toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight(for: toolID)
+            toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
         }
         toolDockState.activeToolID = toolID

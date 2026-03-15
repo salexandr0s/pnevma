@@ -21,18 +21,17 @@ enum ToolDrawerSizing {
         min(max(height, minHeight), maxHeight(for: availableHeight))
     }
 
-    static func storedHeight(for toolID: String) -> CGFloat? {
-        let key = "toolDrawerHeight.\(toolID)"
-        let raw = UserDefaults.standard.double(forKey: key)
+    static func storedHeight() -> CGFloat? {
+        let raw = UserDefaults.standard.double(forKey: "toolDrawerHeight")
         return raw > 0 ? raw : nil
     }
 
-    static func setStoredHeight(_ height: CGFloat, for toolID: String) {
-        UserDefaults.standard.set(height, forKey: "toolDrawerHeight.\(toolID)")
+    static func setStoredHeight(_ height: CGFloat) {
+        UserDefaults.standard.set(height, forKey: "toolDrawerHeight")
     }
 
-    static func resolvedHeight(for toolID: String, availableHeight: CGFloat) -> CGFloat {
-        clamp(storedHeight(for: toolID) ?? defaultHeight(for: availableHeight), availableHeight: availableHeight)
+    static func resolvedHeight(availableHeight: CGFloat) -> CGFloat {
+        clamp(storedHeight() ?? defaultHeight(for: availableHeight), availableHeight: availableHeight)
     }
 }
 
@@ -72,7 +71,19 @@ struct PaneContentBridge: NSViewRepresentable {
         return container
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // If the pane view is already the current child, nothing to do.
+        if nsView.subviews.first === paneView { return }
+        nsView.subviews.forEach { $0.removeFromSuperview() }
+        paneView.translatesAutoresizingMaskIntoConstraints = false
+        nsView.addSubview(paneView)
+        NSLayoutConstraint.activate([
+            paneView.leadingAnchor.constraint(equalTo: nsView.leadingAnchor),
+            paneView.trailingAnchor.constraint(equalTo: nsView.trailingAnchor),
+            paneView.topAnchor.constraint(equalTo: nsView.topAnchor),
+            paneView.bottomAnchor.constraint(equalTo: nsView.bottomAnchor),
+        ])
+    }
 }
 
 // MARK: - Resize handle
@@ -102,7 +113,7 @@ private struct ToolDrawerResizeHandle: View {
             }
         }
         .gesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { value in
                     if dragStartHeight == nil {
                         NSCursor.pop()
@@ -196,8 +207,7 @@ struct ToolDrawerOverlayView: View {
 
     @ViewBuilder
     private func drawerCard(in size: CGSize) -> some View {
-        let toolID = contentModel.activeToolID ?? ""
-        let drawerHeight = ToolDrawerSizing.resolvedHeight(for: toolID, availableHeight: size.height)
+        let drawerHeight = ToolDrawerSizing.resolvedHeight(availableHeight: size.height)
         let maxDrawerHeight = ToolDrawerSizing.maxHeight(for: size.height)
         let cardBackgroundColor = Color(nsColor: theme.backgroundColor)
 
@@ -207,9 +217,7 @@ struct ToolDrawerOverlayView: View {
                 availableHeight: size.height,
                 onHeightChanged: { newHeight in
                     contentModel.drawerHeight = newHeight
-                    if let toolID = contentModel.activeToolID {
-                        ToolDrawerSizing.setStoredHeight(newHeight, for: toolID)
-                    }
+                    ToolDrawerSizing.setStoredHeight(newHeight)
                     isMaximized = false
                 }
             )
@@ -226,9 +234,7 @@ struct ToolDrawerOverlayView: View {
                     let current = contentModel.drawerHeight ?? drawerHeight
                     if isMaximized {
                         contentModel.drawerHeight = heightBeforeMaximize
-                        if let toolID = contentModel.activeToolID {
-                            ToolDrawerSizing.setStoredHeight(heightBeforeMaximize ?? drawerHeight, for: toolID)
-                        }
+                        ToolDrawerSizing.setStoredHeight(heightBeforeMaximize ?? drawerHeight)
                         isMaximized = false
                     } else {
                         heightBeforeMaximize = current
