@@ -123,16 +123,6 @@ struct GeneralSettingsTab: View {
                 }
             }
 
-            Section("Tool Presentation") {
-                Text("Choose how each tool opens when clicked in the sidebar or tool dock.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ForEach(configurablePresentationTools()) { tool in
-                    ToolPresentationRow(viewModel: viewModel, tool: tool)
-                }
-            }
-
             Section("Right Inspector") {
                 HStack {
                     Text("Background tint")
@@ -191,50 +181,6 @@ struct GeneralSettingsTab: View {
         case .failed(let msg):
             Text("Failed: \(msg)")
                 .foregroundStyle(.red)
-        }
-    }
-}
-
-private struct ToolPresentationRow: View {
-    @Bindable var viewModel: SettingsViewModel
-    let tool: SidebarToolItem
-
-    private var selection: Binding<SidebarToolDefaultPresentation> {
-        Binding(
-            get: { viewModel.effectiveToolPresentation(for: tool.id) },
-            set: { viewModel.setToolPresentationOverride(toolID: tool.id, value: $0) }
-        )
-    }
-
-    var body: some View {
-        HStack {
-            Label(tool.title, systemImage: tool.icon)
-                .frame(minWidth: 140, alignment: .leading)
-
-            Spacer()
-
-            Picker("", selection: selection) {
-                Text("Pane").tag(SidebarToolDefaultPresentation.pane)
-                Text("Tab").tag(SidebarToolDefaultPresentation.tab)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 120)
-
-            if viewModel.hasToolPresentationOverride(toolID: tool.id) {
-                Button {
-                    viewModel.resetToolPresentationOverride(toolID: tool.id)
-                } label: {
-                    Image(systemName: "arrow.counterclockwise")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Reset to default")
-            } else {
-                Text("Default")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 50)
-            }
         }
     }
 }
@@ -1138,39 +1084,6 @@ final class SettingsViewModel {
             scheduleSave()
         }
     }
-    var toolPresentationOverrides: [String: String] = [:] {
-        didSet {
-            guard !isRestoring else { return }
-            toolPresentationModified = true
-            scheduleSave()
-        }
-    }
-    private var toolPresentationModified = false
-
-    func effectiveToolPresentation(for toolID: String) -> SidebarToolDefaultPresentation {
-        if let raw = toolPresentationOverrides[toolID],
-           let presentation = SidebarToolDefaultPresentation(rawValue: raw) {
-            return presentation
-        }
-        return sidebarToolDefinition(id: toolID)?.defaultPresentation ?? .tab
-    }
-
-    func setToolPresentationOverride(toolID: String, value: SidebarToolDefaultPresentation) {
-        let defaultValue = sidebarToolDefinition(id: toolID)?.defaultPresentation ?? .tab
-        if value == defaultValue {
-            toolPresentationOverrides.removeValue(forKey: toolID)
-        } else {
-            toolPresentationOverrides[toolID] = value.rawValue
-        }
-    }
-
-    func resetToolPresentationOverride(toolID: String) {
-        toolPresentationOverrides.removeValue(forKey: toolID)
-    }
-
-    func hasToolPresentationOverride(toolID: String) -> Bool {
-        toolPresentationOverrides[toolID] != nil
-    }
     var toolDockBackgroundOffset: Double = ToolDockPreferences.backgroundOffset {
         didSet {
             guard !isRestoring else { return }
@@ -1341,8 +1254,7 @@ final class SettingsViewModel {
                 : (NSColor(focusBorderColor).usingColorSpace(.sRGB)?.hexString ?? "accent"),
             telemetryEnabled: telemetryEnabled,
             crashReports: crashReports,
-            keybindings: keybindingOverrides,
-            toolPresentationOverrides: toolPresentationModified ? toolPresentationOverrides : nil
+            keybindings: keybindingOverrides
         )
 
         Task {
@@ -1354,7 +1266,6 @@ final class SettingsViewModel {
                 guard generation == latestSaveGeneration else { return }
                 latestLoadedSnapshot = snapshot
                 keybindingsModified = false
-                toolPresentationModified = false
                 AppRuntimeSettings.shared.apply(snapshot)
                 apply(snapshot: snapshot)
             } catch {
@@ -1404,7 +1315,6 @@ final class SettingsViewModel {
         telemetryEnabled = snapshot.telemetryEnabled
         crashReports = snapshot.crashReports
         keybindings = snapshot.keybindings
-        toolPresentationOverrides = snapshot.toolPresentationOverrides
 
         SidebarPreferences.backgroundOffset = snapshot.sidebarBackgroundOffset
         toolDockBackgroundOffset = ToolDockPreferences.backgroundOffset
@@ -1440,7 +1350,6 @@ final class SettingsViewModel {
         toolDockBackgroundOffset = ToolDockPreferences.backgroundOffset
         rightInspectorBackgroundOffset = RightInspectorPreferences.backgroundOffset
         bottomToolBarAutoHide = false
-        toolPresentationOverrides = [:]
         focusBorderEnabled = FocusBorderPreferences.enabled
         focusBorderOpacity = FocusBorderPreferences.opacity
         focusBorderWidth = FocusBorderPreferences.width

@@ -120,12 +120,16 @@ private struct ToolDrawerResizeHandle: View {
                         NSCursor.closedHand.push()
                         dragStartHeight = currentHeight
                     }
-                    onHeightChanged(
-                        ToolDrawerSizing.clamp(
-                            dragStartHeight! - value.translation.height,
-                            availableHeight: availableHeight
+                    var t = Transaction()
+                    t.disablesAnimations = true
+                    withTransaction(t) {
+                        onHeightChanged(
+                            ToolDrawerSizing.clamp(
+                                dragStartHeight! - value.translation.height,
+                                availableHeight: availableHeight
+                            )
                         )
-                    )
+                    }
                 }
                 .onEnded { _ in
                     NSCursor.pop()
@@ -216,7 +220,11 @@ struct ToolDrawerOverlayView: View {
                 currentHeight: contentModel.drawerHeight ?? drawerHeight,
                 availableHeight: size.height,
                 onHeightChanged: { newHeight in
-                    contentModel.drawerHeight = newHeight
+                    var t = Transaction()
+                    t.disablesAnimations = true
+                    withTransaction(t) {
+                        contentModel.drawerHeight = newHeight
+                    }
                     ToolDrawerSizing.setStoredHeight(newHeight)
                     isMaximized = false
                 }
@@ -272,6 +280,7 @@ struct ToolDrawerOverlayView: View {
 
             if chromeState.isPresented, let paneView = contentModel.activePaneView {
                 PaneContentBridge(paneView: paneView)
+                    .id(contentModel.activePaneID)
             } else {
                 Color.clear
             }

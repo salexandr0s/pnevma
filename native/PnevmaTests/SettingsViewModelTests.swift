@@ -96,8 +96,7 @@ final class SettingsViewModelTests: XCTestCase {
             focusBorderColor: "accent",
             telemetryEnabled: telemetryEnabled,
             crashReports: false,
-            keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")],
-            toolPresentationOverrides: [:]
+            keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")]
         )
     }
 
@@ -200,8 +199,7 @@ final class SettingsViewModelTests: XCTestCase {
                 focusBorderColor: "accent",
                 telemetryEnabled: false,
                 crashReports: false,
-                keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")],
-                toolPresentationOverrides: [:]
+                keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")]
             )
         )
 

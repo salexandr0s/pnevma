@@ -27,35 +27,6 @@ final class SidebarToolItemTests: XCTestCase {
         )
     }
 
-    func testSidebarToolDefinitionsExposeRecommendedDefaultPresentations() {
-        let expectedDefaults: [String: SidebarToolDefaultPresentation] = [
-            "terminal": .tab,
-            "tasks": .tab,
-            "workflow": .tab,
-            "notifications": .tab,
-            "files": .tab,
-            "ssh": .tab,
-            "harness": .tab,
-            "replay": .tab,
-            "browser": .drawer,
-            "review": .tab,
-            "diff": .tab,
-            "analytics": .tab,
-            "brief": .tab,
-            "rules": .tab,
-            "secrets": .tab,
-            "settings": .tab,
-        ]
-
-        for (toolID, presentation) in expectedDefaults {
-            XCTAssertEqual(
-                sidebarToolDefinition(id: toolID)?.defaultPresentation,
-                presentation,
-                "Unexpected default presentation for \(toolID)"
-            )
-        }
-    }
-
     func testSidebarToolDefinitionLookupByPaneTypeUsesSidebarMappings() {
         XCTAssertEqual(sidebarToolDefinition(id: "files")?.paneType, "file_browser")
         XCTAssertEqual(sidebarToolDefinition(id: "brief")?.paneType, "daily_brief")

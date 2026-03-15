@@ -44,7 +44,7 @@ struct ToolDockBarView: View {
                 .fill(borderColor)
                 .frame(height: DesignTokens.Layout.dividerWidth)
 
-            GeometryReader { geo in
+            GeometryReader { geometry in
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
                         ForEach(tools) { tool in
@@ -60,11 +60,11 @@ struct ToolDockBarView: View {
                         }
                     }
                     .padding(.vertical, 6)
-                    .frame(minWidth: geo.size.width)
+                    .frame(minWidth: geometry.size.width, alignment: .center)
                 }
                 .scrollIndicators(.hidden)
             }
-            .frame(height: 44)
+            .frame(height: DesignTokens.Layout.toolDockHeight)
         }
         .background(backgroundColor)
         .contentShape(Rectangle())
@@ -89,6 +89,8 @@ private struct ToolDockItemButton: View {
     let action: () -> Void
 
     @State private var isHovering = false
+    @State private var showTooltip = false
+    @State private var hoverTask: Task<Void, Never>?
 
     private var iconColor: Color {
         if tool.isStub { return Color.gray.opacity(DesignTokens.TextOpacity.tertiary) }
@@ -157,7 +159,37 @@ private struct ToolDockItemButton: View {
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onHover { isHovering = $0 }
+        .onHover { hovering in
+            isHovering = hovering
+            hoverTask?.cancel()
+            if hovering {
+                hoverTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    showTooltip = true
+                }
+            } else {
+                showTooltip = false
+                hoverTask = nil
+            }
+        }
+        .overlay(alignment: .top) {
+            if showTooltip {
+                Text(tool.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.black.opacity(0.85))
+                    )
+                    .offset(y: -30)
+                    .allowsHitTesting(false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))
+            }
+        }
+        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: showTooltip)
         .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: isHovering)
         .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: isActive)
         .contextMenu {
@@ -179,7 +211,6 @@ private struct ToolDockItemButton: View {
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(isActive ? "Selected" : "")
         .accessibilityIdentifier("tool-dock.item.\(tool.id)")
-        .help(tool.title)
     }
 
     private var badgeText: String {
