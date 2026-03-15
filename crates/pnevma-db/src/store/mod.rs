@@ -10,7 +10,10 @@ use crate::models::{
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    SqlitePool,
+};
 use std::path::{Path, PathBuf};
 
 mod admin;
@@ -69,14 +72,25 @@ impl Db {
             }
         }
 
-        // Open in read-write-create mode so a brand new project root can cold-start
-        // without a pre-created SQLite file.
-        let uri = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+        // Set PRAGMAs via SqliteConnectOptions so they apply to every connection
+        // in the pool, not just the first one acquired (the old post-connect
+        // one-shot approach only hit 1 of 5 connections).
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true)
+            .pragma("journal_mode", "wal")
+            .pragma("busy_timeout", "5000")
+            .pragma("foreign_keys", "on");
+
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&uri)
+            .connect_with(options)
             .await?;
 
+        // Defense-in-depth: the parent directory already has 0o700 permissions
+        // (set above), so no other user can access files within it during the
+        // window between file creation and this chmod.  We still tighten the
+        // file itself to 0o600 as a secondary safeguard.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -85,16 +99,6 @@ impl Db {
                 std::fs::set_permissions(&db_path, perms).map_err(DbError::Io)?;
             }
         }
-
-        sqlx::query("PRAGMA journal_mode=WAL;")
-            .execute(&pool)
-            .await?;
-        sqlx::query("PRAGMA busy_timeout = 5000;")
-            .execute(&pool)
-            .await?;
-        sqlx::query("PRAGMA foreign_keys = ON;")
-            .execute(&pool)
-            .await?;
 
         let db = Self {
             pool,

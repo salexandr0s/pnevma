@@ -11,10 +11,21 @@ use std::sync::Arc;
 
 pub const SHARED_PASSWORD_SUBJECT: &str = "shared-password";
 
+/// Access role assigned to a bearer token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenRole {
+    /// Can read state but cannot mutate (create tasks, dispatch, etc.)
+    ReadOnly,
+    /// Full access to all allowed RPC methods.
+    Operator,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenAuditMetadata {
     pub subject: String,
     pub token_id: String,
+    pub role: TokenRole,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +40,7 @@ struct TokenEntry {
     ip: String,
     subject: String,
     token_id: String,
+    role: TokenRole,
 }
 
 pub struct TokenStore {
@@ -55,7 +67,7 @@ impl TokenStore {
     }
 
     /// Generate a 256-bit random hex token, store it, and return it.
-    pub fn create_token(&self, ip: &str, subject: &str) -> IssuedToken {
+    pub fn create_token(&self, ip: &str, subject: &str, role: TokenRole) -> IssuedToken {
         use rand::rngs::OsRng;
         use rand::RngCore;
         let mut bytes = [0u8; 32];
@@ -70,6 +82,7 @@ impl TokenStore {
                 ip: ip.to_string(),
                 subject: subject.to_string(),
                 token_id: token_id.clone(),
+                role,
             },
         );
         IssuedToken {
@@ -78,6 +91,7 @@ impl TokenStore {
             audit: TokenAuditMetadata {
                 subject: subject.to_string(),
                 token_id,
+                role,
             },
         }
     }
@@ -102,6 +116,7 @@ impl TokenStore {
             return Some(TokenAuditMetadata {
                 subject: entry.subject.clone(),
                 token_id: entry.token_id.clone(),
+                role: entry.role,
             });
         }
         None
@@ -137,13 +152,26 @@ impl TokenStore {
     }
 
     /// Spawn a background task that evicts expired tokens every 5 minutes.
-    pub fn spawn_cleanup(self: &Arc<Self>) {
+    ///
+    /// The task runs until `shutdown` is cancelled, allowing clean termination
+    /// during server shutdown.
+    pub fn spawn_cleanup(self: &Arc<Self>, shutdown: tokio::sync::watch::Receiver<bool>) {
         let store = Arc::clone(self);
+        let mut shutdown = shutdown;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
             loop {
-                interval.tick().await;
-                store.cleanup_expired();
+                tokio::select! {
+                    _ = interval.tick() => {
+                        store.cleanup_expired();
+                    }
+                    _ = shutdown.changed() => {
+                        tracing::debug!("token cleanup task shutting down");
+                        // Final cleanup before exit
+                        store.cleanup_expired();
+                        return;
+                    }
+                }
             }
         });
     }
@@ -157,6 +185,7 @@ impl TokenStore {
             .map(|(_, entry)| TokenAuditMetadata {
                 subject: entry.subject,
                 token_id: entry.token_id,
+                role: entry.role,
             })
     }
 
@@ -191,7 +220,7 @@ mod tests {
     #[test]
     fn valid_token_validates() {
         let ts = store();
-        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         let audit = ts
             .validate_token(&issued.token, "127.0.0.1")
             .expect("issued token must validate");
@@ -208,7 +237,7 @@ mod tests {
     #[test]
     fn revoked_token_is_rejected() {
         let ts = store();
-        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         let revoked = ts
             .revoke_token(&issued.token)
             .expect("token should be revoked");
@@ -238,7 +267,7 @@ mod tests {
     fn expired_token_ttl_zero_is_rejected() {
         // TTL of 0 hours means tokens expire immediately.
         let ts = TokenStore::new("pass".to_string(), 0).unwrap();
-        let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         // age_secs (0) >= ttl_secs (0), so token is invalid
         assert!(ts.validate_token(&token.token, "127.0.0.1").is_none());
     }
@@ -252,7 +281,7 @@ mod tests {
     #[test]
     fn cleanup_expired_removes_zero_ttl_tokens() {
         let ts = TokenStore::new("pass".to_string(), 0).unwrap();
-        let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let token = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         ts.cleanup_expired();
         assert!(!ts.tokens.contains_key(&token_lookup_key(&token.token)));
     }
@@ -260,8 +289,8 @@ mod tests {
     #[test]
     fn multiple_tokens_can_coexist() {
         let ts = store();
-        let t1 = ts.create_token("10.0.0.1", SHARED_PASSWORD_SUBJECT);
-        let t2 = ts.create_token("10.0.0.2", SHARED_PASSWORD_SUBJECT);
+        let t1 = ts.create_token("10.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
+        let t2 = ts.create_token("10.0.0.2", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         assert!(ts.validate_token(&t1.token, "10.0.0.1").is_some());
         assert!(ts.validate_token(&t2.token, "10.0.0.2").is_some());
         assert_ne!(t1.token, t2.token);
@@ -271,7 +300,7 @@ mod tests {
     #[test]
     fn token_rejected_from_different_ip() {
         let ts = store();
-        let token = ts.create_token("10.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let token = ts.create_token("10.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         assert!(ts.validate_token(&token.token, "10.0.0.1").is_some());
         assert!(ts.validate_token(&token.token, "192.168.1.1").is_none());
     }
@@ -294,7 +323,7 @@ mod tests {
     #[test]
     fn token_identifier_does_not_expose_raw_token_prefix() {
         let ts = store();
-        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         assert_ne!(
             issued.audit.token_id,
             issued.token[..12].to_string(),
@@ -305,7 +334,7 @@ mod tests {
     #[test]
     fn raw_token_is_not_used_as_store_key() {
         let ts = store();
-        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let issued = ts.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         assert!(!ts.tokens.contains_key(&issued.token));
         assert!(ts.tokens.contains_key(&token_lookup_key(&issued.token)));
     }

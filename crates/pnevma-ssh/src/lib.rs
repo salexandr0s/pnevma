@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod config_parser;
 pub mod error;
 pub mod key_manager;

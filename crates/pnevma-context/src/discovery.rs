@@ -463,7 +463,10 @@ fn matches_glob_simple(pattern: &str, path: &str) -> bool {
     }
     if let Some(prefix) = pattern.strip_suffix("/**") {
         // Directory prefix: "node_modules/**" matches "node_modules/foo/bar.js"
-        return path.starts_with(prefix) || path.contains(&format!("/{prefix}/"));
+        // Use exact prefix match or path-component match to avoid "node_modules_backup" matching.
+        return path == prefix
+            || path.starts_with(&format!("{prefix}/"))
+            || path.contains(&format!("/{prefix}/"));
     }
     if pattern.contains("**") {
         // General double-star: split and check contains

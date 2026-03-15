@@ -1,30 +1,40 @@
 /// Methods allowed via the generic RPC endpoint and WebSocket RPC messages.
 /// Dangerous operations like `session.new`, `trust_workspace`, `ssh.connect`,
 /// and mutation of rules/conventions/keybindings are deliberately excluded.
-pub(crate) const ALLOWED_RPC_METHODS: &[&str] = &[
+///
+/// Read-only methods — available to all authenticated tokens.
+pub(crate) const READ_METHODS: &[&str] = &[
     "project.status",
     "project.automation",
     "project.daily_brief",
     "project.search",
     "task.list",
-    "task.create",
-    "task.dispatch",
-    "task.dispatch_next_ready",
     "task.poll",
     "session.list",
     "session.timeline",
     "workflow.list_defs",
     "workflow.list_instances",
-    "workflow.instantiate",
     "workflow.list",
     "workflow.get",
-    "workflow.dispatch",
     "workflow.get_instance",
     "agent_profile.list",
     "notification.list",
+];
+
+/// Write/mutate methods — require Operator role.
+pub(crate) const WRITE_METHODS: &[&str] = &[
+    "task.create",
+    "task.dispatch",
+    "task.dispatch_next_ready",
+    "workflow.instantiate",
+    "workflow.dispatch",
     "notification.mark_read",
 ];
 
 pub(crate) fn is_allowed(method: &str) -> bool {
-    ALLOWED_RPC_METHODS.contains(&method)
+    READ_METHODS.contains(&method) || WRITE_METHODS.contains(&method)
+}
+
+pub(crate) fn requires_operator(method: &str) -> bool {
+    WRITE_METHODS.contains(&method)
 }

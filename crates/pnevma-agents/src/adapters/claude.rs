@@ -207,8 +207,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     }
 
                     if !use_stream_json {
+                        let redacted = pnevma_redaction::redact_text(&line, &[]);
                         if tx_out
-                            .send(AgentEvent::OutputChunk(format!("{line}\n")))
+                            .send(AgentEvent::OutputChunk(format!("{redacted}\n")))
                             .is_err()
                         {
                             tracing::debug!("no active subscribers for claude agent output");
@@ -355,8 +356,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
             let err_task = tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    let redacted = pnevma_redaction::redact_text(&line, &[]);
                     if tx_err
-                        .send(AgentEvent::OutputChunk(format!("[stderr] {line}\n")))
+                        .send(AgentEvent::OutputChunk(format!("[stderr] {redacted}\n")))
                         .is_err()
                     {
                         tracing::debug!("no active subscribers for claude agent stderr");
@@ -449,8 +451,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     async fn parse_usage(&self, handle: &AgentHandle) -> Result<CostRecord, AgentError> {
-        if let Some(record) = self.state.costs.read().await.get(&handle.id) {
-            return Ok(record.clone());
+        // Remove the cost record after reading to prevent unbounded growth.
+        if let Some(record) = self.state.costs.write().await.remove(&handle.id) {
+            return Ok(record);
         }
 
         Ok(CostRecord {

@@ -3,6 +3,8 @@ use std::time::Instant;
 use axum::{body::Body, extract::ConnectInfo, http::Request, middleware::Next, response::Response};
 use std::net::SocketAddr;
 
+use crate::auth::TokenRole;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthTokenSource {
     AuthorizationHeader,
@@ -15,6 +17,7 @@ pub struct AuditAuthContext {
     pub subject: String,
     pub token_id: Option<String>,
     pub token_source: Option<AuthTokenSource>,
+    pub role: Option<TokenRole>,
 }
 
 impl AuditAuthContext {
@@ -24,6 +27,7 @@ impl AuditAuthContext {
             subject,
             token_id: Some(token_id),
             token_source: None,
+            role: None,
         }
     }
 
@@ -33,6 +37,7 @@ impl AuditAuthContext {
             subject,
             token_id: Some(token_id),
             token_source: None,
+            role: None,
         }
     }
 
@@ -40,12 +45,14 @@ impl AuditAuthContext {
         subject: String,
         token_id: String,
         token_source: AuthTokenSource,
+        role: TokenRole,
     ) -> Self {
         Self {
             auth_event: "authenticated_request",
             subject,
             token_id: Some(token_id),
             token_source: Some(token_source),
+            role: Some(role),
         }
     }
 
@@ -53,12 +60,14 @@ impl AuditAuthContext {
         subject: String,
         token_id: String,
         token_source: AuthTokenSource,
+        role: TokenRole,
     ) -> Self {
         Self {
             auth_event: "websocket_authenticated",
             subject,
             token_id: Some(token_id),
             token_source: Some(token_source),
+            role: Some(role),
         }
     }
 }
@@ -131,6 +140,7 @@ mod tests {
         assert_eq!(ctx.subject, "user1");
         assert_eq!(ctx.token_id.as_deref(), Some("tid1"));
         assert!(ctx.token_source.is_none());
+        assert!(ctx.role.is_none());
     }
 
     #[test]
@@ -140,6 +150,7 @@ mod tests {
         assert_eq!(ctx.subject, "user2");
         assert_eq!(ctx.token_id.as_deref(), Some("tid2"));
         assert!(ctx.token_source.is_none());
+        assert!(ctx.role.is_none());
     }
 
     #[test]
@@ -148,11 +159,13 @@ mod tests {
             "user3".to_string(),
             "tid3".to_string(),
             AuthTokenSource::AuthorizationHeader,
+            TokenRole::Operator,
         );
         assert_eq!(ctx.auth_event, "authenticated_request");
         assert_eq!(ctx.subject, "user3");
         assert_eq!(ctx.token_id.as_deref(), Some("tid3"));
         assert_eq!(ctx.token_source, Some(AuthTokenSource::AuthorizationHeader));
+        assert_eq!(ctx.role, Some(TokenRole::Operator));
     }
 
     #[test]
@@ -161,10 +174,12 @@ mod tests {
             "user4".to_string(),
             "tid4".to_string(),
             AuthTokenSource::QueryParam,
+            TokenRole::ReadOnly,
         );
         assert_eq!(ctx.auth_event, "websocket_authenticated");
         assert_eq!(ctx.subject, "user4");
         assert_eq!(ctx.token_id.as_deref(), Some("tid4"));
         assert_eq!(ctx.token_source, Some(AuthTokenSource::QueryParam));
+        assert_eq!(ctx.role, Some(TokenRole::ReadOnly));
     }
 }

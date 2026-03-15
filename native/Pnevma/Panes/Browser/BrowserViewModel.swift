@@ -89,28 +89,33 @@ final class BrowserViewModel: NSObject {
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
+        // KVO closures may fire on a background thread. Do NOT read WKWebView
+        // properties (wv.url, wv.title, etc.) inside the closure — they must be
+        // accessed on the main thread. Instead, dispatch to MainActor and read
+        // from self.webView there.
         observations = [
-            webView.observe(\.url) { [weak self] wv, _ in
+            webView.observe(\.url) { [weak self] _, _ in
                 self?.applyObservedUpdate {
-                    $0.currentURL = wv.url
-                    $0.omnibarText = wv.url?.absoluteString ?? ""
-                    $0.onURLChanged?(wv.url)
+                    let url = $0.webView.url
+                    $0.currentURL = url
+                    $0.omnibarText = url?.absoluteString ?? ""
+                    $0.onURLChanged?(url)
                 }
             },
-            webView.observe(\.title) { [weak self] wv, _ in
-                self?.applyObservedUpdate { $0.pageTitle = wv.title ?? "" }
+            webView.observe(\.title) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.pageTitle = $0.webView.title ?? "" }
             },
-            webView.observe(\.isLoading) { [weak self] wv, _ in
-                self?.applyObservedUpdate { $0.isLoading = wv.isLoading }
+            webView.observe(\.isLoading) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.isLoading = $0.webView.isLoading }
             },
-            webView.observe(\.canGoBack) { [weak self] wv, _ in
-                self?.applyObservedUpdate { $0.canGoBack = wv.canGoBack }
+            webView.observe(\.canGoBack) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.canGoBack = $0.webView.canGoBack }
             },
-            webView.observe(\.canGoForward) { [weak self] wv, _ in
-                self?.applyObservedUpdate { $0.canGoForward = wv.canGoForward }
+            webView.observe(\.canGoForward) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.canGoForward = $0.webView.canGoForward }
             },
-            webView.observe(\.estimatedProgress) { [weak self] wv, _ in
-                self?.applyObservedUpdate { $0.estimatedProgress = wv.estimatedProgress }
+            webView.observe(\.estimatedProgress) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.estimatedProgress = $0.webView.estimatedProgress }
             },
         ]
     }

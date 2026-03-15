@@ -251,11 +251,25 @@ impl TaskContract {
     pub fn refresh_blocked_status(&mut self, completed: &HashSet<TaskId>) {
         let unmet = self.dependencies.iter().any(|dep| !completed.contains(dep));
         if unmet && self.status != TaskStatus::Blocked {
-            // Attempt to transition to Blocked; ignore if the current state
-            // does not have a valid edge to Blocked (e.g. Done, Failed).
-            let _ = self.transition(TaskStatus::Blocked);
+            // Attempt to transition to Blocked; log unexpected failures
+            // (states like Done/Failed cannot transition to Blocked by design).
+            if let Err(e) = self.transition(TaskStatus::Blocked) {
+                tracing::warn!(
+                    task_id = %self.id,
+                    status = %self.status,
+                    error = %e,
+                    "could not transition task to Blocked (unmet dependencies exist)"
+                );
+            }
         } else if !unmet && self.status == TaskStatus::Blocked {
-            let _ = self.transition(TaskStatus::Planned);
+            if let Err(e) = self.transition(TaskStatus::Planned) {
+                tracing::warn!(
+                    task_id = %self.id,
+                    status = %self.status,
+                    error = %e,
+                    "could not unblock task (all dependencies met)"
+                );
+            }
         }
     }
 }

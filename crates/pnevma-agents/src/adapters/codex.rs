@@ -161,7 +161,8 @@ impl AgentAdapter for CodexAdapter {
                 let mut last_tokens_in: u64 = 0;
                 let mut last_cost: f64 = 0.0;
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = tx_out.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                    let redacted = pnevma_redaction::redact_text(&line, &[]);
+                    let _ = tx_out.send(AgentEvent::OutputChunk(format!("{redacted}\n")));
                     if let Some(cap) = usage_re_out.captures(&line) {
                         let tokens_in = cap
                             .get(2)
@@ -188,7 +189,8 @@ impl AgentAdapter for CodexAdapter {
             let err_task = tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = tx_err.send(AgentEvent::OutputChunk(format!("{line}\n")));
+                    let redacted = pnevma_redaction::redact_text(&line, &[]);
+                    let _ = tx_err.send(AgentEvent::OutputChunk(format!("{redacted}\n")));
                     if let Some(cap) = usage_re.captures(&line) {
                         let tokens_in = cap
                             .get(2)
@@ -343,13 +345,17 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn events(&self, handle: &AgentHandle) -> broadcast::Receiver<AgentEvent> {
-        // NOTE: try_read() is used because this is a sync fn (trait requirement).
-        // Under write contention, this may briefly return a fallback error receiver
-        // even for valid handles — callers retry on the next poll cycle.
-        if let Ok(guard) = self.channels.try_read() {
-            if let Some(tx) = guard.get(&handle.id) {
-                return tx.subscribe();
+        // Retry try_read() to reduce false negatives under brief write contention.
+        // This is a sync fn (trait requirement) so we can't use .await.
+        for _ in 0..3 {
+            if let Ok(guard) = self.channels.try_read() {
+                if let Some(tx) = guard.get(&handle.id) {
+                    return tx.subscribe();
+                }
+                // Lock acquired but handle not found — genuine miss, stop retrying
+                break;
             }
+            std::thread::yield_now();
         }
         let (tx, rx) = broadcast::channel(4);
         let _ = tx.send(AgentEvent::Error("missing handle".to_string()));

@@ -93,11 +93,60 @@ fn process_alive(pid: libc::pid_t) -> bool {
     )
 }
 
+/// On macOS, verify that `pid` still belongs to an expected pnevma-managed
+/// process before sending a signal. Guards against PID recycling races where
+/// the original process has exited and the PID has been reassigned.
+///
+/// Uses binary name prefix matching ("tmux*", "pnevma*") which accepts
+/// tmux-server, pnevma-bridge, etc. This is intentionally broader than exact
+/// name matching to cover platform variants without an exhaustive list.
+#[cfg(target_os = "macos")]
+fn verify_pid_identity(pid: libc::pid_t) -> bool {
+    extern "C" {
+        fn proc_pidpath(
+            pid: libc::c_int,
+            buffer: *mut libc::c_char,
+            buffersize: u32,
+        ) -> libc::c_int;
+    }
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    // SAFETY: proc_pidpath is a macOS system call that writes at most buffersize bytes.
+    let ret = unsafe { proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_char, buf.len() as u32) };
+    if ret <= 0 {
+        // Cannot determine path — treat as stale to be safe.
+        return false;
+    }
+    let path = String::from_utf8_lossy(&buf[..ret as usize]);
+    let binary_name = path.rsplit('/').next().unwrap_or("");
+    let is_known = binary_name.starts_with("tmux") || binary_name.starts_with("pnevma");
+    #[cfg(test)]
+    let is_known = is_known
+        || binary_name == "sleep"
+        || binary_name == "cat"
+        || binary_name == "sh"
+        || binary_name == "bash"
+        || binary_name == "zsh";
+    is_known
+}
+
+#[cfg(not(target_os = "macos"))]
+fn verify_pid_identity(_pid: libc::pid_t) -> bool {
+    // On non-macOS platforms, skip identity verification.
+    true
+}
+
 async fn terminate_helper_pid(pid: i64) {
     if pid <= 0 {
         return;
     }
     let pid = pid as libc::pid_t;
+    if !verify_pid_identity(pid) {
+        tracing::warn!(
+            pid,
+            "skipping signal: PID identity check failed (possible PID recycling)"
+        );
+        return;
+    }
     let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
     for _ in 0..10 {
         if !process_alive(pid) {
@@ -105,7 +154,14 @@ async fn terminate_helper_pid(pid: i64) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    if verify_pid_identity(pid) {
+        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    } else {
+        tracing::warn!(
+            pid,
+            "skipping SIGKILL: PID identity check failed (possible PID recycling)"
+        );
+    }
 }
 
 async fn kill_tmux_session_for_row(project_path: &Path, session_id: &str) -> Result<(), String> {
@@ -516,7 +572,9 @@ pub async fn open_project(
                 json!({"status": row.status}),
             )
             .await;
-            sessions.register_restored(meta).await;
+            if let Err(e) = sessions.register_restored(meta).await {
+                tracing::warn!(error = %e, %session_id, "failed to register restored session (limit reached)");
+            }
             if row.status == "waiting" {
                 match sessions.attach_existing(session_id).await {
                     Ok(()) => {
@@ -6189,7 +6247,8 @@ enable_entropy_guard = false
                 exit_code: None,
                 ended_at: None,
             })
-            .await;
+            .await
+            .expect("register_restored");
 
         let state =
             Arc::new(make_state_with_project(project_id, &project_root, db, sessions).await);
@@ -6301,7 +6360,8 @@ enable_entropy_guard = false
                 exit_code: None,
                 ended_at: None,
             })
-            .await;
+            .await
+            .expect("register_restored");
 
         let state = make_state_with_project(project_id, &project_root, db, sessions).await;
         let snapshot = command_center_snapshot(&state)
@@ -6531,7 +6591,10 @@ enable_entropy_guard = false
             SessionStatus::Running,
         );
         meta.pid = None;
-        sessions.register_restored(meta.clone()).await;
+        sessions
+            .register_restored(meta.clone())
+            .await
+            .expect("register_restored");
         db.upsert_session(&session_row_from_meta(&meta))
             .await
             .expect("persist session row");
@@ -6578,7 +6641,10 @@ enable_entropy_guard = false
             SessionStatus::Running,
         );
         meta.pid = Some(helper_pid as u32);
-        sessions.register_restored(meta.clone()).await;
+        sessions
+            .register_restored(meta.clone())
+            .await
+            .expect("register_restored");
         db.upsert_session(&session_row_from_meta(&meta))
             .await
             .expect("persist session");
@@ -7008,7 +7074,8 @@ enable_entropy_guard = false
                 &project_root,
                 SessionStatus::Waiting,
             ))
-            .await;
+            .await
+            .expect("register_restored");
         sessions
             .register_restored(make_session_metadata(
                 project_id,
@@ -7016,7 +7083,8 @@ enable_entropy_guard = false
                 &project_root,
                 SessionStatus::Complete,
             ))
-            .await;
+            .await
+            .expect("register_restored");
 
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
         let state = AppState::new(emitter);
@@ -7402,7 +7470,8 @@ enable_entropy_guard = false
                 &project_root,
                 SessionStatus::Complete,
             ))
-            .await;
+            .await
+            .expect("register_restored");
 
         let state = make_state_with_project(project_id, &project_root, db, sessions).await;
         let slice = get_scrollback(
@@ -7455,7 +7524,8 @@ enable_entropy_guard = false
                 &project_root,
                 SessionStatus::Complete,
             ))
-            .await;
+            .await
+            .expect("register_restored");
 
         let state = make_state_with_project(project_id, &project_root, db, sessions).await;
         let timeline = get_session_timeline(
@@ -8446,7 +8516,10 @@ enable_entropy_guard = false
         meta.name = "Agent shell".to_string();
         meta.branch = Some("feature/running".to_string());
         meta.health = SessionHealth::Idle;
-        sessions.register_restored(meta.clone()).await;
+        sessions
+            .register_restored(meta.clone())
+            .await
+            .expect("register_restored");
         db.upsert_session(&session_row_from_meta(&meta))
             .await
             .expect("persist session");
@@ -8606,7 +8679,7 @@ enable_entropy_guard = false
         );
         meta.name = "Detached agent".to_string();
         meta.health = SessionHealth::Stuck;
-        sessions.register_restored(meta).await;
+        let _ = sessions.register_restored(meta).await;
 
         let snapshot = command_center_snapshot(&state)
             .await

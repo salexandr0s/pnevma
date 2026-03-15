@@ -24,6 +24,10 @@ fn default_serve_frontend() -> bool {
     true
 }
 
+fn default_hsts_max_age() -> u64 {
+    86400
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteAccessConfig {
     #[serde(default)]
@@ -40,6 +44,8 @@ pub struct RemoteAccessConfig {
     pub max_ws_per_ip: usize,
     #[serde(default = "default_serve_frontend")]
     pub serve_frontend: bool,
+    #[serde(default = "default_hsts_max_age")]
+    pub hsts_max_age: u64,
     #[serde(default)]
     pub allowed_origins: Vec<String>,
     #[serde(default)]
@@ -58,6 +64,7 @@ impl Default for RemoteAccessConfig {
             rate_limit_rpm: default_rate_limit(),
             max_ws_per_ip: default_max_ws(),
             serve_frontend: default_serve_frontend(),
+            hsts_max_age: default_hsts_max_age(),
             allowed_origins: vec![],
             tls_allow_self_signed_fallback: false,
             allow_session_input: false,

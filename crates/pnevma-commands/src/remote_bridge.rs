@@ -70,6 +70,7 @@ pub async fn maybe_start_remote(state: Arc<AppState>) -> Option<pnevma_remote::R
         allowed_origins: config.allowed_origins.clone(),
         tls_allow_self_signed_fallback: config.tls_allow_self_signed_fallback,
         allow_session_input: config.allow_session_input,
+        ..Default::default()
     };
 
     match pnevma_remote::start_remote_server(

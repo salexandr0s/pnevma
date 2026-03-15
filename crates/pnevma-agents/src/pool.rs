@@ -79,10 +79,13 @@ impl Drop for DispatchPermit {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.take() {
             // CONCURRENCY: Drop cannot be async, so we spawn a task to release the slot.
-            // This is safe because Arc<DispatchPool> is Send+Sync and outlives the spawn.
-            tokio::spawn(async move {
-                pool.release().await;
-            });
+            // Guard with try_current() to avoid panic when no Tokio runtime is active
+            // (e.g., during process shutdown).
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    pool.release().await;
+                });
+            }
         }
     }
 }
@@ -134,15 +137,16 @@ impl DispatchPool {
         }
 
         let seq = inner.seq;
-        inner.seq += 1;
+        inner.seq = inner.seq.wrapping_add(1);
         inner.queue.push(QueueItem { seq, dispatch });
         TryAcquireResult::Queued(inner.queue.len())
     }
 
     pub async fn wait_next(self: &std::sync::Arc<Self>) -> QueuedDispatch {
-        // CONCURRENCY: The mutex is released before `.notified().await` so other
-        // tasks can acquire and release permits while this waiter sleeps.
+        // CONCURRENCY: Register the notified future BEFORE checking state under
+        // the lock to avoid missed notifications (standard Notify pattern).
         loop {
+            let notified = self.notify.notified();
             {
                 let mut inner = self.inner.lock().await;
                 if inner.active < inner.max {
@@ -152,7 +156,7 @@ impl DispatchPool {
                     }
                 }
             }
-            self.notify.notified().await;
+            notified.await;
         }
     }
 

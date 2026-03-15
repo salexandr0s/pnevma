@@ -12,6 +12,7 @@ use axum::{
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use pnevma_remote::{
+    auth::TokenRole,
     routes::{
         api,
         ws::{ws_handler, WsClientMessage, WsServerMessage, WsState},
@@ -97,6 +98,21 @@ impl TestServer {
             allow_session_input: true,
         };
 
+        // Inject a test operator auth context so RBAC-gated routes succeed.
+        let inject_operator = axum::middleware::from_fn(
+            |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+                req.extensions_mut().insert(
+                    pnevma_remote::middleware::audit::AuditAuthContext::authenticated_request(
+                        "test".to_string(),
+                        "test-token".to_string(),
+                        pnevma_remote::middleware::audit::AuthTokenSource::AuthorizationHeader,
+                        TokenRole::Operator,
+                    ),
+                );
+                next.run(req).await
+            },
+        );
+
         let app = Router::new()
             .merge(
                 Router::new()
@@ -106,7 +122,8 @@ impl TestServer {
             .merge(
                 Router::new()
                     .route("/api/tasks/{id}/dispatch", post(api::task_dispatch))
-                    .with_state(router),
+                    .with_state(router)
+                    .layer(inject_operator),
             );
 
         let listener = TcpListener::bind("127.0.0.1:0")

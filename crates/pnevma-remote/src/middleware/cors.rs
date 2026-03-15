@@ -6,11 +6,18 @@ pub fn cors_layer(allowed_origins: Vec<String>) -> CorsLayer {
 
     let origins: Vec<_> = allowed_origins
         .iter()
-        .filter_map(|o| o.parse().ok())
+        .filter_map(|o| match o.parse() {
+            Ok(origin) => Some(origin),
+            Err(e) => {
+                tracing::warn!(origin = %o, error = %e, "ignoring unparseable CORS origin");
+                None
+            }
+        })
         .collect();
 
     CorsLayer::new()
         .allow_origin(if origins.is_empty() {
+            tracing::info!("no valid CORS origins configured, defaulting to https://localhost");
             AllowOrigin::exact(
                 "https://localhost"
                     .parse()

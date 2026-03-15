@@ -75,28 +75,38 @@ fn parse_config_content(content: &str) -> Vec<SshProfile> {
 
         if key == "host" {
             if let Some(ref pattern) = current_host_pattern.take() {
-                if pattern != "*" {
+                // Handle multi-pattern Host lines: split on whitespace and
+                // emit one profile per pattern, sharing the same directives.
+                for sub_pattern in pattern.split_whitespace() {
+                    if sub_pattern == "*" {
+                        continue;
+                    }
                     if let Some(p) = flush(
-                        pattern,
-                        current_hostname.take(),
-                        current_user.take(),
-                        current_port.take(),
-                        current_identity_file.take(),
-                        current_proxy_jump.take(),
+                        sub_pattern,
+                        current_hostname.clone(),
+                        current_user.clone(),
+                        current_port,
+                        current_identity_file.clone(),
+                        current_proxy_jump.clone(),
                     ) {
                         profiles.push(p);
                     }
-                } else {
-                    current_hostname = None;
-                    current_user = None;
-                    current_port = None;
-                    current_identity_file = None;
-                    current_proxy_jump = None;
                 }
+                current_hostname = None;
+                current_user = None;
+                current_port = None;
+                current_identity_file = None;
+                current_proxy_jump = None;
             }
 
-            if value != "*" {
-                current_host_pattern = Some(value);
+            // Filter out wildcard-only Host lines; preserve multi-pattern
+            // values that contain at least one non-wildcard pattern.
+            let non_wildcard: Vec<&str> = value
+                .split_whitespace()
+                .filter(|p| !p.is_empty() && *p != "*")
+                .collect();
+            if !non_wildcard.is_empty() {
+                current_host_pattern = Some(non_wildcard.join(" "));
             }
         } else if current_host_pattern.is_some() {
             match key.as_str() {
@@ -117,16 +127,19 @@ fn parse_config_content(content: &str) -> Vec<SshProfile> {
         }
     }
 
-    // Flush last block
+    // Flush last block — handle multi-pattern Host lines the same way.
     if let Some(ref pattern) = current_host_pattern {
-        if pattern != "*" {
+        for sub_pattern in pattern.split_whitespace() {
+            if sub_pattern == "*" {
+                continue;
+            }
             if let Some(p) = flush(
-                pattern,
-                current_hostname,
-                current_user,
+                sub_pattern,
+                current_hostname.clone(),
+                current_user.clone(),
                 current_port,
-                current_identity_file,
-                current_proxy_jump,
+                current_identity_file.clone(),
+                current_proxy_jump.clone(),
             ) {
                 profiles.push(p);
             }
@@ -270,5 +283,41 @@ Host prod
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].name, "staging");
         assert_eq!(profiles[0].user.as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn multi_pattern_host_line_creates_separate_profiles() {
+        let content = "\
+Host foo bar baz
+    HostName shared.example.com
+    User admin
+    Port 2222
+";
+        let profiles = parse_ssh_config_str(content);
+        assert_eq!(profiles.len(), 3);
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"foo"));
+        assert!(names.contains(&"bar"));
+        assert!(names.contains(&"baz"));
+        // All share the same directives
+        for p in &profiles {
+            assert_eq!(p.host, "shared.example.com");
+            assert_eq!(p.user.as_deref(), Some("admin"));
+            assert_eq!(p.port, 2222);
+        }
+    }
+
+    #[test]
+    fn multi_pattern_host_with_wildcard_filters_it() {
+        let content = "\
+Host foo * bar
+    HostName multi.example.com
+";
+        let profiles = parse_ssh_config_str(content);
+        assert_eq!(profiles.len(), 2);
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"foo"));
+        assert!(names.contains(&"bar"));
+        assert!(!names.contains(&"*"));
     }
 }

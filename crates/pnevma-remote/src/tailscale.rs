@@ -47,8 +47,7 @@ pub async fn get_tailscale_self_ip() -> Result<Ipv4Addr, RemoteError> {
 
     for ip_str in &status.self_info.tailscale_ips {
         if let Ok(addr) = ip_str.parse::<Ipv4Addr>() {
-            // 100.x.x.x range (100.64.0.0/10 CGNAT)
-            if addr.octets()[0] == 100 {
+            if is_tailscale_ip(&IpAddr::V4(addr)) {
                 return Ok(addr);
             }
         }
@@ -114,6 +113,11 @@ pub fn is_tailscale_ip(addr: &IpAddr) -> bool {
             octets[0] == 100 && (64..=127).contains(&octets[1])
         }
         IpAddr::V6(v6) => {
+            // Check for IPv6-mapped IPv4 addresses (::ffff:100.x.x.x)
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                let octets = mapped.octets();
+                return octets[0] == 100 && (64..=127).contains(&octets[1]);
+            }
             let segs = v6.segments();
             // fd7a:115c:a1e0::/48
             segs[0] == 0xfd7a && segs[1] == 0x115c && segs[2] == 0xa1e0
@@ -186,6 +190,18 @@ mod tests {
             std::iter::empty(),
         );
         assert_eq!(resolved, path_entry);
+    }
+
+    #[test]
+    fn ipv6_mapped_tailscale_ipv4_is_accepted() {
+        let addr: IpAddr = "::ffff:100.100.100.100".parse().unwrap();
+        assert!(is_tailscale_ip(&addr));
+    }
+
+    #[test]
+    fn ipv6_mapped_non_tailscale_ipv4_is_rejected() {
+        let addr: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
+        assert!(!is_tailscale_ip(&addr));
     }
 
     fn create_fake_binary(dir: &Path, name: &str) -> PathBuf {

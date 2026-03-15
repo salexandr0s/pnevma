@@ -18,6 +18,7 @@ libc.workspace = true
 dashmap = { workspace = true }
 rand.workspace = true
 pnevma-core = { path = "../pnevma-core" }
+pnevma-redaction = { path = "../pnevma-redaction" }
 
 [dev-dependencies]
 tempfile.workspace = true

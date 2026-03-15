@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod global_store;
 pub mod models;

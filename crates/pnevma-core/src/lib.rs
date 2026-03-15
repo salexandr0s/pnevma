@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod agent_discovery;
 pub mod config;
 pub mod error;
@@ -40,3 +42,19 @@ pub type ProjectId = uuid::Uuid;
 pub type TaskId = uuid::Uuid;
 pub type SessionId = uuid::Uuid;
 pub type TraceId = uuid::Uuid;
+
+/// Truncate a `String` in-place to at most `max_bytes`, ensuring the result
+/// ends on a valid UTF-8 character boundary. If the string is already within
+/// the limit, it is left unchanged.
+pub fn truncate_utf8_safe(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let truncation_point = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    s.truncate(truncation_point);
+}

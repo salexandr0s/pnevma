@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod auth;
 pub mod config;
 pub mod error;
@@ -62,7 +64,8 @@ pub async fn start_remote_server(
         password.to_string(),
         config.token_ttl_hours,
     )?);
-    token_store.spawn_cleanup();
+    let (_cleanup_shutdown_tx, cleanup_shutdown_rx) = tokio::sync::watch::channel(false);
+    token_store.spawn_cleanup(cleanup_shutdown_rx);
 
     // Determine bind address — Tailscale is required; no insecure fallback.
     let ts_ip = match tailscale::get_tailscale_self_ip().await {

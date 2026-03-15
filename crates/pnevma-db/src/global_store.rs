@@ -3,7 +3,10 @@ use crate::models::{GlobalAgentProfileRow, GlobalSshProfileRow, GlobalWorkflowRo
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    FromRow, SqlitePool,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -48,10 +51,16 @@ impl GlobalDb {
             tokio::fs::set_permissions(&dir, perms).await?;
         }
         let db_path = dir.join("global.db");
-        let uri = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true)
+            .pragma("journal_mode", "wal")
+            .pragma("busy_timeout", "5000")
+            .pragma("foreign_keys", "on");
+
         let pool = SqlitePoolOptions::new()
             .max_connections(2)
-            .connect(&uri)
+            .connect_with(options)
             .await?;
 
         sqlx::query(
@@ -126,11 +135,18 @@ impl GlobalDb {
         ] {
             match sqlx::query(stmt).execute(&pool).await {
                 Ok(_) => {}
+                Err(sqlx::Error::Database(ref db_err))
+                    if db_err.message().contains("duplicate column") =>
+                {
+                    // Column already exists from a previous migration -- safe to ignore
+                }
                 Err(e) => {
-                    let msg = e.to_string();
-                    if !msg.contains("duplicate column name") {
-                        return Err(e.into());
-                    }
+                    tracing::warn!(
+                        error = %e,
+                        stmt = %stmt,
+                        "unexpected error adding column to global_agent_profiles"
+                    );
+                    return Err(e.into());
                 }
             }
         }

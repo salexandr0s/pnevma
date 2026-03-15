@@ -102,6 +102,7 @@ const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 8;
 const MAX_SESSION_INPUT_BYTES: usize = 16 * 1024;
 const MAX_RPC_ID_LEN: usize = 128;
 const MAX_RPC_METHOD_LEN: usize = 128;
+const MAX_CONSECUTIVE_RATE_VIOLATIONS: u32 = 5;
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -352,9 +353,21 @@ async fn handle_socket(
     let mut subscribed_channels: HashSet<String> = HashSet::new();
     let mut event_rx = remote_events.subscribe();
 
+    let is_operator = auth_context
+        .as_ref()
+        .and_then(|ctx| ctx.role)
+        .map(|r| r == crate::auth::TokenRole::Operator)
+        .unwrap_or(false);
+
     let mut message_count: u32 = 0;
     let mut window_start = Instant::now();
     let mut last_client_activity = Instant::now();
+    // Tracks consecutive 1-second windows where the client exceeded the rate
+    // limit. Resets to 0 on any window where the client stays within limits
+    // (see the `consecutive_rate_violations = 0` below). This means a client
+    // is only disconnected after MAX_CONSECUTIVE_RATE_VIOLATIONS *consecutive*
+    // over-limit windows — not a lifetime total.
+    let mut consecutive_rate_violations: u32 = 0;
     let mut heartbeat = tokio::time::interval(WS_PING_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     heartbeat.tick().await;
@@ -430,6 +443,16 @@ async fn handle_socket(
                 }
                 message_count += 1;
                 if message_count > MAX_MESSAGES_PER_SECOND {
+                    consecutive_rate_violations += 1;
+                    if consecutive_rate_violations >= MAX_CONSECUTIVE_RATE_VIOLATIONS {
+                        tracing::warn!(
+                            subject = auth_context.as_ref().map(|ctx| ctx.subject.as_str()).unwrap_or("-"),
+                            violations = MAX_CONSECUTIVE_RATE_VIOLATIONS,
+                            "disconnecting WebSocket client after consecutive rate-limit violations"
+                        );
+                        let _ = sender.send(Message::Close(None)).await;
+                        break;
+                    }
                     let message = WsServerMessage::Error {
                         message: "rate limit exceeded: too many messages per second".to_string(),
                     };
@@ -438,6 +461,8 @@ async fn handle_socket(
                     }
                     continue;
                 }
+
+                consecutive_rate_violations = 0;
 
                 let client_msg: WsClientMessage = match serde_json::from_str(&text) {
                     Ok(m) => m,
@@ -556,6 +581,8 @@ async fn handle_socket(
                             rpc_result(id, Err("invalid rpc method".to_string()))
                         } else if !super::rpc_allowlist::is_allowed(&method) {
                             rpc_result(id, Err(format!("method not allowed via RPC: {method}")))
+                        } else if super::rpc_allowlist::requires_operator(&method) && !is_operator {
+                            rpc_result(id, Err(format!("method requires operator role: {method}")))
                         } else {
                             rpc_result(
                                 id,
@@ -680,6 +707,7 @@ mod tests {
             "operator".to_string(),
             "token123".to_string(),
             AuthTokenSource::QueryParam,
+            crate::auth::TokenRole::Operator,
         );
         assert_eq!(
             validate_ws_origin(&headers, Some(&auth), &["https://example.com".to_string()]),
@@ -694,6 +722,7 @@ mod tests {
             "operator".to_string(),
             "token123".to_string(),
             AuthTokenSource::AuthorizationHeader,
+            crate::auth::TokenRole::Operator,
         );
         assert!(
             validate_ws_origin(&headers, Some(&auth), &["https://example.com".to_string()]).is_ok()
@@ -770,5 +799,62 @@ mod tests {
             .await
             .expect_err("invalid session list payload should be rejected");
         assert!(err.contains("invalid session.list response"));
+    }
+
+    #[test]
+    fn requires_operator_returns_true_for_write_methods() {
+        for method in rpc_allowlist::WRITE_METHODS {
+            assert!(
+                rpc_allowlist::requires_operator(method),
+                "{method} should require operator role"
+            );
+        }
+    }
+
+    #[test]
+    fn requires_operator_returns_false_for_read_methods() {
+        for method in rpc_allowlist::READ_METHODS {
+            assert!(
+                !rpc_allowlist::requires_operator(method),
+                "{method} should NOT require operator role"
+            );
+        }
+    }
+
+    #[test]
+    fn is_operator_derived_from_token_role() {
+        use crate::auth::TokenRole;
+
+        let read_only_ctx = AuditAuthContext::websocket_authenticated(
+            "user".to_string(),
+            "tok1".to_string(),
+            AuthTokenSource::AuthorizationHeader,
+            TokenRole::ReadOnly,
+        );
+        let operator_ctx = AuditAuthContext::websocket_authenticated(
+            "admin".to_string(),
+            "tok2".to_string(),
+            AuthTokenSource::AuthorizationHeader,
+            TokenRole::Operator,
+        );
+
+        // ReadOnly → is_operator = false
+        let is_op_readonly = read_only_ctx
+            .role
+            .map(|r| r == TokenRole::Operator)
+            .unwrap_or(false);
+        assert!(!is_op_readonly, "ReadOnly role must not be operator");
+
+        // Operator → is_operator = true
+        let is_op_operator = operator_ctx
+            .role
+            .map(|r| r == TokenRole::Operator)
+            .unwrap_or(false);
+        assert!(is_op_operator, "Operator role must be operator");
+
+        // No auth context → is_operator = false
+        let no_role: Option<TokenRole> = None;
+        let is_op_none = no_role.map(|r| r == TokenRole::Operator).unwrap_or(false);
+        assert!(!is_op_none, "None role must not be operator");
     }
 }

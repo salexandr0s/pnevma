@@ -119,6 +119,7 @@ final class BrowserToolBridge {
             try? await Task.sleep(for: .milliseconds(200))
 
             while session.viewModel.isLoading, ContinuousClock.now < deadline {
+                guard !Task.isCancelled else { return }
                 try? await Task.sleep(for: .milliseconds(200))
             }
 

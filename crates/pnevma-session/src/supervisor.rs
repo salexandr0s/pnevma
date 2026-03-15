@@ -41,27 +41,33 @@ impl StreamRedactor {
     }
 }
 
-fn open_append_only_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+async fn open_append_only_file(path: &Path) -> std::io::Result<tokio::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(tokio::fs::File::from_std(file))
+        let path = path.to_path_buf();
+        let std_file = tokio::task::spawn_blocking(move || {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            Ok::<std::fs::File, std::io::Error>(file)
+        })
+        .await
+        .map_err(std::io::Error::other)??;
+        Ok(tokio::fs::File::from_std(std_file))
     }
 
     #[cfg(not(unix))]
     {
-        let file = std::fs::OpenOptions::new()
+        Ok(tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)?;
-        Ok(tokio::fs::File::from_std(file))
+            .open(path)
+            .await?)
     }
 }
 
@@ -320,8 +326,8 @@ impl SessionSupervisor {
         if let Some(parent) = scrollback_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let _ = open_append_only_file(scrollback_path)?;
-        let _ = open_append_only_file(&scrollback_index_path)?;
+        let _ = open_append_only_file(scrollback_path).await?;
+        let _ = open_append_only_file(&scrollback_index_path).await?;
 
         self.create_tmux_session(session_id, cwd, command).await?;
         self.attach_tmux_client(session_id).await?;
@@ -585,7 +591,7 @@ impl SessionSupervisor {
     ) where
         R: AsyncRead + Send + Unpin + 'static,
     {
-        let sessions = self.sessions.clone();
+        let atomic_states = self.atomic_states.clone();
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
@@ -600,12 +606,12 @@ impl SessionSupervisor {
                 }
             }
 
-            let file = open_append_only_file(scrollback_path.as_path());
+            let file = open_append_only_file(scrollback_path.as_path()).await;
             let Ok(file) = file else {
                 return;
             };
             let file = Arc::new(Mutex::new(file));
-            let index = open_append_only_file(scrollback_index_path.as_path());
+            let index = open_append_only_file(scrollback_index_path.as_path()).await;
             let Ok(index) = index else {
                 return;
             };
@@ -625,13 +631,14 @@ impl SessionSupervisor {
                 };
                 let raw_chunk = String::from_utf8_lossy(&buf[..read]).to_string();
                 {
-                    let mut guard = sessions.write().await;
-                    if let Some(meta) = guard.get_mut(&session_id) {
-                        meta.last_heartbeat = Utc::now();
-                        meta.health = SessionHealth::Active;
-                        if meta.status != SessionStatus::Complete {
-                            meta.status = SessionStatus::Running;
-                        }
+                    let states = atomic_states.read().await;
+                    if let Some(state) = states.get(&session_id) {
+                        state
+                            .last_heartbeat
+                            .store(Utc::now().timestamp(), Ordering::Relaxed);
+                        state
+                            .health
+                            .store(health_to_u8(&SessionHealth::Active), Ordering::Relaxed);
                     }
                 }
                 if tx
@@ -689,6 +696,7 @@ impl SessionSupervisor {
 
     fn spawn_exit_task(&self, session_id: Uuid, mut child: Child) {
         let sessions = self.sessions.clone();
+        let atomic_states = self.atomic_states.clone();
         let inputs = self.inputs.clone();
         let tx = self.tx.clone();
         let tmux_tmpdir = self.tmux_tmpdir.clone();
@@ -713,6 +721,24 @@ impl SessionSupervisor {
                         meta.pid = None;
                         meta.exit_code = code;
                         meta.ended_at = Some(Utc::now());
+                    }
+                }
+            }
+
+            // Sync atomic state to match the transition applied above.
+            {
+                let states = atomic_states.read().await;
+                if let Some(state) = states.get(&session_id) {
+                    let now_ts = Utc::now().timestamp();
+                    state.last_heartbeat.store(now_ts, Ordering::Release);
+                    if tmux_alive {
+                        state
+                            .health
+                            .store(health_to_u8(&SessionHealth::Waiting), Ordering::Release);
+                    } else {
+                        state
+                            .health
+                            .store(health_to_u8(&SessionHealth::Complete), Ordering::Release);
                     }
                 }
             }
@@ -829,11 +855,32 @@ impl SessionSupervisor {
         self.mark_activity(session_id).await
     }
 
-    pub async fn register_restored(&self, mut meta: SessionMetadata) {
+    pub async fn register_restored(&self, mut meta: SessionMetadata) -> Result<(), SessionError> {
         meta.scrollback_path = self
             .canonical_scrollback_path(meta.id)
             .to_string_lossy()
             .to_string();
+
+        // Enforce the same session limit as spawn_shell. Only active
+        // (Running | Waiting) sessions count against the cap.
+        let is_active = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
+        {
+            let mut sessions = self.sessions.write().await;
+            if is_active {
+                let active_count = sessions
+                    .values()
+                    .filter(|m| matches!(m.status, SessionStatus::Running | SessionStatus::Waiting))
+                    .count();
+                if active_count >= self.max_sessions {
+                    return Err(SessionError::LimitReached(format!(
+                        "maximum of {} sessions reached",
+                        self.max_sessions
+                    )));
+                }
+            }
+            sessions.insert(meta.id, meta.clone());
+        }
+
         self.atomic_states.write().await.insert(
             meta.id,
             Arc::new(AtomicSessionState::new(
@@ -841,10 +888,11 @@ impl SessionSupervisor {
                 &meta.health,
             )),
         );
-        self.sessions.write().await.insert(meta.id, meta.clone());
+
         if self.tx.send(SessionEvent::Spawned(meta)).is_err() {
             tracing::debug!("no active subscribers for session spawned event");
         }
+        Ok(())
     }
 
     pub async fn read_scrollback(
@@ -920,13 +968,14 @@ impl SessionSupervisor {
         let now = Utc::now();
         let now_ts = now.timestamp();
 
-        // First pass: read atomics to find sessions whose health changed.
-        // This avoids taking the sessions write lock when nothing changed.
-        let changed: Vec<(Uuid, SessionHealth)> = {
+        // First pass: read atomics to find candidate sessions whose health may
+        // need a transition. This avoids taking the sessions write lock when
+        // nothing changed.
+        let candidates: Vec<Uuid> = {
             let atomic_states = self.atomic_states.read().await;
             let sessions = self.sessions.read().await;
 
-            let mut changes = Vec::new();
+            let mut ids = Vec::new();
             for (id, meta) in sessions.iter() {
                 if meta.status != SessionStatus::Running {
                     continue;
@@ -952,25 +1001,62 @@ impl SessionSupervisor {
                     .unwrap_or(meta.health.clone());
 
                 if current != next {
-                    changes.push((*id, next));
+                    ids.push(*id);
                 }
             }
-            changes
+            ids
         };
 
-        if changed.is_empty() {
+        if candidates.is_empty() {
             return;
         }
 
-        // Second pass: take write lock only for sessions that actually changed.
+        // Second pass: take write lock and re-read atomics before applying.
+        // Between the two passes, a reader task or mark_activity may have
+        // updated the heartbeat, making the earlier reading stale. Re-reading
+        // under the write lock prevents incorrect transitions.
         let mut sessions = self.sessions.write().await;
         let atomic_states = self.atomic_states.read().await;
-        for (id, next) in changed {
-            if let Some(meta) = sessions.get_mut(&id) {
-                meta.health = next.clone();
+        let now_ts = Utc::now().timestamp(); // refresh to latest wall-clock
+        for id in candidates {
+            let Some(meta) = sessions.get_mut(&id) else {
+                continue;
+            };
+
+            // Skip sessions that are no longer Running (may have exited
+            // between the two passes).
+            if meta.status != SessionStatus::Running {
+                continue;
             }
+
+            // Re-read the atomic heartbeat to get the freshest value.
+            let heartbeat_ts = atomic_states
+                .get(&id)
+                .map(|s| s.last_heartbeat.load(Ordering::Acquire))
+                .unwrap_or(meta.last_heartbeat.timestamp());
+
+            let delta_secs = now_ts.saturating_sub(heartbeat_ts);
+            let next = if delta_secs >= self.stuck_after.num_seconds() {
+                SessionHealth::Stuck
+            } else if delta_secs >= self.idle_after.num_seconds() {
+                SessionHealth::Idle
+            } else {
+                SessionHealth::Active
+            };
+
+            // Re-read current health under the lock and skip if unchanged.
+            let current = atomic_states
+                .get(&id)
+                .map(|s| u8_to_health(s.health.load(Ordering::Acquire)))
+                .unwrap_or(meta.health.clone());
+
+            if current == next {
+                continue;
+            }
+
+            meta.health = next.clone();
             if let Some(state) = atomic_states.get(&id) {
-                state.health.store(health_to_u8(&next), Ordering::Relaxed);
+                state.health.store(health_to_u8(&next), Ordering::Release);
             }
             if self
                 .tx
@@ -1224,7 +1310,8 @@ mod tests {
                 exit_code: None,
                 ended_at: None,
             })
-            .await;
+            .await
+            .expect("register_restored");
 
         let err = supervisor
             .read_scrollback(session_id, 0, 128)
@@ -1252,7 +1339,7 @@ mod tests {
             .await
             .expect("write attacker scrollback");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1300,7 +1387,7 @@ mod tests {
             .await
             .expect("write scrollback");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1343,7 +1430,7 @@ mod tests {
             .await
             .expect("write scrollback");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1386,7 +1473,7 @@ mod tests {
             .await
             .expect("write scrollback");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1426,7 +1513,7 @@ mod tests {
             .await
             .expect("create directory path");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1467,7 +1554,7 @@ mod tests {
             .await
             .expect("write invalid utf8");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1522,7 +1609,8 @@ mod tests {
                 exit_code: None,
                 ended_at: None,
             })
-            .await;
+            .await
+            .expect("register_restored");
         session_id
     }
 
@@ -1598,7 +1686,7 @@ mod tests {
         let scrollback = root.join("scrollback").join(format!("{session_id}.log"));
 
         // Register a session that is Complete — should not be changed by refresh
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1672,7 +1760,7 @@ mod tests {
         let session_id = Uuid::new_v4();
         let scrollback = root.join("scrollback").join(format!("{session_id}.log"));
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1793,7 +1881,7 @@ mod tests {
         let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
         let scrollback_index_path = scrollback_path.with_extension("idx");
 
-        supervisor
+        let _ = supervisor
             .register_restored(SessionMetadata {
                 id: session_id,
                 project_id: Uuid::new_v4(),
@@ -1900,7 +1988,7 @@ mod tests {
         for i in 0..3 {
             let id = Uuid::new_v4();
             let scrollback = root.join("scrollback").join(format!("{id}.log"));
-            supervisor
+            let _ = supervisor
                 .register_restored(SessionMetadata {
                     id,
                     project_id: Uuid::new_v4(),
@@ -1946,7 +2034,7 @@ mod tests {
         for status in [SessionStatus::Complete, SessionStatus::Error] {
             let id = Uuid::new_v4();
             let scrollback = root.join("scrollback").join(format!("{id}.log"));
-            supervisor
+            let _ = supervisor
                 .register_restored(SessionMetadata {
                     id,
                     project_id,
@@ -1971,7 +2059,7 @@ mod tests {
         for i in 0..2 {
             let id = Uuid::new_v4();
             let scrollback = root.join("scrollback").join(format!("{id}.log"));
-            supervisor
+            let _ = supervisor
                 .register_restored(SessionMetadata {
                     id,
                     project_id,

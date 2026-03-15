@@ -89,7 +89,11 @@ enum JSONValue: Codable, Equatable {
         case let value as UInt32:
             self = .int(Int(value))
         case let value as UInt64:
-            self = .int(Int(value))
+            if value <= UInt64(Int.max) {
+                self = .int(Int(value))
+            } else {
+                self = .double(Double(value))
+            }
         case let value as Double:
             self = .double(value)
         case let value as Float:

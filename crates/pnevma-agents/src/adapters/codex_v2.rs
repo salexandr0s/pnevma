@@ -647,9 +647,10 @@ fn map_notification(notif: &JsonRpcNotification) -> Option<AgentEvent> {
                 finish_reason,
             })
         }
-        "item/agentMessage/delta" => Some(AgentEvent::OutputChunk(
-            params.get("delta")?.as_str()?.to_string(),
-        )),
+        "item/agentMessage/delta" => Some(AgentEvent::OutputChunk(pnevma_redaction::redact_text(
+            params.get("delta")?.as_str()?,
+            &[],
+        ))),
         "thread/tokenUsage/updated" => Some(AgentEvent::UsageUpdate {
             tokens_in: params
                 .get("tokenUsage")?
@@ -665,9 +666,12 @@ fn map_notification(notif: &JsonRpcNotification) -> Option<AgentEvent> {
                 .unwrap_or(0),
             cost_usd: 0.0,
         }),
-        "codex/event/agent_message_delta" | "codex/event/agent_message_content_delta" => Some(
-            AgentEvent::OutputChunk(params.get("msg")?.get("delta")?.as_str()?.to_string()),
-        ),
+        "codex/event/agent_message_delta" | "codex/event/agent_message_content_delta" => {
+            Some(AgentEvent::OutputChunk(pnevma_redaction::redact_text(
+                params.get("msg")?.get("delta")?.as_str()?,
+                &[],
+            )))
+        }
         "codex/event/token_count" => Some(AgentEvent::UsageUpdate {
             tokens_in: params
                 .get("msg")?
@@ -703,7 +707,7 @@ fn map_notification(notif: &JsonRpcNotification) -> Option<AgentEvent> {
                 .to_string(),
         }),
         "output.chunk" => {
-            let text = params.get("text")?.as_str()?.to_string();
+            let text = pnevma_redaction::redact_text(params.get("text")?.as_str()?, &[]);
             Some(AgentEvent::OutputChunk(text))
         }
         "tool.use" => Some(AgentEvent::ToolUse {

@@ -76,6 +76,7 @@ class TerminalSurface {
     private static var ghosttyConfigOwner: TerminalConfig?
     private static var isAppInitialized = false
     private static let surfaceRegistry = NSHashTable<TerminalSurface>.weakObjects()
+    private static let surfaceRegistryLock = NSLock()
 
     /// Create the ghostty app singleton. Call once at launch from AppDelegate.
     @MainActor
@@ -162,6 +163,11 @@ class TerminalSurface {
     // MARK: - Instance
 
     private var surface: ghostty_surface_t?
+
+    /// Tracks the `Unmanaged.passRetained(self)` pointer handed to ghostty
+    /// as surface userdata. Must be released exactly once when the surface
+    /// is torn down to avoid leaking `self`.
+    private var retainedSelfPtr: UnsafeMutableRawPointer?
 
     /// The raw ghostty surface pointer, used for identity comparison
     /// when routing action callbacks to the correct TerminalHostView.
@@ -260,15 +266,30 @@ class TerminalSurface {
             Self.emitSmokeDiagnostic("ghostty_surface_new returned nil")
             Unmanaged<TerminalSurface>.fromOpaque(selfPtr).release()
         } else {
+            retainedSelfPtr = selfPtr
+            Self.surfaceRegistryLock.lock()
             Self.surfaceRegistry.add(self)
+            Self.surfaceRegistryLock.unlock()
         }
     }
 
+    /// Releases the retained `self` pointer previously passed to ghostty
+    /// as surface userdata. Safe to call multiple times — only the first
+    /// call releases; subsequent calls are no-ops.
+    func releaseRetainedSelfIfNeeded() {
+        guard let ptr = retainedSelfPtr else { return }
+        retainedSelfPtr = nil
+        Unmanaged<TerminalSurface>.fromOpaque(ptr).release()
+    }
+
     deinit {
+        releaseRetainedSelfIfNeeded()
         if let surface {
             ghostty_surface_free(surface)
         }
+        Self.surfaceRegistryLock.lock()
         Self.surfaceRegistry.remove(self)
+        Self.surfaceRegistryLock.unlock()
     }
 
     // MARK: - Layout
@@ -316,7 +337,10 @@ class TerminalSurface {
         if let ghosttyApp {
             ghostty_app_update_config(ghosttyApp, config)
         }
-        for surface in surfaceRegistry.allObjects {
+        surfaceRegistryLock.lock()
+        let surfaces = surfaceRegistry.allObjects
+        surfaceRegistryLock.unlock()
+        for surface in surfaces {
             surface.updateConfig(config)
         }
     }
@@ -413,6 +437,9 @@ class TerminalSurface {
     // MARK: - Callbacks
 
     private func handleClose(processAlive: Bool) {
+        // The close callback already consumed the retained pointer via
+        // takeRetainedValue(), so clear our tracking to prevent double-release.
+        retainedSelfPtr = nil
         onClose?(processAlive)
     }
 

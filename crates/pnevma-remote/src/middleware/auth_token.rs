@@ -39,12 +39,14 @@ pub async fn auth_token(
                         audit.subject,
                         audit.token_id,
                         token_source,
+                        audit.role,
                     )
                 } else {
                     AuditAuthContext::authenticated_request(
                         audit.subject,
                         audit.token_id,
                         token_source,
+                        audit.role,
                     )
                 };
                 let mut req = req;
@@ -211,7 +213,8 @@ mod tests {
     #[tokio::test]
     async fn middleware_sets_authenticated_request_audit_context() {
         let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
-        let issued = store.create_token("127.0.0.1", "operator-a");
+        let issued =
+            store.create_token("127.0.0.1", "operator-a", crate::auth::TokenRole::Operator);
         let app = Router::new()
             .route("/api/status", get(|| async { StatusCode::OK }))
             .route_layer(middleware::from_fn_with_state(
@@ -255,7 +258,11 @@ mod tests {
     #[tokio::test]
     async fn middleware_sets_websocket_audit_context_for_query_token() {
         let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
-        let issued = store.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let issued = store.create_token(
+            "127.0.0.1",
+            SHARED_PASSWORD_SUBJECT,
+            crate::auth::TokenRole::Operator,
+        );
         let app = Router::new()
             .route("/api/ws", get(|| async { StatusCode::OK }))
             .route_layer(middleware::from_fn_with_state(

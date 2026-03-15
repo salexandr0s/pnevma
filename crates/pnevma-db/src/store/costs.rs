@@ -121,11 +121,14 @@ impl Db {
     }
 
     /// Sum daily aggregates by provider over the given number of days.
+    ///
+    /// `days` must be positive; values less than 1 are clamped to 1.
     pub async fn get_usage_breakdown(
         &self,
         project_id: &str,
         days: i64,
     ) -> Result<Vec<CostDailyAggregateRow>, DbError> {
+        let days = days.max(1);
         let rows = sqlx::query_as::<_, CostDailyAggregateRow>(
             r#"
             SELECT
@@ -186,11 +189,14 @@ impl Db {
     }
 
     /// Daily totals aggregated across all providers for a trend chart.
+    ///
+    /// `days` must be positive; values less than 1 are clamped to 1.
     pub async fn get_usage_daily_trend(
         &self,
         project_id: &str,
         days: i64,
     ) -> Result<Vec<CostDailyAggregateRow>, DbError> {
+        let days = days.max(1);
         let rows = sqlx::query_as::<_, CostDailyAggregateRow>(
             r#"
             SELECT

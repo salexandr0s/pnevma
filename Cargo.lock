@@ -1744,6 +1744,7 @@ dependencies = [
  "dashmap",
  "libc",
  "pnevma-core",
+ "pnevma-redaction",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -1857,6 +1858,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1865,6 +1867,7 @@ name = "pnevma-git"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "pnevma-core",
  "proptest",
  "serde",
  "shell-words",

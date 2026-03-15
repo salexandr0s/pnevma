@@ -304,6 +304,25 @@ pub async fn generate_key(
         return Err(SshError::Command(stderr.to_string()));
     }
 
+    // Set restrictive permissions immediately — the key is unencrypted at this
+    // point, so we must not leave it world-readable even briefly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&key_path, perms).map_err(SshError::Io)?;
+
+        // Verify permissions were applied correctly before proceeding.
+        let meta = std::fs::metadata(&key_path).map_err(SshError::Io)?;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            return Err(SshError::Command(format!(
+                "failed to set key permissions: expected 0600, got {:o}",
+                mode
+            )));
+        }
+    }
+
     // Cleanup guard: remove unencrypted key files on any subsequent failure
     struct KeyCleanup<'a> {
         path: &'a str,
@@ -366,24 +385,6 @@ pub async fn generate_key(
     })?;
 
     cleanup.armed = false;
-
-    // Set restrictive permissions on the private key file
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&key_path, perms).map_err(SshError::Io)?;
-
-        // Verify permissions were set correctly
-        let meta = std::fs::metadata(&key_path).map_err(SshError::Io)?;
-        let mode = meta.permissions().mode() & 0o777;
-        if mode != 0o600 {
-            return Err(SshError::Command(format!(
-                "failed to set key permissions: expected 0600, got {:o}",
-                mode
-            )));
-        }
-    }
 
     let pub_path = format!("{}.pub", key_path_str);
     let (key_type_out, fingerprint) = fingerprint_key(Path::new(&pub_path), Some(ssh_dir))?;

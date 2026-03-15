@@ -26,7 +26,18 @@ struct WorkspaceRemoteTarget: Codable, Equatable {
     let proxyJump: String?
     let remotePath: String
 
+    /// Whether the remote path contains only safe printable characters (no control chars).
+    var isRemotePathSafe: Bool {
+        !remotePath.isEmpty && remotePath.unicodeScalars.allSatisfy {
+            !CharacterSet.controlCharacters.contains($0)
+        }
+    }
+
     var remoteShellCommand: String {
+        // Validate remotePath contains only printable characters to prevent shell injection.
+        guard isRemotePathSafe else {
+            return "echo 'Error: remote path contains invalid characters'; exit 1"
+        }
         let destination = "\(user)@\(host)"
         var args = ["ssh", "-p", String(port)]
         if let identityFile, !identityFile.isEmpty {
@@ -238,8 +249,11 @@ final class Workspace: Identifiable {
     var activeTabIndex: Int = 0
 
     /// The active tab's pane layout engine.
+    /// Both init paths guarantee at least one tab, so `tabs` is never empty.
     var layoutEngine: PaneLayoutEngine {
-        tabs[activeTabIndex].layoutEngine
+        precondition(!tabs.isEmpty, "Workspace must always have at least one tab")
+        let clampedIndex = min(max(activeTabIndex, 0), tabs.count - 1)
+        return tabs[clampedIndex].layoutEngine
     }
 
     /// When this workspace was created.

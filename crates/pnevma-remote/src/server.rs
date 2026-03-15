@@ -13,7 +13,11 @@ use crate::{
     auth::TokenStore,
     config::RemoteAccessConfig,
     middleware::{
-        audit::audit_log, auth_token::auth_token, cors::cors_layer, rate_limit::RateLimitState,
+        audit::audit_log,
+        auth_token::auth_token,
+        cors::cors_layer,
+        rate_limit::RateLimitState,
+        security_headers::{security_headers, SecurityHeadersConfig},
         tailscale_guard::tailscale_guard,
     },
     routes::{
@@ -101,14 +105,30 @@ pub async fn build_router(
             crate::middleware::rate_limit::rate_limit,
         ));
 
-    // Health check (no auth, no rate limit)
-    let health_router = Router::new().route("/health", get(health));
+    // Health check (no auth, rate-limited separately)
+    let health_rate_limit = RateLimitState::new(120); // 120 req/min
+    health_rate_limit.spawn_cleanup();
+    let health_router =
+        Router::new()
+            .route("/health", get(health))
+            .layer(middleware::from_fn_with_state(
+                health_rate_limit,
+                crate::middleware::rate_limit::rate_limit,
+            ));
 
     let mut app = Router::new()
         .merge(health_router)
         .merge(auth_router)
         .merge(api_router)
         .layer(middleware::from_fn(audit_log))
+        .layer(middleware::from_fn_with_state(
+            SecurityHeadersConfig {
+                hsts_max_age: config.hsts_max_age,
+                tls_active: tls_fingerprint.is_some(),
+                serve_frontend: config.serve_frontend,
+            },
+            security_headers,
+        ))
         .layer(cors_layer(config.allowed_origins.clone()))
         .layer(RequestBodyLimitLayer::new(2_097_152))
         .layer(middleware::from_fn(tailscale_guard));

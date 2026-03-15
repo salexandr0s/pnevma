@@ -9,13 +9,16 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth::{TokenStore, SHARED_PASSWORD_SUBJECT},
+    auth::{TokenRole, TokenStore, SHARED_PASSWORD_SUBJECT},
     middleware::audit::AuditAuthContext,
 };
 
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
     pub password: String,
+    /// Optional role for the issued token. Defaults to `ReadOnly`.
+    #[serde(default)]
+    pub role: Option<TokenRole>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,7 +42,8 @@ pub async fn create_token(
             .into_response();
     }
 
-    let issued = store.create_token(&addr.ip().to_string(), SHARED_PASSWORD_SUBJECT);
+    let role = body.role.unwrap_or(TokenRole::ReadOnly);
+    let issued = store.create_token(&addr.ip().to_string(), SHARED_PASSWORD_SUBJECT, role);
 
     tracing::info!(
         remote_ip = %addr.ip(),
@@ -53,6 +57,7 @@ pub async fn create_token(
         Json(serde_json::json!({
             "token": issued.token,
             "expires_at": issued.expires_at.to_rfc3339(),
+            "role": role,
         })),
     )
         .into_response();
@@ -160,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_token_response_sets_audit_context() {
         let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
-        let issued = store.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT);
+        let issued = store.create_token("127.0.0.1", SHARED_PASSWORD_SUBJECT, TokenRole::Operator);
         let app = Router::new()
             .route("/api/auth/token", delete(revoke_token))
             .with_state(Arc::clone(&store));

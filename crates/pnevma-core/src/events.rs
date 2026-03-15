@@ -2,6 +2,7 @@ use crate::{ProjectId, SessionId, TaskId, TraceId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -129,15 +130,22 @@ pub trait EventStore: Send + Sync {
     async fn query(&self, filter: EventFilter) -> Vec<EventRecord>;
 }
 
+/// Maximum number of events retained in the in-memory store.
+const MAX_IN_MEMORY_EVENTS: usize = 10_000;
+
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryEventStore {
-    inner: Arc<RwLock<Vec<EventRecord>>>,
+    inner: Arc<RwLock<VecDeque<EventRecord>>>,
 }
 
 #[async_trait::async_trait]
 impl EventStore for InMemoryEventStore {
     async fn append(&self, event: EventRecord) {
-        self.inner.write().await.push(event);
+        let mut store = self.inner.write().await;
+        if store.len() >= MAX_IN_MEMORY_EVENTS {
+            store.pop_front();
+        }
+        store.push_back(event);
     }
 
     async fn query(&self, filter: EventFilter) -> Vec<EventRecord> {

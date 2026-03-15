@@ -1,15 +1,39 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{FromRequest, Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::auth::TokenRole;
+use crate::middleware::audit::AuditAuthContext;
 use crate::CommandRouter;
+
+/// Check that the authenticated caller has `Operator` role.
+/// Returns a `403 Forbidden` JSON response on failure.
+#[allow(clippy::result_large_err)]
+fn require_operator(
+    auth: &Option<Extension<AuditAuthContext>>,
+) -> Result<(), axum::response::Response> {
+    let is_operator = auth
+        .as_ref()
+        .and_then(|ext| ext.role)
+        .map(|r| r == TokenRole::Operator)
+        .unwrap_or(false);
+    if is_operator {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(RpcResponse::failure("requires operator role".to_string())),
+        )
+            .into_response())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RpcRequest {
@@ -92,8 +116,12 @@ pub async fn fleet_snapshot(State(r): State<Arc<dyn CommandRouter>>) -> impl Int
 
 pub async fn fleet_action(
     State(r): State<Arc<dyn CommandRouter>>,
+    auth: Option<Extension<AuditAuthContext>>,
     Json(params): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = require_operator(&auth) {
+        return resp;
+    }
     call(&r, "fleet.action", params).await
 }
 
@@ -121,16 +149,24 @@ pub async fn task_list(State(r): State<Arc<dyn CommandRouter>>) -> impl IntoResp
 
 pub async fn task_create(
     State(r): State<Arc<dyn CommandRouter>>,
+    auth: Option<Extension<AuditAuthContext>>,
     Json(params): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = require_operator(&auth) {
+        return resp;
+    }
     call(&r, "task.create", params).await
 }
 
 pub async fn task_dispatch(
     State(r): State<Arc<dyn CommandRouter>>,
+    auth: Option<Extension<AuditAuthContext>>,
     Path(id): Path<String>,
     Json(mut params): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = require_operator(&auth) {
+        return resp;
+    }
     inject_param(&mut params, "task_id", id);
     call(&r, "task.dispatch", params).await
 }
@@ -192,15 +228,23 @@ pub async fn workflow_list_instances(State(r): State<Arc<dyn CommandRouter>>) ->
 
 pub async fn workflow_instantiate(
     State(r): State<Arc<dyn CommandRouter>>,
+    auth: Option<Extension<AuditAuthContext>>,
     Json(params): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = require_operator(&auth) {
+        return resp;
+    }
     call(&r, "workflow.instantiate", params).await
 }
 
 pub async fn workflow_dispatch(
     State(r): State<Arc<dyn CommandRouter>>,
+    auth: Option<Extension<AuditAuthContext>>,
     Json(params): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = require_operator(&auth) {
+        return resp;
+    }
     call(&r, "workflow.dispatch", params).await
 }
 
@@ -217,13 +261,42 @@ pub async fn workflow_get_instance(
 
 pub async fn rpc(
     State(r): State<Arc<dyn CommandRouter>>,
-    Json(body): Json<RpcRequest>,
+    req: axum::extract::Request,
 ) -> impl IntoResponse {
+    // Extract role from auth context (set by auth_token middleware).
+    let is_operator = req
+        .extensions()
+        .get::<crate::middleware::audit::AuditAuthContext>()
+        .and_then(|ctx| ctx.role)
+        .map(|r| r == crate::auth::TokenRole::Operator)
+        .unwrap_or(false);
+
+    let body: RpcRequest = match axum::Json::from_request(req, &()).await {
+        Ok(axum::Json(b)) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RpcResponse::failure(e.to_string())),
+            )
+                .into_response();
+        }
+    };
+
     if !super::rpc_allowlist::is_allowed(&body.method) {
         return (
             StatusCode::FORBIDDEN,
             Json(RpcResponse::failure(format!(
                 "method not allowed via RPC: {}",
+                body.method
+            ))),
+        )
+            .into_response();
+    }
+    if super::rpc_allowlist::requires_operator(&body.method) && !is_operator {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(RpcResponse::failure(format!(
+                "method requires operator role: {}",
                 body.method
             ))),
         )
@@ -236,8 +309,11 @@ pub async fn rpc(
 mod tests {
     use super::super::rpc_allowlist;
     use super::{fleet_action, fleet_snapshot, task_dispatch};
+    use crate::auth::TokenRole;
+    use crate::middleware::audit::AuditAuthContext;
     use crate::CommandRouter;
     use async_trait::async_trait;
+    use axum::Extension;
     use axum::{
         extract::{Path, State},
         Json,
@@ -280,8 +356,15 @@ mod tests {
         let recorder = Arc::new(RecordingRouter::default());
         let router: Arc<dyn CommandRouter> = recorder.clone();
 
+        let operator_auth = Some(Extension(AuditAuthContext::authenticated_request(
+            "test".to_string(),
+            "tok-1".to_string(),
+            crate::middleware::audit::AuthTokenSource::AuthorizationHeader,
+            TokenRole::Operator,
+        )));
         let _ = task_dispatch(
             State(router),
+            operator_auth,
             Path("task-123".to_string()),
             Json(json!({ "priority": "high" })),
         )
@@ -326,7 +409,13 @@ mod tests {
             "session_id": "session-123"
         });
 
-        let _ = fleet_action(State(router), Json(params.clone())).await;
+        let operator_auth = Some(Extension(AuditAuthContext::authenticated_request(
+            "test".to_string(),
+            "tok-1".to_string(),
+            crate::middleware::audit::AuthTokenSource::AuthorizationHeader,
+            TokenRole::Operator,
+        )));
+        let _ = fleet_action(State(router), operator_auth, Json(params.clone())).await;
 
         assert_eq!(
             recorder.method.lock().expect("method mutex").as_deref(),

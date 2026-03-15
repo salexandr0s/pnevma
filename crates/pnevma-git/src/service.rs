@@ -88,13 +88,28 @@ impl GitService {
                                     leases.entry(task_id)
                                 {
                                     let branch = current_branch.clone().unwrap_or_default();
+                                    // Use filesystem mtime as last_active heuristic to
+                                    // avoid resetting stale worktrees to "just now".
+                                    let last_active = std::fs::metadata(&canonical)
+                                        .and_then(|m| m.modified())
+                                        .ok()
+                                        .and_then(|t| {
+                                            chrono::DateTime::<Utc>::from_timestamp(
+                                                t.duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs()
+                                                    as i64,
+                                                0,
+                                            )
+                                        })
+                                        .unwrap_or_else(Utc::now);
                                     entry.insert(WorktreeLease {
                                         id: Uuid::new_v4(),
                                         task_id,
                                         branch,
                                         path: canonical.to_string_lossy().to_string(),
-                                        started_at: Utc::now(),
-                                        last_active: Utc::now(),
+                                        started_at: last_active,
+                                        last_active,
                                         status: LeaseStatus::Active,
                                     });
                                     count += 1;
@@ -170,9 +185,16 @@ impl GitService {
             return Err(e);
         }
 
-        let canonical_path = tokio::fs::canonicalize(&path).await.map_err(|e| {
-            GitError::Command(format!("worktree path unavailable after create: {e}"))
-        })?;
+        let canonical_path = match tokio::fs::canonicalize(&path).await {
+            Ok(p) => p,
+            Err(e) => {
+                // Clean up placeholder on post-insertion failure
+                self.leases.lock().await.remove(&task_id);
+                return Err(GitError::Command(format!(
+                    "worktree path unavailable after create: {e}"
+                )));
+            }
+        };
 
         // Update placeholder with real data
         let lease = WorktreeLease {
@@ -194,7 +216,7 @@ impl GitService {
         task_id: Uuid,
         delete_branch: bool,
     ) -> Result<(), GitError> {
-        // Remove lease from the map first, then drop the lock before doing git I/O.
+        // Extract lease but re-insert on failure so it's not lost.
         let lease = {
             let mut leases = self.leases.lock().await;
             leases
@@ -203,10 +225,19 @@ impl GitService {
         };
         // Lock is dropped here -- safe to perform git operations.
 
-        self.git(["worktree", "remove", "--force", &lease.path])
-            .await?;
+        if let Err(e) = self
+            .git(["worktree", "remove", "--force", &lease.path])
+            .await
+        {
+            // Re-insert lease on failure so it's not orphaned
+            self.leases.lock().await.insert(task_id, lease);
+            return Err(e);
+        }
         if delete_branch {
-            self.git(["branch", "-D", &lease.branch]).await?;
+            if let Err(e) = self.git(["branch", "-D", &lease.branch]).await {
+                // Worktree is already removed; lease stays removed but log the branch error
+                tracing::warn!(%task_id, error = %e, "failed to delete branch after worktree removal");
+            }
         }
         Ok(())
     }
@@ -269,11 +300,11 @@ impl GitService {
     }
 
     pub async fn list_worktrees(&self) -> Vec<WorktreeLease> {
-        let mut leases: Vec<_> = self.leases.lock().await.values().cloned().collect();
-        for lease in &mut leases {
+        let mut map = self.leases.lock().await;
+        for lease in map.values_mut() {
             lease.mark_stale_if_needed(self.stale_after);
         }
-        leases
+        map.values().cloned().collect()
     }
 
     /// Reap stale worktree leases whose `last_active` exceeds `stale_after`.

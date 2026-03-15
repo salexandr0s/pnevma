@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+pnevma-core = { path = "../pnevma-core" }
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

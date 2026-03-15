@@ -67,6 +67,8 @@ pub struct PnevmaHandle {
     next_async_callback_id: AtomicU64,
     handle_generation: u64,
     shutting_down: Arc<AtomicBool>,
+    /// Guards against double-destroy: first caller wins, subsequent calls are no-ops.
+    destroyed: AtomicBool,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
@@ -294,6 +296,39 @@ impl Drop for PendingAsyncCallbackGuard {
     }
 }
 
+/// RAII guard ensuring `release_cb(ctx)` is called exactly once on panic.
+/// Defuse when ownership transfers to `finish_async_callback` or `PendingAsyncCallbackGuard`.
+struct AsyncContextReleaseGuard {
+    ctx: *mut (),
+    release_cb: AsyncContextRelease,
+    active: bool,
+}
+
+impl AsyncContextReleaseGuard {
+    fn new(ctx: *mut (), release_cb: AsyncContextRelease) -> Self {
+        Self {
+            ctx,
+            release_cb,
+            active: true,
+        }
+    }
+    fn defuse(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for AsyncContextReleaseGuard {
+    fn drop(&mut self) {
+        if self.active {
+            (self.release_cb)(self.ctx);
+        }
+    }
+}
+
+// Need Send+Sync for catch_unwind
+unsafe impl Send for AsyncContextReleaseGuard {}
+unsafe impl Sync for AsyncContextReleaseGuard {}
+
 fn snapshot_session_output_callback(
     cb: &Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
 ) -> Option<Arc<SessionOutputCallbackRegistration>> {
@@ -360,6 +395,10 @@ const MAX_PARAMS_LEN: usize = 16 * 1024 * 1024; // 16 MB
 const MAX_METHOD_LEN: usize = 128;
 
 fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, *mut PnevmaResult> {
+    debug_assert!(
+        !params_json.is_null() || params_len == 0,
+        "non-null params_json required when params_len > 0"
+    );
     if params_json.is_null() {
         return Ok(Value::Object(serde_json::Map::new()));
     }
@@ -369,10 +408,6 @@ fn parse_params(params_json: *const c_char, params_len: usize) -> Result<Value, 
             params_len, MAX_PARAMS_LEN
         )));
     }
-    debug_assert!(
-        !params_json.is_null() || params_len == 0,
-        "non-null params_json required when params_len > 0"
-    );
     // SAFETY: The caller (Swift side) must guarantee that `params_json` points to a valid
     // allocation of at least `params_len` bytes. The Swift wrapper always passes
     // `string.utf8.count` for the length, which matches the allocation size.
@@ -584,7 +619,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             );
         });
 
-        Box::into_raw(Box::new(PnevmaHandle {
+        Arc::into_raw(Arc::new(PnevmaHandle {
             runtime,
             state,
             session_output_cb: Arc::new(std::sync::Mutex::new(None)),
@@ -594,8 +629,9 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             next_async_callback_id: AtomicU64::new(1),
             handle_generation: GLOBAL_HANDLE_GENERATION.fetch_add(1, Ordering::SeqCst),
             shutting_down,
+            destroyed: AtomicBool::new(false),
             shutdown: shutdown_tx,
-        }))
+        })) as *mut PnevmaHandle
     });
 
     result.unwrap_or(ptr::null_mut())
@@ -610,13 +646,22 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
     if handle.is_null() {
         return;
     }
+    // SAFETY: handle is non-null (checked above). We read the `destroyed` flag
+    // before taking ownership to prevent double Arc::from_raw on the same pointer.
+    let handle_ref = unsafe { &*handle };
+    if handle_ref
+        .destroyed
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        // Already destroyed by another caller — no-op.
+        return;
+    }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         // Mark as shutting down BEFORE reclaiming ownership — narrows the
         // concurrent-destroy / concurrent-call race window.
-        unsafe { &*handle }
-            .shutting_down
-            .store(true, Ordering::SeqCst);
-        let handle = unsafe { Box::from_raw(handle) };
+        handle_ref.shutting_down.store(true, Ordering::SeqCst);
+        let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
         let _ = handle.shutdown.send(true);
         if let Ok(mut task_guard) = handle.session_output_task.lock() {
             if let Some(task) = task_guard.take() {
@@ -633,10 +678,17 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
         for callback in pending_callbacks {
             release_async_context(callback);
         }
-        // Give tasks time to finish gracefully
-        handle
-            .runtime
-            .shutdown_timeout(std::time::Duration::from_secs(5));
+        // Wait briefly for in-flight calls to release their Arc clones
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while Arc::strong_count(&handle) > 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        match Arc::try_unwrap(handle) {
+            Ok(inner) => inner
+                .runtime
+                .shutdown_timeout(std::time::Duration::from_secs(5)),
+            Err(_) => { /* in-flight calls still running; Runtime drops via background shutdown */ }
+        }
     }));
 }
 
@@ -662,7 +714,10 @@ pub extern "C" fn pnevma_call(
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let handle = unsafe { &*handle };
+        // Increment Arc refcount so this call keeps the handle alive even if
+        // pnevma_destroy runs concurrently.
+        unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
+        let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 
         if handle.shutting_down.load(Ordering::SeqCst) {
             return make_error_result("handle is shutting down");
@@ -751,9 +806,17 @@ pub extern "C" fn pnevma_call_async(
     }
 
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        let handle = unsafe { &*handle };
+        // Increment Arc refcount so this call keeps the handle alive even if
+        // pnevma_destroy runs concurrently.
+        unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
+        let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
+
+        // RAII guard: if we panic before ownership of cb_ctx transfers to
+        // finish_async_callback or PendingAsyncCallbackGuard, release it.
+        let mut ctx_guard = AsyncContextReleaseGuard::new(cb_ctx, release_cb);
 
         if handle.shutting_down.load(Ordering::SeqCst) {
+            ctx_guard.defuse();
             finish_async_callback(
                 AsyncCallbackWrapper {
                     cb,
@@ -770,6 +833,7 @@ pub extern "C" fn pnevma_call_async(
             Ok(s) => s.to_owned(),
             Err(_) => {
                 let r = make_error_result("invalid UTF-8 in method");
+                ctx_guard.defuse();
                 finish_async_callback(
                     AsyncCallbackWrapper {
                         cb,
@@ -783,6 +847,7 @@ pub extern "C" fn pnevma_call_async(
             }
         };
         if let Err(r) = validate_method_name(&method_str) {
+            ctx_guard.defuse();
             finish_async_callback(
                 AsyncCallbackWrapper {
                     cb,
@@ -798,6 +863,7 @@ pub extern "C" fn pnevma_call_async(
         let params = match parse_params(params_json, params_len) {
             Ok(v) => v,
             Err(r) => {
+                ctx_guard.defuse();
                 finish_async_callback(
                     AsyncCallbackWrapper {
                         cb,
@@ -815,6 +881,7 @@ pub extern "C" fn pnevma_call_async(
         let callback_id = handle
             .next_async_callback_id
             .fetch_add(1, Ordering::Relaxed);
+        ctx_guard.defuse();
         let pending_callback = PendingAsyncCallbackGuard::insert(
             Arc::clone(&handle.pending_async_callbacks),
             Arc::clone(&handle.shutting_down),
@@ -911,7 +978,11 @@ pub extern "C" fn pnevma_set_session_output_callback(
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        let handle = unsafe { &*handle };
+        // Increment Arc refcount so this call keeps the handle alive even if
+        // pnevma_destroy runs concurrently.
+        unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
+        let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
+
         if let Ok(mut task_guard) = handle.session_output_task.lock() {
             if let Some(task) = task_guard.take() {
                 task.abort();
@@ -940,6 +1011,7 @@ pub extern "C" fn pnevma_set_session_output_callback(
         if let Ok(mut task_guard) = handle.session_output_task.lock() {
             *task_guard = Some(join);
         }
+        drop(handle);
     }));
 }
 

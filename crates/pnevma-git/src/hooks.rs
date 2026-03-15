@@ -138,6 +138,11 @@ pub fn validate_hook_binary(argv0: &str, repo_root: &Path) -> Result<PathBuf, Ho
                 canonical.display()
             )));
         }
+        debug!(
+            binary = %argv0,
+            resolved = %canonical.display(),
+            "hook binary validated within repo root"
+        );
     }
 
     Ok(binary_path)
@@ -173,9 +178,14 @@ pub async fn run_single_hook(
 
     let timeout_dur = Duration::from_secs(hook.timeout_seconds);
 
-    let output = match tokio::time::timeout(timeout_dur, cmd.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => {
+    // Spawn the child explicitly so we can kill it on timeout (prevents orphaned processes).
+    let mut child = match cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
             return HookResult {
                 hook_name: hook.name.clone(),
                 phase,
@@ -186,7 +196,44 @@ pub async fn run_single_hook(
                 success: false,
             };
         }
+    };
+
+    // Take stdout/stderr before wait so we can read them and still kill on timeout.
+    let child_stdout = child.stdout.take();
+    let child_stderr = child.stderr.take();
+
+    let output = match tokio::time::timeout(timeout_dur, child.wait()).await {
+        Ok(Ok(status)) => {
+            // Read captured output after the process has exited.
+            use tokio::io::AsyncReadExt;
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            if let Some(mut out) = child_stdout {
+                let _ = out.read_to_end(&mut stdout_buf).await;
+            }
+            if let Some(mut err) = child_stderr {
+                let _ = err.read_to_end(&mut stderr_buf).await;
+            }
+            std::process::Output {
+                status,
+                stdout: stdout_buf,
+                stderr: stderr_buf,
+            }
+        }
+        Ok(Err(e)) => {
+            return HookResult {
+                hook_name: hook.name.clone(),
+                phase,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: format!("wait error: {}", e),
+                duration_ms: start.elapsed().as_millis() as u64,
+                success: false,
+            };
+        }
         Err(_) => {
+            // Kill the child on timeout to prevent orphaned processes.
+            let _ = child.kill().await;
             return HookResult {
                 hook_name: hook.name.clone(),
                 phase,
@@ -210,14 +257,14 @@ pub async fn run_single_hook(
         }
     }
 
-    // Truncate long output
+    // Truncate long output (UTF-8-safe to avoid panics on multi-byte chars)
     const MAX_OUTPUT: usize = 4096;
     if stdout.len() > MAX_OUTPUT {
-        stdout.truncate(MAX_OUTPUT);
+        pnevma_core::truncate_utf8_safe(&mut stdout, MAX_OUTPUT);
         stdout.push_str("...(truncated)");
     }
     if stderr.len() > MAX_OUTPUT {
-        stderr.truncate(MAX_OUTPUT);
+        pnevma_core::truncate_utf8_safe(&mut stderr, MAX_OUTPUT);
         stderr.push_str("...(truncated)");
     }
 
@@ -249,14 +296,37 @@ pub async fn run_hooks(
     }
 
     // Validate hook binaries that exist on disk (symlink-escape check).
-    // Absolute paths and bare command names (resolved via PATH at runtime) are
-    // skipped — only repo-relative paths can be meaningfully validated.
+    // Absolute paths are skipped — only repo-relative paths can be meaningfully validated.
+    // Bare command names (resolved via PATH at runtime) are audited: if the resolved
+    // path falls outside the repo root, we log an informational warning for awareness.
     for hook in hooks {
         let argv0 = &hook.argv[0];
         let argv0_path = Path::new(argv0);
         if !argv0_path.is_absolute() && argv0_path.components().count() > 1 {
             // Repo-relative path (e.g. ".hooks/lint.sh") — validate it.
             validate_hook_binary(argv0, worktree_path)?;
+        } else if !argv0_path.is_absolute() && !argv0.contains('/') {
+            // Bare command name (e.g. "make", "cargo") — audit-log its resolved path.
+            if let Ok(output) = std::process::Command::new("which").arg(argv0).output() {
+                if output.status.success() {
+                    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let resolved_path = Path::new(&resolved);
+                    let outside_repo =
+                        match (resolved_path.canonicalize(), worktree_path.canonicalize()) {
+                            (Ok(canon_resolved), Ok(canon_repo)) => {
+                                !canon_resolved.starts_with(&canon_repo)
+                            }
+                            _ => true,
+                        };
+                    if outside_repo {
+                        info!(
+                            hook = %argv0,
+                            resolved = %resolved,
+                            "hook binary resolved outside repository root"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -264,7 +334,12 @@ pub async fn run_hooks(
     let mut results = Vec::with_capacity(hooks.len());
 
     for hook in hooks {
-        debug!(hook = %hook.name, phase = %phase.as_str(), "running hook");
+        info!(
+            hook = %hook.name,
+            binary = %hook.argv[0],
+            phase = %phase.as_str(),
+            "executing hook"
+        );
         let result = run_single_hook(
             hook,
             phase,

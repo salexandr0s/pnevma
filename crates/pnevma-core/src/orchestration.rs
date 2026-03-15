@@ -1,6 +1,6 @@
 use crate::{Priority, TaskId};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
@@ -66,6 +66,7 @@ struct Inner {
     active: usize,
     seq: u64,
     queue: BinaryHeap<QueueItem>,
+    active_or_queued: HashSet<TaskId>,
 }
 
 #[derive(Debug)]
@@ -81,19 +82,26 @@ impl DispatchOrchestrator {
                 active: 0,
                 seq: 0,
                 queue: BinaryHeap::new(),
+                active_or_queued: HashSet::new(),
             }),
         }
     }
 
     pub async fn request_dispatch(&self, req: DispatchRequest) -> DispatchResult {
         let mut inner = self.inner.lock().await;
+        // Deduplicate: reject if this task ID is already active or queued
+        if !inner.active_or_queued.insert(req.task_id) {
+            return DispatchResult::Queued {
+                position: inner.queue.len(),
+            };
+        }
         if inner.active < inner.max_concurrent {
             inner.active += 1;
             return DispatchResult::Started;
         }
 
         let seq = inner.seq;
-        inner.seq += 1;
+        inner.seq = inner.seq.wrapping_add(1);
         inner.queue.push(QueueItem { seq, req });
 
         DispatchResult::Queued {
@@ -101,14 +109,20 @@ impl DispatchOrchestrator {
         }
     }
 
-    pub async fn complete_one(&self) -> Option<DispatchRequest> {
+    /// Mark one active task as complete and dequeue the next if available.
+    /// `completed_task_id` is removed from the dedup set so it can be re-dispatched later.
+    pub async fn complete_one(&self, completed_task_id: Option<TaskId>) -> Option<DispatchRequest> {
         let mut inner = self.inner.lock().await;
         if inner.active > 0 {
             inner.active -= 1;
         }
+        // Remove completed task from dedup set so it can be re-dispatched.
+        if let Some(id) = completed_task_id {
+            inner.active_or_queued.remove(&id);
+        }
 
         let next = inner.queue.pop().map(|i| i.req);
-        if next.is_some() {
+        if let Some(ref _req) = next {
             inner.active += 1;
         }
         next
@@ -158,7 +172,7 @@ mod tests {
             .await;
         assert!(matches!(second, DispatchResult::Queued { .. }));
 
-        let next = pool.complete_one().await;
+        let next = pool.complete_one(None).await;
         assert!(next.is_some());
     }
 
@@ -190,7 +204,7 @@ mod tests {
                 expected.sort_by_key(|(rank, seq, _)| (*rank, *seq));
 
                 let mut actual = Vec::new();
-                while let Some(next) = pool.complete_one().await {
+                while let Some(next) = pool.complete_one(None).await {
                     actual.push(next.task_id);
                 }
 

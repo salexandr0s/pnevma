@@ -1,5 +1,39 @@
 import Foundation
 
+/// Thread-safe wrapper that ensures a CheckedContinuation is resumed exactly once.
+/// Used to prevent double-resume when a callback fires after a timeout.
+private final class ContinuationGuard<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let method: String
+    private var continuation: CheckedContinuation<T, Error>?
+
+    init(method: String) {
+        self.method = method
+    }
+
+    func setContinuation(_ cont: CheckedContinuation<T, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.continuation = cont
+    }
+
+    func takeContinuation() -> CheckedContinuation<T, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let cont = continuation
+        continuation = nil
+        return cont
+    }
+
+    deinit {
+        // Safety net: if neither the callback nor the timeout consumed the
+        // continuation, resume with an error to prevent an indefinite hang.
+        if let cont = continuation {
+            cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
+        }
+    }
+}
+
 /// Convenience wrapper for making typed calls to the Rust backend.
 /// All calls are dispatched to a background queue to avoid blocking the main thread.
 protocol CommandCalling: Sendable {
@@ -22,40 +56,66 @@ actor CommandBus: CommandCalling {
     }
 
     /// Call a Rust command with pre-serialized JSON params and decode the result.
+    /// Races the FFI callback against a 30-second timeout to prevent indefinite hangs.
     func callRaw<T: Decodable>(method: String, paramsJSON: String) async throws -> T {
-        return try await withCheckedThrowingContinuation { continuation in
-            bridge.callAsync(method: method, params: paramsJSON) { resultJSON in
-                guard let result = resultJSON else {
-                    continuation.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
-                    return
-                }
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            let continuationGuard = ContinuationGuard<T>(method: method)
 
-                guard result.ok else {
-                    continuation.resume(
-                        throwing: PnevmaError.backendError(method: method, message: result.payload)
-                    )
-                    return
-                }
+            group.addTask {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                    continuationGuard.setContinuation(continuation)
 
-                guard let data = result.payload.data(using: .utf8) else {
-                    continuation.resume(throwing: PnevmaError.invalidResponse)
-                    return
-                }
+                    self.bridge.callAsync(method: method, params: paramsJSON) { resultJSON in
+                        guard let cont: CheckedContinuation<T, Error> = continuationGuard.takeContinuation() else { return }
 
-                do {
-                    let decoder = PnevmaJSON.decoder()
-                    let decoded = try decoder.decode(T.self, from: data)
-                    continuation.resume(returning: decoded)
-                } catch {
-                    continuation.resume(
-                        throwing: PnevmaError.decodingFailed(method: method, error: error)
-                    )
+                        guard let result = resultJSON else {
+                            cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
+                            return
+                        }
+
+                        guard result.ok else {
+                            cont.resume(
+                                throwing: PnevmaError.backendError(method: method, message: result.payload)
+                            )
+                            return
+                        }
+
+                        guard let data = result.payload.data(using: .utf8) else {
+                            cont.resume(throwing: PnevmaError.invalidResponse)
+                            return
+                        }
+
+                        do {
+                            let decoder = PnevmaJSON.decoder()
+                            let decoded = try decoder.decode(T.self, from: data)
+                            cont.resume(returning: decoded)
+                        } catch {
+                            cont.resume(
+                                throwing: PnevmaError.decodingFailed(method: method, error: error)
+                            )
+                        }
+                    }
                 }
             }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+                if let cont = continuationGuard.takeContinuation() {
+                    cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
+                }
+                throw PnevmaError.bridgeCallFailed(method: method)
+            }
+
+            guard let result = try await group.next() else {
+                throw PnevmaError.bridgeCallFailed(method: method)
+            }
+            group.cancelAll()
+            return result
         }
     }
 
     /// Call a Rust command and decode the JSON result.
+    /// Races the FFI callback against a 30-second timeout to prevent indefinite hangs.
     func call<T: Decodable>(method: String, params: Encodable? = nil) async throws -> T {
         let paramsJSON: String
         if let params = params {
@@ -67,35 +127,60 @@ actor CommandBus: CommandCalling {
             paramsJSON = "{}"
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            bridge.callAsync(method: method, params: paramsJSON) { resultJSON in
-                guard let result = resultJSON else {
-                    continuation.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
-                    return
-                }
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            // Continuation guard prevents double-resume when callback fires after timeout.
+            let continuationGuard = ContinuationGuard<T>(method: method)
 
-                guard result.ok else {
-                    continuation.resume(
-                        throwing: PnevmaError.backendError(method: method, message: result.payload)
-                    )
-                    return
-                }
+            group.addTask {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                    continuationGuard.setContinuation(continuation)
 
-                guard let data = result.payload.data(using: .utf8) else {
-                    continuation.resume(throwing: PnevmaError.invalidResponse)
-                    return
-                }
+                    self.bridge.callAsync(method: method, params: paramsJSON) { resultJSON in
+                        guard let cont: CheckedContinuation<T, Error> = continuationGuard.takeContinuation() else { return }
 
-                do {
-                    let decoder = PnevmaJSON.decoder()
-                    let decoded = try decoder.decode(T.self, from: data)
-                    continuation.resume(returning: decoded)
-                } catch {
-                    continuation.resume(
-                        throwing: PnevmaError.decodingFailed(method: method, error: error)
-                    )
+                        guard let result = resultJSON else {
+                            cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
+                            return
+                        }
+
+                        guard result.ok else {
+                            cont.resume(
+                                throwing: PnevmaError.backendError(method: method, message: result.payload)
+                            )
+                            return
+                        }
+
+                        guard let data = result.payload.data(using: .utf8) else {
+                            cont.resume(throwing: PnevmaError.invalidResponse)
+                            return
+                        }
+
+                        do {
+                            let decoder = PnevmaJSON.decoder()
+                            let decoded = try decoder.decode(T.self, from: data)
+                            cont.resume(returning: decoded)
+                        } catch {
+                            cont.resume(
+                                throwing: PnevmaError.decodingFailed(method: method, error: error)
+                            )
+                        }
+                    }
                 }
             }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds
+                if let cont = continuationGuard.takeContinuation() {
+                    cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
+                }
+                throw PnevmaError.bridgeCallFailed(method: method)
+            }
+
+            guard let result = try await group.next() else {
+                throw PnevmaError.bridgeCallFailed(method: method)
+            }
+            group.cancelAll()
+            return result
         }
     }
 }

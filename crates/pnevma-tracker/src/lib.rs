@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod adapter;
 pub mod error;
 pub mod linear;
