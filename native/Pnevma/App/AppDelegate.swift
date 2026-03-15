@@ -2725,6 +2725,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         browserDrawerPresentationModel.session = session
         let captures = session?.isDrawerVisible ?? false
+        // Enforce single-drawer: dismiss tool drawer when browser drawer presents
+        if captures && toolDrawerChromeState.isPresented {
+            closeToolDrawer()
+        }
         browserDrawerChromeState.isPresented = captures
         host.capturesPointerEvents = captures
         browserDrawerOverlayBlockerView?.capturesPointerEvents = captures
@@ -2756,6 +2760,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if session.isDrawerVisible {
             closeBrowserDrawer()
         } else {
+            if toolDrawerChromeState.isPresented { closeToolDrawer() }
             browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
             session.showDrawer()
             refreshBrowserDrawerOverlayRootView()
@@ -2787,6 +2792,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if !session.isDrawerVisible {
             browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
         }
+        if toolDrawerChromeState.isPresented { closeToolDrawer() }
         session.showDrawer()
         session.requestOmnibarFocus()
         refreshBrowserDrawerOverlayRootView()
@@ -2797,6 +2803,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let session = activeBrowserSession() else { return }
         if !session.isDrawerVisible {
             guard !activeWorkspaceHasBrowserPane() else { return }
+            if toolDrawerChromeState.isPresented { closeToolDrawer() }
             browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
             session.showDrawer(focusOmnibar: false)
         }
@@ -2870,9 +2877,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace) else { return }
 
-        // Close browser drawer if open
-        if let session = existingActiveBrowserSession(), session.isDrawerVisible {
-            session.hideDrawer()
+        // Close browser drawer if open (check chrome state directly for robustness)
+        if browserDrawerChromeState.isPresented {
+            if let session = existingActiveBrowserSession() {
+                session.hideDrawer()
+            }
             refreshBrowserDrawerOverlayRootView()
         }
 
