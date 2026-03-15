@@ -1745,7 +1745,7 @@ dependencies = [
  "libc",
  "pnevma-core",
  "pnevma-redaction",
- "rand 0.8.5",
+ "rand 0.9.2",
  "regex",
  "serde",
  "serde_json",
@@ -1905,7 +1905,7 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-util",
- "rand 0.8.5",
+ "rand 0.9.2",
  "rcgen",
  "reqwest",
  "rustls",
@@ -1944,7 +1944,7 @@ name = "pnevma-ssh"
 version = "0.2.0"
 dependencies = [
  "chrono",
- "rand 0.8.5",
+ "rand 0.9.2",
  "regex",
  "secrecy",
  "security-framework 2.11.1",
