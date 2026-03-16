@@ -27,7 +27,7 @@ private actor MockUsageAnalyticsCommandBus: CommandCalling {
         self.diagnosticsJSON = diagnosticsJSON
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         methodHistory.append(method)
         let paramsJSON = try encodeParams(params)
         if let scope = paramsJSON["scope"] as? String {

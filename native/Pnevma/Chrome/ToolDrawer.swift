@@ -1,40 +1,6 @@
 import Observation
 import SwiftUI
 
-// MARK: - Sizing
-
-enum ToolDrawerSizing {
-    static let minHeight: CGFloat = 280
-    static let verticalInset: CGFloat = 24
-    static let defaultHeightRatio: CGFloat = 0.45
-    static let keyboardStep: CGFloat = 72
-
-    static func maxHeight(for availableHeight: CGFloat) -> CGFloat {
-        max(minHeight, availableHeight - verticalInset)
-    }
-
-    static func defaultHeight(for availableHeight: CGFloat) -> CGFloat {
-        clamp(availableHeight * defaultHeightRatio, availableHeight: availableHeight)
-    }
-
-    static func clamp(_ height: CGFloat, availableHeight: CGFloat) -> CGFloat {
-        min(max(height, minHeight), maxHeight(for: availableHeight))
-    }
-
-    static func storedHeight() -> CGFloat? {
-        let raw = UserDefaults.standard.double(forKey: "toolDrawerHeight")
-        return raw > 0 ? raw : nil
-    }
-
-    static func setStoredHeight(_ height: CGFloat) {
-        UserDefaults.standard.set(height, forKey: "toolDrawerHeight")
-    }
-
-    static func resolvedHeight(availableHeight: CGFloat) -> CGFloat {
-        clamp(storedHeight() ?? defaultHeight(for: availableHeight), availableHeight: availableHeight)
-    }
-}
-
 // MARK: - State
 
 @Observable @MainActor
@@ -83,63 +49,6 @@ struct PaneContentBridge: NSViewRepresentable {
             paneView.topAnchor.constraint(equalTo: nsView.topAnchor),
             paneView.bottomAnchor.constraint(equalTo: nsView.bottomAnchor),
         ])
-    }
-}
-
-// MARK: - Resize handle
-
-private struct ToolDrawerResizeHandle: View {
-    let currentHeight: CGFloat
-    let availableHeight: CGFloat
-    let onHeightChanged: (CGFloat) -> Void
-
-    @State private var dragStartHeight: CGFloat?
-
-    var body: some View {
-        ZStack {
-            Color.clear
-                .frame(height: 18)
-
-            Capsule(style: .continuous)
-                .fill(Color.secondary.opacity(0.55))
-                .frame(width: 46, height: 5)
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            if hovering {
-                NSCursor.openHand.push()
-            } else {
-                NSCursor.pop()
-            }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                .onChanged { value in
-                    if dragStartHeight == nil {
-                        NSCursor.pop()
-                        NSCursor.closedHand.push()
-                        dragStartHeight = currentHeight
-                    }
-                    guard let startHeight = dragStartHeight else { return }
-                    var t = Transaction()
-                    t.disablesAnimations = true
-                    withTransaction(t) {
-                        onHeightChanged(
-                            ToolDrawerSizing.clamp(
-                                startHeight - value.translation.height,
-                                availableHeight: availableHeight
-                            )
-                        )
-                    }
-                }
-                .onEnded { _ in
-                    NSCursor.pop()
-                    NSCursor.openHand.push()
-                    dragStartHeight = nil
-                }
-        )
-        .help("Drag to resize")
-        .accessibilityLabel("Resize tool drawer")
     }
 }
 
@@ -212,25 +121,21 @@ struct ToolDrawerOverlayView: View {
 
     @ViewBuilder
     private func drawerCard(in size: CGSize) -> some View {
-        let effectiveHeight = ToolDrawerSizing.clamp(
+        let effectiveHeight = DrawerSizing.clamp(
             contentModel.drawerHeight
-                ?? ToolDrawerSizing.resolvedHeight(availableHeight: size.height),
+                ?? DrawerSizing.resolvedHeight(availableHeight: size.height),
             availableHeight: size.height
         )
-        let maxDrawerHeight = ToolDrawerSizing.maxHeight(for: size.height)
+        let maxDrawerHeight = DrawerSizing.maxHeight(for: size.height)
         let cardBackgroundColor = Color(nsColor: theme.backgroundColor)
 
         VStack(spacing: 0) {
-            ToolDrawerResizeHandle(
+            DrawerResizeHandle(
                 currentHeight: effectiveHeight,
                 availableHeight: size.height,
                 onHeightChanged: { newHeight in
-                    var t = Transaction()
-                    t.disablesAnimations = true
-                    withTransaction(t) {
-                        contentModel.drawerHeight = newHeight
-                    }
-                    ToolDrawerSizing.setStoredHeight(newHeight)
+                    contentModel.drawerHeight = newHeight
+                    DrawerSizing.setStoredHeight(newHeight)
                     isMaximized = false
                 }
             )
@@ -247,7 +152,7 @@ struct ToolDrawerOverlayView: View {
                     if isMaximized {
                         let restored = heightBeforeMaximize ?? effectiveHeight
                         contentModel.drawerHeight = restored
-                        ToolDrawerSizing.setStoredHeight(restored)
+                        DrawerSizing.setStoredHeight(restored)
                         isMaximized = false
                     } else {
                         heightBeforeMaximize = effectiveHeight

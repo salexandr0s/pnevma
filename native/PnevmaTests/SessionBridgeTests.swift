@@ -21,7 +21,7 @@ private actor SessionBridgeCommandBusStub: CommandCalling {
 
     private var lastCreateParams: [String: Any]?
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.new":
             guard let params else {

@@ -141,10 +141,12 @@
 		B5FD6634BFAB3E1B0B91CF82 /* SidebarToolButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC189336BEE185BB13D2ED00 /* SidebarToolButton.swift */; };
 		B6E8AD12E3D46AE708EE465B /* SidebarFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C544DBD7E3A974E4C975167 /* SidebarFooter.swift */; };
 		B96D61A27992C6433A64C9A9 /* BrowserDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 471DD0687A5FE62992E60905 /* BrowserDrawer.swift */; };
+		BBF4E979152F9E618AE94DBC /* DrawerResizeHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2FA41039773CE052F32E7C /* DrawerResizeHandle.swift */; };
 		BC332C3EFDDBABC0682018A9 /* PortsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A152A61FDFE0435D6B03EC /* PortsModels.swift */; };
 		BF980285DCD2037C225FDBD4 /* PnevmaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3CFF02A2EB2BE337EC00ED /* PnevmaApp.swift */; };
 		C03D2547C25174593CC629C5 /* ReplayPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */; };
 		C04F752EED06511D4BDF484A /* PromptTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F0279B0EC2BF6670E471C1C /* PromptTabView.swift */; };
+		C14E3216095347A9A037E7EB /* DrawerSizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB027B14198CDD249E6ABFB /* DrawerSizing.swift */; };
 		C2F6CC250850CDCF5532085A /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF6E7B271E83011328CCC2DD /* WebKit.framework */; };
 		C4777666EE5F0AF492950084 /* HarnessConfigPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B84FFF58E7D9D106E523612 /* HarnessConfigPane.swift */; };
 		C48A433DE9B9CF2EA6C307AF /* WorkflowPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 873A3669AAA8C9FB4AC6ADC6 /* WorkflowPane.swift */; };
@@ -302,6 +304,7 @@
 		56FFA62C53B156737FB105D1 /* GhosttyThemeBrowserViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeBrowserViewModel.swift; sourceTree = "<group>"; };
 		58FF1B6AC31D7241243B2DF1 /* SidebarNavigationHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarNavigationHeader.swift; sourceTree = "<group>"; };
 		59B8A86BCEE282610E576DA8 /* ShortcutRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRecorderView.swift; sourceTree = "<group>"; };
+		5F2FA41039773CE052F32E7C /* DrawerResizeHandle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawerResizeHandle.swift; sourceTree = "<group>"; };
 		5F9720138A2A8A983D4E084B /* SessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPersistence.swift; sourceTree = "<group>"; };
 		62741B6EA28060BADC0E8C4D /* GhosttyThemeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeProvider.swift; sourceTree = "<group>"; };
 		63BD67A7F3112CAA1C86EC8D /* SidebarToolItemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarToolItemTests.swift; sourceTree = "<group>"; };
@@ -433,6 +436,7 @@
 		FA483F3DA9F1A665DB3D9AD6 /* ShortcutSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutSheetView.swift; sourceTree = "<group>"; };
 		FAB3A9FD21A3B4DDE1B3EB9B /* SshManagerModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshManagerModelsTests.swift; sourceTree = "<group>"; };
 		FBA0CB4E50F6B5BF2AE464D0 /* TaskBoardPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskBoardPane.swift; sourceTree = "<group>"; };
+		FBB027B14198CDD249E6ABFB /* DrawerSizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawerSizing.swift; sourceTree = "<group>"; };
 		FC879880933557B14A3270BC /* BrowserMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserMarkdown.swift; sourceTree = "<group>"; };
 		FD99CF62BD447E070374E23F /* SidebarSectionHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSectionHeader.swift; sourceTree = "<group>"; };
 		FFC7D5AA27FD6FE6D8299EF6 /* Pnevma-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Pnevma-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -755,6 +759,8 @@
 				7128B807BE64773097BA36E6 /* CommandPalette.swift */,
 				96F3E9A01AAEB43237357B36 /* CommandPaletteDataProvider.swift */,
 				AAE584199342E7EB5812347D /* CommitPopoverView.swift */,
+				5F2FA41039773CE052F32E7C /* DrawerResizeHandle.swift */,
+				FBB027B14198CDD249E6ABFB /* DrawerSizing.swift */,
 				8668CB5BDD3AC8F22D37FAC4 /* FocusModeEscapeHatch.swift */,
 				0136B442F7A561E78C6FD5A7 /* InspectorChangesViewModel.swift */,
 				236A255089252E63981DF8FE /* LayoutTemplatePopoverView.swift */,
@@ -1065,6 +1071,8 @@
 				959DD98492FA05388B3126AF /* DiffModels.swift in Sources */,
 				A2335A9E3C912412ED893B0B /* DiffPane.swift in Sources */,
 				63CB5DD8AE02C1F0DD72F252 /* DiffViewModel.swift in Sources */,
+				BBF4E979152F9E618AE94DBC /* DrawerResizeHandle.swift in Sources */,
+				C14E3216095347A9A037E7EB /* DrawerSizing.swift in Sources */,
 				8034B7939104803F6D608161 /* ErrorBanner.swift in Sources */,
 				FC909B27A07721ABC7737BF5 /* Extensions.swift in Sources */,
 				EE32C0DC4310751E92C25777 /* FileBrowserPane.swift in Sources */,

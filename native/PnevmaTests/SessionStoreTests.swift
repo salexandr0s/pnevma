@@ -37,7 +37,7 @@ private actor MockSessionCommandBus: CommandCalling {
         killBehaviors[sessionID] = behavior
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.list_live":
             if let listError {

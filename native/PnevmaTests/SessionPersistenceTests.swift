@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class SessionPersistenceTests: XCTestCase {
 
     private var persistence: SessionPersistence!

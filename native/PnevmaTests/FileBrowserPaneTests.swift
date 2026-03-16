@@ -43,7 +43,7 @@ private actor MockFileBrowserCommandBus: CommandCalling {
         self.treeSearchJSONByQuery = treeSearchJSONByQuery
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         methodHistory.append(method)
 
         switch method {

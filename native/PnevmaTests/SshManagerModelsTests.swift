@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class SshManagerModelsTests: XCTestCase {
     func testTailscaleDeviceDecodesDevicePayload() throws {
         let data = Data(

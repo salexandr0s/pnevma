@@ -143,6 +143,9 @@ enum RightInspectorSection: String, Codable, CaseIterable {
         case .mergeQueue: return "arrow.triangle.merge"
         }
     }
+
+    /// The two primary tabs shown in the inspector tab bar.
+    static var tabBarCases: [RightInspectorSection] { [.changes, .files] }
 }
 
 /// A single tab within a workspace. Each tab has its own pane layout.
@@ -572,7 +575,7 @@ extension Workspace {
             isPinned: isPinned,
             rightInspectorSection: rightInspectorSection,
             browserLastURL: browserLastURL,
-            browserDrawerHeight: browserDrawerHeight
+            browserDrawerHeight: nil
         )
     }
 

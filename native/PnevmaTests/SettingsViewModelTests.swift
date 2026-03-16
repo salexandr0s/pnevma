@@ -14,7 +14,7 @@ actor SettingsCommandBusStub: CommandCalling {
         self.getResult = getResult
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "settings.app.get":
             return try cast(getResult.get())

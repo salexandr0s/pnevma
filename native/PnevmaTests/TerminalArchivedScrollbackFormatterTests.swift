@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class TerminalArchivedScrollbackFormatterTests: XCTestCase {
     func testFormatterStripsTerminalControlSequencesIntoReadableTranscript() {
         let raw = "\u{001B}[?1049h\u{001B}[2Jpnevma on main\r\n\u{001B}[32m❯\u{001B}[m ls\r\nfile.txt\r\n^D\u{0008}\u{0008}[exited]"

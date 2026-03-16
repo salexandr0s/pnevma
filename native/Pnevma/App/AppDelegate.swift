@@ -1702,11 +1702,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func makeBrowserDrawerShorterAction() {
-        resizeBrowserDrawer(by: -BrowserDrawerSizing.keyboardStep)
+        resizeBrowserDrawer(by: -DrawerSizing.keyboardStep)
     }
 
     @objc private func makeBrowserDrawerTallerAction() {
-        resizeBrowserDrawer(by: BrowserDrawerSizing.keyboardStep)
+        resizeBrowserDrawer(by: DrawerSizing.keyboardStep)
     }
 
     @objc private func pinBrowserToPaneAction() {
@@ -2269,10 +2269,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             },
             CommandItem(id: "browser.drawer_shorter", title: "Make Browser Drawer Shorter", category: "view", shortcut: "Opt+Cmd+-", description: "Shrink the built-in browser drawer height") { [weak self] in
-                self?.resizeBrowserDrawer(by: -BrowserDrawerSizing.keyboardStep)
+                self?.resizeBrowserDrawer(by: -DrawerSizing.keyboardStep)
             },
             CommandItem(id: "browser.drawer_taller", title: "Make Browser Drawer Taller", category: "view", shortcut: "Opt+Cmd+=", description: "Expand the built-in browser drawer height") { [weak self] in
-                self?.resizeBrowserDrawer(by: BrowserDrawerSizing.keyboardStep)
+                self?.resizeBrowserDrawer(by: DrawerSizing.keyboardStep)
             },
             CommandItem(id: "browser.pin_to_pane", title: "Pin Browser to Pane", category: "view", shortcut: "Shift+Cmd+Return", description: "Promote the browser drawer into a persistent pane") { [weak self] in
                 self?.pinBrowserToPane()
@@ -2844,7 +2844,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func browserSession(for workspace: Workspace) -> BrowserWorkspaceSession {
         if let existing = browserSessions[workspace.id] {
             existing.updateRestoredURL(workspace.browserLastURL.flatMap(URL.init(string:)))
-            existing.updateRestoredDrawerHeight(workspace.browserDrawerHeight)
+            existing.updateRestoredDrawerHeight(DrawerSizing.storedHeight().map(Double.init))
             existing.updateWorkspaceProjectPath(workspace.projectPath)
             return existing
         }
@@ -2853,15 +2853,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceID: workspace.id,
             workspaceProjectPath: workspace.projectPath,
             restoredURL: workspace.browserLastURL.flatMap(URL.init(string:)),
-            restoredDrawerHeight: workspace.browserDrawerHeight,
+            restoredDrawerHeight: DrawerSizing.storedHeight().map(Double.init),
             onURLChanged: { [weak self, weak workspace] url in
                 guard let workspace else { return }
                 workspace.browserLastURL = url?.absoluteString
                 self?.persistence?.markDirty()
             },
-            onDrawerHeightChanged: { [weak self, weak workspace] height in
-                guard let workspace else { return }
-                workspace.browserDrawerHeight = height
+            onDrawerHeightChanged: { [weak self] _ in
                 self?.persistence?.markDirty()
             }
         )
@@ -3013,8 +3011,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         let session = browserSession(for: workspace)
 
-        // Close the generic tool drawer if it's open
+        // Close the generic tool drawer if it's open, carrying height to browser
         if toolDrawerChromeState.isPresented {
+            if let h = toolDrawerContentModel.drawerHeight {
+                session.setDrawerHeight(h)
+            }
             closeToolDrawer()
         }
 
@@ -3069,12 +3070,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace) else { return }
 
-        // Close browser drawer if open (check chrome state directly for robustness)
+        // Close browser drawer if open, carrying height to tool drawer
         if browserDrawerChromeState.isPresented {
+            let browserHeight = existingActiveBrowserSession()?.preferredDrawerHeight
             if let session = existingActiveBrowserSession() {
                 session.hideDrawer()
             }
             refreshBrowserDrawerOverlayRootView()
+            if let h = browserHeight {
+                toolDrawerContentModel.drawerHeight = h
+            }
         }
 
         // Same tool — toggle the drawer
@@ -3119,7 +3124,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             toolDrawerContentModel.activeToolTitle = tool.title
             toolDrawerContentModel.activePaneView = paneView
             toolDrawerContentModel.activePaneID = paneID
-            toolDrawerContentModel.drawerHeight = ToolDrawerSizing.storedHeight()
+            toolDrawerContentModel.drawerHeight = DrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
         }
         toolDockState.activeToolID = toolID

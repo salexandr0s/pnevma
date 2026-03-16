@@ -36,7 +36,7 @@ private actor CommandCenterMockBus: CommandCalling {
         specsByID = byID
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "project.open":
             let json = try encodeParams(params)
@@ -70,7 +70,13 @@ private actor CommandCenterMockBus: CommandCalling {
                 activeAgents: 0,
                 costToday: 0,
                 unreadNotifications: 0,
-                gitDirty: nil
+                gitDirty: nil,
+                diffInsertions: nil,
+                diffDeletions: nil,
+                linkedPrNumber: nil,
+                linkedPrUrl: nil,
+                ciStatus: nil,
+                attentionReason: nil
             ) as! T
         case "project.command_center_snapshot":
             guard let currentProjectIDValue,
@@ -164,7 +170,7 @@ private actor CommandCenterRoutingMockBus: CommandCalling {
         return try PnevmaJSON.decoder().decode(T.self, from: data)
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         let json = try encodeParams(params)
         switch method {
         case "task.list":

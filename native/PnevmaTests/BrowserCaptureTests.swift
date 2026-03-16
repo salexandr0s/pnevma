@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class BrowserCaptureTests: XCTestCase {
     func testScratchDirectoryUsesWorkspaceProjectMetadataPath() throws {
         let workspaceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!

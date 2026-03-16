@@ -17,7 +17,7 @@ private struct TerminalPaneAnyEncodable: Encodable {
 private actor TerminalPaneCommandBus: CommandCalling {
     private var createSessionCallCountValue = 0
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.new":
             createSessionCallCountValue += 1
@@ -53,7 +53,7 @@ private actor TerminalPaneCommandBus: CommandCalling {
 private actor RetryingTerminalPaneCommandBus: CommandCalling {
     private var createSessionCallCountValue = 0
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.new":
             createSessionCallCountValue += 1
@@ -94,7 +94,7 @@ private actor ExistingSessionTerminalPaneCommandBus: CommandCalling {
     private var bindingCallCountValue = 0
     private var lastBoundSessionIDValue: String?
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.new":
             createSessionCallCountValue += 1

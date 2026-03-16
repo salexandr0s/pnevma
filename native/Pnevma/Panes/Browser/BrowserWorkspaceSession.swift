@@ -123,7 +123,7 @@ final class BrowserWorkspaceSession {
     }
 
     func resolvedDrawerHeight(for availableHeight: CGFloat) -> CGFloat {
-        BrowserDrawerSizing.resolvedHeight(
+        DrawerSizing.resolvedHeight(
             storedHeight: preferredDrawerHeight,
             availableHeight: availableHeight
         )
@@ -133,11 +133,12 @@ final class BrowserWorkspaceSession {
         let normalizedHeight = height.map { max(0, $0) }
         guard !isEffectivelyEqual(preferredDrawerHeight, normalizedHeight) else { return }
         preferredDrawerHeight = normalizedHeight
+        if let h = normalizedHeight { DrawerSizing.setStoredHeight(h) }
         onDrawerHeightChanged?(normalizedHeight.map(Double.init))
     }
 
     func adjustDrawerHeight(by delta: CGFloat, availableHeight: CGFloat) {
-        let nextHeight = BrowserDrawerSizing.clamp(
+        let nextHeight = DrawerSizing.clamp(
             resolvedDrawerHeight(for: availableHeight) + delta,
             availableHeight: availableHeight
         )

@@ -17,7 +17,7 @@ private actor BrowserToolBridgeCommandBus: CommandCalling {
     private(set) var methods: [String] = []
     private(set) var paramsJSON: [String] = []
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         methods.append(method)
         if let params {
             let encoder = JSONEncoder()

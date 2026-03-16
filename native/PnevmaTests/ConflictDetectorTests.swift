@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class ConflictDetectorTests: XCTestCase {
 
     // MARK: - Normalization

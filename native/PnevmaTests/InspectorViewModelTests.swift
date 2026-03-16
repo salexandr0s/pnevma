@@ -33,7 +33,7 @@ private actor MockInspectorCommandBus: CommandCalling {
         self.responsesByMethod = responsesByMethod
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         _ = try encodeParams(params)
 
         guard var responses = responsesByMethod[method], !responses.isEmpty else {

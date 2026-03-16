@@ -300,8 +300,6 @@ final class WorkspaceTabTests: XCTestCase {
         workspace.switchToTab(1)
         workspace.rightInspectorSection = .review
         workspace.browserLastURL = "https://example.com/docs"
-        workspace.browserDrawerHeight = 612
-
         let snapshot = workspace.snapshot()
         let restored = Workspace(snapshot: snapshot)
 
@@ -310,7 +308,8 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(restored.tabs[1].title, "Tab 2")
         XCTAssertEqual(restored.rightInspectorSection, .review)
         XCTAssertEqual(restored.browserLastURL, "https://example.com/docs")
-        XCTAssertEqual(restored.browserDrawerHeight, 612)
+        // browserDrawerHeight is no longer persisted per-workspace (uses global DrawerSizing store)
+        XCTAssertNil(restored.browserDrawerHeight)
     }
 
     func testSnapshotRoundTripPreservesPersistedPanes() {
@@ -364,10 +363,10 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(restored.rightInspectorSection, .files)
     }
 
-    func testBrowserDrawerSizingClampsStoredHeightIntoVisibleRange() {
-        XCTAssertEqual(BrowserDrawerSizing.resolvedHeight(storedHeight: nil, availableHeight: 1_000), 450)
-        XCTAssertEqual(BrowserDrawerSizing.resolvedHeight(storedHeight: 120, availableHeight: 1_000), 320)
-        XCTAssertEqual(BrowserDrawerSizing.resolvedHeight(storedHeight: 2_000, availableHeight: 1_000), 976)
+    func testDrawerSizingClampsStoredHeightIntoVisibleRange() {
+        XCTAssertEqual(DrawerSizing.resolvedHeight(storedHeight: nil, availableHeight: 1_000), 450)
+        XCTAssertEqual(DrawerSizing.resolvedHeight(storedHeight: 120, availableHeight: 1_000), 280)
+        XCTAssertEqual(DrawerSizing.resolvedHeight(storedHeight: 2_000, availableHeight: 1_000), 976)
     }
 
     @MainActor
@@ -383,7 +382,7 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(session.preferredDrawerHeight, 540)
         XCTAssertEqual(session.resolvedDrawerHeight(for: 1_000), 540)
 
-        session.adjustDrawerHeight(by: BrowserDrawerSizing.keyboardStep, availableHeight: 1_000)
+        session.adjustDrawerHeight(by: DrawerSizing.keyboardStep, availableHeight: 1_000)
 
         XCTAssertEqual(session.preferredDrawerHeight, 612)
         XCTAssertEqual(persistedHeight, 612)

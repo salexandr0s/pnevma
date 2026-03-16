@@ -23,7 +23,7 @@ final class SidebarToolItemTests: XCTestCase {
 
         XCTAssertEqual(
             tools,
-            ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "settings"]
+            ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor", "settings"]
         )
     }
 

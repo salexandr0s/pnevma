@@ -42,7 +42,7 @@ private actor MockCommandBus: CommandCalling {
         specsByID = byID
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "project.open":
             let json = try encodeParams(params)
@@ -76,7 +76,13 @@ private actor MockCommandBus: CommandCalling {
                 activeAgents: spec.activeAgents,
                 costToday: spec.costToday,
                 unreadNotifications: spec.unreadNotifications,
-                gitDirty: nil
+                gitDirty: nil,
+                diffInsertions: nil,
+                diffDeletions: nil,
+                linkedPrNumber: nil,
+                linkedPrUrl: nil,
+                ciStatus: nil,
+                attentionReason: nil
             ) as! T
         case "project.close":
             closeCountValue += 1
@@ -117,7 +123,7 @@ private actor FailingProjectOpenCommandBus: CommandCalling {
         self.message = message
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "project.open":
             throw PnevmaError.backendError(method: method, message: message)
@@ -142,7 +148,7 @@ private actor RecoveringProjectOpenCommandBus: CommandCalling {
         self.spec = spec
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "project.open":
             openCallCountValue += 1
@@ -189,7 +195,13 @@ private actor RecoveringProjectOpenCommandBus: CommandCalling {
                 activeAgents: spec.activeAgents,
                 costToday: spec.costToday,
                 unreadNotifications: spec.unreadNotifications,
-                gitDirty: nil
+                gitDirty: nil,
+                diffInsertions: nil,
+                diffDeletions: nil,
+                linkedPrNumber: nil,
+                linkedPrUrl: nil,
+                ciStatus: nil,
+                attentionReason: nil
             ) as! T
         case "project.close":
             currentProjectIDValue = nil

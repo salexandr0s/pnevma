@@ -17,7 +17,7 @@ private actor MockProviderUsageCommandBus: CommandCalling {
     private(set) var methodHistory: [String] = []
     private(set) var forceRefreshHistory: [Bool] = []
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         methodHistory.append(method)
         let paramsJSON = try encodeParams(params)
         if method == "usage.providers.overview" {

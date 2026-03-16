@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class PnevmaBridgeTests: XCTestCase {
 
     // MARK: - Init & Destroy

@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class ConfigFileWatcherTests: XCTestCase {
 
     private var tempDir: URL!

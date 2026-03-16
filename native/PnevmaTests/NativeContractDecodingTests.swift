@@ -1,6 +1,7 @@
 import XCTest
 @testable import Pnevma
 
+@MainActor
 final class NativeContractDecodingTests: XCTestCase {
     private let decoder = PnevmaJSON.decoder()
 
