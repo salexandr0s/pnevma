@@ -29,12 +29,35 @@ AGENTS.md
 # Spike / prototype explorations
 spike/
 
-# Internal-only docs
+# Internal-only docs — planning, design explorations, audits (keep local)
+docs/plans/
+docs/archive/
+docs/design/
 docs/design-partner-readiness.md
 docs/keyboard-audit.md
 docs/latency-validation.md
 docs/ipc-harness.md
 docs/release-checklist.md
+docs/upgrade-plan.md
+docs/FEATURE_UPGRADE_PLAN.md
+docs/UI_UPGRADE_PLAN.md
+docs/superset_upgrade.md
+docs/superset_sidebar_upgrade.md
+docs/conductor_upgrade.md
+docs/migration-recovery.md
+docs/configuration-reference.md
+docs/final_hardening_plan.md
+docs/hardening_plan_v2.md
+docs/hardening-exit-checklist.md
+docs/hardening-exit-criteria.md
+docs/deepaudit-recommendations.md
+docs/implementation-status.md
+docs/macos-website-release-plan.md
+docs/idea-nonpersistence.md
+docs/agent-command-center-gap-analysis.md
+
+# Superset local config
+.superset/
 
 # External local vendor checkout; fetched on demand by scripts/fetch-ghostty.sh
 vendor/ghostty/
