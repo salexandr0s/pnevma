@@ -3022,7 +3022,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let session = activeBrowserSession() else { return }
         session.hideDrawer()
         refreshBrowserDrawerOverlayRootView()
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.openToolAsPane("browser")
         }
     }
@@ -3031,7 +3031,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let session = activeBrowserSession() else { return }
         session.hideDrawer()
         refreshBrowserDrawerOverlayRootView()
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.openToolAsTab("browser")
         }
     }
@@ -3109,7 +3109,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         toolDrawerPreviousFirstResponder = nil
         // Defer cleanup so the dismiss animation can play
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
             guard let self, !self.toolDrawerChromeState.isPresented else { return }
             self.toolDrawerContentModel.activePaneView?.removeFromSuperview()
             self.toolDrawerContentModel.activePaneView = nil
@@ -3130,7 +3131,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDrawerContentModel.activePaneID = nil
         toolDrawerContentModel.activeToolID = nil
         toolDrawerContentModel.activeToolTitle = nil
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.openToolAsPane(toolID)
         }
     }
@@ -3145,7 +3146,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDrawerContentModel.activePaneID = nil
         toolDrawerContentModel.activeToolID = nil
         toolDrawerContentModel.activeToolTitle = nil
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.openToolAsTab(toolID)
         }
     }
@@ -3904,7 +3905,7 @@ extension AppDelegate {
             onDelete: { [weak self] template in
                 LayoutTemplateStore.delete(template)
                 popover.performClose(nil)
-                DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
                     self?.titlebarTemplateAction()
                 }
             },

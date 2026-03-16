@@ -6,7 +6,7 @@ final class CommandCenterWindowController: NSWindowController, NSWindowDelegate 
     private let store: CommandCenterStore
     private let onVisibilityChanged: (Bool) -> Void
     private let onFrameChanged: (NSRect) -> Void
-    private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var themeObserver: NSObjectProtocol?
 
     init(
         store: CommandCenterStore,

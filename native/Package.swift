@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 // SPM build path — alternative to xcodebuild.
 // Note: SPM cannot directly consume a .xcodeproj, so this file
 // describes the same target for `swift build` / CI use.
@@ -57,7 +57,6 @@ let package = Package(
             ],
             swiftSettings: [
                 .unsafeFlags([
-                    "-enable-bare-slash-regex",
                     "-disable-bridging-pch",
                     "-import-objc-header", "Pnevma/Bridge/Pnevma-Bridging-Header.h",
                 ]),

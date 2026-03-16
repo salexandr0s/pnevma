@@ -2,7 +2,7 @@ import Foundation
 
 /// Watches a file for changes using GCD dispatch sources.
 /// Handles atomic-write editors (Vim, etc.) that rename/delete the file.
-final class ConfigFileWatcher {
+final class ConfigFileWatcher: @unchecked Sendable {
     private var source: DispatchSourceFileSystemObject?
     private var fileDescriptor: Int32 = -1
     private let url: URL

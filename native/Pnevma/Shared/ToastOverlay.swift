@@ -151,8 +151,8 @@ struct ToastOverlayView: View {
 final class ToastWindowController {
     private var overlayWindow: NSWindow?
     private let manager: ToastManager
-    private var resizeObserver: NSObjectProtocol?
-    private var moveObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var resizeObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var moveObserver: NSObjectProtocol?
 
     init(manager: ToastManager? = nil) {
         self.manager = manager ?? .shared

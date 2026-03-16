@@ -102,7 +102,7 @@ enum SessionBridgeError: LocalizedError {
 }
 
 /// Native coordinator for backend-managed terminal sessions.
-protocol SessionBridging {
+protocol SessionBridging: Sendable {
     func createSession(
         name: String,
         workingDirectory requestedWorkingDirectory: String?,
@@ -120,6 +120,7 @@ extension SessionBridging {
     }
 }
 
+@MainActor
 final class SessionBridge: SessionBridging {
     static var shared: (any SessionBridging)?
 

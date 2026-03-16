@@ -31,25 +31,25 @@ struct ProviderUsageOverview: Decodable {
     let providers: [ProviderUsageProviderSnapshot]
 }
 
-private let providerUsageDayParser: ISO8601DateFormatter = {
+private nonisolated(unsafe) let providerUsageDayParser: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withFullDate]
     return formatter
 }()
 
-private let providerUsageTimestampParser: ISO8601DateFormatter = {
+private nonisolated(unsafe) let providerUsageTimestampParser: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter
 }()
 
-private let providerUsageTimestampParserNoFraction: ISO8601DateFormatter = {
+private nonisolated(unsafe) let providerUsageTimestampParserNoFraction: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
     return formatter
 }()
 
-private let providerUsageRelativeFormatter = RelativeDateTimeFormatter()
+private nonisolated(unsafe) let providerUsageRelativeFormatter = RelativeDateTimeFormatter()
 
 private func providerFormatTokens(_ value: Int) -> String {
     value.formatted(.number.grouping(.automatic))

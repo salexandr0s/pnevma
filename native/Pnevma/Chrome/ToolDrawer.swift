@@ -146,7 +146,7 @@ private struct ToolDrawerResizeHandle: View {
 // MARK: - Preference key
 
 private struct ToolDrawerFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
+    nonisolated(unsafe) static var defaultValue: CGRect = .zero
 
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         value = nextValue()

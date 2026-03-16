@@ -41,13 +41,14 @@ class PnevmaWebView: WKWebView {
 
 // MARK: - BrowserSearchEngine
 
+@MainActor
 enum BrowserSearchEngine: String, CaseIterable, Identifiable {
     case google = "Google"
     case duckduckgo = "DuckDuckGo"
     case bing = "Bing"
     case kagi = "Kagi"
 
-    var id: String { rawValue }
+    nonisolated var id: String { rawValue }
 
     func searchURL(query: String) -> URL? {
         guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {

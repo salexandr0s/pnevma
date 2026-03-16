@@ -45,7 +45,7 @@ struct ToolDockBarView: View {
                 .frame(height: DesignTokens.Layout.dividerWidth)
 
             GeometryReader { geometry in
-                ScrollView(.horizontal) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
                         HStack(spacing: 6) {

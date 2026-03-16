@@ -28,7 +28,7 @@ final class RightInspectorChromeState {
 }
 
 private struct RightInspectorOverlayFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
+    nonisolated(unsafe) static var defaultValue: CGRect = .zero
 
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         value = nextValue()
@@ -343,7 +343,7 @@ struct RightInspectorOverlayView: View {
     }
 }
 
-@ViewBuilder
+@MainActor @ViewBuilder
 private func overlayCloseButton(action: @escaping () -> Void) -> some View {
     _OverlayCloseButton(action: action)
 }
@@ -1002,7 +1002,7 @@ private struct InspectorReviewSection: View {
                         GroupBox("Changed Files") {
                             VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
                                 if !viewModel.diffFiles.isEmpty {
-                                    ScrollView(.horizontal) {
+                                    ScrollView(.horizontal, showsIndicators: false) {
                                         HStack(spacing: DesignTokens.Spacing.sm) {
                                             ForEach(viewModel.diffFiles) { file in
                                                 Button(file.path) {
@@ -1456,7 +1456,7 @@ private struct InspectorReviewOverlay: View {
                     GroupBox("Changed Files") {
                         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
                             if !viewModel.diffFiles.isEmpty {
-                                ScrollView(.horizontal) {
+                                ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: DesignTokens.Spacing.sm) {
                                         ForEach(viewModel.diffFiles) { file in
                                             Button(file.path) {

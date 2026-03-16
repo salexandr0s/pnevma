@@ -1872,7 +1872,7 @@ private struct TerminalStateView: View {
                 }
 
                 if archivedScrollback.hasReadableContent {
-                    ScrollView(.horizontal) {
+                    ScrollView(.horizontal, showsIndicators: false) {
                         Text(archivedScrollback.text)
                             .font(.system(.body, design: .monospaced))
                             .lineSpacing(3)

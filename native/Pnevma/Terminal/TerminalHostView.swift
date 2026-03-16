@@ -1,3 +1,4 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 #if canImport(GhosttyKit)
 import GhosttyKit
@@ -10,7 +11,7 @@ import GhosttyKit
 ///   1. The view becomes layer-backed (ghostty requires Metal on a CALayer).
 ///   2. Surface creation is deferred until the view has a window, screen, and non-zero backing size.
 ///   3. Every resize / scale change propagates to the surface immediately.
-final class TerminalHostView: NSView, NSTextInputClient {
+final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     struct PendingSurfaceLayout: Equatable {
         let width: UInt32
         let height: UInt32
@@ -57,7 +58,7 @@ final class TerminalHostView: NSView, NSTextInputClient {
     private var lastReportedGridSize: (columns: UInt16, rows: UInt16)?
     private var currentCursor: NSCursor = .iBeam
     private let closeCoordinator = TerminalCloseCoordinator()
-    private var chromeTransitionObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var chromeTransitionObserver: NSObjectProtocol?
     private var pendingSurfaceLayout: PendingSurfaceLayout?
     private var lastAppliedSurfaceLayout: PendingSurfaceLayout?
 
@@ -70,12 +71,16 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        commonInit()
+        MainActor.assumeIsolated {
+            commonInit()
+        }
     }
 
     deinit {
-        removeWindowObservers()
-        removeActionObservers()
+        MainActor.assumeIsolated {
+            removeWindowObservers()
+            removeActionObservers()
+        }
         if let chromeTransitionObserver {
             NotificationCenter.default.removeObserver(chromeTransitionObserver)
         }
@@ -108,7 +113,9 @@ final class TerminalHostView: NSView, NSTextInputClient {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.flushDeferredSurfaceLayout()
+            MainActor.assumeIsolated {
+                self?.flushDeferredSurfaceLayout()
+            }
         }
     }
 
@@ -166,10 +173,12 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        updateWindowObservers()
-        guard window != nil else { return }
-        window?.acceptsMouseMovedEvents = true
-        scheduleEnsureSurfaceCreated()
+        MainActor.assumeIsolated {
+            updateWindowObservers()
+            guard window != nil else { return }
+            window?.acceptsMouseMovedEvents = true
+            scheduleEnsureSurfaceCreated()
+        }
     }
 
     override func resetCursorRects() {
@@ -571,8 +580,10 @@ final class TerminalHostView: NSView, NSTextInputClient {
                 object: window,
                 queue: .main
             ) { [weak self] _ in
-                self?.updateSurfaceDisplayID()
-                self?.scheduleEnsureSurfaceCreated()
+                MainActor.assumeIsolated {
+                    self?.updateSurfaceDisplayID()
+                    self?.scheduleEnsureSurfaceCreated()
+                }
             }
             windowObservers.append(observer)
         }
@@ -595,36 +606,48 @@ final class TerminalHostView: NSView, NSTextInputClient {
         let notifObserver = center.addObserver(
             forName: .ghosttyDesktopNotification, object: nil, queue: .main
         ) { [weak self] notification in
-            guard let self, self.matchesSurface(notification) else { return }
+            let surfaceAddr = (notification.userInfo?["surface"] as? UnsafeMutableRawPointer).map { Int(bitPattern: $0) }
             let title = notification.userInfo?["title"] as? String ?? ""
             let body = notification.userInfo?["body"] as? String ?? ""
-            self.onDesktopNotification?(title, body)
+            MainActor.assumeIsolated {
+                guard let self, self.matchesSurfaceAddr(surfaceAddr) else { return }
+                self.onDesktopNotification?(title, body)
+            }
         }
         actionObservers.append(notifObserver)
 
         let titleObserver = center.addObserver(
             forName: .ghosttySetTitle, object: nil, queue: .main
         ) { [weak self] notification in
-            guard let self, self.matchesSurface(notification) else { return }
+            let surfaceAddr = (notification.userInfo?["surface"] as? UnsafeMutableRawPointer).map { Int(bitPattern: $0) }
             let title = notification.userInfo?["title"] as? String ?? ""
-            self.onTitleChanged?(title)
+            MainActor.assumeIsolated {
+                guard let self, self.matchesSurfaceAddr(surfaceAddr) else { return }
+                self.onTitleChanged?(title)
+            }
         }
         actionObservers.append(titleObserver)
 
         let pwdObserver = center.addObserver(
             forName: .ghosttyPwdChanged, object: nil, queue: .main
         ) { [weak self] notification in
-            guard let self, self.matchesSurface(notification) else { return }
+            let surfaceAddr = (notification.userInfo?["surface"] as? UnsafeMutableRawPointer).map { Int(bitPattern: $0) }
             let path = notification.userInfo?["path"] as? String ?? ""
-            self.onPwdChanged?(path)
+            MainActor.assumeIsolated {
+                guard let self, self.matchesSurfaceAddr(surfaceAddr) else { return }
+                self.onPwdChanged?(path)
+            }
         }
         actionObservers.append(pwdObserver)
 
         let bellObserver = center.addObserver(
             forName: .ghosttyRingBell, object: nil, queue: .main
         ) { [weak self] notification in
-            guard let self, self.matchesSurface(notification) else { return }
-            self.onBell?()
+            let surfaceAddr = (notification.userInfo?["surface"] as? UnsafeMutableRawPointer).map { Int(bitPattern: $0) }
+            MainActor.assumeIsolated {
+                guard let self, self.matchesSurfaceAddr(surfaceAddr) else { return }
+                self.onBell?()
+            }
         }
         actionObservers.append(bellObserver)
 
@@ -632,11 +655,15 @@ final class TerminalHostView: NSView, NSTextInputClient {
         let mouseShapeObserver = center.addObserver(
             forName: .ghosttyMouseShape, object: nil, queue: .main
         ) { [weak self] notification in
-            guard let self, self.matchesSurface(notification) else { return }
-            guard let rawValue = notification.userInfo?["shape"] as? UInt32 else { return }
-            let shape = ghostty_action_mouse_shape_e(rawValue)
-            self.currentCursor = Self.nsCursor(for: shape)
-            self.window?.invalidateCursorRects(for: self)
+            let surfaceAddr = (notification.userInfo?["surface"] as? UnsafeMutableRawPointer).map { Int(bitPattern: $0) }
+            let rawValue = notification.userInfo?["shape"] as? UInt32
+            MainActor.assumeIsolated {
+                guard let self, self.matchesSurfaceAddr(surfaceAddr) else { return }
+                guard let rawValue else { return }
+                let shape = ghostty_action_mouse_shape_e(rawValue)
+                self.currentCursor = Self.nsCursor(for: shape)
+                self.window?.invalidateCursorRects(for: self)
+            }
         }
         actionObservers.append(mouseShapeObserver)
         #endif
@@ -652,10 +679,14 @@ final class TerminalHostView: NSView, NSTextInputClient {
 
     /// Check if a ghostty action notification targets this view's surface.
     private func matchesSurface(_ notification: Notification) -> Bool {
-        guard let surfacePtr = notification.userInfo?["surface"] else { return true }
+        matchesSurfaceAddr((notification.userInfo?["surface"] as? UnsafeMutableRawPointer).map { Int(bitPattern: $0) })
+    }
+
+    private func matchesSurfaceAddr(_ surfaceAddr: Int?) -> Bool {
+        guard let surfaceAddr else { return true }
         #if canImport(GhosttyKit)
-        guard let ptr = surfacePtr as? ghostty_surface_t else { return false }
-        return ptr == terminalSurface?.surfacePointer
+        guard let ownPtr = terminalSurface?.surfacePointer else { return false }
+        return Int(bitPattern: ownPtr) == surfaceAddr
         #else
         return true
         #endif
@@ -776,7 +807,7 @@ final class TerminalCloseCoordinator {
 /// Uses the ghostty `unfocused-split-fill` color with alpha derived from
 /// `unfocused-split-opacity`. Passes through all mouse events.
 private final class UnfocusedOverlayView: NSView {
-    private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var themeObserver: NSObjectProtocol?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -788,7 +819,9 @@ private final class UnfocusedOverlayView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateOverlayColor()
+            MainActor.assumeIsolated {
+                self?.updateOverlayColor()
+            }
         }
     }
 

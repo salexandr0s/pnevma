@@ -118,7 +118,7 @@ enum BackgroundTint {
 }
 
 enum SidebarPreferences {
-    private static let defaults = UserDefaults.standard
+    private nonisolated(unsafe) static let defaults = UserDefaults.standard
 
     /// How much to lighten the sidebar background relative to the terminal.
     /// 0.0 = exact terminal color, 0.05 = slight lightening (default).
@@ -156,7 +156,7 @@ enum SidebarPreferences {
 // MARK: - ToolDockPreferences
 
 enum ToolDockPreferences {
-    private static let defaults = UserDefaults.standard
+    private nonisolated(unsafe) static let defaults = UserDefaults.standard
 
     /// How much to lighten the tool dock background relative to the terminal.
     /// Uses the same scale as the sidebar. Default matches sidebar default.
@@ -172,7 +172,7 @@ enum ToolDockPreferences {
 // MARK: - RightInspectorPreferences
 
 enum RightInspectorPreferences {
-    private static let defaults = UserDefaults.standard
+    private nonisolated(unsafe) static let defaults = UserDefaults.standard
 
     /// How much to lighten the right inspector background relative to the terminal.
     /// Default is 0.0 (exact terminal color, no tinting).

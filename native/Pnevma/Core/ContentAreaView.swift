@@ -40,8 +40,8 @@ final class ContentAreaView: NSView {
 
     // MARK: - Init
 
-    private var themeObserver: NSObjectProtocol?
-    private var paneAttentionObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var paneAttentionObserver: NSObjectProtocol?
 
     init(frame: NSRect, rootPaneView: NSView & PaneContent) {
         layoutEngine = PaneLayoutEngine(rootPaneID: rootPaneView.paneID)
@@ -98,6 +98,18 @@ final class ContentAreaView: NSView {
     /// Use flipped coordinate system (top-left origin) so vertical splits
     /// render correctly: first=top, second=bottom.
     override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let window else { return super.hitTest(point) }
+        let windowPoint = convert(point, to: nil)
+        let edgeThreshold: CGFloat = 5
+        let cornerThreshold: CGFloat = 15
+        // Right edge — let NSThemeFrame handle horizontal resize
+        if windowPoint.x > window.frame.width - edgeThreshold { return nil }
+        // Bottom-right corner
+        if windowPoint.y < cornerThreshold && windowPoint.x > window.frame.width - cornerThreshold { return nil }
+        return super.hitTest(point)
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -287,7 +299,7 @@ final class ContentAreaView: NSView {
     // MARK: - Click-to-Focus
 
     private var clickMonitor: Any?
-    private var focusBorderObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var focusBorderObserver: NSObjectProtocol?
 
     private func installClickMonitor() {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
@@ -948,7 +960,7 @@ extension Notification.Name {
 // MARK: - Focus Border Preferences
 
 enum FocusBorderPreferences {
-    private static let defaults = UserDefaults.standard
+    nonisolated(unsafe) private static let defaults = UserDefaults.standard
 
     static var enabled: Bool {
         get { defaults.object(forKey: "focusBorderEnabled") as? Bool ?? true }

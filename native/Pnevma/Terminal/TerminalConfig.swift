@@ -3,6 +3,7 @@ import Foundation
 import GhosttyKit
 #endif
 
+@MainActor
 enum GhosttyRuntime {
     private(set) static var isInitialized = false
 
@@ -17,10 +18,11 @@ enum GhosttyRuntime {
 
 /// Reads and applies Ghostty configuration for terminal instances.
 /// Merges user config with per-pane overrides.
+@MainActor
 class TerminalConfig {
 
     #if canImport(GhosttyKit)
-    private(set) var config: ghostty_config_t?
+    nonisolated(unsafe) private(set) var config: ghostty_config_t?
     private(set) var diagnostics: [String] = []
 
     init() {

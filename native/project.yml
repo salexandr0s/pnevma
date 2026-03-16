@@ -3,13 +3,13 @@ options:
   bundleIdPrefix: com.pnevma
   deploymentTarget:
     macOS: "14.0"
-  xcodeVersion: "15.0"
+  xcodeVersion: "26.3"
   generateEmptyDirectories: true
 
 settings:
   base:
     PRODUCT_NAME: Pnevma
-    SWIFT_VERSION: "5.9"
+    SWIFT_VERSION: "6"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     ENABLE_HARDENED_RUNTIME: YES
     ENABLE_APP_INTENTS_METADATA_GENERATION: NO

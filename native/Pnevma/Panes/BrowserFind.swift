@@ -1,9 +1,10 @@
 import SwiftUI
 import Observation
-import WebKit
+@preconcurrency import WebKit
 
 // MARK: - BrowserFindJavaScript
 
+@MainActor
 enum BrowserFindJavaScript {
     /// Inject find-in-page search. Returns match count.
     static func search(in webView: WKWebView, query: String) async -> Int {
@@ -176,7 +177,7 @@ final class BrowserFindState {
 struct BrowserFindActions {
     let search: (String) async -> Int
     let navigate: (_ forward: Bool) async -> (current: Int, total: Int)
-    let clear: () -> Void
+    let clear: @MainActor () -> Void
 
     static func webView(_ webView: WKWebView) -> Self {
         Self(
@@ -186,7 +187,7 @@ struct BrowserFindActions {
             navigate: { forward in
                 await BrowserFindJavaScript.navigate(in: webView, forward: forward)
             },
-            clear: {
+            clear: { @MainActor in
                 BrowserFindJavaScript.clear(in: webView)
             }
         )

@@ -14,7 +14,7 @@ struct AgentStripView: View {
 
     var body: some View {
         if state.hasEntries {
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(state.entries) { entry in
                         AgentStripChip(

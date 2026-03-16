@@ -6,27 +6,27 @@ import UniformTypeIdentifiers
 
 // MARK: - Shared Formatters
 
-private let usageDayParser: ISO8601DateFormatter = {
+nonisolated(unsafe) private let usageDayParser: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withFullDate]
     return formatter
 }()
 
-private let usageTimestampParser: ISO8601DateFormatter = {
+nonisolated(unsafe) private let usageTimestampParser: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter
 }()
 
-private let usageTimestampParserNoFraction: ISO8601DateFormatter = {
+nonisolated(unsafe) private let usageTimestampParserNoFraction: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
     return formatter
 }()
 
-private let usageRelativeFormatter = RelativeDateTimeFormatter()
+nonisolated(unsafe) private let usageRelativeFormatter = RelativeDateTimeFormatter()
 
-private let usageRequestDayFormatter: DateFormatter = {
+nonisolated(unsafe) private let usageRequestDayFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.calendar = .autoupdatingCurrent
     formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -35,7 +35,7 @@ private let usageRequestDayFormatter: DateFormatter = {
     return formatter
 }()
 
-private let usageRequestTimestampFormatter: ISO8601DateFormatter = {
+nonisolated(unsafe) private let usageRequestTimestampFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.timeZone = .autoupdatingCurrent
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -400,7 +400,7 @@ final class UsageViewModel {
     @ObservationIgnored
     private var activationObserverID: UUID?
     @ObservationIgnored
-    private var navigationObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var navigationObserver: NSObjectProtocol?
     @ObservationIgnored
     private var coreTask: Task<Void, Never>?
     @ObservationIgnored

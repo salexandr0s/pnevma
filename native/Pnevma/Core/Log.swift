@@ -21,7 +21,7 @@ extension Notification.Name {
     static let chromeTransitionDidEnd = Notification.Name("chromeTransitionDidEnd")
 }
 
-final class ChromeTransitionCoordinator {
+final class ChromeTransitionCoordinator: @unchecked Sendable {
     static let shared = ChromeTransitionCoordinator()
 
     private struct State {
@@ -75,7 +75,7 @@ final class ChromeTransitionCoordinator {
     }
 }
 
-final class PerformanceDiagnostics {
+final class PerformanceDiagnostics: @unchecked Sendable {
     static let shared = PerformanceDiagnostics()
 
     private let signposter = OSSignposter(logger: Log.performance)

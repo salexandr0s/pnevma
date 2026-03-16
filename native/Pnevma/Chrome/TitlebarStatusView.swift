@@ -1,3 +1,4 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 import Observation
 
@@ -9,7 +10,7 @@ final class TitlebarStatusView: NSView {
     private let attentionDot = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
     private let separator1 = NSBox()
     private let separator2 = NSBox()
-    private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) var themeObserver: NSObjectProtocol?
     private var sessionObservationGeneration: UInt64 = 0
 
     var onSessionsClicked: (() -> Void)?
@@ -26,7 +27,7 @@ final class TitlebarStatusView: NSView {
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        setupUI()
+        MainActor.assumeIsolated { setupUI() }
     }
 
     deinit {

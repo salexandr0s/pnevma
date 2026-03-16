@@ -45,7 +45,7 @@ final class DiffViewModel {
     @ObservationIgnored
     private let notificationCenter: NotificationCenter
     @ObservationIgnored
-    private var deepLinkObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var deepLinkObserver: NSObjectProtocol?
 
     init(
         initialTaskID: String? = nil,
@@ -69,8 +69,9 @@ final class DiffViewModel {
             object: CommandCenterDeepLinkStore.shared,
             queue: nil
         ) { [weak self] notification in
+            let target = notification.userInfo?["target"] as? String
             Task { @MainActor [weak self] in
-                self?.handleDeepLinkNotification(notification)
+                self?.handleDeepLinkForTarget(target)
             }
         }
     }
@@ -204,7 +205,11 @@ final class DiffViewModel {
     }
 
     private func handleDeepLinkNotification(_ notification: Notification) {
-        guard let target = notification.userInfo?["target"] as? String,
+        handleDeepLinkForTarget(notification.userInfo?["target"] as? String)
+    }
+
+    private func handleDeepLinkForTarget(_ target: String?) {
+        guard let target,
               target == CommandCenterDeepLinkTarget.diff.rawValue else {
             return
         }

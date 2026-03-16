@@ -1,3 +1,4 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 
 /// Container for the tool dock NSHostingView that passes through mouse
@@ -8,12 +9,15 @@ final class ToolDockContainerView: NSView {
         guard let window else { return super.hitTest(point) }
         let windowPoint = convert(point, to: nil)
         let threshold: CGFloat = 5
+        let cornerSize: CGFloat = 15
         // Bottom edge
         if windowPoint.y < threshold { return nil }
+        // Right edge — let NSThemeFrame handle horizontal resize
+        if windowPoint.x > window.frame.width - threshold { return nil }
         // Bottom-left corner
-        if windowPoint.y < 15 && windowPoint.x < 15 { return nil }
+        if windowPoint.y < cornerSize && windowPoint.x < cornerSize { return nil }
         // Bottom-right corner
-        if windowPoint.y < 15 && windowPoint.x > window.frame.width - 15 { return nil }
+        if windowPoint.y < cornerSize && windowPoint.x > window.frame.width - cornerSize { return nil }
         return super.hitTest(point)
     }
 }
@@ -22,8 +26,8 @@ final class ToolDockContainerView: NSView {
 /// instead of the system NSVisualEffectView blur, so the sidebar matches
 /// the terminal's color scheme.
 final class ThemedSidebarBackingView: NSView {
-    private var themeObserver: NSObjectProtocol?
-    private var tintObserver: NSObjectProtocol?
+    nonisolated(unsafe) var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) var tintObserver: NSObjectProtocol?
     private let rightSeparator = NSView()
 
     override func hitTest(_ point: NSPoint) -> NSView? {

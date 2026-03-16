@@ -1,9 +1,10 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 
 /// Covers the titlebar area with the ghostty theme background so the
 /// transparent titlebar matches the rest of the chrome instead of being clear.
 final class ThemedTitlebarFillView: NSView {
-    private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) var themeObserver: NSObjectProtocol?
 
     override init(frame: NSRect) {
         super.init(frame: frame)

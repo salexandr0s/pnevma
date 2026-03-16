@@ -18,7 +18,7 @@ struct SidebarCollapsedRailView: View {
     var body: some View {
         VStack(spacing: 4) {
             // Workspace indicators
-            ScrollView(.vertical) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 4) {
                     ForEach(workspaceManager.workspaces) { workspace in
                         collapsedWorkspaceIndicator(workspace)

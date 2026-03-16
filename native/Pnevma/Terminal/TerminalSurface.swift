@@ -39,10 +39,10 @@ struct TerminalSurfaceLaunchConfiguration: Equatable {
 /// is shared across all surfaces and lives for the application lifetime.
 class TerminalSurface {
 
-    static var clipboardStringProvider: () -> String = {
+    @MainActor static var clipboardStringProvider: () -> String = {
         NSPasteboard.general.string(forType: .string) ?? ""
     }
-    static var clipboardStringWriter: (String) -> Void = { string in
+    @MainActor static var clipboardStringWriter: (String) -> Void = { string in
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(string, forType: .string)
     }
@@ -72,10 +72,10 @@ class TerminalSurface {
     // MARK: - Static App Singleton
 
     /// Internal so TerminalHostView can relay focus events via ghostty_app_set_focus.
-    static var ghosttyApp: ghostty_app_t?
-    private static var ghosttyConfigOwner: TerminalConfig?
-    private static var isAppInitialized = false
-    private static let surfaceRegistry = NSHashTable<TerminalSurface>.weakObjects()
+    nonisolated(unsafe) static var ghosttyApp: ghostty_app_t?
+    @MainActor private static var ghosttyConfigOwner: TerminalConfig?
+    @MainActor private static var isAppInitialized = false
+    nonisolated(unsafe) private static let surfaceRegistry = NSHashTable<TerminalSurface>.weakObjects()
     private static let surfaceRegistryLock = NSLock()
 
     /// Create the ghostty app singleton. Call once at launch from AppDelegate.

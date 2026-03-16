@@ -1,3 +1,4 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 
 /// Horizontal tab bar that sits directly above the content area.
@@ -22,7 +23,7 @@ final class TabBarView: NSView {
 
     private var tabButtons: [TabButton] = []
     private var addButton: NSButton?
-    private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) var themeObserver: NSObjectProtocol?
 
     private static let addButtonWidth: CGFloat = 20
     private static let addButtonGap: CGFloat = 4
@@ -37,7 +38,7 @@ final class TabBarView: NSView {
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        setup()
+        MainActor.assumeIsolated { setup() }
     }
 
     deinit {

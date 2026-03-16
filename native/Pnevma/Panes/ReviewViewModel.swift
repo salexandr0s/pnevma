@@ -81,7 +81,7 @@ final class ReviewViewModel {
     @ObservationIgnored
     private var activationObserverID: UUID?
     @ObservationIgnored
-    private var deepLinkObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var deepLinkObserver: NSObjectProtocol?
     @ObservationIgnored
     private var loadTask: Task<Void, Never>?
     @ObservationIgnored
@@ -124,8 +124,9 @@ final class ReviewViewModel {
             object: CommandCenterDeepLinkStore.shared,
             queue: nil
         ) { [weak self] notification in
+            let target = notification.userInfo?["target"] as? String
             Task { @MainActor [weak self] in
-                self?.handleDeepLinkNotification(notification)
+                self?.handleDeepLinkForTarget(target)
             }
         }
     }
@@ -420,7 +421,11 @@ final class ReviewViewModel {
     }
 
     private func handleDeepLinkNotification(_ notification: Notification) {
-        guard let target = notification.userInfo?["target"] as? String,
+        handleDeepLinkForTarget(notification.userInfo?["target"] as? String)
+    }
+
+    private func handleDeepLinkForTarget(_ target: String?) {
+        guard let target,
               target == CommandCenterDeepLinkTarget.review.rawValue else {
             return
         }

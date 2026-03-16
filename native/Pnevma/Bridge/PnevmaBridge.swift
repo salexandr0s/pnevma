@@ -26,7 +26,7 @@ enum ActiveWorkspaceActivationState: Equatable {
     }
 }
 
-final class BridgeEventHub {
+final class BridgeEventHub: @unchecked Sendable {
     static let shared = BridgeEventHub()
 
     typealias Observer = (BridgeEvent) -> Void
@@ -60,7 +60,7 @@ final class BridgeEventHub {
     }
 }
 
-final class ActiveWorkspaceActivationHub {
+final class ActiveWorkspaceActivationHub: @unchecked Sendable {
     static let shared = ActiveWorkspaceActivationHub()
 
     typealias Observer = (ActiveWorkspaceActivationState) -> Void
@@ -103,7 +103,7 @@ final class ActiveWorkspaceActivationHub {
     }
 }
 
-final class SessionOutputHub {
+final class SessionOutputHub: @unchecked Sendable {
     static let shared = SessionOutputHub()
 
     typealias Observer = (SessionOutputEvent) -> Void
@@ -245,7 +245,7 @@ final class PnevmaBridge: @unchecked Sendable {
     }
 
     /// Async call to the Rust backend with callback.
-    func callAsync(method: String, params: String, completion: @escaping (BridgeCallResult?) -> Void) {
+    func callAsync(method: String, params: String, completion: @escaping @Sendable (BridgeCallResult?) -> Void) {
         handleLock.lock()
         let h = handle
         handleLock.unlock()
@@ -311,9 +311,9 @@ final class PnevmaBridge: @unchecked Sendable {
     }
 }
 
-private class CompletionBox {
-    let completion: (BridgeCallResult?) -> Void
-    init(_ completion: @escaping (BridgeCallResult?) -> Void) {
+private final class CompletionBox: @unchecked Sendable {
+    let completion: @Sendable (BridgeCallResult?) -> Void
+    init(_ completion: @escaping @Sendable (BridgeCallResult?) -> Void) {
         self.completion = completion
     }
 }

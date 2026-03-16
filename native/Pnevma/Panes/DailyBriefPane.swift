@@ -4,19 +4,19 @@ import Cocoa
 
 // MARK: - Timestamp Formatting
 
-private let briefISOFormatter: ISO8601DateFormatter = {
+nonisolated(unsafe) private let briefISOFormatter: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return f
 }()
 
-private let briefISOFormatterNoFraction: ISO8601DateFormatter = {
+nonisolated(unsafe) private let briefISOFormatterNoFraction: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
     return f
 }()
 
-private let briefRelativeFormatter = RelativeDateTimeFormatter()
+nonisolated(unsafe) private let briefRelativeFormatter = RelativeDateTimeFormatter()
 
 private func formatRelativeTimestamp(_ raw: String) -> String {
     let date = briefISOFormatter.date(from: raw)

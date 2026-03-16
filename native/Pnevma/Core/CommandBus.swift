@@ -37,17 +37,17 @@ private final class ContinuationGuard<T: Sendable>: @unchecked Sendable {
 /// Convenience wrapper for making typed calls to the Rust backend.
 /// All calls are dispatched to a background queue to avoid blocking the main thread.
 protocol CommandCalling: Sendable {
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T
 }
 
 extension CommandCalling {
-    func call<T: Decodable>(method: String) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String) async throws -> T {
         try await call(method: method, params: nil)
     }
 }
 
 actor CommandBus: CommandCalling {
-    static var shared: (any CommandCalling)?
+    @MainActor static var shared: (any CommandCalling)?
 
     private let bridge: PnevmaBridge
 
@@ -57,7 +57,7 @@ actor CommandBus: CommandCalling {
 
     /// Call a Rust command with pre-serialized JSON params and decode the result.
     /// Races the FFI callback against a 30-second timeout to prevent indefinite hangs.
-    func callRaw<T: Decodable>(method: String, paramsJSON: String) async throws -> T {
+    func callRaw<T: Decodable & Sendable>(method: String, paramsJSON: String) async throws -> T {
         return try await withThrowingTaskGroup(of: T.self) { group in
             let continuationGuard = ContinuationGuard<T>(method: method)
 
@@ -116,7 +116,7 @@ actor CommandBus: CommandCalling {
 
     /// Call a Rust command and decode the JSON result.
     /// Races the FFI callback against a 30-second timeout to prevent indefinite hangs.
-    func call<T: Decodable>(method: String, params: Encodable? = nil) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)? = nil) async throws -> T {
         let paramsJSON: String
         if let params = params {
             let encoder = JSONEncoder()
@@ -201,7 +201,7 @@ final class ActiveWorkspaceCommandBus: CommandCalling, @unchecked Sendable {
         self.activeCommandBusProvider = activeCommandBusProvider
     }
 
-    func call<T: Decodable>(method: String, params: Encodable?) async throws -> T {
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         let bus = activeCommandBusProvider() ?? fallback
         return try await bus.call(method: method, params: params)
     }

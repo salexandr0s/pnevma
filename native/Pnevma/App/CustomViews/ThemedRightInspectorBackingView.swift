@@ -1,8 +1,9 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 
 final class ThemedRightInspectorBackingView: NSView {
-    private var themeObserver: NSObjectProtocol?
-    private var tintObserver: NSObjectProtocol?
+    nonisolated(unsafe) var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) var tintObserver: NSObjectProtocol?
     private let leftSeparator = NSView()
 
     override func hitTest(_ point: NSPoint) -> NSView? {

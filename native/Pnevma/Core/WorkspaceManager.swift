@@ -31,10 +31,11 @@ final class WorkspaceManager {
 
     // MARK: - Sidebar Grouping
 
+    @MainActor
     struct ProjectGroup: Identifiable {
         let name: String
         var workspaces: [Workspace]
-        var id: String { name }
+        nonisolated var id: String { name }
 
         var attention: [Workspace] { workspaces.filter { $0.operationalState == .attention } }
         var active: [Workspace] { workspaces.filter { $0.operationalState == .active } }
@@ -1017,6 +1018,7 @@ private enum WorkspaceProjectInitializationError: LocalizedError {
     }
 }
 
+@MainActor
 protocol WorkspaceProjectPathResolving {
     func resolveProjectPath(for workspace: Workspace) async throws -> String?
     func cleanup(workspace: Workspace)
@@ -1067,6 +1069,7 @@ enum WorkspaceProjectTransportSupport {
     }
 }
 
+@MainActor
 private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathResolving {
     private let remoteMountManager = RemoteWorkspaceMountManager()
 
@@ -1106,6 +1109,7 @@ private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathRes
     }
 }
 
+@MainActor
 private final class RemoteWorkspaceMountManager {
     private let fileManager = FileManager.default
 
@@ -1126,7 +1130,7 @@ private final class RemoteWorkspaceMountManager {
         try prepareMountDirectory(at: mountPath)
 
         let source = "\(remoteTarget.user)@\(remoteTarget.host):\(resolvedRemotePath)"
-        let result = try await runCommand(
+        let result = await runCommand(
             executable: sshfsPath,
             arguments: sshfsArguments(
                 source: source,
@@ -1169,7 +1173,7 @@ private final class RemoteWorkspaceMountManager {
     private func resolveRemotePath(for remoteTarget: WorkspaceRemoteTarget) async throws -> String {
         let destination = "\(remoteTarget.user)@\(remoteTarget.host)"
         let remoteCommand = "cd -- \(remoteTarget.shellDirectoryExpression) && pwd -P"
-        let result = try await runCommand(
+        let result = await runCommand(
             executable: "/usr/bin/ssh",
             arguments: sshArguments(
                 remoteTarget: remoteTarget,
@@ -1285,18 +1289,14 @@ private final class RemoteWorkspaceMountManager {
         )
     }
 
-    private func runCommand(
+    private nonisolated func runCommand(
         executable: String,
         arguments: [String]
-    ) async throws -> ShellCommandResult {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: Self.runCommandSync(executable: executable, arguments: arguments))
-            }
-        }
+    ) async -> ShellCommandResult {
+        Self.runCommandSync(executable: executable, arguments: arguments)
     }
 
-    private static func runCommandSync(
+    private nonisolated static func runCommandSync(
         executable: String,
         arguments: [String]
     ) -> ShellCommandResult {

@@ -77,7 +77,7 @@ struct CommandCenterView: View {
                     onClear: { handleWorkspaceSelection(nil) }
                 )
 
-                ScrollView(.horizontal) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: DesignTokens.Spacing.sm) {
                         ForEach(CommandCenterStore.Filter.allCases) { filter in
                             FilterPill(
@@ -106,7 +106,7 @@ struct CommandCenterView: View {
 
                 Spacer(minLength: DesignTokens.Spacing.sm)
 
-                ScrollView(.horizontal) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: DesignTokens.Spacing.sm) {
                         MetricCapsule(title: "Attention", value: "\(store.attentionRunCount)", accent: .systemOrange)
                         MetricCapsule(title: "Active", value: "\(store.fleetSummary.activeCount)", accent: .systemGreen)
@@ -208,7 +208,7 @@ struct CommandCenterView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                ScrollView(.horizontal) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: DesignTokens.Spacing.sm) {
                         KeyboardHintToken(keys: "⌘1–7", description: "filter")
                         KeyboardHintToken(keys: "↑↓", description: "move")
@@ -1371,7 +1371,7 @@ private struct CommandCenterBoardFocusBridge: NSViewRepresentable {
         coordinator.boardView = nil
     }
 
-    final class Coordinator {
+    @MainActor final class Coordinator {
         weak var hostView: NSView?
         weak var boardView: NSView?
         var lastAppliedFocusToken = 0
@@ -1379,14 +1379,14 @@ private struct CommandCenterBoardFocusBridge: NSViewRepresentable {
         func resolveBoardViewIfNeeded() {
             guard let hostView else { return }
             if boardView == nil || boardView?.window !== hostView.window {
-                DispatchQueue.main.async { [weak self] in
+                Task { @MainActor [weak self] in
                     self?.boardView = self?.locateBoardView()
                 }
             }
         }
 
         func focusBoard() {
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.boardView == nil || self.boardView?.window == nil {
                     self.boardView = self.locateBoardView()

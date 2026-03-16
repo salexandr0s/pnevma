@@ -25,7 +25,7 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView(.vertical) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 2) {
                     // Terminal section (always first)
                     let terminals = workspaceManager.terminalWorkspaces

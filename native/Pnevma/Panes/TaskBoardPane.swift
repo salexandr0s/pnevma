@@ -127,23 +127,7 @@ struct TaskBoardView: View {
                     onStatusChange: viewModel.moveTask
                 )
             } else {
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: layout.spacing) {
-                        ForEach(TaskStatus.allCases, id: \.self) { status in
-                            TaskLaneColumn(
-                                status: status,
-                                tasks: viewModel.tasks(for: status),
-                                width: layout.columnWidth,
-                                density: layout.cardDensity,
-                                onCreate: status == .planned ? openCreateSheet : nil,
-                                onDispatch: viewModel.dispatch,
-                                onStatusChange: viewModel.moveTask
-                            )
-                        }
-                    }
-                    .padding(.bottom, 2)
-                }
-                .scrollIndicators(.hidden)
+                expandedBoard
             }
         }
         .padding(16)
@@ -175,6 +159,27 @@ struct TaskBoardView: View {
         }
         .task { await viewModel.activate() }
         .accessibilityIdentifier("pane.taskBoard")
+    }
+
+    @ViewBuilder
+    private var expandedBoard: some View {
+        let createAction: (() -> Void)? = openCreateSheet
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: layout.spacing) {
+                ForEach(TaskStatus.allCases, id: \.self) { status in
+                    TaskLaneColumn(
+                        status: status,
+                        tasks: viewModel.tasks(for: status),
+                        width: layout.columnWidth,
+                        density: layout.cardDensity,
+                        onCreate: status == .planned ? createAction : nil,
+                        onDispatch: viewModel.dispatch,
+                        onStatusChange: viewModel.moveTask
+                    )
+                }
+            }
+            .padding(.bottom, 2)
+        }
     }
 
     private func openCreateSheet() {
@@ -302,7 +307,7 @@ private struct TaskBoardStackedLayout: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(TaskStatus.allCases, id: \.self) { status in
                         Button {
@@ -401,7 +406,7 @@ private struct TaskLaneColumn: View {
                 TaskLaneEmptyState(status: status, onCreate: onCreate)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                ScrollView(.vertical) {
+                ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(spacing: 10) {
                         ForEach(tasks) { task in
                             TaskCard(
@@ -636,7 +641,7 @@ private struct FlowingTagRow: View {
     let tags: [String]
 
     var body: some View {
-        ScrollView(.horizontal) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(tags, id: \.self) { tag in
                     TaskMetaBadge(text: tag)
@@ -691,7 +696,7 @@ private struct TaskCreationSheet: View {
                 Spacer()
             }
 
-            ScrollView(.vertical) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 16) {
                     TaskCreationSection(title: "Essentials") {
                         TextField("Title", text: $draft.title)

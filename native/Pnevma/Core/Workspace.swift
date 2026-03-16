@@ -146,8 +146,9 @@ enum RightInspectorSection: String, Codable, CaseIterable {
 }
 
 /// A single tab within a workspace. Each tab has its own pane layout.
+@MainActor
 final class WorkspaceTab: Identifiable {
-    let id: UUID
+    nonisolated let id: UUID
     var title: String
     let layoutEngine: PaneLayoutEngine
 
@@ -246,9 +247,10 @@ enum WorkspaceOperationalState: String, CaseIterable {
 /// A workspace represents an open project with its own tabs, terminal sessions,
 /// and connection to the Rust backend (via a shared PnevmaBridge).
 @Observable
+@MainActor
 final class Workspace: Identifiable {
 
-    let id: UUID
+    nonisolated let id: UUID
     var name: String
     var projectPath: String?
     let kind: WorkspaceKind

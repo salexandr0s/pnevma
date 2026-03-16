@@ -1,10 +1,11 @@
+@preconcurrency import ObjectiveC
 import Cocoa
 
 /// A subtle 1pt separator line that follows the ghostty split divider color.
 final class ThemedSeparatorView: NSView {
     enum Axis { case horizontal, vertical }
     private let axis: Axis
-    private var themeObserver: NSObjectProtocol?
+    nonisolated(unsafe) var themeObserver: NSObjectProtocol?
 
     init(axis: Axis) {
         self.axis = axis

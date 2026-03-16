@@ -379,7 +379,7 @@ struct MiniDagPreview: View {
             .padding(.top, 8)
             .padding(.bottom, 6)
 
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
                     ForEach(Array(layers.enumerated()), id: \.offset) { layerIdx, layer in
                         let (_, layerSteps) = layer
