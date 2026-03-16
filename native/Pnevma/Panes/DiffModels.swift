@@ -103,3 +103,29 @@ struct BackendDiffTask: Decodable {
     let status: String
     let priority: String
 }
+
+// MARK: - Inspector Diff File Stats
+
+struct InspectorDiffFileStat: Identifiable {
+    let path: String
+    let additions: Int
+    let deletions: Int
+    var isReviewed: Bool = false
+
+    var id: String { path }
+
+    var directory: String {
+        (path as NSString).deletingLastPathComponent
+    }
+
+    var fileName: String {
+        (path as NSString).lastPathComponent
+    }
+
+    var statsLabel: String {
+        var parts: [String] = []
+        if additions > 0 { parts.append("+\(additions)") }
+        if deletions > 0 { parts.append("-\(deletions)") }
+        return parts.joined(separator: " ")
+    }
+}

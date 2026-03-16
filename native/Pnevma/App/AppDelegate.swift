@@ -2339,8 +2339,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             object: panel,
             queue: .main
         ) { [weak self] _ in
-            self?.wizardViewModel = nil
-            self?.wizardPanel = nil
+            MainActor.assumeIsolated {
+                self?.wizardViewModel = nil
+                self?.wizardPanel = nil
+            }
         }
 
         let hostingView = NSHostingView(rootView: wizardView)

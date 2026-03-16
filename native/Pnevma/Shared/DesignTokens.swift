@@ -16,11 +16,36 @@ enum DesignTokens {
         static let fast: TimeInterval = 0.12
         static let normal: TimeInterval = 0.18
         static let slow: TimeInterval = 0.22
+        static let toastActionDuration: TimeInterval = 5.0
+        static let focusModeTransition: TimeInterval = 0.25
+    }
+
+    // MARK: - Severity Colors
+    enum SeverityColor {
+        static func color(for level: String) -> NSColor {
+            switch level {
+            case "error", "failed":
+                return .systemRed
+            case "warning", "attention", "stuck":
+                return .systemOrange
+            case "success", "pass", "passed":
+                return .systemGreen
+            case "running", "active":
+                return .systemBlue
+            default:
+                return .secondaryLabelColor
+            }
+        }
     }
 
     // MARK: - Layout
     enum Layout {
         static let sidebarWidth: CGFloat = 220
+        static let sidebarCollapsedWidth: CGFloat = 52
+        static let sidebarMinWidth: CGFloat = 180
+        static let sidebarMaxWidth: CGFloat = 380
+        static let agentStripHeight: CGFloat = 32
+        static let statusDotSize: CGFloat = 8
         static let rightInspectorDefaultWidth: CGFloat = 340
         static let rightInspectorMinWidth: CGFloat = 280
         static let rightInspectorMaxWidth: CGFloat = 520

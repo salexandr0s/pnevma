@@ -154,7 +154,7 @@ struct CommandCenterView: View {
                     }
                 }
             } header: {
-                SidebarSectionHeader(title: "Attention Queue", systemImage: "bell.badge.fill")
+                CommandCenterSectionHeader(title: "Attention Queue", systemImage: "bell.badge.fill")
             }
 
             Section {
@@ -180,7 +180,7 @@ struct CommandCenterView: View {
                     .listRowBackground(Color.clear)
                 }
             } header: {
-                SidebarSectionHeader(title: "Workspaces", systemImage: "square.grid.2x2.fill")
+                CommandCenterSectionHeader(title: "Workspaces", systemImage: "square.grid.2x2.fill")
             }
         }
         .listStyle(.sidebar)
@@ -754,7 +754,7 @@ private struct CommandCenterPanel<Content: View>: View {
     }
 }
 
-private struct SidebarSectionHeader: View {
+private struct CommandCenterSectionHeader: View {
     let title: String
     let systemImage: String
 

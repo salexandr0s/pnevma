@@ -49,3 +49,33 @@ struct BackendTaskItem: Decodable {
     let priority: String
     let costUsd: Double?
 }
+
+// MARK: - Inspector Check & Merge Readiness
+
+struct CheckStatusSummary: Decodable {
+    let total: Int
+    let passed: Int
+    let failed: Int
+    let running: Int
+
+    var allPassed: Bool { total > 0 && passed == total }
+    var hasFailures: Bool { failed > 0 }
+    var isRunning: Bool { running > 0 }
+
+    var statusLabel: String {
+        if hasFailures { return "\(failed) failed" }
+        if isRunning { return "\(running) running" }
+        if allPassed { return "All \(total) passed" }
+        return "\(passed)/\(total) passed"
+    }
+}
+
+struct MergeReadiness: Decodable {
+    let isReady: Bool
+    let blockers: [String]
+    let requiredChecks: [String]
+
+    var blockersDescription: String {
+        blockers.isEmpty ? "Ready to merge" : blockers.joined(separator: ", ")
+    }
+}

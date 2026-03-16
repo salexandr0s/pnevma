@@ -93,6 +93,20 @@ struct ToolsSectionHeader: View {
     }
 }
 
+// MARK: - SidebarMode
+
+enum SidebarMode: String, Codable, CaseIterable {
+    case expanded, collapsed, hidden
+
+    var next: SidebarMode {
+        switch self {
+        case .expanded: return .collapsed
+        case .collapsed: return .hidden
+        case .hidden: return .expanded
+        }
+    }
+}
+
 // MARK: - SidebarPreferences
 
 // MARK: - Background tint constants
@@ -114,6 +128,28 @@ enum SidebarPreferences {
             return BackgroundTint.clamped(raw)
         }
         set { defaults.set(newValue, forKey: "sidebarBackgroundOffset") }
+    }
+
+    /// Current sidebar display mode.
+    static var sidebarMode: SidebarMode {
+        get {
+            defaults.string(forKey: "sidebarMode")
+                .flatMap(SidebarMode.init(rawValue:)) ?? .expanded
+        }
+        set { defaults.set(newValue.rawValue, forKey: "sidebarMode") }
+    }
+
+    /// User-dragged sidebar width (clamped to design token bounds).
+    static var sidebarWidth: CGFloat {
+        get {
+            let raw = defaults.object(forKey: "sidebarCustomWidth") as? CGFloat
+                ?? DesignTokens.Layout.sidebarWidth
+            return min(max(raw, DesignTokens.Layout.sidebarMinWidth), DesignTokens.Layout.sidebarMaxWidth)
+        }
+        set {
+            let clamped = min(max(newValue, DesignTokens.Layout.sidebarMinWidth), DesignTokens.Layout.sidebarMaxWidth)
+            defaults.set(clamped, forKey: "sidebarCustomWidth")
+        }
     }
 }
 

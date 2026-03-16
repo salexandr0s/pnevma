@@ -732,6 +732,8 @@ private struct InspectorFileTreeRow: View {
 
 private struct InspectorChangesSection: View {
     @Bindable var viewModel: WorkspaceChangesViewModel
+    @State private var commitMessage = ""
+    @State private var isCommitting = false
 
     var body: some View {
         VStack(spacing: 0) {

@@ -29,6 +29,46 @@ final class WorkspaceManager {
         activeRuntime?.commandBus
     }
 
+    // MARK: - Sidebar Grouping
+
+    struct ProjectGroup: Identifiable {
+        let name: String
+        var workspaces: [Workspace]
+        var id: String { name }
+
+        var attention: [Workspace] { workspaces.filter { $0.operationalState == .attention } }
+        var active: [Workspace] { workspaces.filter { $0.operationalState == .active } }
+        var review: [Workspace] { workspaces.filter { $0.operationalState == .review } }
+        var idle: [Workspace] { workspaces.filter { $0.operationalState == .idle } }
+        var count: Int { workspaces.count }
+    }
+
+    var terminalWorkspaces: [Workspace] {
+        workspaces.filter(\.isPermanent)
+    }
+
+    var pinnedWorkspaces: [Workspace] {
+        workspaces.filter { !$0.isPermanent && $0.isPinned }
+    }
+
+    var projectGroups: [ProjectGroup] {
+        let unpinned = workspaces.filter { !$0.isPermanent && !$0.isPinned }
+        var groups: [String: [Workspace]] = [:]
+        for ws in unpinned {
+            let key = ws.projectRoot ?? "Ungrouped"
+            groups[key, default: []].append(ws)
+        }
+        return groups
+            .map { ProjectGroup(name: $0.key, workspaces: $0.value) }
+            .sorted { lhs, rhs in
+                // Groups with attention items sort first
+                let lhsHasAttention = lhs.attention.isEmpty ? 1 : 0
+                let rhsHasAttention = rhs.attention.isEmpty ? 1 : 0
+                if lhsHasAttention != rhsHasAttention { return lhsHasAttention < rhsHasAttention }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
     @ObservationIgnored
     var onActiveWorkspaceChanged: ((PaneLayoutEngine) -> Void)?
 
@@ -768,6 +808,12 @@ final class WorkspaceManager {
         workspace.costToday = summary.costToday
         workspace.unreadNotifications = summary.unreadNotifications
         workspace.gitDirty = summary.gitDirty ?? false
+        workspace.diffInsertions = summary.diffInsertions
+        workspace.diffDeletions = summary.diffDeletions
+        workspace.linkedPRNumber = summary.linkedPrNumber
+        workspace.linkedPRURL = summary.linkedPrUrl
+        workspace.ciStatus = summary.ciStatus
+        workspace.attentionReason = summary.attentionReason
         if activeWorkspaceID == workspaceID {
             onNotificationCountChanged?(workspace.unreadNotifications + workspace.terminalNotificationCount)
         }
@@ -1336,4 +1382,10 @@ struct ProjectSummary: Decodable {
     let costToday: Double
     let unreadNotifications: Int
     let gitDirty: Bool?
+    let diffInsertions: Int?
+    let diffDeletions: Int?
+    let linkedPrNumber: UInt64?
+    let linkedPrUrl: String?
+    let ciStatus: String?
+    let attentionReason: String?
 }

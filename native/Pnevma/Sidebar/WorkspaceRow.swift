@@ -32,16 +32,6 @@ struct WorkspaceRow: View {
         return isActive ? themeAccentColor : Color.secondary.opacity(0.3)
     }
 
-    private var shortenedPath: String? {
-        guard let path = workspace.displayPath else { return nil }
-        switch workspace.location {
-        case .local:
-            return WorkspacePathDisplayFormatter.shortenedLocalPath(path)
-        case .remote:
-            return path
-        }
-    }
-
     private var modeLabel: String {
         switch workspace.location {
         case .local:
@@ -49,10 +39,6 @@ struct WorkspaceRow: View {
         case .remote:
             return "Remote"
         }
-    }
-
-    private var terminalModeLabel: String {
-        workspace.terminalMode == .persistent ? "Persistent" : "Local Shell"
     }
 
     private var failureMessage: String? {
@@ -75,6 +61,7 @@ struct WorkspaceRow: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
+                // Line 1: Name
                 if isRenaming {
                     TextField("Name", text: $renameText)
                         .textFieldStyle(.plain)
@@ -98,13 +85,15 @@ struct WorkspaceRow: View {
                         .lineLimit(1)
                 }
 
-                HStack(spacing: 6) {
+                // Line 2: Signal chips
+                HStack(spacing: 4) {
                     if workspace.showsProjectToolsInUI && workspace.gitBranch == nil && isActive {
                         ProgressView()
                             .controlSize(.mini)
                             .scaleEffect(0.7)
                     }
 
+                    // Branch + dirty
                     if let branch = workspace.gitBranch {
                         HStack(spacing: 2) {
                             Label(branch, systemImage: "arrow.triangle.branch")
@@ -120,27 +109,37 @@ struct WorkspaceRow: View {
                         .lineLimit(1)
                     }
 
-                    if workspace.activeTasks > 0 {
-                        Label("\(workspace.activeTasks)", systemImage: "checklist")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                    // Diff stats chip
+                    if let ins = workspace.diffInsertions, let dels = workspace.diffDeletions,
+                       ins > 0 || dels > 0 {
+                        DiffStatsChip(insertions: ins, deletions: dels)
                     }
 
-                    Text(modeLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
-                        .fixedSize()
+                    // PR chip
+                    if let prNum = workspace.linkedPRNumber {
+                        PRChip(number: prNum, url: workspace.linkedPRURL)
+                    }
 
-                    Text(terminalModeLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
-                        .fixedSize()
+                    // CI chip
+                    if let ci = workspace.ciStatus, ci != "none" {
+                        CIChip(status: ci)
+                    }
+
+                    // Attention chip
+                    if let reason = workspace.attentionReason {
+                        AttentionChip(reason: reason)
+                    }
+
+                    // Mode pills — only on hover or active
+                    if isActive || isHovering {
+                        Text(modeLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                            .fixedSize()
+                    }
 
                     if failureMessage != nil {
                         Label("Activation Failed", systemImage: "exclamationmark.triangle.fill")
@@ -152,13 +151,7 @@ struct WorkspaceRow: View {
                 .lineLimit(1)
                 .clipped()
 
-                if let shortPath = shortenedPath {
-                    Text(shortPath)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-
+                // Failure detail
                 if let failureMessage {
                     Text(failureMessage)
                         .font(.system(size: 10))
@@ -196,6 +189,7 @@ struct WorkspaceRow: View {
                 isRenameFieldFocused = true
             }
         }
+        .help(workspace.displayPath ?? workspace.name)
         .contextMenu {
             Button("Rename...") {
                 renameText = workspace.name

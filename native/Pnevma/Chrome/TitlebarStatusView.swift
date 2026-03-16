@@ -2,15 +2,22 @@ import Cocoa
 import Observation
 
 final class TitlebarStatusView: NSView {
-    private let branchLabel = NSTextField(labelWithString: "")
+    private let branchButton = NSButton(frame: .zero)
     private let agentsLabel = NSTextField(labelWithString: "")
     let sessionsButton = NSButton(frame: .zero)
+    private let prPill = NSButton(frame: .zero)
+    private let attentionDot = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
     private let separator1 = NSBox()
     private let separator2 = NSBox()
     private var themeObserver: NSObjectProtocol?
     private var sessionObservationGeneration: UInt64 = 0
 
     var onSessionsClicked: (() -> Void)?
+    var onBranchClicked: (() -> Void)?
+    var onPRClicked: (() -> Void)?
+
+    private var currentPRNumber: UInt64?
+    private var currentPRURL: String?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -29,22 +36,36 @@ final class TitlebarStatusView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 320, height: 24)
+        NSSize(width: 420, height: 24)
     }
 
     private func setupUI() {
         let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        for label in [branchLabel, agentsLabel] {
-            label.font = font
-            label.isEditable = false
-            label.isBordered = false
-            label.drawsBackground = false
-            label.cell?.lineBreakMode = .byTruncatingTail
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(label)
-        }
 
+        // Branch button (clickable)
+        branchButton.bezelStyle = .inline
+        branchButton.isBordered = false
+        branchButton.font = font
+        branchButton.title = "\u{E0A0} —"
+        branchButton.target = self
+        branchButton.action = #selector(branchClicked)
+        branchButton.setAccessibilityLabel("Git branch")
+        branchButton.toolTip = "Click to switch branch"
+        branchButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(branchButton)
+
+        // Agents label
+        agentsLabel.font = font
+        agentsLabel.isEditable = false
+        agentsLabel.isBordered = false
+        agentsLabel.drawsBackground = false
+        agentsLabel.cell?.lineBreakMode = .byTruncatingTail
+        agentsLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        agentsLabel.translatesAutoresizingMaskIntoConstraints = false
+        agentsLabel.setAccessibilityLabel("Active agents")
+        addSubview(agentsLabel)
+
+        // Sessions button
         sessionsButton.bezelStyle = .inline
         sessionsButton.isBordered = false
         sessionsButton.font = font
@@ -55,6 +76,28 @@ final class TitlebarStatusView: NSView {
         sessionsButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(sessionsButton)
 
+        // PR pill (hidden by default)
+        prPill.bezelStyle = .inline
+        prPill.isBordered = false
+        prPill.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+        prPill.title = ""
+        prPill.target = self
+        prPill.action = #selector(prClicked)
+        prPill.wantsLayer = true
+        prPill.layer?.cornerRadius = 8
+        prPill.setAccessibilityLabel("Pull request")
+        prPill.translatesAutoresizingMaskIntoConstraints = false
+        prPill.isHidden = true
+        addSubview(prPill)
+
+        // Attention dot (hidden by default)
+        attentionDot.wantsLayer = true
+        attentionDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
+        attentionDot.layer?.cornerRadius = 4
+        attentionDot.translatesAutoresizingMaskIntoConstraints = false
+        attentionDot.isHidden = true
+        addSubview(attentionDot)
+
         for separator in [separator1, separator2] {
             separator.boxType = .separator
             separator.translatesAutoresizingMaskIntoConstraints = false
@@ -62,10 +105,13 @@ final class TitlebarStatusView: NSView {
         }
 
         NSLayoutConstraint.activate([
-            branchLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
-            branchLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            branchButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+            branchButton.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            separator1.leadingAnchor.constraint(equalTo: branchLabel.trailingAnchor, constant: 8),
+            prPill.leadingAnchor.constraint(equalTo: branchButton.trailingAnchor, constant: 6),
+            prPill.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            separator1.leadingAnchor.constraint(equalTo: prPill.trailingAnchor, constant: 8),
             separator1.centerYAnchor.constraint(equalTo: centerYAnchor),
             separator1.widthAnchor.constraint(equalToConstant: 1),
             separator1.heightAnchor.constraint(equalToConstant: 12),
@@ -81,10 +127,12 @@ final class TitlebarStatusView: NSView {
             sessionsButton.leadingAnchor.constraint(equalTo: separator2.trailingAnchor, constant: 8),
             sessionsButton.trailingAnchor.constraint(equalTo: trailingAnchor),
             sessionsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
 
-        branchLabel.setAccessibilityLabel("Git branch")
-        agentsLabel.setAccessibilityLabel("Active agents")
+            attentionDot.widthAnchor.constraint(equalToConstant: DesignTokens.Layout.statusDotSize),
+            attentionDot.heightAnchor.constraint(equalToConstant: DesignTokens.Layout.statusDotSize),
+            attentionDot.trailingAnchor.constraint(equalTo: sessionsButton.trailingAnchor, constant: 2),
+            attentionDot.topAnchor.constraint(equalTo: sessionsButton.topAnchor, constant: -2),
+        ])
 
         updateBranch(nil)
         updateAgents(0)
@@ -102,17 +150,30 @@ final class TitlebarStatusView: NSView {
 
     private func applyThemeColors() {
         let color = GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.secondary)
-        branchLabel.textColor = color
+        branchButton.contentTintColor = color
         agentsLabel.textColor = color
         sessionsButton.contentTintColor = color
+        prPill.contentTintColor = .controlAccentColor
+        prPill.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.1).cgColor
     }
 
     @objc private func sessionsClicked() {
         onSessionsClicked?()
     }
 
+    @objc private func branchClicked() {
+        onBranchClicked?()
+    }
+
+    @objc private func prClicked() {
+        if let url = currentPRURL, let nsURL = URL(string: url) {
+            NSWorkspace.shared.open(nsURL)
+        }
+        onPRClicked?()
+    }
+
     func updateBranch(_ branch: String?) {
-        branchLabel.stringValue = branch.map { "\u{E0A0} \($0)" } ?? "\u{E0A0} —"
+        branchButton.title = branch.map { "\u{E0A0} \($0)" } ?? "\u{E0A0} —"
     }
 
     func updateAgents(_ count: Int) {
@@ -121,6 +182,21 @@ final class TitlebarStatusView: NSView {
 
     func updateSessions(_ count: Int) {
         sessionsButton.title = "\(count) session\(count == 1 ? "" : "s")"
+    }
+
+    func updatePR(number: UInt64?, url: String?) {
+        currentPRNumber = number
+        currentPRURL = url
+        if let number {
+            prPill.title = "#\(number)"
+            prPill.isHidden = false
+        } else {
+            prPill.isHidden = true
+        }
+    }
+
+    func updateAttentionDot(visible: Bool) {
+        attentionDot.isHidden = !visible
     }
 
     func bindSessionStore(_ store: SessionStore) {

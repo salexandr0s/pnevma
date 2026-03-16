@@ -254,6 +254,33 @@ final class CommandCenterStore {
         scopedRuns.filter(\.needsAttention).count + scopedWorkspaceSnapshots.filter { $0.errorMessage != nil }.count
     }
 
+    /// Total cost across all workspaces today, formatted as currency.
+    var costTodayFormatted: String {
+        let total = scopedWorkspaceSnapshots.reduce(into: 0.0) { acc, ws in
+            acc += ws.snapshot?.summary.costTodayUsd ?? 0
+        }
+        return String(format: "$%.2f", total)
+    }
+
+    /// Per-workspace health indicator for the command strip heat-map.
+    /// Returns (workspaceName, severity) tuples sorted alphabetically.
+    var healthHeatMap: [(name: String, severity: String)] {
+        scopedWorkspaceSnapshots.map { ws in
+            let severity: String
+            if ws.errorMessage != nil {
+                severity = "error"
+            } else if (ws.snapshot?.summary.stuckCount ?? 0) > 0 || (ws.snapshot?.summary.failedCount ?? 0) > 0 {
+                severity = "warning"
+            } else if (ws.snapshot?.summary.activeCount ?? 0) > 0 {
+                severity = "active"
+            } else {
+                severity = "idle"
+            }
+            return (name: ws.workspaceName, severity: severity)
+        }
+        .sorted { $0.name < $1.name }
+    }
+
     var boardSections: [CommandCenterBoardSection] {
         let grouped = Dictionary(grouping: visibleRuns, by: \.boardSectionKind)
         return CommandCenterBoardSectionKind.allCases.compactMap { kind in

@@ -2,6 +2,13 @@ import SwiftUI
 import Cocoa
 import Observation
 
+// MARK: - Toast Action
+
+struct ToastAction {
+    let title: String
+    let callback: @MainActor () -> Void
+}
+
 // MARK: - Toast Model
 
 struct ToastMessage: Identifiable {
@@ -9,9 +16,17 @@ struct ToastMessage: Identifiable {
     let text: String
     let icon: String?
     let style: ToastStyle
+    let action: ToastAction?
 
     enum ToastStyle {
         case success, error, info
+    }
+
+    init(text: String, icon: String? = nil, style: ToastStyle = .info, action: ToastAction? = nil) {
+        self.text = text
+        self.icon = icon
+        self.style = style
+        self.action = action
     }
 }
 
@@ -38,15 +53,24 @@ final class ToastManager {
     private var lastShownTime: Date?
 
     func show(_ text: String, icon: String? = nil, style: ToastMessage.ToastStyle = .info) {
+        show(text, icon: icon, style: style, action: nil)
+    }
+
+    func show(_ text: String, icon: String? = nil, style: ToastMessage.ToastStyle = .info, action: ToastAction?) {
         if text == lastShownText, let lastTime = lastShownTime, Date.now.timeIntervalSince(lastTime) < 1.0 {
             return
         }
         dismissTask?.cancel()
-        currentToast = ToastMessage(text: text, icon: icon, style: style)
+        currentToast = ToastMessage(text: text, icon: icon, style: style, action: action)
         lastShownText = text
         lastShownTime = Date.now
+
+        let duration = action != nil
+            ? DesignTokens.Motion.toastActionDuration
+            : 2.5
+
         dismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2.5))
+            try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: DesignTokens.Motion.normal)) {
                 self.currentToast = nil
@@ -80,6 +104,18 @@ struct ToastOverlayView: View {
                         Text(toast.text)
                             .font(.body.weight(.medium))
                             .lineLimit(2)
+
+                        if let action = toast.action {
+                            Divider()
+                                .frame(height: 16)
+                            Button(action.title) {
+                                action.callback()
+                                manager.dismiss()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)

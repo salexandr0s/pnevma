@@ -216,6 +216,33 @@ extension WorkspaceTab {
     }
 }
 
+// MARK: - WorkspaceOperationalState
+
+enum WorkspaceOperationalState: String, CaseIterable {
+    case attention  // activationFailure, high unread count, stuck agent
+    case active     // activeAgents > 0
+    case review     // activeTasks > 0, no active agents
+    case idle       // default
+
+    var sortOrder: Int {
+        switch self {
+        case .attention: return 0
+        case .active: return 1
+        case .review: return 2
+        case .idle: return 3
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .attention: return "Needs Attention"
+        case .active: return "Active"
+        case .review: return "In Review"
+        case .idle: return "Idle"
+        }
+    }
+}
+
 /// A workspace represents an open project with its own tabs, terminal sessions,
 /// and connection to the Rust backend (via a shared PnevmaBridge).
 @Observable
@@ -326,6 +353,28 @@ final class Workspace: Identifiable {
         self.tabs = resolvedTabs
         self.activeTabIndex = min(activeTabIndex, resolvedTabs.count - 1)
         self.createdAt = Date.now
+    }
+
+    // MARK: - Signal Pack Properties
+
+    var diffInsertions: Int?
+    var diffDeletions: Int?
+    var linkedPRNumber: UInt64?
+    var linkedPRURL: String?
+    var ciStatus: String?
+    var attentionReason: String?
+
+    var operationalState: WorkspaceOperationalState {
+        if activationFailureMessage != nil { return .attention }
+        if attentionReason != nil { return .attention }
+        if activeAgents > 0 { return .active }
+        if activeTasks > 0 { return .review }
+        return .idle
+    }
+
+    var projectRoot: String? {
+        projectPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? remoteTarget?.remotePath
     }
 
     var isPermanent: Bool {

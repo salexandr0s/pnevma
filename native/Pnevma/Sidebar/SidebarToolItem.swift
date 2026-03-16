@@ -122,6 +122,12 @@ private let allSidebarTools: [SidebarToolItem] = [
         paneType: "secrets",
     ),
     SidebarToolItem(
+        id: "ports",
+        title: "Ports",
+        icon: "network.badge.shield.half.filled",
+        paneType: "ports",
+    ),
+    SidebarToolItem(
         id: "settings",
         title: "Settings",
         icon: "gearshape",
@@ -157,6 +163,7 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "brief",
             "rules",
             "secrets",
+            "ports",
             "settings",
         ]
     } else {
