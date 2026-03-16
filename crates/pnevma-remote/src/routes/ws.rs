@@ -548,6 +548,10 @@ async fn handle_socket(
                                     "not subscribed to session {session_id} — subscribe first"
                                 ),
                             }
+                        } else if !is_operator {
+                            WsServerMessage::Error {
+                                message: "session input requires operator role".to_string(),
+                            }
                         } else {
                             tracing::warn!(
                                 subject = auth_context
@@ -856,5 +860,22 @@ mod tests {
         let no_role: Option<TokenRole> = None;
         let is_op_none = no_role.map(|r| r == TokenRole::Operator).unwrap_or(false);
         assert!(!is_op_none, "None role must not be operator");
+    }
+
+    #[test]
+    fn origin_disallowed_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://evil.com".parse().unwrap());
+        assert_eq!(
+            validate_ws_origin(&headers, None, &["https://example.com".to_string()]),
+            Err(StatusCode::FORBIDDEN)
+        );
+    }
+
+    #[test]
+    fn origin_localhost_default_accepted() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://localhost".parse().unwrap());
+        assert!(validate_ws_origin(&headers, None, &[]).is_ok());
     }
 }

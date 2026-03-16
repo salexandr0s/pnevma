@@ -283,6 +283,7 @@ jobs:
           subject-path: |
             ${{ env.DMG_PATH }}
             ${{ env.CHECKSUM_PATH }}
+            ${{ env.SBOM_PATH }}
 
       - name: Create GitHub Release
         env:

@@ -117,6 +117,85 @@ Verify that recognizable provider credentials are redacted before persistence an
 
 ---
 
+## G5c: Local Control Plane Security
+
+### G5c.1: Socket auth mode verification
+
+1. Configure `socket_auth_mode = "password"` in `~/.config/pnevma/config.toml` with a known password file (mode `0600`).
+2. Connect via `socat` with no password:
+
+   ```bash
+   echo '{"id":"t1","method":"project.status","params":{}}' \
+     | socat - UNIX-CONNECT:.pnevma/run/control.sock
+   ```
+
+   **Expected**: response contains `"code":"unauthorized"` and `"missing auth.password"`.
+
+3. Connect with wrong password:
+
+   ```bash
+   echo '{"id":"t2","method":"project.status","params":{},"auth":{"password":"wrong"}}' \
+     | socat - UNIX-CONNECT:.pnevma/run/control.sock
+   ```
+
+   **Expected**: response contains `"code":"unauthorized"` and `"invalid password"`.
+
+4. Connect with correct password:
+
+   ```bash
+   echo '{"id":"t3","method":"project.status","params":{},"auth":{"password":"<correct>"}}' \
+     | socat - UNIX-CONNECT:.pnevma/run/control.sock
+   ```
+
+   **Expected**: `"ok":true`.
+
+5. Attempt a privileged command (`session.new`) in password mode:
+
+   ```bash
+   echo '{"id":"t4","method":"session.new","params":{"name":"x","cwd":".","command":"zsh"},"auth":{"password":"<correct>"}}' \
+     | socat - UNIX-CONNECT:.pnevma/run/control.sock
+   ```
+
+   **Expected**: response contains `"code":"unauthorized"` and `"privileged"`.
+
+**Pass**: missing/wrong passwords rejected, correct password accepted, privileged commands blocked in password mode.
+
+### G5c.2: Socket rate limiting
+
+1. Set `socket_rate_limit_rpm = 3` in the project's `pnevma.toml`.
+2. Send a burst of 5 requests over the same connection:
+
+   ```bash
+   for i in $(seq 1 5); do
+     echo "{\"id\":\"r$i\",\"method\":\"project.status\",\"params\":{}}"
+   done | socat - UNIX-CONNECT:.pnevma/run/control.sock
+   ```
+
+3. Verify that the first 3 responses have `"ok":true` and the remaining responses contain `"code":"rate_limited"`.
+4. Check application logs for `control plane rate limit exceeded` warning with `peer_uid`.
+
+**Pass**: requests beyond the RPM limit are rejected with `rate_limited`.
+
+### G5c.3: Audit trail inspection
+
+1. After running G5c.1 and G5c.2, open the project's SQLite database and query:
+
+   ```sql
+   SELECT event_type, payload_json FROM events
+   WHERE event_type LIKE 'Automation%'
+   ORDER BY created_at DESC LIMIT 20;
+   ```
+
+2. Verify:
+   - `AutomationRequestReceived` and `AutomationRequestFailed` payloads contain `"peer_uid"` and `"auth_mode"` keys.
+   - `AutomationAuthThresholdExceeded` event is present after 5 repeated auth failures in G5c.1 step 3 (repeat 5 times).
+   - No raw passwords appear in any `payload_json` value.
+
+**Pass**: all audit payloads include `peer_uid` and `auth_mode`; threshold event fires after repeated failures; no secrets in DB.
+**Fail**: missing `peer_uid`/`auth_mode` in payloads, missing threshold event, or raw password in any payload.
+
+---
+
 ## G6: Sign / Notarize / Staple Pipeline
 
 **Reference**: `scripts/release-macos-sign.sh`, `scripts/release-macos-notarize.sh`, `scripts/release-macos-staple-verify.sh`
@@ -148,6 +227,8 @@ codesign --verify --deep --strict /path/to/Pnevma.app && echo "PASS" || echo "FA
 ## G7: Auth Bypass Testing
 
 Tests that the API correctly rejects unauthenticated and malformed requests.
+
+**Automated coverage:** `middleware_rejects_missing_token`, `middleware_rejects_wrong_token`, `middleware_rejects_expired_token`, `middleware_rejects_revoked_token`, `middleware_rejects_query_token_on_non_ws` (unit tests in `auth_token.rs`); `session_input_denied_when_config_disabled`, `session_input_denied_without_subscription`, `session_input_denied_for_readonly_role` (integration tests in `ws_event_flow.rs`).
 
 ### G7a: No token
 
@@ -221,6 +302,8 @@ curl -sk "$BASE_URL/api/tasks?token=$TOKEN" | jq .
 
 ## G8: Rate Limit Burst Testing
 
+**Automated coverage:** `ws_per_ip_connection_cap_enforced`, `ws_message_rate_burst_triggers_error` (integration tests in `ws_event_flow.rs`); `rate_limit_state_exhausts_at_threshold`, `rate_limit_state_creates_per_ip_limiter`, `same_ip_returns_same_limiter_instance` (unit tests in `rate_limit.rs`).
+
 ### G8a: API rate limit (default: 60 req/min)
 
 ```bash
@@ -256,6 +339,8 @@ done
 ## G9: RPC Allowlist Testing
 
 Verify that methods not in `ALLOWED_RPC_METHODS` are blocked on the generic RPC endpoint.
+
+**Automated coverage:** `ws_rpc_rejects_blocked_methods`, `ws_rpc_allows_safe_methods` (unit tests in `ws.rs`); `ws_rpc_rejects_operator_method_for_readonly` (integration test in `ws_event_flow.rs`).
 
 ### G9a: Blocked method via RPC endpoint
 
@@ -298,6 +383,8 @@ curl -sk -X POST \
 ---
 
 ## G10: Body and WebSocket Size Limit Testing
+
+**Automated coverage:** `MAX_WS_MESSAGE_SIZE` (64 KB) is enforced by axum's `WebSocketUpgrade::max_message_size` in `ws_handler`. `RequestBodyLimitLayer` (2 MB) is applied in the server router builder.
 
 ### G10a: Oversized REST body (limit: 2 MB)
 

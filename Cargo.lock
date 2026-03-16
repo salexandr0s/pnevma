@@ -1854,6 +1854,7 @@ name = "pnevma-db"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "pnevma-redaction",
  "serde",
  "serde_json",
  "sha2",

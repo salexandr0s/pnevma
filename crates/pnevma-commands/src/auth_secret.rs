@@ -283,4 +283,65 @@ mod tests {
         std::env::remove_var(key);
         assert_eq!(password, "secret");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn world_readable_password_file_is_rejected() {
+        let (_dir, path) = write_password_file(0o604);
+        let err = read_password_file_secure(&path).expect_err("must reject world-readable");
+        assert!(err.to_string().contains("group or others"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_password_file_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty.txt");
+        std::fs::write(&path, "").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let err = read_password_file_secure(&path).expect_err("must reject empty");
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_path_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let subdir = dir.path().join("not-a-file");
+        std::fs::create_dir(&subdir).expect("mkdir");
+        std::fs::set_permissions(&subdir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let err = read_password_file_secure(&subdir).expect_err("must reject directory");
+        assert!(err.to_string().contains("regular file"));
+    }
+
+    #[test]
+    fn debug_impl_redacts_password() {
+        use crate::control::ControlAuthMode;
+        let mode = ControlAuthMode::Password {
+            password: "super-secret-password".into(),
+        };
+        let debug_output = format!("{:?}", mode);
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "debug output must contain [REDACTED], got: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("super-secret-password"),
+            "debug output must NOT contain the actual password"
+        );
+    }
+
+    #[test]
+    fn password_not_in_debug_output_env_sourced() {
+        use crate::control::ControlAuthMode;
+        let env_password_value = "env-sourced-secret-42";
+        let mode = ControlAuthMode::Password {
+            password: env_password_value.into(),
+        };
+        let debug_output = format!("{:?}", mode);
+        assert!(
+            !debug_output.contains(env_password_value),
+            "debug output must NOT contain the env-sourced password"
+        );
+    }
 }

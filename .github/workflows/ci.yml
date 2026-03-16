@@ -104,6 +104,9 @@ jobs:
       - name: Install cargo-cyclonedx
         run: command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
 
+      - name: Verify migration checksums
+        run: ./scripts/check-migration-checksums.sh
+
       - name: Generate SBOM
         run: cargo cyclonedx --format json
 
@@ -188,6 +191,9 @@ jobs:
 
       - name: Run Swift tests
         run: just xcode-test
+
+      - name: Check FFI coverage
+        run: ./scripts/check-ffi-coverage.sh
 
       - name: Run Ghostty smoke
         run: ./scripts/run-ghostty-smoke.sh

@@ -72,10 +72,22 @@ impl ControlResponse {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ControlAuthMode {
     SameUser,
     Password { password: String },
+}
+
+impl std::fmt::Debug for ControlAuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SameUser => write!(f, "SameUser"),
+            Self::Password { .. } => f
+                .debug_struct("Password")
+                .field("password", &"[REDACTED]")
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +128,48 @@ impl SocketRateLimiter {
         }
         window.push_back(now);
         true
+    }
+}
+
+const AUTH_FAILURE_THRESHOLD: u32 = 5;
+const AUTH_FAILURE_WINDOW_SECS: u64 = 60;
+
+type AuthFailureState = HashMap<u32, (Instant, u32, bool)>;
+
+#[derive(Clone)]
+struct AuthFailureTracker {
+    /// Map from peer_uid → (window_start, failure_count, already_fired)
+    state: Arc<std::sync::Mutex<AuthFailureState>>,
+}
+
+impl AuthFailureTracker {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Record an auth failure for a peer UID. Returns `true` exactly once when
+    /// the threshold is first exceeded within the window.
+    fn record_failure(&self, peer_uid: u32) -> bool {
+        let mut guard = self
+            .state
+            .lock()
+            .expect("auth failure tracker lock poisoned");
+        let now = Instant::now();
+        let entry = guard.entry(peer_uid).or_insert((now, 0, false));
+        let window = Duration::from_secs(AUTH_FAILURE_WINDOW_SECS);
+        if now.duration_since(entry.0) > window {
+            // Reset window
+            *entry = (now, 1, false);
+            return false;
+        }
+        entry.1 += 1;
+        if entry.1 >= AUTH_FAILURE_THRESHOLD && !entry.2 {
+            entry.2 = true; // Fire once per window
+            return true;
+        }
+        false
     }
 }
 
@@ -216,6 +270,7 @@ pub async fn start_control_plane(
     let socket_path = settings.socket_path.clone();
     let accept_settings = settings.clone();
     let rate_limiter = SocketRateLimiter::new(settings.socket_rate_limit_rpm);
+    let auth_failure_tracker = AuthFailureTracker::new();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let join = tokio::spawn(async move {
         loop {
@@ -230,8 +285,9 @@ pub async fn start_control_plane(
                     let state = Arc::clone(&state);
                     let settings = accept_settings.clone();
                     let rate_limiter = rate_limiter.clone();
+                    let auth_tracker = auth_failure_tracker.clone();
                     tokio::spawn(async move {
-                        let _ = handle_unix_client(state, settings, rate_limiter, stream).await;
+                        let _ = handle_unix_client(state, settings, rate_limiter, auth_tracker, stream).await;
                     });
                 }
             }
@@ -259,6 +315,7 @@ async fn handle_unix_client(
     state: Arc<AppState>,
     settings: ControlPlaneSettings,
     rate_limiter: SocketRateLimiter,
+    auth_tracker: AuthFailureTracker,
     stream: tokio::net::UnixStream,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -326,7 +383,8 @@ async fn handle_unix_client(
 
         let request_id = request.id.clone();
         let method = request.method.clone();
-        let response = process_request(&state, &settings, request).await;
+        let response =
+            process_request(&state, &settings, request, peer_uid, &settings.auth_mode).await;
         log_control_plane_request(
             peer_uid,
             &settings.auth_mode,
@@ -334,6 +392,25 @@ async fn handle_unix_client(
             &method,
             &response,
         );
+        if let Some(ref err) = response.error {
+            if err.code == "unauthorized" && auth_tracker.record_failure(peer_uid) {
+                tracing::warn!(
+                    peer_uid,
+                    "auth failure threshold exceeded: 5 failures within 60s"
+                );
+                append_automation_audit(
+                    &state,
+                    "AutomationAuthThresholdExceeded",
+                    json!({
+                        "peer_uid": peer_uid,
+                        "auth_mode": auth_mode_name(&settings.auth_mode),
+                        "failure_count": 5,
+                        "window_seconds": 60,
+                    }),
+                )
+                .await;
+            }
+        }
         let wire = serde_json::to_string(&response).map_err(|e| e.to_string())? + "\n";
         write_half
             .write_all(wire.as_bytes())
@@ -595,6 +672,8 @@ async fn process_request(
     state: &AppState,
     settings: &ControlPlaneSettings,
     request: ControlRequest,
+    peer_uid: u32,
+    auth_mode: &ControlAuthMode,
 ) -> ControlResponse {
     if let Err(err) = validate_control_request(&request) {
         return ControlResponse::err(request.id.clone(), "invalid_request", err);
@@ -603,6 +682,7 @@ async fn process_request(
     let request_id = request.id.clone();
     let method = request.method.clone();
     let params = request.params.clone();
+    let mode_name = auth_mode_name(auth_mode);
 
     if let Err(err) = authorize_request(&request, settings) {
         append_automation_audit(
@@ -612,6 +692,8 @@ async fn process_request(
                 "request_id": request.id,
                 "method": method,
                 "error": err,
+                "peer_uid": peer_uid,
+                "auth_mode": mode_name,
             }),
         )
         .await;
@@ -626,6 +708,8 @@ async fn process_request(
             "request_id": request.id,
             "method": method,
             "params": redacted_params,
+            "peer_uid": peer_uid,
+            "auth_mode": mode_name,
         }),
     )
     .await;
@@ -639,6 +723,8 @@ async fn process_request(
                 json!({
                     "request_id": request.id,
                     "method": method,
+                    "peer_uid": peer_uid,
+                    "auth_mode": mode_name,
                 }),
             )
             .await;
@@ -652,6 +738,8 @@ async fn process_request(
                     "request_id": request.id,
                     "method": method,
                     "error": message,
+                    "peer_uid": peer_uid,
+                    "auth_mode": mode_name,
                 }),
             )
             .await;
@@ -2916,5 +3004,59 @@ mod tests {
             Ok(_) => {} // success is fine
             Err((code, _)) => assert_ne!(code, "method_not_found"),
         }
+    }
+
+    #[test]
+    fn auth_failure_tracker_fires_at_threshold() {
+        let tracker = AuthFailureTracker::new();
+        let uid = 1001;
+        for _ in 0..4 {
+            assert!(
+                !tracker.record_failure(uid),
+                "should not fire below threshold"
+            );
+        }
+        assert!(tracker.record_failure(uid), "should fire at threshold");
+    }
+
+    #[test]
+    fn auth_failure_tracker_fires_once_per_window() {
+        let tracker = AuthFailureTracker::new();
+        let uid = 1002;
+        for _ in 0..5 {
+            tracker.record_failure(uid);
+        }
+        // Further failures in same window should not fire again
+        assert!(
+            !tracker.record_failure(uid),
+            "should not fire twice in same window"
+        );
+    }
+
+    #[test]
+    fn auth_failure_tracker_isolates_uids() {
+        let tracker = AuthFailureTracker::new();
+        for _ in 0..5 {
+            tracker.record_failure(1001);
+        }
+        // Different UID should not have reached threshold
+        assert!(
+            !tracker.record_failure(1002),
+            "different UID should not inherit failures"
+        );
+    }
+
+    #[test]
+    fn debug_impl_redacts_control_auth_mode() {
+        let mode = ControlAuthMode::Password {
+            password: "top-secret".into(),
+        };
+        let output = format!("{:?}", mode);
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("top-secret"));
+
+        let same_user = ControlAuthMode::SameUser;
+        let output = format!("{:?}", same_user);
+        assert!(output.contains("SameUser"));
     }
 }

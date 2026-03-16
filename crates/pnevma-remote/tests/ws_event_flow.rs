@@ -87,26 +87,53 @@ struct TestServer {
 
 impl TestServer {
     async fn spawn(router_impl: Arc<RecordingRouter>) -> Self {
+        Self::spawn_with_config(router_impl, true, 4).await
+    }
+
+    async fn spawn_with_config(
+        router_impl: Arc<RecordingRouter>,
+        allow_session_input: bool,
+        max_ws_per_ip: usize,
+    ) -> Self {
+        Self::build(
+            router_impl,
+            allow_session_input,
+            max_ws_per_ip,
+            TokenRole::Operator,
+        )
+        .await
+    }
+
+    async fn spawn_with_role(router_impl: Arc<RecordingRouter>, role: TokenRole) -> Self {
+        Self::build(router_impl, true, 4, role).await
+    }
+
+    async fn build(
+        router_impl: Arc<RecordingRouter>,
+        allow_session_input: bool,
+        max_ws_per_ip: usize,
+        role: TokenRole,
+    ) -> Self {
         let router: Arc<dyn CommandRouter> = router_impl.clone();
         let (events, _rx) = broadcast::channel(64);
         let ws_state = WsState {
             router: router.clone(),
             remote_events: events.clone(),
             connection_counts: Arc::new(DashMap::new()),
-            max_ws_per_ip: 4,
+            max_ws_per_ip,
             allowed_origins: vec![],
-            allow_session_input: true,
+            allow_session_input,
         };
 
-        // Inject a test operator auth context so RBAC-gated routes succeed.
-        let inject_operator = axum::middleware::from_fn(
-            |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+        // Inject a test auth context so RBAC-gated routes succeed.
+        let inject_auth = axum::middleware::from_fn(
+            move |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
                 req.extensions_mut().insert(
                     pnevma_remote::middleware::audit::AuditAuthContext::authenticated_request(
                         "test".to_string(),
                         "test-token".to_string(),
                         pnevma_remote::middleware::audit::AuthTokenSource::AuthorizationHeader,
-                        TokenRole::Operator,
+                        role,
                     ),
                 );
                 next.run(req).await
@@ -122,9 +149,9 @@ impl TestServer {
             .merge(
                 Router::new()
                     .route("/api/tasks/{id}/dispatch", post(api::task_dispatch))
-                    .with_state(router)
-                    .layer(inject_operator),
-            );
+                    .with_state(router),
+            )
+            .layer(inject_auth);
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -439,5 +466,350 @@ async fn ws_rpc_blocks_workflow_definition_mutation() {
                 .contains("method not allowed"));
         }
         other => panic!("expected rpc rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn session_input_denied_when_config_disabled() {
+    let session_id = Uuid::new_v4().to_string();
+    let router_impl = Arc::new(RecordingRouter::with_authorized_session(session_id.clone()));
+    let server = TestServer::spawn_with_config(router_impl, false, 4).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    // Subscribe to the session channel first so that failure is about the policy,
+    // not about missing subscription.
+    let subscribe = serde_json::to_string(&WsClientMessage::Subscribe {
+        channel: format!("session:{session_id}"),
+    })
+    .expect("serialize subscribe");
+    stream
+        .send(Message::Text(subscribe.into()))
+        .await
+        .expect("send subscribe");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Subscribed { .. } => {}
+        other => panic!("expected subscribed response, got {other:?}"),
+    }
+
+    let input = serde_json::to_string(&WsClientMessage::SessionInput {
+        session_id: session_id.clone(),
+        data: "pwd\n".to_string(),
+    })
+    .expect("serialize session input");
+    stream
+        .send(Message::Text(input.into()))
+        .await
+        .expect("send session input");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Error { message } => {
+            assert!(
+                message.contains("disabled by policy"),
+                "expected 'disabled by policy', got: {message}"
+            );
+        }
+        other => panic!("expected policy error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn session_input_denied_without_subscription() {
+    let session_id = Uuid::new_v4().to_string();
+    let router_impl = Arc::new(RecordingRouter::with_authorized_session(session_id.clone()));
+    let server = TestServer::spawn_with_config(router_impl, true, 4).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    // Do NOT subscribe — send input directly.
+    let input = serde_json::to_string(&WsClientMessage::SessionInput {
+        session_id: session_id.clone(),
+        data: "pwd\n".to_string(),
+    })
+    .expect("serialize session input");
+    stream
+        .send(Message::Text(input.into()))
+        .await
+        .expect("send session input without subscription");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Error { message } => {
+            assert!(
+                message.contains("subscribe first"),
+                "expected 'subscribe first', got: {message}"
+            );
+        }
+        other => panic!("expected subscription error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn session_input_denied_for_readonly_role() {
+    let session_id = Uuid::new_v4().to_string();
+    let router_impl = Arc::new(RecordingRouter::with_authorized_session(session_id.clone()));
+    let server = TestServer::spawn_with_role(router_impl, TokenRole::ReadOnly).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    // Subscribe to the session channel so the role check is reached.
+    let subscribe = serde_json::to_string(&WsClientMessage::Subscribe {
+        channel: format!("session:{session_id}"),
+    })
+    .expect("serialize subscribe");
+    stream
+        .send(Message::Text(subscribe.into()))
+        .await
+        .expect("send subscribe");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Subscribed { .. } => {}
+        other => panic!("expected subscribed response, got {other:?}"),
+    }
+
+    let input = serde_json::to_string(&WsClientMessage::SessionInput {
+        session_id: session_id.clone(),
+        data: "ls\n".to_string(),
+    })
+    .expect("serialize session input");
+    stream
+        .send(Message::Text(input.into()))
+        .await
+        .expect("send session input as readonly");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Error { message } => {
+            assert!(
+                message.contains("operator role"),
+                "expected 'operator role', got: {message}"
+            );
+        }
+        other => panic!("expected operator role error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn session_input_allowed_narrow_positive() {
+    let session_id = Uuid::new_v4().to_string();
+    let router_impl = Arc::new(RecordingRouter::with_authorized_session(session_id.clone()));
+    let server = TestServer::spawn(router_impl).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    // Subscribe to the session channel.
+    let subscribe = serde_json::to_string(&WsClientMessage::Subscribe {
+        channel: format!("session:{session_id}"),
+    })
+    .expect("serialize subscribe");
+    stream
+        .send(Message::Text(subscribe.into()))
+        .await
+        .expect("send subscribe");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Subscribed { .. } => {}
+        other => panic!("expected subscribed response, got {other:?}"),
+    }
+
+    let input = serde_json::to_string(&WsClientMessage::SessionInput {
+        session_id: session_id.clone(),
+        data: "echo hello\n".to_string(),
+    })
+    .expect("serialize session input");
+    stream
+        .send(Message::Text(input.into()))
+        .await
+        .expect("send session input");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::RpcResult { ok, result, .. } => {
+            assert!(ok, "expected ok: true for session input");
+            assert_eq!(result, Some(json!({ "ok": true })));
+        }
+        other => panic!("expected rpc result, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_rpc_rejects_operator_method_for_readonly() {
+    let router_impl = Arc::new(RecordingRouter::default());
+    let server = TestServer::spawn_with_role(router_impl, TokenRole::ReadOnly).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    let rpc = serde_json::to_string(&WsClientMessage::Rpc {
+        id: "req-readonly".to_string(),
+        method: "task.dispatch".to_string(),
+        params: json!({"task_id": "some-task"}),
+    })
+    .expect("serialize rpc");
+    stream
+        .send(Message::Text(rpc.into()))
+        .await
+        .expect("send rpc as readonly");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::RpcResult { id, ok, error, .. } => {
+            assert_eq!(id, "req-readonly");
+            assert!(!ok);
+            assert!(
+                error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("requires operator role"),
+                "expected 'requires operator role', got: {:?}",
+                error
+            );
+        }
+        other => panic!("expected rpc rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_per_ip_connection_cap_enforced() {
+    let router_impl = Arc::new(RecordingRouter::default());
+    let server = TestServer::spawn_with_config(router_impl, true, 2).await;
+
+    // Open 2 WS connections successfully.
+    let (_stream1, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket 1");
+    let (_stream2, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket 2");
+
+    // The 3rd connection should be rejected with 429 at the HTTP upgrade level.
+    let result = connect_async(format!("ws://{}/api/ws", server.address)).await;
+    match result {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                "expected 429 status, got {}",
+                response.status()
+            );
+        }
+        Err(other) => panic!("expected HTTP 429 error, got: {other:?}"),
+        Ok(_) => panic!("expected 3rd connection to be rejected, but it succeeded"),
+    }
+}
+
+#[tokio::test]
+async fn ws_message_rate_burst_triggers_error() {
+    let router_impl = Arc::new(RecordingRouter::default());
+    let server = TestServer::spawn(router_impl).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    // Send >60 messages in a tight loop. Use Subscribe messages for channels
+    // that will get "channel not allowed" errors — that is fine, the rate
+    // limiter counts all messages regardless.
+    for i in 0..80 {
+        let msg = serde_json::to_string(&WsClientMessage::Subscribe {
+            channel: format!("bogus_channel_{i}"),
+        })
+        .expect("serialize subscribe");
+        if stream.send(Message::Text(msg.into())).await.is_err() {
+            // Connection may have been closed by the server after rate violations.
+            break;
+        }
+    }
+
+    // Read responses — we expect at least one rate-limit error among them.
+    let mut saw_rate_limit = false;
+    for _ in 0..80 {
+        let msg = tokio::time::timeout(Duration::from_secs(2), read_ws_message(&mut stream)).await;
+        match msg {
+            Ok(WsServerMessage::Error { message }) if message.contains("rate limit") => {
+                saw_rate_limit = true;
+                break;
+            }
+            Ok(_) => {
+                // "channel not allowed" or other responses — keep reading.
+            }
+            Err(_) => {
+                // Timeout — the server may have disconnected us.
+                break;
+            }
+        }
+    }
+
+    assert!(
+        saw_rate_limit,
+        "expected at least one rate-limit error in the response stream"
+    );
+}
+
+#[tokio::test]
+async fn ws_event_payload_does_not_leak_secrets() {
+    // Verify that if an event payload contains secret-shaped strings,
+    // the WS broadcast preserves whatever was sent (it doesn't add secrets).
+    // In the real system, redaction happens before publishing to the broadcast
+    // channel. This test verifies the WS layer is a faithful pass-through and
+    // that a pre-redacted payload arrives intact.
+    let session_id = Uuid::new_v4().to_string();
+    let router_impl = Arc::new(RecordingRouter::with_authorized_session(session_id.clone()));
+    let server = TestServer::spawn(router_impl).await;
+
+    let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
+        .await
+        .expect("connect websocket");
+
+    // Subscribe to session channel
+    let subscribe = serde_json::to_string(&WsClientMessage::Subscribe {
+        channel: format!("session:{session_id}"),
+    })
+    .expect("serialize subscribe");
+    stream
+        .send(Message::Text(subscribe.into()))
+        .await
+        .expect("send subscribe");
+    let _ = read_ws_message(&mut stream).await; // consume Subscribed
+
+    // Send an event with pre-redacted content (simulating what pnevma-commands does).
+    let redacted_chunk = "API key: [REDACTED] and token: [REDACTED]";
+    server
+        .events
+        .send(RemoteEventEnvelope {
+            event: "session_output".to_string(),
+            payload: json!({
+                "session_id": session_id,
+                "chunk": redacted_chunk,
+            }),
+        })
+        .expect("send redacted event");
+
+    match read_ws_message(&mut stream).await {
+        WsServerMessage::Event { payload, .. } => {
+            let chunk = payload
+                .get("chunk")
+                .and_then(Value::as_str)
+                .expect("chunk field");
+            assert_eq!(
+                chunk, redacted_chunk,
+                "WS layer must faithfully transmit the pre-redacted payload"
+            );
+            assert!(
+                !chunk.contains("sk-ant-api03"),
+                "chunk must not contain raw API keys"
+            );
+            assert!(
+                !chunk.contains("ghp_"),
+                "chunk must not contain raw GitHub tokens"
+            );
+        }
+        other => panic!("expected event, got {other:?}"),
     }
 }

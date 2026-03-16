@@ -760,4 +760,94 @@ mod tests {
         assert!(reaped.is_empty(), "nothing should be reaped");
         assert_eq!(service.leases.lock().await.len(), 1);
     }
+
+    // ── create_worktree placeholder cleanup on failure ──────────────────────
+
+    #[tokio::test]
+    async fn create_worktree_failure_cleans_placeholder_lease() {
+        // Use a tempdir with no git repo so git commands will fail
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let task_id = Uuid::new_v4();
+
+        // create_worktree should fail (no git repo at tmp.path())
+        let result = service.create_worktree(task_id, "main", "test-slug").await;
+        assert!(result.is_err(), "should fail without a real git repo");
+
+        // The placeholder lease should have been cleaned up
+        let leases = service.leases.lock().await;
+        assert!(
+            !leases.contains_key(&task_id),
+            "placeholder lease should be removed on failure"
+        );
+    }
+
+    // ── concurrent create_worktree lease violation ──────────────────────────
+
+    #[tokio::test]
+    async fn concurrent_create_same_task_second_gets_violation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = StdArc::new(GitService::new(tmp.path()));
+        let task_id = Uuid::new_v4();
+
+        // Launch two create_worktree calls concurrently for the same task_id
+        let s1 = service.clone();
+        let s2 = service.clone();
+
+        let (r1, r2) = tokio::join!(
+            s1.create_worktree(task_id, "main", "slug-a"),
+            s2.create_worktree(task_id, "main", "slug-b"),
+        );
+
+        // Exactly one should get LeaseViolation, the other may fail for git reasons
+        let violations = [&r1, &r2]
+            .iter()
+            .filter(|r| matches!(r, Err(GitError::LeaseViolation(_))))
+            .count();
+
+        // At least one must be a lease violation (the second to acquire the lock).
+        // The first one might also fail (no real git repo) but NOT with LeaseViolation.
+        assert!(
+            violations >= 1,
+            "at least one concurrent create should get LeaseViolation; r1={:?}, r2={:?}",
+            r1,
+            r2
+        );
+    }
+
+    // ── cleanup_worktree failure reinstates lease ───────────────────────────
+
+    #[tokio::test]
+    async fn cleanup_worktree_failure_reinstates_lease() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let service = GitService::new(tmp.path());
+        let task_id = Uuid::new_v4();
+
+        // Manually insert a lease pointing to a path that does not exist
+        // (so git worktree remove will fail)
+        let lease = WorktreeLease {
+            id: Uuid::new_v4(),
+            task_id,
+            branch: "pnevma/test/cleanup-fail".to_string(),
+            path: "/nonexistent/path/that/doesnt/exist".to_string(),
+            started_at: Utc::now(),
+            last_active: Utc::now(),
+            status: LeaseStatus::Active,
+        };
+        service.leases.lock().await.insert(task_id, lease);
+
+        // cleanup_worktree should fail because the path does not exist in git
+        let result = service.cleanup_worktree(task_id, false).await;
+        assert!(
+            result.is_err(),
+            "cleanup should fail for nonexistent worktree path"
+        );
+
+        // The lease should be re-inserted on failure
+        let leases = service.leases.lock().await;
+        assert!(
+            leases.contains_key(&task_id),
+            "lease should be reinstated on cleanup failure"
+        );
+    }
 }

@@ -19,7 +19,8 @@ exports=$(grep -cE 'pub (unsafe )?extern "C" fn pnevma_' crates/pnevma-bridge/sr
 echo "  extern C functions (header): $h_exports"
 echo "  extern C functions (impl):   $exports"
 if [[ "$h_exports" != "$exports" ]]; then
-  echo "  WARNING: header/impl mismatch — run cbindgen to regenerate pnevma-bridge.h"
+  echo "  ERROR: header/impl mismatch — run cbindgen to regenerate pnevma-bridge.h"
+  exit 1
 fi
 
 # Verify each function declared in header has a call site in PnevmaBridge.swift

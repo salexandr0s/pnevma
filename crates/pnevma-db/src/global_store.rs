@@ -614,4 +614,75 @@ mod tests {
         drop(db);
         let _ = tokio::fs::remove_dir_all(&root).await;
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_creates_global_dir_with_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pnevma-gdb-dir-perm-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let _db = GlobalDb::open_in_dir(db_dir.clone())
+            .await
+            .expect("open global db");
+        let meta = std::fs::metadata(&db_dir).expect("stat global db dir");
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "expected global db dir mode 0700, got {:o}",
+            mode
+        );
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_corrects_overly_permissive_global_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pnevma-gdb-dir-fix-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&db_dir)
+            .await
+            .expect("create global db dir");
+        std::fs::set_permissions(&db_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("set permissive mode");
+
+        let _db = GlobalDb::open_in_dir(db_dir.clone())
+            .await
+            .expect("open global db");
+        let meta = std::fs::metadata(&db_dir).expect("stat global db dir");
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "expected corrected mode 0700, got {:o}", mode);
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_creates_global_db_file_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pnevma-gdb-file-perm-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let db = GlobalDb::open_in_dir(db_dir.clone())
+            .await
+            .expect("open global db");
+        let meta = std::fs::metadata(db.path()).expect("stat global db file");
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "expected global db file mode 0600, got {:o}",
+            mode
+        );
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
 }

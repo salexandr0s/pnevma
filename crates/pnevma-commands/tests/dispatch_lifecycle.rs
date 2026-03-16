@@ -25,7 +25,7 @@ use pnevma_db::{AutomationRunRow, Db, TaskRow};
 use pnevma_git::GitService;
 use pnevma_session::SessionSupervisor;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tokio::sync::{broadcast, Notify, RwLock};
 use uuid::Uuid;
@@ -440,6 +440,16 @@ async fn dispatch_returns_before_completion_and_streams_output() {
         Some("hello from fake adapter")
     );
 
+    // Verify event ordering: session_output must appear in the recorded events.
+    {
+        let events = harness.emitter.events.lock().expect("emitter lock");
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"session_output"),
+            "session_output must appear in event stream, got: {names:?}"
+        );
+    }
+
     let (_, active_before, _, _) = harness.pool.state().await;
     assert_eq!(
         active_before, 1,
@@ -666,5 +676,186 @@ async fn completed_task_unblocks_blocked_dependent_task() {
             run.as_ref().and_then(|r| r.summary.as_deref()),
             dependent.handoff_summary
         );
+    }
+}
+
+/// Validates the persist-restart-restore path: task and automation-run state
+/// written to a file-backed SQLite database survive a full pool close and
+/// reconnect, simulating a supervisor restart.
+#[tokio::test]
+async fn dispatch_state_survives_db_reconnect() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let db_path = tempdir.path().join("pnevma-test.db");
+
+    let project_id = Uuid::new_v4().to_string();
+    let task_id = Uuid::new_v4().to_string();
+    let run_id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+
+    // ── Phase 1: open DB, seed data, close ──────────────────────────────
+    {
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open file-backed sqlite");
+        let db = Db::from_pool_and_path(pool, db_path.clone());
+        db.migrate().await.expect("migrate");
+
+        // Seed project (required FK parent).
+        db.upsert_project(&project_id, "reconnect-test", "/tmp/reconnect", None, None)
+            .await
+            .expect("seed project");
+
+        // Create task in InProgress state.
+        let task = TaskRow {
+            id: task_id.clone(),
+            project_id: project_id.clone(),
+            title: "Reconnect test task".to_string(),
+            goal: "Verify state survives reconnect".to_string(),
+            scope_json: "[]".to_string(),
+            dependencies_json: "[]".to_string(),
+            acceptance_json: "[]".to_string(),
+            constraints_json: "[]".to_string(),
+            priority: "P1".to_string(),
+            status: "InProgress".to_string(),
+            branch: Some("feat/reconnect".to_string()),
+            worktree_id: None,
+            handoff_summary: None,
+            created_at: now,
+            updated_at: now,
+            auto_dispatch: false,
+            agent_profile_override: None,
+            execution_mode: Some("worktree".to_string()),
+            timeout_minutes: None,
+            max_retries: None,
+            loop_iteration: 0,
+            loop_context_json: None,
+        };
+        db.create_task(&task).await.expect("create task");
+
+        // Create automation run in running state.
+        let run = AutomationRunRow {
+            id: run_id.clone(),
+            project_id: project_id.clone(),
+            task_id: task_id.clone(),
+            run_id: Uuid::new_v4().to_string(),
+            origin: "manual".to_string(),
+            provider: "claude-code".to_string(),
+            model: Some("opus".to_string()),
+            status: "running".to_string(),
+            attempt: 1,
+            started_at: now,
+            finished_at: None,
+            duration_seconds: None,
+            tokens_in: 100,
+            tokens_out: 50,
+            cost_usd: 0.05,
+            summary: None,
+            error_message: None,
+            created_at: now,
+        };
+        db.create_automation_run(&run)
+            .await
+            .expect("create automation run");
+
+        // Verify data is readable before close.
+        let pre_task = db
+            .get_task(&task_id)
+            .await
+            .expect("pre-close task lookup")
+            .expect("task exists before close");
+        assert_eq!(pre_task.status, "InProgress");
+
+        // Close the pool, dropping all connections.
+        db.pool().close().await;
+    }
+
+    // ── Phase 2: reopen the same file, verify state persisted ───────────
+    {
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("reopen file-backed sqlite");
+        let db2 = Db::from_pool_and_path(pool, db_path.clone());
+        // No migrate needed — schema already exists from phase 1.
+
+        // Verify task state survived.
+        let restored_task = db2
+            .get_task(&task_id)
+            .await
+            .expect("post-reconnect task lookup")
+            .expect("task exists after reconnect");
+        assert_eq!(
+            restored_task.status, "InProgress",
+            "task status must survive reconnect"
+        );
+        assert_eq!(
+            restored_task.title, "Reconnect test task",
+            "task title must survive reconnect"
+        );
+        assert_eq!(
+            restored_task.branch.as_deref(),
+            Some("feat/reconnect"),
+            "task branch must survive reconnect"
+        );
+        assert_eq!(
+            restored_task.priority, "P1",
+            "task priority must survive reconnect"
+        );
+
+        // Verify automation run state survived.
+        let restored_run = db2
+            .get_automation_run(&run_id)
+            .await
+            .expect("post-reconnect run lookup")
+            .expect("automation run exists after reconnect");
+        assert_eq!(
+            restored_run.status, "running",
+            "run status must survive reconnect"
+        );
+        assert_eq!(
+            restored_run.task_id, task_id,
+            "run task_id must survive reconnect"
+        );
+        assert_eq!(
+            restored_run.origin, "manual",
+            "run origin must survive reconnect"
+        );
+        assert_eq!(
+            restored_run.provider, "claude-code",
+            "run provider must survive reconnect"
+        );
+        assert_eq!(
+            restored_run.model.as_deref(),
+            Some("opus"),
+            "run model must survive reconnect"
+        );
+        assert!(
+            restored_run.finished_at.is_none(),
+            "running run should have no finished_at"
+        );
+
+        // Verify list query also works on the restored connection.
+        let runs = db2
+            .list_automation_runs(&project_id, 10)
+            .await
+            .expect("list automation runs after reconnect");
+        assert_eq!(runs.len(), 1, "should find exactly one run after reconnect");
+        assert_eq!(runs[0].id, run_id);
+        // Verify automation run_id (the internal unique identifier) is consistent
+        assert_eq!(
+            restored_run.run_id, runs[0].run_id,
+            "run_id must be consistent across get and list after reconnect"
+        );
+
+        db2.pool().close().await;
     }
 }

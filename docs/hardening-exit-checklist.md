@@ -4,22 +4,22 @@ This checklist must be fully satisfied before the hardening freeze can be lifted
 
 ## 1. Version Alignment
 
-- [ ] All `Cargo.toml` workspace members: `0.2.0`
-- [ ] `Info.plist` / `CFBundleShortVersionString`: `0.2.0`
-- [ ] `SECURITY.md`: `0.2.x`
-- [ ] `docs/implementation-status.md`: `v0.2.0`
-- [ ] `docs/hardening-exit-criteria.md`: `v0.2.0`
-- [ ] `docs/macos-release.md`: `v0.2.0` (all references)
-- [ ] `docs/macos-website-release-plan.md`: `v0.2.0` (all references)
+- [x] All `Cargo.toml` workspace members: `0.2.0`
+- [x] `Info.plist` / `CFBundleShortVersionString`: `0.2.0`
+- [x] `SECURITY.md`: `0.2.x`
+- [x] `docs/implementation-status.md`: `v0.2.0`
+- [x] `docs/hardening-exit-criteria.md`: `v0.2.0`
+- [x] `docs/macos-release.md`: `v0.2.0` (all references)
+- [x] `docs/macos-website-release-plan.md`: `v0.2.0` (all references)
 
 ## 2. Security Findings
 
-- [ ] All Critical severity findings: closed with test evidence
-- [ ] All High severity findings: closed with test evidence
-- [ ] Remote plane (Phase 1): 32 controls implemented, 50+ tests
-- [ ] Local control plane (Phase 2): symlink protection, permissions, rate limiting, auth
-- [ ] Agent execution (Phase 4): no-shell, env allowlist, prompt sanitization, bounded retries
-- [ ] Data-at-rest (Phase 5): scrollback 0600, DB 0700/0600, 16+ redaction patterns
+- [x] All Critical severity findings: closed with test evidence
+- [x] All High severity findings: closed with test evidence
+- [x] Remote plane (Phase 1): 32 controls implemented, 50+ tests
+- [x] Local control plane (Phase 2): symlink protection, permissions, rate limiting, auth, peer_uid audit enrichment, auth threshold tracking, debug redaction
+- [x] Agent execution (Phase 4): no-shell, env allowlist, prompt sanitization, bounded retries, npx package filtering, sandbox gate fix, spawn failure logging
+- [x] Data-at-rest (Phase 5): scrollback 0600, DB 0700/0600, 16+ redaction patterns, directory permission tests, DB file permission tests
 
 ## 3. CI Green Runs
 
@@ -43,11 +43,11 @@ This checklist must be fully satisfied before the hardening freeze can be lifted
 
 ## 4. Integration Tests
 
-- [ ] `dispatch_lifecycle` tests green (4 tests: dispatch+stream, launch failure, dependent unblock, DB reconnect)
-- [ ] `ws_event_flow` tests green
-- [ ] FFI bridge stress tests green (concurrent calls, create/destroy cycles, destroy race, ordering)
-- [ ] Scrollback permission tests green (open_append_only 0600, open_scrollback_rw 0600)
-- [ ] Redaction e2e matrix green (AWS key, GitHub PAT, PEM key, connection string, env var assignment)
+- [x] `dispatch_lifecycle` tests green (4 tests: dispatch+stream, launch failure, dependent unblock, DB reconnect)
+- [x] `ws_event_flow` tests green (note: `ws_message_rate_burst_triggers_error` is timing-sensitive and may flake)
+- [x] FFI bridge stress tests green (concurrent calls, create/destroy cycles, destroy race, ordering, in-flight teardown)
+- [x] Scrollback permission tests green (open_append_only 0600, open_scrollback_rw 0600)
+- [x] Redaction e2e matrix green (AWS key, GitHub PAT, PEM key, connection string, env var assignment)
 
 ## 5. Manual Test Evidence
 
@@ -72,8 +72,8 @@ This checklist must be fully satisfied before the hardening freeze can be lifted
 
 ## 7. Accepted Risks
 
-- [ ] `com.apple.security.cs.disable-library-validation`: justified for GhosttyKit (Ghostty's own app retains the same exception)
-- [ ] `RUSTSEC-2023-0071` (rsa crate via sqlx-mysql): Pnevma uses SQLite only, MySQL feature never enabled; ignored in `.cargo/audit.toml`
+- [x] `com.apple.security.cs.disable-library-validation`: justified for GhosttyKit (Ghostty's own app retains the same exception); documented in `docs/security-deployment.md`
+- [x] `RUSTSEC-2023-0071` (rsa crate via sqlx-mysql): Pnevma uses SQLite only, MySQL feature never enabled; ignored in `.cargo/audit.toml`
 
 ## 8. Sign-Off
 

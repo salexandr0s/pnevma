@@ -324,7 +324,9 @@ impl Drop for AsyncContextReleaseGuard {
     }
 }
 
-// Need Send+Sync for catch_unwind
+// SAFETY: The raw pointer `ctx` is only accessed while the PnevmaHandle Arc is alive.
+// The generation guard prevents stale access after `pnevma_destroy`. The pointer is
+// exclusively owned by this guard and passed back to Swift via `release_cb` on drop.
 unsafe impl Send for AsyncContextReleaseGuard {}
 unsafe impl Sync for AsyncContextReleaseGuard {}
 
@@ -722,8 +724,10 @@ pub extern "C" fn pnevma_call(
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        // Increment Arc refcount so this call keeps the handle alive even if
-        // pnevma_destroy runs concurrently.
+        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`. The
+        // increment keeps it alive during this call even if `pnevma_destroy` fires
+        // concurrently. `Arc::from_raw` converts back to an owned reference that
+        // will be dropped at scope exit, decrementing the refcount.
         unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
         let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 
@@ -731,6 +735,9 @@ pub extern "C" fn pnevma_call(
             return make_error_result("handle is shutting down");
         }
 
+        // SAFETY: The null check at function entry guarantees `method` is non-null.
+        // The C ABI contract requires the caller to pass a valid null-terminated
+        // UTF-8 string.
         let method_str = match unsafe { CStr::from_ptr(method) }.to_str() {
             Ok(s) => s,
             Err(_) => return make_error_result("invalid UTF-8 in method"),
@@ -821,8 +828,10 @@ pub extern "C" fn pnevma_call_async(
     }
 
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        // Increment Arc refcount so this call keeps the handle alive even if
-        // pnevma_destroy runs concurrently.
+        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`. The
+        // increment keeps it alive during this call even if `pnevma_destroy` fires
+        // concurrently. `Arc::from_raw` converts back to an owned reference that
+        // will be dropped at scope exit, decrementing the refcount.
         unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
         let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 
@@ -844,6 +853,9 @@ pub extern "C" fn pnevma_call_async(
             return;
         }
 
+        // SAFETY: The null check at function entry guarantees `method` is non-null.
+        // The C ABI contract requires the caller to pass a valid null-terminated
+        // UTF-8 string.
         let method_str = match unsafe { CStr::from_ptr(method) }.to_str() {
             Ok(s) => s.to_owned(),
             Err(_) => {
@@ -993,8 +1005,10 @@ pub extern "C" fn pnevma_set_session_output_callback(
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        // Increment Arc refcount so this call keeps the handle alive even if
-        // pnevma_destroy runs concurrently.
+        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`. The
+        // increment keeps it alive during this call even if `pnevma_destroy` fires
+        // concurrently. `Arc::from_raw` converts back to an owned reference that
+        // will be dropped at scope exit, decrementing the refcount.
         unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
         let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 

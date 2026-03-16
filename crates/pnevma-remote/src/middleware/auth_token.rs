@@ -296,4 +296,140 @@ mod tests {
         );
         assert_eq!(audit.token_source, Some(AuthTokenSource::QueryParam));
     }
+
+    #[tokio::test]
+    async fn middleware_rejects_missing_token() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_rejects_wrong_token() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        "Bearer not-a-real-token-value",
+                    )
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_rejects_expired_token() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 0).unwrap());
+        let issued = store.create_token("127.0.0.1", "test", crate::auth::TokenRole::Operator);
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {}", issued.token),
+                    )
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_rejects_revoked_token() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
+        let issued = store.create_token("127.0.0.1", "test", crate::auth::TokenRole::Operator);
+        store.revoke_token(&issued.token);
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {}", issued.token),
+                    )
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_rejects_query_token_on_non_ws() {
+        let store = Arc::new(TokenStore::new("correcthorsebatterystaple".to_string(), 24).unwrap());
+        let issued = store.create_token("127.0.0.1", "test", crate::auth::TokenRole::Operator);
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::clone(&store),
+                auth_token,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/status?token={}", issued.token))
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("route response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }

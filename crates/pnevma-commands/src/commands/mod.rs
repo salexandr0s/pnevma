@@ -5110,6 +5110,141 @@ mod redaction_tests {
         assert!(out_str.contains("[REDACTED]"));
     }
 
+    // ── redaction e2e ────────────────────────────────────────────────────────
+
+    /// End-to-end integration test: a realistic Anthropic API key is injected
+    /// into all three redaction entry points (text, JSON payload, streaming
+    /// chunked output) and must never survive in any output path.
+    #[tokio::test]
+    async fn redaction_e2e_secret_never_survives_any_output_path() {
+        // A realistic Anthropic API key long enough to exercise pattern +
+        // literal redaction.
+        let secret =
+            "sk-ant-api03-testredaction123456789012345678901234567890123456789012345678901234567890-AAAA"
+                .to_string();
+
+        // ── Path 1: plain-text redaction via redact_text ────────────────────
+        let text_input = format!("connecting to provider with key={secret} and continuing work");
+        let text_output = redact_text(&text_input, std::slice::from_ref(&secret));
+        assert!(
+            !text_output.contains(&secret),
+            "text path: secret must not survive redact_text; got: {text_output}"
+        );
+        assert!(
+            text_output.contains("[REDACTED]"),
+            "text path: redacted marker must be present"
+        );
+
+        // ── Path 2: JSON event-payload redaction via redact_json_value ──────
+        let json_payload = serde_json::json!({
+            "event": "session_output",
+            "chunk": format!("export ANTHROPIC_API_KEY=\"{secret}\""),
+            "meta": {
+                "nested": format!("token={secret}")
+            }
+        });
+        let json_output = redact_json_value(json_payload, std::slice::from_ref(&secret));
+        let json_str = json_output.to_string();
+        assert!(
+            !json_str.contains(&secret),
+            "json path: secret must not survive redact_json_value; got: {json_str}"
+        );
+        assert!(
+            json_str.contains("[REDACTED]"),
+            "json path: redacted marker must be present"
+        );
+
+        // ── Path 3: streaming chunked output via StreamRedactor ─────────────
+        // The secret is deliberately split across two chunks at an arbitrary
+        // boundary to simulate real PTY output fragmentation.
+        let secrets = Arc::new(RwLock::new(vec![secret.clone()]));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        let split_point = 40;
+        let (chunk_a, chunk_b) = secret.split_at(split_point);
+
+        let first = redactor.push_chunk(&format!("output: {chunk_a}")).await;
+        let second = redactor.push_chunk(&format!("{chunk_b} done\n")).await;
+        let remainder = redactor.finish().await;
+
+        // Collect all emitted fragments.
+        let mut stream_output = String::new();
+        if let Some(s) = first {
+            stream_output.push_str(&s);
+        }
+        if let Some(s) = second {
+            stream_output.push_str(&s);
+        }
+        if let Some(s) = remainder {
+            stream_output.push_str(&s);
+        }
+
+        assert!(
+            !stream_output.contains(&secret),
+            "stream path: secret must not survive StreamRedactor; got: {stream_output}"
+        );
+        // The stream path may or may not emit a [REDACTED] marker depending on
+        // buffering; the critical invariant is the secret's absence.
+    }
+
+    /// Variant: secret injected via environment-variable assignment pattern
+    /// without being registered as a known secret — pattern-based redaction
+    /// must still catch it across all three paths.
+    #[tokio::test]
+    async fn redaction_e2e_pattern_only_catches_unregistered_provider_key() {
+        // Not registered as a known secret — relies purely on pattern matching.
+        let unregistered_key =
+            "sk-ant-api03-unregistered99887766554433221100aabbccddeeff00112233445566778899-ZZZZ"
+                .to_string();
+
+        // ── Path 1: text ────────────────────────────────────────────────────
+        let text_output = redact_text(&format!("key={unregistered_key}"), &[]);
+        assert!(
+            !text_output.contains(&unregistered_key),
+            "pattern-only text path: unregistered secret must be caught; got: {text_output}"
+        );
+
+        // ── Path 2: JSON payload ────────────────────────────────────────────
+        let json_output = redact_json_value(
+            serde_json::json!({
+                "chunk": format!("ANTHROPIC_API_KEY=\"{unregistered_key}\"")
+            }),
+            &[],
+        );
+        let json_str = json_output.to_string();
+        assert!(
+            !json_str.contains(&unregistered_key),
+            "pattern-only json path: unregistered secret must be caught; got: {json_str}"
+        );
+
+        // ── Path 3: streaming (split across chunks) ─────────────────────────
+        let secrets = Arc::new(RwLock::new(Vec::<String>::new()));
+        let mut redactor = StreamRedactor::new(secrets);
+
+        let split_point = 30;
+        let (chunk_a, chunk_b) = unregistered_key.split_at(split_point);
+
+        let first = redactor.push_chunk(&format!("export KEY={chunk_a}")).await;
+        let second = redactor.push_chunk(&format!("{chunk_b}\n")).await;
+        let remainder = redactor.finish().await;
+
+        let mut stream_output = String::new();
+        if let Some(s) = first {
+            stream_output.push_str(&s);
+        }
+        if let Some(s) = second {
+            stream_output.push_str(&s);
+        }
+        if let Some(s) = remainder {
+            stream_output.push_str(&s);
+        }
+
+        assert!(
+            !stream_output.contains(&unregistered_key),
+            "pattern-only stream path: unregistered secret must be caught; got: {stream_output}"
+        );
+    }
+
     #[tokio::test]
     async fn discover_markdown_files_ignores_missing_glob_parent() {
         let project_root =

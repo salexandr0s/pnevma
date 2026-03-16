@@ -105,7 +105,10 @@ impl AgentAdapter for CodexAdapter {
                     Ok(())
                 })
                 .spawn()
-                .map_err(|e| AgentError::Spawn(e.to_string()))?
+                .map_err(|e| {
+                    tracing::warn!(provider = "codex", working_dir = %cfg.working_dir, error = %e, "agent adapter spawn failed");
+                    AgentError::Spawn(e.to_string())
+                })?
         };
 
         // Store PID for interrupt/stop lifecycle management.
@@ -390,6 +393,8 @@ mod tests {
             timeout_minutes: 30,
             auto_approve: false,
             allow_npx: false,
+            npx_allowed_packages: vec![],
+            allow_full_sandbox_access: false,
             output_format: "stream-json".to_string(),
             context_file: None,
             thread_id: None,
@@ -478,6 +483,8 @@ mod tests {
             timeout_minutes: 60,
             auto_approve: true,
             allow_npx: false,
+            npx_allowed_packages: vec![],
+            allow_full_sandbox_access: false,
             output_format: "text".to_string(),
             context_file: Some("/tmp/context.md".to_string()),
             thread_id: None,

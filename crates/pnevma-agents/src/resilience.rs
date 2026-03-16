@@ -198,6 +198,43 @@ impl ContinuationState {
     }
 }
 
+/// Tracks retry state across attempts for a single task.
+#[derive(Debug, Clone)]
+pub struct RetryContext {
+    pub task_id: uuid::Uuid,
+    pub provider: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub cumulative_backoff_secs: u64,
+    pub last_failure_class: Option<FailureClass>,
+}
+
+impl RetryContext {
+    pub fn new(task_id: uuid::Uuid, provider: String, max_attempts: u32) -> Self {
+        Self {
+            task_id,
+            provider,
+            attempt: 0,
+            max_attempts,
+            cumulative_backoff_secs: 0,
+            last_failure_class: None,
+        }
+    }
+
+    pub fn record_failure(&mut self, class: FailureClass, _message: &str, backoff_secs: u64) {
+        self.attempt += 1;
+        self.cumulative_backoff_secs += backoff_secs;
+        self.last_failure_class = Some(class);
+    }
+
+    pub fn should_retry(&self) -> bool {
+        self.attempt < self.max_attempts
+            && self
+                .last_failure_class
+                .is_some_and(|c| c == FailureClass::Transient || c == FailureClass::Stall)
+    }
+}
+
 /// Configuration for stall detection.
 #[derive(Debug, Clone)]
 pub struct StallDetectorConfig {

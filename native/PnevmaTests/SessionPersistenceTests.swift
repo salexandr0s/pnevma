@@ -233,4 +233,42 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(saveCount, 1)
         XCTAssertNotNil(persistence.restore())
     }
+
+    // MARK: - Corruption Handling
+
+    func testRestoreFromTruncatedJSON() {
+        let saveURL = tempDir.appendingPathComponent("session.json")
+        let truncated = #"{"windowFrame": null, "workspaces": [{"#
+        try? truncated.data(using: .utf8)?.write(to: saveURL)
+
+        let result = persistence.restore()
+        XCTAssertNil(result, "restore from truncated JSON should return nil")
+    }
+
+    func testRestoreFromBinaryGarbage() {
+        let saveURL = tempDir.appendingPathComponent("session.json")
+        var bytes = Data(count: 256)
+        for i in 0..<bytes.count { bytes[i] = UInt8(i % 256) }
+        try? bytes.write(to: saveURL)
+
+        let result = persistence.restore()
+        XCTAssertNil(result, "restore from binary garbage should return nil")
+    }
+
+    func testRestoreFromEmptyFile() {
+        let saveURL = tempDir.appendingPathComponent("session.json")
+        try? Data().write(to: saveURL)
+
+        let result = persistence.restore()
+        XCTAssertNil(result, "restore from empty file should return nil")
+    }
+
+    func testRestoreFromWrongSchema() {
+        let saveURL = tempDir.appendingPathComponent("session.json")
+        let wrongSchema = "[]"
+        try? wrongSchema.data(using: .utf8)?.write(to: saveURL)
+
+        let result = persistence.restore()
+        XCTAssertNil(result, "restore from wrong schema (JSON array) should return nil")
+    }
 }

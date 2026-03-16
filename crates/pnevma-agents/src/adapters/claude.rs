@@ -71,10 +71,20 @@ fn auto_approve_allowed_tools(cfg: &AgentConfig) -> Vec<String> {
         "Grep".to_string(),
     ];
     if cfg.allow_npx {
-        allowed_tools.push("Bash(npm exec)".to_string());
-        allowed_tools.push("Bash(npm exec *)".to_string());
-        allowed_tools.push("Bash(npx)".to_string());
-        allowed_tools.push("Bash(npx *)".to_string());
+        if cfg.npx_allowed_packages.is_empty() {
+            warn!("allow_npx is true but npx_allowed_packages is empty — falling back to wildcard npx access");
+            allowed_tools.push("Bash(npm exec)".to_string());
+            allowed_tools.push("Bash(npm exec *)".to_string());
+            allowed_tools.push("Bash(npx)".to_string());
+            allowed_tools.push("Bash(npx *)".to_string());
+        } else {
+            for pkg in &cfg.npx_allowed_packages {
+                allowed_tools.push(format!("Bash(npx {pkg})"));
+                allowed_tools.push(format!("Bash(npx {pkg} *)"));
+                allowed_tools.push(format!("Bash(npm exec {pkg})"));
+                allowed_tools.push(format!("Bash(npm exec {pkg} *)"));
+            }
+        }
     }
     allowed_tools
 }
@@ -149,7 +159,10 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     Ok(())
                 })
                 .spawn()
-                .map_err(|e| AgentError::Spawn(e.to_string()))?
+                .map_err(|e| {
+                    tracing::warn!(provider = "claude", working_dir = %cfg.working_dir, error = %e, "agent adapter spawn failed");
+                    AgentError::Spawn(e.to_string())
+                })?
         };
 
         // Store PID for interrupt/stop lifecycle management.
@@ -794,6 +807,8 @@ mod tests {
             timeout_minutes: 5,
             auto_approve: true,
             allow_npx,
+            npx_allowed_packages: vec![],
+            allow_full_sandbox_access: false,
             output_format: "stream-json".to_string(),
             context_file: None,
             thread_id: None,
@@ -858,6 +873,49 @@ mod tests {
             "existing CLAUDE.md injection tags must be stripped"
         );
         assert!(sanitized_existing.contains("Normal content"));
+    }
+
+    #[test]
+    fn npx_allowed_packages_restricts_wildcard() {
+        let mut cfg = test_agent_config(true);
+        cfg.npx_allowed_packages = vec!["prettier".to_string(), "eslint".to_string()];
+        let allowed = auto_approve_allowed_tools(&cfg);
+
+        // Should have specific package patterns, not wildcards
+        assert!(allowed.contains(&"Bash(npx prettier)".to_string()));
+        assert!(allowed.contains(&"Bash(npx prettier *)".to_string()));
+        assert!(allowed.contains(&"Bash(npx eslint)".to_string()));
+        assert!(allowed.contains(&"Bash(npx eslint *)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec prettier)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec eslint *)".to_string()));
+
+        // Should NOT have wildcards
+        assert!(!allowed.contains(&"Bash(npx *)".to_string()));
+        assert!(!allowed.contains(&"Bash(npx)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm exec *)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm exec)".to_string()));
+    }
+
+    #[test]
+    fn npx_empty_packages_falls_back_to_wildcard_with_warning() {
+        let cfg = test_agent_config(true); // npx_allowed_packages is empty by default
+        let allowed = auto_approve_allowed_tools(&cfg);
+
+        // Should fall back to wildcard patterns
+        assert!(allowed.contains(&"Bash(npx *)".to_string()));
+        assert!(allowed.contains(&"Bash(npx)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec *)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec)".to_string()));
+    }
+
+    #[test]
+    fn codex_v1_spawns_with_codex_command() {
+        // Structural test verifying the codex v1 adapter uses Command::new("codex")
+        let source = include_str!("codex.rs");
+        assert!(
+            source.contains(r#"Command::new("codex")"#),
+            "codex v1 source must use Command::new(\"codex\")"
+        );
     }
 
     #[test]

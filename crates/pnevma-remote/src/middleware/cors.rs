@@ -69,4 +69,62 @@ mod tests {
             "https://b.example.com".to_string(),
         ]);
     }
+
+    /// Helper: build a minimal router with the CORS layer applied.
+    fn test_router(allowed_origins: Vec<String>) -> axum::Router {
+        use axum::routing::get;
+
+        axum::Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(cors_layer(allowed_origins))
+    }
+
+    /// Helper: build an OPTIONS preflight request for the given origin.
+    fn preflight_request(origin: &str) -> axum::http::Request<axum::body::Body> {
+        use axum::http::{header, Method, Request};
+
+        Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/health")
+            .header(header::ORIGIN, origin)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .body(axum::body::Body::empty())
+            .expect("build preflight request")
+    }
+
+    #[tokio::test]
+    async fn preflight_sets_allow_origin_for_recognized_origin() {
+        use tower::ServiceExt;
+
+        let app = test_router(vec!["https://example.com".to_string()]);
+        let response = app
+            .oneshot(preflight_request("https://example.com"))
+            .await
+            .expect("preflight response");
+
+        let allow_origin = response
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("access-control-allow-origin header should be present");
+        assert_eq!(allow_origin, "https://example.com");
+    }
+
+    #[tokio::test]
+    async fn preflight_omits_allow_origin_for_unrecognized_origin() {
+        use tower::ServiceExt;
+
+        let app = test_router(vec!["https://example.com".to_string()]);
+        let response = app
+            .oneshot(preflight_request("https://evil.example.net"))
+            .await
+            .expect("preflight response");
+
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "access-control-allow-origin must not be set for an unrecognized origin"
+        );
+    }
 }

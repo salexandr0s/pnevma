@@ -76,3 +76,26 @@ impl Default for RemoteAccessConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_security_posture() {
+        let config = RemoteAccessConfig::default();
+        assert_eq!(
+            config.tls_mode, "tailscale",
+            "default TLS must be tailscale"
+        );
+        assert!(
+            !config.tls_allow_self_signed_fallback,
+            "self-signed fallback must be off by default"
+        );
+        assert!(
+            !config.allow_session_input,
+            "session input must be off by default"
+        );
+        assert!(!config.enabled, "remote access must be disabled by default");
+    }
+}

@@ -207,4 +207,162 @@ mod tests {
         assert!(info.verify_confirmation("delete active task"));
         assert!(!info.verify_confirmation("delete active"));
     }
+
+    #[test]
+    fn all_danger_actions_require_nonempty_phrase() {
+        let danger_actions = [
+            ActionKind::MergeToTarget,
+            ActionKind::DeleteWorktreeWithChanges,
+            ActionKind::ForcePush,
+            ActionKind::DeleteTaskWithActiveSession,
+            ActionKind::BulkDeleteCompletedTasks,
+        ];
+        for kind in &danger_actions {
+            let info = kind.risk_info();
+            assert_eq!(
+                info.risk_level,
+                RiskLevel::Danger,
+                "{:?} should be Danger",
+                kind
+            );
+            let phrase = info
+                .confirmation_phrase
+                .as_ref()
+                .unwrap_or_else(|| panic!("{:?} must have confirmation_phrase", kind));
+            assert!(
+                !phrase.is_empty(),
+                "{:?} confirmation phrase must not be empty",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn all_caution_and_safe_actions_have_no_phrase() {
+        let non_danger = [
+            ActionKind::PurgeScrollback,
+            ActionKind::RestartStuckAgent,
+            ActionKind::DiscardReview,
+            ActionKind::RedispatchFailedTask,
+            ActionKind::CreateTask,
+            ActionKind::DispatchReadyTask,
+            ActionKind::OpenPane,
+            ActionKind::CreateCheckpoint,
+        ];
+        for kind in &non_danger {
+            let info = kind.risk_info();
+            assert!(
+                info.risk_level != RiskLevel::Danger,
+                "{:?} should not be Danger",
+                kind
+            );
+            assert!(
+                info.confirmation_phrase.is_none(),
+                "{:?} should have no confirmation_phrase",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn risk_catalog_covers_all_variants() {
+        // Exhaustive check: every ActionKind variant returns a valid ActionRiskInfo.
+        // If a new variant is added but forgets to implement risk_info(), this won't compile
+        // (match is exhaustive in risk_info). This test additionally validates the returned info.
+        let all_kinds = [
+            ActionKind::MergeToTarget,
+            ActionKind::DeleteWorktreeWithChanges,
+            ActionKind::ForcePush,
+            ActionKind::DeleteTaskWithActiveSession,
+            ActionKind::PurgeScrollback,
+            ActionKind::RestartStuckAgent,
+            ActionKind::DiscardReview,
+            ActionKind::RedispatchFailedTask,
+            ActionKind::BulkDeleteCompletedTasks,
+            ActionKind::CreateTask,
+            ActionKind::DispatchReadyTask,
+            ActionKind::OpenPane,
+            ActionKind::CreateCheckpoint,
+        ];
+        assert_eq!(
+            all_kinds.len(),
+            13,
+            "update this test when adding ActionKind variants"
+        );
+        for kind in &all_kinds {
+            let info = kind.risk_info();
+            assert_eq!(info.kind, *kind);
+            assert!(!info.description.is_empty());
+            // Danger actions must have consequences listed
+            if info.risk_level == RiskLevel::Danger {
+                assert!(
+                    !info.consequences.is_empty(),
+                    "{:?} danger action should have consequences",
+                    kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn danger_actions_enforce_confirmation_regardless_of_entry_point() {
+        // Protected actions must enforce confirmation phrases uniformly.
+        // Whether invoked from Swift UI, control plane RPC, or remote WS,
+        // the same ActionKind::risk_info() and verify_confirmation() gate
+        // applies. This test proves that no Danger action can bypass the
+        // gate by passing empty or arbitrary input.
+        let danger_actions = [
+            ActionKind::MergeToTarget,
+            ActionKind::DeleteWorktreeWithChanges,
+            ActionKind::ForcePush,
+            ActionKind::DeleteTaskWithActiveSession,
+            ActionKind::BulkDeleteCompletedTasks,
+        ];
+        for kind in &danger_actions {
+            let info = kind.risk_info();
+            // Empty input must be rejected
+            assert!(
+                !info.verify_confirmation(""),
+                "{:?} must reject empty confirmation",
+                kind
+            );
+            // Random input must be rejected
+            assert!(
+                !info.verify_confirmation("yes"),
+                "{:?} must reject generic 'yes' confirmation",
+                kind
+            );
+            // Only exact phrase passes
+            let phrase = info.confirmation_phrase.as_ref().unwrap();
+            assert!(
+                info.verify_confirmation(phrase),
+                "{:?} must accept its exact phrase",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn action_kind_serde_roundtrip() {
+        let all_kinds = [
+            ActionKind::MergeToTarget,
+            ActionKind::DeleteWorktreeWithChanges,
+            ActionKind::ForcePush,
+            ActionKind::DeleteTaskWithActiveSession,
+            ActionKind::PurgeScrollback,
+            ActionKind::RestartStuckAgent,
+            ActionKind::DiscardReview,
+            ActionKind::RedispatchFailedTask,
+            ActionKind::BulkDeleteCompletedTasks,
+            ActionKind::CreateTask,
+            ActionKind::DispatchReadyTask,
+            ActionKind::OpenPane,
+            ActionKind::CreateCheckpoint,
+        ];
+        for kind in &all_kinds {
+            let json = serde_json::to_string(kind).expect("serialize");
+            let roundtripped: ActionKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*kind, roundtripped, "serde roundtrip failed for {:?}", kind);
+        }
+    }
 }

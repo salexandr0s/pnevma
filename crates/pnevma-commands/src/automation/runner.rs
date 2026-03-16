@@ -20,8 +20,8 @@ use crate::state::AppState;
 use chrono::Utc;
 use pnevma_agents::{
     classify_failure, compute_backoff, AgentAdapter, AgentConfig, AgentEvent, AgentHandle,
-    ContinuationState, DispatchPermit, FailureClass, QueuedDispatch, RetryPolicy, StallDetector,
-    StallDetectorConfig, TaskPayload,
+    ContinuationState, DispatchPermit, FailureClass, QueuedDispatch, RetryContext, RetryPolicy,
+    StallDetector, StallDetectorConfig, TaskPayload,
 };
 use pnevma_context::{
     ContextCompileInput, ContextCompileMode, ContextCompiler, ContextCompilerConfig,
@@ -86,6 +86,8 @@ pub struct PreparedRun {
     pub model: Option<String>,
     pub auto_approve: bool,
     pub allow_npx: bool,
+    pub npx_allowed_packages: Vec<String>,
+    pub allow_full_sandbox_access: bool,
     pub task: TaskContract,
     pub task_row: TaskRow,
     pub origin: DispatchOrigin,
@@ -714,6 +716,8 @@ pub async fn prepare(
         model,
         auto_approve,
         allow_npx,
+        npx_allowed_packages: vec![],
+        allow_full_sandbox_access: false,
         task,
         task_row,
         origin,
@@ -777,6 +781,8 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
             timeout_minutes: prepared.timeout_minutes,
             auto_approve: prepared.auto_approve,
             allow_npx: prepared.allow_npx,
+            npx_allowed_packages: prepared.npx_allowed_packages.clone(),
+            allow_full_sandbox_access: prepared.allow_full_sandbox_access,
             output_format: "stream-json".to_string(),
             context_file: Some(prepared.context_path.to_string_lossy().to_string()),
             thread_id: None,
@@ -1159,7 +1165,7 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
 
     // Resilience state
     let retry_policy = RetryPolicy::default();
-    let mut retry_count: u32 = 0;
+    let mut retry_ctx = RetryContext::new(task_id, provider.clone(), retry_policy.max_attempts);
     let mut continuation = ContinuationState::new(handle.thread_id.clone(), 10);
     let mut stall_detector = StallDetector::new(StallDetectorConfig::default());
     let mut stall_check_interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -1283,12 +1289,10 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                     }
                     AgentEvent::Error(message) => {
                         let class = classify_failure(&message);
+                        let backoff = compute_backoff(retry_ctx.attempt + 1, &retry_policy);
+                        retry_ctx.record_failure(class, &message, backoff.as_secs());
                         match class {
-                            FailureClass::Transient
-                                if retry_count < retry_policy.max_attempts =>
-                            {
-                                retry_count += 1;
-                                let backoff = compute_backoff(retry_count, &retry_policy);
+                            FailureClass::Transient if retry_ctx.should_retry() => {
                                 append_event(
                                     &db,
                                     project_id,
@@ -1297,8 +1301,9 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                                     "agent",
                                     "AgentRetry",
                                     json!({
-                                        "attempt": retry_count,
+                                        "attempt": retry_ctx.attempt,
                                         "backoff_secs": backoff.as_secs(),
+                                        "cumulative_backoff_secs": retry_ctx.cumulative_backoff_secs,
                                         "reason": message
                                     }),
                                 )

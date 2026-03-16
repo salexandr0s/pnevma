@@ -591,4 +591,33 @@ mod tests {
             LeaseStatus::Expired
         );
     }
+
+    proptest! {
+        #[test]
+        fn proptest_blocked_unblocks_when_all_deps_done(dep_count in 1usize..6) {
+            let deps: Vec<Uuid> =
+                (0..dep_count).map(|i| Uuid::from_u128(i as u128 + 1000)).collect();
+            let mut task = base_task();
+            task.dependencies = deps.clone();
+            task.status = TaskStatus::Blocked;
+
+            // Initially blocked — not all deps met
+            let partial: HashSet<Uuid> = deps[..deps.len() - 1].iter().copied().collect();
+            task.refresh_blocked_status(&partial);
+            prop_assert_eq!(
+                task.status,
+                TaskStatus::Blocked,
+                "should stay blocked with partial deps"
+            );
+
+            // All deps met → should transition to Planned
+            let full: HashSet<Uuid> = deps.iter().copied().collect();
+            task.refresh_blocked_status(&full);
+            prop_assert_eq!(
+                task.status,
+                TaskStatus::Planned,
+                "should unblock when all deps done"
+            );
+        }
+    }
 }

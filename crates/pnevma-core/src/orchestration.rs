@@ -220,4 +220,129 @@ mod tests {
             });
         }
     }
+
+    proptest! {
+        #[test]
+        fn proptest_active_never_exceeds_max(
+            max_concurrent in 1usize..8,
+            ops in prop::collection::vec(prop::bool::ANY, 1..100)
+        ) {
+            // ops: true = dispatch, false = complete_one
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async move {
+                let pool = DispatchOrchestrator::new(max_concurrent);
+                for op in &ops {
+                    if *op {
+                        pool.request_dispatch(DispatchRequest {
+                            task_id: Uuid::new_v4(),
+                            priority: Priority::P2,
+                        })
+                        .await;
+                    } else {
+                        pool.complete_one(None).await;
+                    }
+                    let state = pool.state().await;
+                    prop_assert!(
+                        state.active <= state.max_concurrent,
+                        "active {} exceeded max {}",
+                        state.active,
+                        state.max_concurrent
+                    );
+                }
+                Ok(())
+            })?;
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_dedup_rejects_same_task_id(count in 2usize..10) {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async move {
+                let pool = DispatchOrchestrator::new(1);
+                // Fill the active slot with a different task
+                pool.request_dispatch(DispatchRequest {
+                    task_id: Uuid::new_v4(),
+                    priority: Priority::P3,
+                })
+                .await;
+
+                let dup_id = Uuid::new_v4();
+                let mut positions = Vec::new();
+                for _ in 0..count {
+                    let result = pool
+                        .request_dispatch(DispatchRequest {
+                            task_id: dup_id,
+                            priority: Priority::P2,
+                        })
+                        .await;
+                    if let DispatchResult::Queued { position } = result {
+                        positions.push(position);
+                    }
+                }
+                // All submissions after the first dedup hit should return same queue position
+                // because the dedup set prevents double insertion
+                prop_assert!(
+                    positions.len() == count,
+                    "all duplicate submissions should return Queued"
+                );
+                // Queue should contain only 1 entry for this task id, not `count`
+                let state = pool.state().await;
+                prop_assert!(
+                    state.queued <= 1,
+                    "dedup should prevent multiple queue entries, got {}",
+                    state.queued
+                );
+                Ok(())
+            })?;
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_complete_returns_highest_priority(
+            priorities in prop::collection::vec(0u8..4, 2..20)
+        ) {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async move {
+                let pool = DispatchOrchestrator::new(1);
+                // Fill active slot
+                pool.request_dispatch(DispatchRequest {
+                    task_id: Uuid::new_v4(),
+                    priority: Priority::P3,
+                })
+                .await;
+
+                // Queue items with varying priorities
+                let mut best_rank = 4u8;
+                for (i, &rank) in priorities.iter().enumerate() {
+                    let task_id = Uuid::from_u128((i + 100) as u128);
+                    pool.request_dispatch(DispatchRequest {
+                        task_id,
+                        priority: priority_from_rank(rank),
+                    })
+                    .await;
+                    best_rank = best_rank.min(rank);
+                }
+
+                // Complete one → the next returned should have the best (lowest) priority rank
+                if let Some(next) = pool.complete_one(None).await {
+                    let returned_rank = match next.priority {
+                        Priority::P0 => 0,
+                        Priority::P1 => 1,
+                        Priority::P2 => 2,
+                        Priority::P3 => 3,
+                    };
+                    prop_assert_eq!(
+                        returned_rank,
+                        best_rank,
+                        "should dequeue highest priority (rank {}), got rank {}",
+                        best_rank,
+                        returned_rank
+                    );
+                }
+                Ok(())
+            })?;
+        }
+    }
 }

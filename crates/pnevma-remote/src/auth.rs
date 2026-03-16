@@ -306,6 +306,13 @@ impl TokenStore {
     }
 }
 
+/// Derive the DashMap lookup key by SHA-256 hashing the raw bearer token.
+///
+/// Because the store key is a full SHA-256 digest rather than the raw token,
+/// a timing side-channel on the `DashMap::get` string comparison does not
+/// leak information about the actual token value — an attacker would need to
+/// guess the hash, not the token. This makes constant-time comparison (e.g.
+/// via the `subtle` crate) unnecessary for the lookup step.
 fn token_lookup_key(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
@@ -532,6 +539,116 @@ mod tests {
             .find(|(e, _, _)| e == "validate_fail_unknown")
             .unwrap();
         assert_eq!(unknown_row.2, "unknown");
+    }
+
+    #[tokio::test]
+    async fn revoke_all_while_validating_concurrently() {
+        let store = Arc::new(store());
+        let tokens: Vec<_> = (0..20)
+            .map(|i| {
+                store
+                    .create_token("127.0.0.1", &format!("user-{i}"), TokenRole::Operator)
+                    .token
+            })
+            .collect();
+
+        let mut handles = Vec::new();
+
+        // Spawn validators
+        for token in tokens.clone() {
+            let s = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..50 {
+                    let _ = s.validate_token(&token, "127.0.0.1");
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+
+        // Spawn revoker
+        let s = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            s.revoke_all_tokens();
+        }));
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            futures::future::join_all(handles),
+        )
+        .await
+        .expect("concurrent revoke_all must complete within 2s");
+
+        for r in result {
+            r.expect("task must not panic");
+        }
+
+        // After revoke_all, every token must be invalid
+        for token in &tokens {
+            assert!(
+                store.validate_token(token, "127.0.0.1").is_none(),
+                "token must be invalid after revoke_all"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn revoke_single_while_validating_concurrently() {
+        let store = Arc::new(store());
+        let tokens: Vec<_> = (0..10)
+            .map(|i| {
+                store
+                    .create_token("127.0.0.1", &format!("user-{i}"), TokenRole::Operator)
+                    .token
+            })
+            .collect();
+        let revoke_target = tokens[0].clone();
+
+        let mut handles = Vec::new();
+
+        // Spawn validators for all tokens
+        for token in tokens.clone() {
+            let s = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..50 {
+                    let _ = s.validate_token(&token, "127.0.0.1");
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+
+        // Spawn single revoker
+        let s = Arc::clone(&store);
+        let target = revoke_target.clone();
+        handles.push(tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            s.revoke_token(&target);
+        }));
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            futures::future::join_all(handles),
+        )
+        .await
+        .expect("concurrent single revoke must complete within 2s");
+
+        for r in result {
+            r.expect("task must not panic");
+        }
+
+        // Revoked token must be invalid
+        assert!(
+            store.validate_token(&revoke_target, "127.0.0.1").is_none(),
+            "revoked token must be invalid"
+        );
+
+        // Other tokens must still be valid
+        for token in &tokens[1..] {
+            assert!(
+                store.validate_token(token, "127.0.0.1").is_some(),
+                "non-revoked token must remain valid"
+            );
+        }
     }
 }
 

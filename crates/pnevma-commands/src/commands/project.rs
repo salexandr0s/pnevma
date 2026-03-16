@@ -5197,6 +5197,8 @@ pub(crate) async fn try_provider_task_draft(
             timeout_minutes,
             auto_approve: false,
             allow_npx: false,
+            npx_allowed_packages: vec![],
+            allow_full_sandbox_access: false,
             output_format: "stream-json".to_string(),
             context_file: None,
             thread_id: None,

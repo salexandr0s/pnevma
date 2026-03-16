@@ -23,6 +23,6 @@ pub use profiles::{AgentProfile, DispatchRecommendation};
 pub use reconciler::{reconcile_claims, ReconciliationAction, ReconciliationClaim};
 pub use registry::AdapterRegistry;
 pub use resilience::{
-    classify_failure, compute_backoff, ContinuationState, FailureClass, RetryPolicy, StallDetector,
-    StallDetectorConfig,
+    classify_failure, compute_backoff, ContinuationState, FailureClass, RetryContext, RetryPolicy,
+    StallDetector, StallDetectorConfig,
 };

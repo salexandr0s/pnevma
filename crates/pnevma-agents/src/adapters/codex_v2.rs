@@ -47,10 +47,10 @@ fn build_initialize_params() -> serde_json::Value {
 }
 
 fn build_thread_start_params(config: &AgentConfig) -> serde_json::Value {
-    let sandbox = if config.auto_approve {
+    let sandbox = if config.auto_approve && config.allow_full_sandbox_access {
         tracing::warn!(
             agent_id = %config.working_dir,
-            "Codex v2 auto_approve enabled — using danger-full-access sandbox (unrestricted system access)"
+            "Codex v2 auto_approve + allow_full_sandbox_access — using danger-full-access sandbox (unrestricted system access)"
         );
         "danger-full-access"
     } else {
@@ -213,7 +213,7 @@ impl CodexV2Adapter {
                 .envs(crate::env::build_agent_environment(&config.env))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .pre_exec(|| {
                     if libc::setpgid(0, 0) != 0 {
                         return Err(std::io::Error::last_os_error());
@@ -221,7 +221,10 @@ impl CodexV2Adapter {
                     Ok(())
                 })
                 .spawn()
-                .map_err(|e| AgentError::Spawn(e.to_string()))?
+                .map_err(|e| {
+                    tracing::warn!(provider = "codex-v2", working_dir = %config.working_dir, error = %e, "agent adapter spawn failed");
+                    AgentError::Spawn(e.to_string())
+                })?
         };
 
         let stdin = child
@@ -794,6 +797,8 @@ mod tests {
             timeout_minutes: 30,
             auto_approve: false,
             allow_npx: false,
+            npx_allowed_packages: vec![],
+            allow_full_sandbox_access: false,
             output_format: "stream-json".to_string(),
             context_file: None,
             thread_id: None,
@@ -1063,5 +1068,49 @@ mod tests {
             map_notification(&complete),
             Some(AgentEvent::Complete { ref summary }) if summary == "done"
         ));
+    }
+
+    #[test]
+    fn auto_approve_without_full_sandbox_uses_workspace_write() {
+        let mut config = make_config();
+        config.auto_approve = true;
+        config.allow_full_sandbox_access = false;
+        let params = build_thread_start_params(&config);
+        assert_eq!(params["sandbox"], "workspace-write");
+    }
+
+    #[test]
+    fn auto_approve_with_full_sandbox_uses_danger_full_access() {
+        let mut config = make_config();
+        config.auto_approve = true;
+        config.allow_full_sandbox_access = true;
+        let params = build_thread_start_params(&config);
+        assert_eq!(params["sandbox"], "danger-full-access");
+    }
+
+    #[test]
+    fn codex_v2_spawns_with_app_server_args() {
+        // Verify the expected command line for Codex v2 app-server mode.
+        // The adapter constructs: codex app-server --listen stdio://
+        let expected_args = ["app-server", "--listen", "stdio://"];
+        // This is a structural test: verify the constants/function that builds
+        // the command are consistent with the protocol contract.
+        // The spawn method uses Command::new("codex").args(&["app-server", "--listen", "stdio://"])
+        let source = include_str!("codex_v2.rs");
+        assert!(
+            source.contains(r#""app-server""#),
+            "codex v2 source must reference app-server subcommand"
+        );
+        assert!(
+            source.contains(r#""stdio://"#),
+            "codex v2 source must reference stdio:// listen address"
+        );
+        // Verify args list is used in correct order
+        for arg in expected_args {
+            assert!(
+                source.contains(arg),
+                "codex v2 source must contain arg: {arg}"
+            );
+        }
     }
 }

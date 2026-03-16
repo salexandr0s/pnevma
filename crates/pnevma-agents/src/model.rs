@@ -12,12 +12,20 @@ pub struct AgentConfig {
     pub env: Vec<(String, String)>,
     pub working_dir: String,
     pub timeout_minutes: u64,
-    /// Pass --dangerously-skip-permissions (worktree isolation is the safety boundary).
+    /// Enable auto-approval via --allowedTools whitelist (worktree isolation is the safety boundary).
     #[serde(default)]
     pub auto_approve: bool,
     /// Allow npm exec / npx in provider allowlists when auto-approve is enabled.
     #[serde(default)]
     pub allow_npx: bool,
+    /// Specific npm packages allowed via npx/npm-exec when `allow_npx` is true.
+    /// When non-empty, only these packages are whitelisted instead of the wildcard `npx *`.
+    #[serde(default)]
+    pub npx_allowed_packages: Vec<String>,
+    /// Allow Codex V2 `danger-full-access` sandbox when `auto_approve` is also true.
+    /// Without this flag, `auto_approve` alone defaults to `workspace-write`.
+    #[serde(default)]
+    pub allow_full_sandbox_access: bool,
     /// Output format: "stream-json" for structured output, "text" for raw.
     #[serde(default = "default_output_format")]
     pub output_format: String,

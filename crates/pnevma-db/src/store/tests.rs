@@ -1,8 +1,8 @@
 use super::*;
 use crate::models::{
-    AutomationRunRow, ContextRuleUsageRow, CostRow, ErrorSignatureRow, FeedbackRow,
-    NotificationRow, OnboardingStateRow, ReviewRow, RuleRow, SecretRefRow, SessionRow, TaskRow,
-    TelemetryEventRow, WorkflowInstanceRow, WorktreeRow,
+    AutomationRetryRow, AutomationRunRow, ContextRuleUsageRow, CostRow, ErrorSignatureRow,
+    FeedbackRow, NotificationRow, OnboardingStateRow, ReviewRow, RuleRow, SecretRefRow, SessionRow,
+    TaskRow, TelemetryEventRow, WorkflowInstanceRow, WorktreeRow,
 };
 use chrono::Utc;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -1626,4 +1626,735 @@ async fn cost_append_and_aggregation() {
     db.aggregate_costs_daily(&project_id)
         .await
         .expect("daily agg");
+}
+
+// ── Helpers for new tests ───────────────────────────────────────────────
+
+fn make_task(project_id: &str) -> TaskRow {
+    let now = Utc::now();
+    TaskRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.to_string(),
+        title: "test task".to_string(),
+        goal: "goal".to_string(),
+        scope_json: "[]".to_string(),
+        dependencies_json: "[]".to_string(),
+        acceptance_json: "[]".to_string(),
+        constraints_json: "[]".to_string(),
+        priority: "P2".to_string(),
+        status: "Planned".to_string(),
+        branch: None,
+        worktree_id: None,
+        handoff_summary: None,
+        created_at: now,
+        updated_at: now,
+        auto_dispatch: false,
+        agent_profile_override: None,
+        execution_mode: None,
+        timeout_minutes: None,
+        max_retries: None,
+        loop_iteration: 0,
+        loop_context_json: None,
+    }
+}
+
+fn make_automation_run(project_id: &str, task_id: &str, status: &str) -> AutomationRunRow {
+    let now = Utc::now();
+    AutomationRunRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.to_string(),
+        task_id: task_id.to_string(),
+        run_id: Uuid::new_v4().to_string(),
+        origin: "manual".to_string(),
+        provider: "claude-code".to_string(),
+        model: None,
+        status: status.to_string(),
+        attempt: 1,
+        started_at: now,
+        finished_at: None,
+        duration_seconds: None,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: 0.0,
+        summary: None,
+        error_message: None,
+        created_at: now,
+    }
+}
+
+fn make_session(project_id: &str) -> SessionRow {
+    let now = Utc::now();
+    SessionRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.to_string(),
+        name: "test-session".to_string(),
+        r#type: None,
+        status: "running".to_string(),
+        pid: None,
+        cwd: "/tmp".to_string(),
+        command: "bash".to_string(),
+        branch: None,
+        worktree_id: None,
+        started_at: now,
+        last_heartbeat: now,
+    }
+}
+
+// ── 1A: Automation run lifecycle ────────────────────────────────────────
+
+#[tokio::test]
+async fn automation_run_update_status_sets_finished_at() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let run = make_automation_run(&pid, &task.id, "running");
+    db.create_automation_run(&run).await.expect("create run");
+
+    let finished = Utc::now();
+    db.update_automation_run_status(&run.id, "completed", Some(finished), Some(12.5), None)
+        .await
+        .expect("update status");
+
+    let loaded = db.get_automation_run(&run.id).await.expect("get").unwrap();
+    assert_eq!(loaded.status, "completed");
+    assert!(loaded.finished_at.is_some());
+    assert!((loaded.duration_seconds.unwrap() - 12.5).abs() < 0.001);
+    assert!(loaded.error_message.is_none());
+}
+
+#[tokio::test]
+async fn automation_run_update_usage_persists_tokens() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let run = make_automation_run(&pid, &task.id, "running");
+    db.create_automation_run(&run).await.expect("create run");
+
+    db.update_automation_run_usage(&run.id, 500, 200, 0.03, Some("done"))
+        .await
+        .expect("update usage");
+
+    let loaded = db.get_automation_run(&run.id).await.expect("get").unwrap();
+    assert_eq!(loaded.tokens_in, 500);
+    assert_eq!(loaded.tokens_out, 200);
+    assert!((loaded.cost_usd - 0.03).abs() < 0.001);
+    assert_eq!(loaded.summary.as_deref(), Some("done"));
+}
+
+#[tokio::test]
+async fn list_active_automation_runs_filters_running_only() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let running = make_automation_run(&pid, &task.id, "running");
+    db.create_automation_run(&running)
+        .await
+        .expect("create running");
+
+    let mut completed = make_automation_run(&pid, &task.id, "completed");
+    completed.finished_at = Some(Utc::now());
+    db.create_automation_run(&completed)
+        .await
+        .expect("create completed");
+
+    let mut failed = make_automation_run(&pid, &task.id, "failed");
+    failed.finished_at = Some(Utc::now());
+    failed.error_message = Some("boom".to_string());
+    db.create_automation_run(&failed)
+        .await
+        .expect("create failed");
+
+    let active = db
+        .list_active_automation_runs(&pid)
+        .await
+        .expect("list active");
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, running.id);
+}
+
+#[tokio::test]
+async fn mark_stale_automation_runs_marks_only_running() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let r1 = make_automation_run(&pid, &task.id, "running");
+    db.create_automation_run(&r1).await.expect("r1");
+    let r2 = make_automation_run(&pid, &task.id, "running");
+    db.create_automation_run(&r2).await.expect("r2");
+
+    let mut done = make_automation_run(&pid, &task.id, "completed");
+    done.finished_at = Some(Utc::now());
+    db.create_automation_run(&done).await.expect("done");
+
+    let affected = db
+        .mark_stale_automation_runs(&pid)
+        .await
+        .expect("mark stale");
+    assert_eq!(affected, 2);
+
+    // running ones are now failed
+    let l1 = db.get_automation_run(&r1.id).await.expect("get").unwrap();
+    assert_eq!(l1.status, "failed");
+    assert!(l1.error_message.is_some());
+    let l2 = db.get_automation_run(&r2.id).await.expect("get").unwrap();
+    assert_eq!(l2.status, "failed");
+
+    // completed one is unchanged
+    let ld = db.get_automation_run(&done.id).await.expect("get").unwrap();
+    assert_eq!(ld.status, "completed");
+}
+
+#[tokio::test]
+async fn automation_retry_create_and_list_pending() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let run = make_automation_run(&pid, &task.id, "failed");
+    db.create_automation_run(&run).await.expect("create run");
+
+    let now = Utc::now();
+    let retry = AutomationRetryRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: pid.clone(),
+        run_id: run.id.clone(),
+        task_id: task.id.clone(),
+        attempt: 2,
+        reason: "transient failure".to_string(),
+        retry_after: now,
+        retried_at: None,
+        outcome: None,
+        created_at: now,
+    };
+    db.create_automation_retry(&retry)
+        .await
+        .expect("create retry");
+
+    let pending = db.list_pending_retries(&pid).await.expect("list pending");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, retry.id);
+
+    db.update_automation_retry_outcome(&retry.id, "success", Some(Utc::now()))
+        .await
+        .expect("update outcome");
+
+    let pending2 = db
+        .list_pending_retries(&pid)
+        .await
+        .expect("list pending again");
+    assert_eq!(pending2.len(), 0);
+}
+
+// ── 1B: Orphaned task detection ─────────────────────────────────────────
+
+#[tokio::test]
+async fn list_orphaned_in_progress_tasks_no_running_run() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let mut task = make_task(&pid);
+    task.status = "InProgress".to_string();
+    db.create_task(&task).await.expect("create task");
+
+    let orphaned = db
+        .list_orphaned_in_progress_tasks(&pid)
+        .await
+        .expect("list");
+    assert_eq!(orphaned.len(), 1);
+    assert_eq!(orphaned[0].id, task.id);
+}
+
+#[tokio::test]
+async fn list_orphaned_excludes_tasks_with_active_run() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let mut task = make_task(&pid);
+    task.status = "InProgress".to_string();
+    db.create_task(&task).await.expect("create task");
+
+    let run = make_automation_run(&pid, &task.id, "running");
+    db.create_automation_run(&run).await.expect("create run");
+
+    let orphaned = db
+        .list_orphaned_in_progress_tasks(&pid)
+        .await
+        .expect("list");
+    assert_eq!(orphaned.len(), 0);
+}
+
+// ── 1C: Cost aggregation queries ────────────────────────────────────────
+
+#[tokio::test]
+async fn aggregate_costs_daily_idempotent() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+    let session = make_session(&pid);
+    db.upsert_session(&session).await.expect("upsert session");
+
+    let cost = CostRow {
+        id: Uuid::new_v4().to_string(),
+        agent_run_id: None,
+        task_id: task.id.clone(),
+        session_id: session.id.clone(),
+        provider: "anthropic".to_string(),
+        model: Some("opus".to_string()),
+        tokens_in: 100,
+        tokens_out: 50,
+        estimated_usd: 0.01,
+        tracked: true,
+        timestamp: Utc::now(),
+    };
+    db.append_cost(&cost).await.expect("append cost");
+
+    db.aggregate_costs_daily(&pid).await.expect("first agg");
+    db.aggregate_costs_daily(&pid).await.expect("second agg");
+
+    let by_model = db.get_usage_by_model(&pid).await.expect("by model");
+    assert_eq!(by_model.len(), 1);
+    assert_eq!(by_model[0].tokens_in, 100);
+    assert!((by_model[0].estimated_usd - 0.01).abs() < 0.001);
+}
+
+#[tokio::test]
+async fn get_usage_by_model_groups_correctly() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+    let session = make_session(&pid);
+    db.upsert_session(&session).await.expect("upsert session");
+
+    let now = Utc::now();
+    let c1 = CostRow {
+        id: Uuid::new_v4().to_string(),
+        agent_run_id: None,
+        task_id: task.id.clone(),
+        session_id: session.id.clone(),
+        provider: "anthropic".to_string(),
+        model: Some("opus".to_string()),
+        tokens_in: 100,
+        tokens_out: 50,
+        estimated_usd: 0.10,
+        tracked: true,
+        timestamp: now,
+    };
+    let c2 = CostRow {
+        id: Uuid::new_v4().to_string(),
+        agent_run_id: None,
+        task_id: task.id.clone(),
+        session_id: session.id.clone(),
+        provider: "anthropic".to_string(),
+        model: Some("sonnet".to_string()),
+        tokens_in: 200,
+        tokens_out: 100,
+        estimated_usd: 0.05,
+        tracked: true,
+        timestamp: now,
+    };
+    db.append_cost(&c1).await.expect("c1");
+    db.append_cost(&c2).await.expect("c2");
+
+    db.aggregate_costs_daily(&pid).await.expect("agg");
+
+    let by_model = db.get_usage_by_model(&pid).await.expect("by model");
+    assert_eq!(by_model.len(), 2);
+    // Ordered by estimated_usd DESC
+    assert_eq!(by_model[0].model, "opus");
+    assert_eq!(by_model[0].tokens_in, 100);
+    assert_eq!(by_model[1].model, "sonnet");
+    assert_eq!(by_model[1].tokens_in, 200);
+}
+
+#[tokio::test]
+async fn task_cost_total_zero_for_no_costs() {
+    let db = open_test_db().await;
+    let total = db
+        .task_cost_total("nonexistent-task-id")
+        .await
+        .expect("task cost");
+    assert!((total - 0.0).abs() < 0.001);
+}
+
+// ── 1D: Error signature daily tracking ──────────────────────────────────
+
+#[tokio::test]
+async fn increment_error_signature_daily_accumulates() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let now = Utc::now();
+    let sig = ErrorSignatureRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: pid.clone(),
+        signature_hash: Uuid::new_v4().to_string(),
+        canonical_message: "timeout".to_string(),
+        category: "network".to_string(),
+        first_seen: now,
+        last_seen: now,
+        total_count: 1,
+        sample_output: None,
+        remediation_hint: None,
+    };
+    db.upsert_error_signature(&sig).await.expect("upsert sig");
+
+    let date = "2026-03-16";
+    for _ in 0..3 {
+        db.increment_error_signature_daily(&sig.id, date)
+            .await
+            .expect("increment");
+    }
+
+    // Verify via get_error_trend which reads the daily table
+    let trend = db.get_error_trend(&pid, 30).await.expect("trend");
+    assert_eq!(trend.len(), 1);
+    assert_eq!(trend[0].count, 3);
+    assert_eq!(trend[0].date, date);
+}
+
+#[tokio::test]
+async fn list_error_signatures_ordered_by_count() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let now = Utc::now();
+    let counts = [1i64, 5, 3];
+    for count in counts {
+        let sig = ErrorSignatureRow {
+            id: Uuid::new_v4().to_string(),
+            project_id: pid.clone(),
+            signature_hash: Uuid::new_v4().to_string(),
+            canonical_message: format!("error-{count}"),
+            category: "test".to_string(),
+            first_seen: now,
+            last_seen: now,
+            total_count: count,
+            sample_output: None,
+            remediation_hint: None,
+        };
+        db.upsert_error_signature(&sig).await.expect("upsert");
+    }
+
+    let sigs = db.list_error_signatures(&pid, 10).await.expect("list");
+    assert_eq!(sigs.len(), 3);
+    assert_eq!(sigs[0].total_count, 5);
+    assert_eq!(sigs[1].total_count, 3);
+    assert_eq!(sigs[2].total_count, 1);
+}
+
+// ── 1E: Worktree cascade + bulk ops ─────────────────────────────────────
+
+#[tokio::test]
+async fn update_task_status_bulk_transitions_multiple() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let mut t = make_task(&pid);
+        t.status = "Dispatching".to_string();
+        db.create_task(&t).await.expect("create task");
+        ids.push(t.id);
+    }
+
+    let affected = db
+        .update_task_status_bulk(&pid, "Dispatching", "Ready")
+        .await
+        .expect("bulk update");
+    assert_eq!(affected, 3);
+
+    for id in &ids {
+        let t = db.get_task(id).await.expect("get").unwrap();
+        assert_eq!(t.status, "Ready");
+    }
+}
+
+#[tokio::test]
+async fn worktree_cascade_on_task_delete() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let now = Utc::now();
+    let wt = WorktreeRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: pid.clone(),
+        task_id: task.id.clone(),
+        path: "/tmp/wt".to_string(),
+        branch: "feat/test".to_string(),
+        lease_status: "active".to_string(),
+        lease_started: now,
+        last_active: now,
+    };
+    db.upsert_worktree(&wt).await.expect("upsert worktree");
+
+    // Verify worktree exists
+    let found = db.find_worktree_by_task(&task.id).await.expect("find");
+    assert!(found.is_some());
+
+    // Delete task -- FK ON DELETE CASCADE should remove worktree
+    db.delete_task(&task.id).await.expect("delete task");
+
+    let gone = db
+        .find_worktree_by_task(&task.id)
+        .await
+        .expect("find after");
+    assert!(gone.is_none());
+}
+
+// ── 1F: Failure injection ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_task_duplicate_id_returns_error() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("first insert");
+
+    let result = db.create_task(&task).await;
+    assert!(result.is_err(), "duplicate task_id should return error");
+}
+
+// ── Batch 4: Directory & file permission tests ──────────────────────────
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_creates_project_dir_with_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let project_root = std::env::temp_dir().join(format!("pnevma-dir-perm-{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(&project_root)
+        .await
+        .expect("create temp root");
+
+    let _db = Db::open(&project_root).await.expect("open db");
+    let pnevma_dir = project_root.join(".pnevma");
+    let meta = std::fs::metadata(&pnevma_dir).expect("stat .pnevma dir");
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "expected .pnevma/ dir mode 0700, got {:o}",
+        mode
+    );
+
+    let _ = tokio::fs::remove_dir_all(&project_root).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_corrects_overly_permissive_project_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let project_root = std::env::temp_dir().join(format!("pnevma-dir-fix-{}", Uuid::new_v4()));
+    let pnevma_dir = project_root.join(".pnevma");
+    tokio::fs::create_dir_all(&pnevma_dir)
+        .await
+        .expect("create .pnevma dir");
+    std::fs::set_permissions(&pnevma_dir, std::fs::Permissions::from_mode(0o755))
+        .expect("set permissive mode");
+
+    let _db = Db::open(&project_root).await.expect("open db");
+    let meta = std::fs::metadata(&pnevma_dir).expect("stat .pnevma dir");
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "expected corrected mode 0700, got {:o}", mode);
+
+    let _ = tokio::fs::remove_dir_all(&project_root).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_creates_db_file_with_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let project_root = std::env::temp_dir().join(format!("pnevma-file-perm-{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(&project_root)
+        .await
+        .expect("create temp root");
+
+    let db = Db::open(&project_root).await.expect("open db");
+    let meta = std::fs::metadata(db.path()).expect("stat db file");
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "expected db file mode 0600, got {:o}", mode);
+
+    drop(db);
+    let _ = tokio::fs::remove_dir_all(&project_root).await;
+}
+
+// ── Batch 5: merge_queue roundtrip ──────────────────────────────────────
+
+#[tokio::test]
+async fn merge_queue_roundtrip() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let task = make_task(&pid);
+    db.create_task(&task).await.expect("create task");
+
+    let now = Utc::now();
+    let item = crate::models::MergeQueueRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: pid.clone(),
+        task_id: task.id.clone(),
+        status: "queued".to_string(),
+        blocked_reason: None,
+        approved_at: now,
+        started_at: None,
+        completed_at: None,
+    };
+    db.upsert_merge_queue_item(&item)
+        .await
+        .expect("upsert merge queue item");
+
+    let queue = db.list_merge_queue(&pid).await.expect("list merge queue");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].task_id, task.id);
+    assert_eq!(queue[0].status, "queued");
+
+    // Get by task
+    let found = db
+        .get_merge_queue_item_by_task(&task.id)
+        .await
+        .expect("get by task")
+        .expect("should exist");
+    assert_eq!(found.id, item.id);
+}
+
+// ── Batch 4: Event payload redaction integration test ───────────────────
+
+#[tokio::test]
+async fn event_payload_is_redacted_before_storage() {
+    // This test verifies the redaction-then-store pattern:
+    // 1. Build a payload containing secret-shaped strings.
+    // 2. Apply pnevma_redaction::redact_json_value (the same function used by
+    //    append_automation_audit in pnevma-commands).
+    // 3. Store the redacted payload via append_event.
+    // 4. Read it back and verify the secrets are replaced with [REDACTED].
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let secret_payload = serde_json::json!({
+        "request_id": "req-1",
+        "method": "session.new",
+        "env": "GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh",
+        "api_key": "sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    });
+
+    // Redact using the same function the control plane uses.
+    let redacted = pnevma_redaction::redact_json_value(secret_payload, &[]);
+
+    db.append_event(crate::store::NewEvent {
+        id: Uuid::new_v4().to_string(),
+        project_id: pid.clone(),
+        task_id: None,
+        session_id: None,
+        trace_id: Uuid::new_v4().to_string(),
+        source: "test".to_string(),
+        event_type: "TestRedaction".to_string(),
+        payload: redacted,
+    })
+    .await
+    .expect("append redacted event");
+
+    let events = db.list_recent_events(&pid, 10).await.expect("list events");
+    assert_eq!(events.len(), 1);
+    let stored = &events[0].payload_json;
+    assert!(
+        !stored.contains("ghp_"),
+        "GitHub token must be redacted in stored payload, got: {stored}"
+    );
+    assert!(
+        !stored.contains("sk-ant-api03"),
+        "Anthropic key must be redacted in stored payload, got: {stored}"
+    );
+    assert!(
+        stored.contains("[REDACTED]"),
+        "stored payload must contain [REDACTED] markers"
+    );
+}
+
+// ── Batch 5: DB write failure graceful degradation ──────────────────────
+
+#[tokio::test]
+async fn closed_pool_append_event_returns_err() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    // Close the pool
+    db.pool.close().await;
+
+    let result = db
+        .append_event(crate::store::NewEvent {
+            id: Uuid::new_v4().to_string(),
+            project_id: pid,
+            task_id: None,
+            session_id: None,
+            trace_id: Uuid::new_v4().to_string(),
+            source: "test".to_string(),
+            event_type: "TestEvent".to_string(),
+            payload: serde_json::json!({"key": "value"}),
+        })
+        .await;
+    assert!(
+        result.is_err(),
+        "append_event on closed pool should return Err, not panic"
+    );
+}
+
+// ── FK violation ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn worktree_fk_violation_without_task() {
+    let db = open_test_db().await;
+    let pid = Uuid::new_v4().to_string();
+    seed_project(&db, &pid).await;
+
+    let now = Utc::now();
+    let wt = WorktreeRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: pid.clone(),
+        task_id: "nonexistent-task".to_string(),
+        path: "/tmp/wt".to_string(),
+        branch: "feat/orphan".to_string(),
+        lease_status: "active".to_string(),
+        lease_started: now,
+        last_active: now,
+    };
+
+    let result = db.upsert_worktree(&wt).await;
+    assert!(result.is_err(), "FK violation should return error");
 }
