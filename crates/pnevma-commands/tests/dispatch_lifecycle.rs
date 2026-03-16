@@ -404,6 +404,9 @@ fn make_task(project_id: &str) -> TaskRow {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     }
 }
 
@@ -596,6 +599,9 @@ async fn completed_task_unblocks_blocked_dependent_task() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
     harness
         .db
@@ -734,6 +740,9 @@ async fn dispatch_state_survives_db_reconnect() {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         };
         db.create_task(&task).await.expect("create task");
 

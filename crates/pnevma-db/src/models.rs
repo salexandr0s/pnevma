@@ -26,6 +26,12 @@ pub struct SessionRow {
     pub worktree_id: Option<String>,
     pub started_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
+    #[serde(default)]
+    pub restore_status: Option<String>,
+    #[serde(default)]
+    pub exit_code: Option<i64>,
+    #[serde(default)]
+    pub ended_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -84,6 +90,15 @@ pub struct TaskRow {
     pub loop_iteration: i64,
     /// JSON context for loop iterations (iteration number, feedback, trigger task).
     pub loop_context_json: Option<String>,
+    /// Task this was forked from.
+    #[serde(default)]
+    pub forked_from_task_id: Option<String>,
+    /// One-line summary of the fork lineage.
+    #[serde(default)]
+    pub lineage_summary: Option<String>,
+    /// Fork depth (0 = root).
+    #[serde(default)]
+    pub lineage_depth: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -414,6 +429,14 @@ pub struct AgentProfileRow {
     pub source: String,
     pub source_path: Option<String>,
     pub user_modified: bool,
+    #[serde(default)]
+    pub thinking_level: Option<String>,
+    #[serde(default)]
+    pub thinking_budget: Option<i64>,
+    #[serde(default)]
+    pub tool_restrictions_json: Option<String>,
+    #[serde(default)]
+    pub extra_flags_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -438,6 +461,12 @@ pub struct TaskExternalSourceRow {
     pub url: String,
     pub state: String,
     pub synced_at: DateTime<Utc>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub labels_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -495,6 +524,14 @@ pub struct GlobalAgentProfileRow {
     pub source: String,
     pub source_path: Option<String>,
     pub user_modified: bool,
+    #[serde(default)]
+    pub thinking_level: Option<String>,
+    #[serde(default)]
+    pub thinking_budget: Option<i64>,
+    #[serde(default)]
+    pub tool_restrictions_json: Option<String>,
+    #[serde(default)]
+    pub extra_flags_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -510,4 +547,281 @@ pub struct GlobalSshProfileRow {
     pub source: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+// ── Wave 1: Intake, PRs, CI, Telemetry ──────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct IntakeQueueRow {
+    pub id: String,
+    pub project_id: String,
+    pub kind: String,
+    pub external_id: String,
+    pub identifier: String,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub priority: Option<String>,
+    pub labels_json: String,
+    pub source_updated_at: Option<String>,
+    pub ingested_at: String,
+    pub status: String,
+    pub promoted_task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PullRequestRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub number: i64,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub remote_url: String,
+    pub status: String,
+    pub checks_status: Option<String>,
+    pub review_status: Option<String>,
+    pub mergeable: bool,
+    pub head_sha: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub merged_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PrCheckRunRow {
+    pub id: String,
+    pub pr_id: String,
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub details_url: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CiPipelineRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub pr_id: Option<String>,
+    pub provider: String,
+    pub run_number: Option<i64>,
+    pub workflow_name: Option<String>,
+    pub head_sha: Option<String>,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub html_url: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CiJobRow {
+    pub id: String,
+    pub pipeline_id: String,
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeploymentRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub environment: String,
+    pub status: String,
+    pub ref_name: Option<String>,
+    pub sha: Option<String>,
+    pub url: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TelemetryMetricRow {
+    pub id: String,
+    pub project_id: String,
+    pub metric_name: String,
+    pub metric_value: f64,
+    pub tags_json: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct FleetSnapshotRow {
+    pub id: String,
+    pub project_id: String,
+    pub active_sessions: i64,
+    pub active_dispatches: i64,
+    pub queued_dispatches: i64,
+    pub pool_max: i64,
+    pub pool_utilization: f64,
+    pub total_cost_usd: f64,
+    pub tasks_ready: i64,
+    pub tasks_in_progress: i64,
+    pub tasks_failed: i64,
+    pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentPerformanceRow {
+    pub id: String,
+    pub project_id: String,
+    pub provider: String,
+    pub model: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub runs_total: i64,
+    pub runs_success: i64,
+    pub runs_failed: i64,
+    pub avg_duration_seconds: Option<f64>,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost_usd: f64,
+    pub p95_duration_seconds: Option<f64>,
+}
+
+// ── Wave 2: Session Restore, Attention, Review ──────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SessionRestoreLogRow {
+    pub id: String,
+    pub session_id: String,
+    pub project_id: String,
+    pub action: String,
+    pub outcome: String,
+    pub error_message: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AttentionRuleRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub event_type: String,
+    pub condition_json: String,
+    pub action: String,
+    pub severity: String,
+    pub enabled: bool,
+    pub cooldown_seconds: i64,
+    pub last_triggered: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ReviewFileRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub file_path: String,
+    pub status: String,
+    pub reviewer_notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ReviewCommentRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub file_path: Option<String>,
+    pub line_number: Option<i64>,
+    pub body: String,
+    pub author: String,
+    pub resolved: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ReviewChecklistItemRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub label: String,
+    pub checked: bool,
+    pub sort_order: i64,
+    pub created_at: String,
+}
+
+// ── Wave 3: Lineage, Hooks ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TaskLineageRow {
+    pub id: String,
+    pub project_id: String,
+    pub parent_task_id: String,
+    pub child_task_id: String,
+    pub fork_reason: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentHookRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub hook_type: String,
+    pub command: String,
+    pub timeout_seconds: i64,
+    pub enabled: bool,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Wave 4: Ports, Workspace Hooks, Editor Profiles ─────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PortAllocationRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub port: i64,
+    pub protocol: String,
+    pub label: Option<String>,
+    pub allocated_at: String,
+    pub released_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WorkspaceHookRunRow {
+    pub id: String,
+    pub project_id: String,
+    pub hook_name: String,
+    pub phase: String,
+    pub trigger_event: Option<String>,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EditorProfileRow {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub editor: String,
+    pub settings_json: String,
+    pub extensions_json: String,
+    pub keybindings_json: String,
+    pub active: bool,
+    pub created_at: String,
+    pub updated_at: String,
 }

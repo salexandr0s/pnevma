@@ -728,8 +728,9 @@ impl Db {
             INSERT INTO agent_profiles
                 (id, project_id, name, provider, model, token_budget, timeout_minutes,
                  max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                 role, system_prompt, source, source_path, user_modified)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                 role, system_prompt, source, source_path, user_modified,
+                 thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
             "#,
         )
         .bind(&row.id)
@@ -750,6 +751,10 @@ impl Db {
         .bind(&row.source)
         .bind(&row.source_path)
         .bind(row.user_modified)
+        .bind(&row.thinking_level)
+        .bind(row.thinking_budget)
+        .bind(&row.tool_restrictions_json)
+        .bind(&row.extra_flags_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -760,7 +765,8 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt, source, source_path, user_modified
+                   role, system_prompt, source, source_path, user_modified,
+                   thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
             FROM agent_profiles
             WHERE id = ?1
             "#,
@@ -780,7 +786,8 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt, source, source_path, user_modified
+                   role, system_prompt, source, source_path, user_modified,
+                   thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
             FROM agent_profiles
             WHERE project_id = ?1 AND name = ?2
             "#,
@@ -801,7 +808,8 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt, source, source_path, user_modified
+                   role, system_prompt, source, source_path, user_modified,
+                   thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
             FROM agent_profiles
             WHERE project_id = ?1 AND source_path = ?2
             "#,
@@ -821,7 +829,8 @@ impl Db {
             r#"
             SELECT id, project_id, name, provider, model, token_budget, timeout_minutes,
                    max_concurrent, stations_json, config_json, active, created_at, updated_at,
-                   role, system_prompt, source, source_path, user_modified
+                   role, system_prompt, source, source_path, user_modified,
+                   thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
             FROM agent_profiles
             WHERE project_id = ?1 AND active = 1
             ORDER BY name
@@ -841,8 +850,10 @@ impl Db {
                 timeout_minutes = ?5, max_concurrent = ?6, stations_json = ?7,
                 config_json = ?8, active = ?9, updated_at = ?10,
                 role = ?11, system_prompt = ?12,
-                source = ?13, source_path = ?14, user_modified = ?15
-            WHERE id = ?16
+                source = ?13, source_path = ?14, user_modified = ?15,
+                thinking_level = ?16, thinking_budget = ?17,
+                tool_restrictions_json = ?18, extra_flags_json = ?19
+            WHERE id = ?20
             "#,
         )
         .bind(&row.name)
@@ -860,6 +871,10 @@ impl Db {
         .bind(&row.source)
         .bind(&row.source_path)
         .bind(row.user_modified)
+        .bind(&row.thinking_level)
+        .bind(row.thinking_budget)
+        .bind(&row.tool_restrictions_json)
+        .bind(&row.extra_flags_json)
         .bind(&row.id)
         .execute(&self.pool)
         .await?;

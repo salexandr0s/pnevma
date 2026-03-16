@@ -1,14 +1,17 @@
 #![forbid(unsafe_code)]
 
 pub mod agent_discovery;
+pub mod ci;
 pub mod config;
 pub mod error;
 pub mod error_signatures;
 pub mod events;
 pub mod orchestration;
+pub mod pr;
 pub mod protected_actions;
 pub mod stories;
 pub mod task;
+pub mod telemetry;
 pub mod workflow;
 pub mod workflow_contract;
 
@@ -37,6 +40,10 @@ pub use workflow_contract::{
     AgentDefaults, RetryDefaults, TrackerSettings, VerificationHook, WorkflowDocument,
     WorkflowHooks, WorkflowMdConfig, WorkflowParseError,
 };
+
+pub use ci::{CiConclusion, CiStatus, DeploymentStatus};
+pub use pr::{ChecksStatus, Mergeable, PrStatus, ReviewStatus};
+pub use telemetry::{AgentPerformanceSummary, FleetSnapshot, MetricPoint};
 
 pub type ProjectId = uuid::Uuid;
 pub type TaskId = uuid::Uuid;

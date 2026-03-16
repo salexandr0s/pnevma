@@ -289,6 +289,9 @@ pub async fn dispatch_workflow(
             max_retries: step.max_retries.map(|v| v as i64),
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -560,6 +563,9 @@ pub async fn instantiate_workflow(
             max_retries: step.max_retries.map(|v| v as i64),
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .map_err(|e| e.to_string())?;

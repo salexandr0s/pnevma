@@ -5,8 +5,8 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO sessions
-            (id, project_id, name, type, status, pid, cwd, command, branch, worktree_id, started_at, last_heartbeat)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            (id, project_id, name, type, status, pid, cwd, command, branch, worktree_id, started_at, last_heartbeat, restore_status, exit_code, ended_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(id) DO UPDATE SET
               status=excluded.status,
               pid=excluded.pid,
@@ -14,7 +14,10 @@ impl Db {
               command=excluded.command,
               branch=excluded.branch,
               worktree_id=excluded.worktree_id,
-              last_heartbeat=excluded.last_heartbeat
+              last_heartbeat=excluded.last_heartbeat,
+              restore_status=excluded.restore_status,
+              exit_code=excluded.exit_code,
+              ended_at=excluded.ended_at
             "#,
         )
         .bind(&session.id)
@@ -29,6 +32,9 @@ impl Db {
         .bind(&session.worktree_id)
         .bind(session.started_at)
         .bind(session.last_heartbeat)
+        .bind(&session.restore_status)
+        .bind(session.exit_code)
+        .bind(&session.ended_at)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -37,7 +43,7 @@ impl Db {
     pub async fn list_sessions(&self, project_id: &str) -> Result<Vec<SessionRow>, DbError> {
         let rows = sqlx::query_as::<_, SessionRow>(
             r#"
-            SELECT id, project_id, name, type, status, pid, cwd, command, branch, worktree_id, started_at, last_heartbeat
+            SELECT id, project_id, name, type, status, pid, cwd, command, branch, worktree_id, started_at, last_heartbeat, restore_status, exit_code, ended_at
             FROM sessions
             WHERE project_id = ?1
             ORDER BY started_at DESC

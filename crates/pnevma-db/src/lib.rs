@@ -8,13 +8,16 @@ pub mod store;
 pub use error::DbError;
 pub use global_store::{sha256_hex, GlobalDb, RecentProjectRow, TrustRecord};
 pub use models::{
-    AgentProfileRow, ArtifactRow, AutomationRetryRow, AutomationRunRow, CheckResultRow,
-    CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostDailyAggregateRow, CostHourlyAggregateRow,
-    CostRow, ErrorSignatureDailyRow, ErrorSignatureRow, EventRow, FeedbackRow,
-    GlobalAgentProfileRow, GlobalSshProfileRow, GlobalWorkflowRow, MergeQueueRow, NotificationRow,
-    OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow, RuleRow,
-    SecretRefRow, SessionRow, SshProfileRow, StoryProgressRow, TaskExternalSourceRow, TaskRow,
-    TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow,
-    WorktreeRow,
+    AgentHookRow, AgentPerformanceRow, AgentProfileRow, ArtifactRow, AttentionRuleRow,
+    AutomationRetryRow, AutomationRunRow, CheckResultRow, CheckRunRow, CheckpointRow, CiJobRow,
+    CiPipelineRow, ContextRuleUsageRow, CostDailyAggregateRow, CostHourlyAggregateRow, CostRow,
+    DeploymentRow, EditorProfileRow, ErrorSignatureDailyRow, ErrorSignatureRow, EventRow,
+    FeedbackRow, FleetSnapshotRow, GlobalAgentProfileRow, GlobalSshProfileRow, GlobalWorkflowRow,
+    IntakeQueueRow, MergeQueueRow, NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow,
+    PaneRow, PortAllocationRow, PrCheckRunRow, ProjectRow, PullRequestRow, ReviewChecklistItemRow,
+    ReviewCommentRow, ReviewFileRow, ReviewRow, RuleRow, SecretRefRow, SessionRestoreLogRow,
+    SessionRow, SshProfileRow, StoryProgressRow, TaskExternalSourceRow, TaskLineageRow, TaskRow,
+    TaskStoryRow, TelemetryEventRow, TelemetryMetricRow, WorkflowInstanceRow, WorkflowRow,
+    WorkflowTaskRow, WorkspaceHookRunRow, WorktreeRow,
 };
 pub use store::{Db, EventQueryFilter, NewEvent};

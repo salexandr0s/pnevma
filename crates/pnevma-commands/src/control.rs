@@ -880,6 +880,72 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.resolve_pr_url" => {
+            let url =
+                parse_string_param(params, "url").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::resolve_pr_url(&url, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.resolve_issue_url" => {
+            let url =
+                parse_string_param(params, "url").map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::resolve_issue_url(&url, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "project.list_files" => serde_json::to_value(
+            commands::list_project_files_flat(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "git.list_branches" => serde_json::to_value(
+            commands::list_branches(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workspace.changes_summary" => serde_json::to_value(
+            commands::changes_summary(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "review.check_summary" => serde_json::to_value(
+            commands::check_summary(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "merge.queue.readiness" => serde_json::to_value(
+            commands::merge_queue_readiness(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workspace.commit_and_push" => {
+            let message = parse_string_param(params, "message")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::commit_and_push(&message, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "ports.list" => serde_json::to_value(
+            commands::list_ports(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "project.command_center_snapshot" => serde_json::to_value(
             commands::command_center_snapshot(state)
                 .await

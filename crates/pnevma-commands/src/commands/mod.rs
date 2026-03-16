@@ -2,15 +2,19 @@
 pub mod agents;
 pub mod analytics;
 pub mod browser_tools;
+pub mod ci;
 pub mod global_agents;
 pub mod global_workflow;
 pub mod harness_config;
+pub mod intake;
 pub mod plan_tools;
+pub mod pr;
 pub mod project;
 pub mod provider_usage;
 pub mod secrets;
 pub mod ssh;
 pub mod tasks;
+pub mod telemetry;
 pub mod tracker;
 pub mod tracker_tools;
 pub mod usage_local;
@@ -19,15 +23,19 @@ pub mod workflow;
 // Re-export all command functions from submodules
 pub use self::agents::*;
 pub use self::analytics::*;
+pub use self::ci::*;
 pub use self::global_agents::*;
 pub use self::global_workflow::*;
 pub use self::harness_config::*;
+pub use self::intake::*;
 pub use self::plan_tools::*;
+pub use self::pr::*;
 pub use self::project::*;
 pub use self::provider_usage::*;
 pub use self::secrets::*;
 pub use self::ssh::*;
 pub use self::tasks::*;
+pub use self::telemetry::*;
 pub use self::tracker::*;
 pub use self::usage_local::*;
 pub use self::workflow::*;
@@ -379,6 +387,70 @@ pub struct ProjectSummaryView {
     pub active_agents: usize,
     pub cost_today: f64,
     pub unread_notifications: usize,
+    pub diff_insertions: Option<i64>,
+    pub diff_deletions: Option<i64>,
+    pub linked_pr_number: Option<u64>,
+    pub linked_pr_url: Option<String>,
+    pub ci_status: Option<String>,
+    pub attention_reason: Option<String>,
+    pub git_dirty: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PRResolveView {
+    pub number: u64,
+    pub title: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueResolveView {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileChangeView {
+    pub path: String,
+    pub additions: i64,
+    pub deletions: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckSummaryView {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub running: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeReadinessView {
+    pub is_ready: bool,
+    pub blockers: Vec<String>,
+    pub required_checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitAndPushView {
+    pub success: bool,
+    pub commit_sha: Option<String>,
+    pub push_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortEntryView {
+    pub port: u16,
+    pub pid: u32,
+    pub process_name: String,
+    pub workspace_name: Option<String>,
+    pub session_id: Option<String>,
+    pub label: Option<String>,
+    pub protocol: String,
+    pub detected_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1805,6 +1877,9 @@ fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
         worktree_id: meta.worktree_id.map(|v| v.to_string()),
         started_at: meta.started_at,
         last_heartbeat: meta.last_heartbeat,
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     }
 }
 
@@ -1969,6 +2044,9 @@ pub(crate) fn task_contract_to_row(
         max_retries: task.max_retries,
         loop_iteration: task.loop_iteration as i64,
         loop_context_json: task.loop_context_json.clone(),
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     })
 }
 
@@ -3904,6 +3982,9 @@ async fn create_loop_iteration(
             max_retries: step.max_retries.map(|v| v as i64),
             loop_iteration: iteration,
             loop_context_json: Some(loop_context.to_string()),
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -5286,6 +5367,9 @@ mod redaction_tests {
             worktree_id: Some(Uuid::new_v4().to_string()),
             started_at: Utc::now(),
             last_heartbeat: Utc::now(),
+            restore_status: None,
+            exit_code: None,
+            ended_at: None,
         };
 
         let payload = session_row_to_event_payload(&row);
@@ -5421,6 +5505,9 @@ mod redaction_tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("create task");

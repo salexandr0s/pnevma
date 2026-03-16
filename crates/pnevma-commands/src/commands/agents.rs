@@ -113,6 +113,10 @@ async fn sync_discovered_project_agents(state: &AppState) -> Result<(), String> 
                 source: agent.source,
                 source_path: Some(agent.source_path),
                 user_modified: false,
+                thinking_level: None,
+                thinking_budget: None,
+                tool_restrictions_json: None,
+                extra_flags_json: None,
             };
             if let Err(e) = db.update_agent_profile(&updated).await {
                 tracing::warn!(error = %e, "failed to update discovered project agent");
@@ -143,6 +147,10 @@ async fn sync_discovered_project_agents(state: &AppState) -> Result<(), String> 
                 source: agent.source,
                 source_path: Some(agent.source_path),
                 user_modified: false,
+                thinking_level: None,
+                thinking_budget: None,
+                tool_restrictions_json: None,
+                extra_flags_json: None,
             };
             if let Err(e) = db.create_agent_profile(&row).await {
                 tracing::warn!(error = %e, "failed to insert discovered project agent");
@@ -363,6 +371,10 @@ pub async fn create_agent_profile(
         source: "user".to_string(),
         source_path: None,
         user_modified: false,
+        thinking_level: None,
+        thinking_budget: None,
+        tool_restrictions_json: None,
+        extra_flags_json: None,
     };
     db.create_agent_profile(&row)
         .await
@@ -417,6 +429,10 @@ pub async fn update_agent_profile(
         source: existing.source,
         source_path: existing.source_path,
         user_modified: true,
+        thinking_level: None,
+        thinking_budget: None,
+        tool_restrictions_json: None,
+        extra_flags_json: None,
     };
     db.update_agent_profile(&updated)
         .await
@@ -491,6 +507,10 @@ pub async fn copy_agent_to_global(id: String, state: &AppState) -> Result<String
         source: "user".to_string(),
         source_path: None,
         user_modified: false,
+        thinking_level: None,
+        thinking_budget: None,
+        tool_restrictions_json: None,
+        extra_flags_json: None,
     };
     global_db
         .create_global_agent_profile(&row)

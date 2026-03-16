@@ -1167,6 +1167,9 @@ impl AutomationCoordinator {
                     max_retries: None,
                     loop_iteration: 0,
                     loop_context_json: None,
+                    forked_from_task_id: None,
+                    lineage_summary: None,
+                    lineage_depth: 0,
                 };
                 if db.create_task(&task_row).await.is_ok() {
                     let source_row = pnevma_db::TaskExternalSourceRow {
@@ -1179,6 +1182,9 @@ impl AutomationCoordinator {
                         url: item.url.clone(),
                         state: item.state.to_string(),
                         synced_at: now,
+                        title: None,
+                        description: None,
+                        labels_json: None,
                     };
                     let _ = db.upsert_task_external_source(&source_row).await;
                     info!(
@@ -1587,6 +1593,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("task");
@@ -1671,6 +1680,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("task");
@@ -1851,6 +1863,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("task");
@@ -1967,6 +1982,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("task");
@@ -2023,6 +2041,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("done task");
@@ -2140,6 +2161,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("task");
@@ -2194,6 +2218,9 @@ mod tests {
             worktree_id: Some(worktree_id.to_string()),
             started_at: now,
             last_heartbeat: now,
+            restore_status: None,
+            exit_code: None,
+            ended_at: None,
         })
         .await
         .expect("session");
@@ -2268,6 +2295,9 @@ mod tests {
             worktree_id: None,
             started_at: Utc::now(),
             last_heartbeat: Utc::now(),
+            restore_status: None,
+            exit_code: None,
+            ended_at: None,
         })
         .await
         .expect("seed session");
@@ -2323,6 +2353,9 @@ mod tests {
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         })
         .await
         .expect("task");
@@ -2351,6 +2384,9 @@ mod tests {
             worktree_id: Some(task_id.to_string()),
             started_at: now,
             last_heartbeat: now,
+            restore_status: None,
+            exit_code: None,
+            ended_at: None,
         })
         .await
         .expect("session");

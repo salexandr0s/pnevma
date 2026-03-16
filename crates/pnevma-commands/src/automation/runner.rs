@@ -812,6 +812,9 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         worktree_id: prepared.task.worktree.clone(),
         started_at: Utc::now(),
         last_heartbeat: Utc::now(),
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     };
     prepared
         .db

@@ -95,6 +95,11 @@ const ALLOWED_EVENT_CHANNELS: &[&str] = &[
     "notification_cleared",
     "notification_updated",
     "cost_updated",
+    "intake_updated",
+    "pr_updated",
+    "ci_updated",
+    "deployment_updated",
+    "telemetry_updated",
 ];
 const MAX_WS_MESSAGE_SIZE: usize = 65_536;
 const MAX_MESSAGES_PER_SECOND: u32 = 60;

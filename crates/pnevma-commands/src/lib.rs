@@ -2,6 +2,7 @@
 
 mod auth_secret;
 pub mod automation;
+pub mod ci_service;
 pub mod command_registry;
 pub mod commands;
 pub mod control;
@@ -9,6 +10,7 @@ pub mod cost_aggregation;
 pub mod event_emitter;
 #[cfg(target_os = "macos")]
 pub mod platform;
+pub mod pr_service;
 pub mod remote_bridge;
 pub mod state;
 

@@ -46,6 +46,20 @@ fn ensure_safe_session_input(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
+    let mut insertions: Option<i64> = None;
+    let mut deletions: Option<i64> = None;
+    for part in stat.split(',') {
+        let part = part.trim();
+        if part.contains("insertion") {
+            insertions = part.split_whitespace().next().and_then(|n| n.parse().ok());
+        } else if part.contains("deletion") {
+            deletions = part.split_whitespace().next().and_then(|n| n.parse().ok());
+        }
+    }
+    (insertions, deletions)
+}
+
 async fn abort_project_runtime(state: &AppState) {
     if let Some(runtime) = state.current_runtime.lock().await.take() {
         runtime.abort();
@@ -4338,6 +4352,83 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
         .map(|branch| branch.trim().to_string())
         .filter(|branch| !branch.is_empty());
 
+    let git_dirty = TokioCommand::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| !out.stdout.is_empty());
+
+    let (diff_insertions, diff_deletions) = TokioCommand::new("git")
+        .args(["diff", "--shortstat"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|stat| parse_shortstat(&stat))
+        .unwrap_or((None, None));
+
+    let (linked_pr_number, linked_pr_url, ci_status) = if let Some(ref branch) = git_branch {
+        let pr_result = tokio::time::timeout(
+            std::time::Duration::from_millis(3000),
+            TokioCommand::new("gh")
+                .args([
+                    "pr",
+                    "list",
+                    "--head",
+                    branch,
+                    "--json",
+                    "number,url,statusCheckRollup",
+                    "--limit",
+                    "1",
+                ])
+                .current_dir(&project_path)
+                .output(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|json_str| serde_json::from_str::<Vec<serde_json::Value>>(&json_str).ok())
+        .and_then(|arr| arr.into_iter().next());
+
+        match pr_result {
+            Some(pr) => {
+                let number = pr.get("number").and_then(|v| v.as_u64());
+                let url = pr.get("url").and_then(|v| v.as_str()).map(String::from);
+                let ci = pr
+                    .get("statusCheckRollup")
+                    .and_then(|v| v.as_array())
+                    .map(|checks| {
+                        if checks.iter().any(|c| {
+                            c.get("conclusion").and_then(|v| v.as_str()) == Some("FAILURE")
+                        }) {
+                            "failed".to_string()
+                        } else if checks.iter().any(|c| {
+                            c.get("status").and_then(|v| v.as_str()) == Some("IN_PROGRESS")
+                        }) {
+                            "running".to_string()
+                        } else if checks.iter().all(|c| {
+                            c.get("conclusion").and_then(|v| v.as_str()) == Some("SUCCESS")
+                        }) {
+                            "pass".to_string()
+                        } else {
+                            "none".to_string()
+                        }
+                    });
+                (number, url, ci)
+            }
+            None => (None, None, None),
+        }
+    } else {
+        (None, None, None)
+    };
+
     Ok(ProjectSummaryView {
         project_id: project_id.to_string(),
         git_branch,
@@ -4353,6 +4444,13 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
             .count(),
         cost_today,
         unread_notifications,
+        diff_insertions,
+        diff_deletions,
+        linked_pr_number,
+        linked_pr_url,
+        ci_status,
+        attention_reason: None,
+        git_dirty,
     })
 }
 
@@ -5724,6 +5822,409 @@ async fn initialize_tracker(
     ))
 }
 
+pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = TokioCommand::new("gh")
+        .args([
+            "pr",
+            "view",
+            url,
+            "--json",
+            "number,title,headRefName,baseRefName,url",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let val: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    Ok(PRResolveView {
+        number: val.get("number").and_then(|v| v.as_u64()).unwrap_or(0),
+        title: val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        head_ref: val
+            .get("headRefName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        base_ref: val
+            .get("baseRefName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        url: val
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+pub async fn resolve_issue_url(url: &str, state: &AppState) -> Result<IssueResolveView, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = TokioCommand::new("gh")
+        .args(["issue", "view", url, "--json", "number,title,url"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let val: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    Ok(IssueResolveView {
+        number: val.get("number").and_then(|v| v.as_u64()).unwrap_or(0),
+        title: val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        url: val
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+pub async fn list_project_files_flat(state: &AppState) -> Result<Vec<String>, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = TokioCommand::new("git")
+        .args(["ls-files"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("git ls-files failed".to_string());
+    }
+    let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .take(5000)
+        .map(String::from)
+        .collect();
+    Ok(files)
+}
+
+pub async fn list_branches(state: &AppState) -> Result<Vec<String>, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = TokioCommand::new("git")
+        .args([
+            "branch",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("git branch failed".to_string());
+    }
+    let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .collect();
+    Ok(branches)
+}
+
+pub async fn changes_summary(state: &AppState) -> Result<Vec<FileChangeView>, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = TokioCommand::new("git")
+        .args(["diff", "--numstat"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("git diff --numstat failed".to_string());
+    }
+    let changes: Vec<FileChangeView> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 3 {
+                Some(FileChangeView {
+                    additions: parts[0].parse().unwrap_or(0),
+                    deletions: parts[1].parse().unwrap_or(0),
+                    path: parts[2].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(changes)
+}
+
+pub async fn check_summary(state: &AppState) -> Result<CheckSummaryView, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = tokio::time::timeout(
+        std::time::Duration::from_millis(5000),
+        TokioCommand::new("gh")
+            .args(["pr", "checks", "--json", "name,state,conclusion"])
+            .current_dir(&project_path)
+            .output(),
+    )
+    .await
+    .map_err(|_| "timeout".to_string())?
+    .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Ok(CheckSummaryView {
+            total: 0,
+            passed: 0,
+            failed: 0,
+            running: 0,
+        });
+    }
+    let checks: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    let total = checks.len();
+    let passed = checks
+        .iter()
+        .filter(|c| c.get("conclusion").and_then(|v| v.as_str()) == Some("SUCCESS"))
+        .count();
+    let failed = checks
+        .iter()
+        .filter(|c| c.get("conclusion").and_then(|v| v.as_str()) == Some("FAILURE"))
+        .count();
+    let running = checks
+        .iter()
+        .filter(|c| c.get("state").and_then(|v| v.as_str()) == Some("IN_PROGRESS"))
+        .count();
+    Ok(CheckSummaryView {
+        total,
+        passed,
+        failed,
+        running,
+    })
+}
+
+pub async fn merge_queue_readiness(state: &AppState) -> Result<MergeReadinessView, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = tokio::time::timeout(
+        std::time::Duration::from_millis(5000),
+        TokioCommand::new("gh")
+            .args([
+                "pr",
+                "view",
+                "--json",
+                "mergeStateStatus,statusCheckRollup,reviewDecision",
+            ])
+            .current_dir(&project_path)
+            .output(),
+    )
+    .await
+    .map_err(|_| "timeout".to_string())?
+    .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Ok(MergeReadinessView {
+            is_ready: false,
+            blockers: vec!["No PR found".to_string()],
+            required_checks: vec![],
+        });
+    }
+    let val: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    let mut blockers = Vec::new();
+    let merge_state = val
+        .get("mergeStateStatus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+    if merge_state != "CLEAN" {
+        blockers.push(format!("Merge state: {}", merge_state));
+    }
+    let review = val
+        .get("reviewDecision")
+        .and_then(|v| v.as_str())
+        .unwrap_or("NONE");
+    if review != "APPROVED" {
+        blockers.push(format!("Review: {}", review));
+    }
+    let required_checks: Vec<String> = val
+        .get("statusCheckRollup")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(MergeReadinessView {
+        is_ready: blockers.is_empty(),
+        blockers,
+        required_checks,
+    })
+}
+
+pub async fn commit_and_push(message: &str, state: &AppState) -> Result<CommitAndPushView, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    // Stage all changes
+    let add_out = TokioCommand::new("git")
+        .args(["add", "-A"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !add_out.status.success() {
+        return Ok(CommitAndPushView {
+            success: false,
+            commit_sha: None,
+            push_error: Some("git add failed".to_string()),
+        });
+    }
+    // Commit
+    let commit_out = TokioCommand::new("git")
+        .args(["commit", "-m", message])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !commit_out.status.success() {
+        return Ok(CommitAndPushView {
+            success: false,
+            commit_sha: None,
+            push_error: Some(String::from_utf8_lossy(&commit_out.stderr).to_string()),
+        });
+    }
+    // Get sha
+    let sha = TokioCommand::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string());
+    // Push
+    let push_out = TokioCommand::new("git")
+        .args(["push"])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    let push_error = if push_out.status.success() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&push_out.stderr).to_string())
+    };
+    Ok(CommitAndPushView {
+        success: push_error.is_none(),
+        commit_sha: sha,
+        push_error,
+    })
+}
+
+pub async fn list_ports(_state: &AppState) -> Result<Vec<PortEntryView>, String> {
+    let output = TokioCommand::new("lsof")
+        .args(["-i", "-P", "-n", "-sTCP:LISTEN"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+    let now = Utc::now().to_rfc3339();
+    let ports: Vec<PortEntryView> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1) // skip header
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 9 {
+                return None;
+            }
+            let process_name = parts[0].to_string();
+            let pid: u32 = parts[1].parse().ok()?;
+            let addr = parts[8];
+            let port: u16 = addr.rsplit(':').next()?.parse().ok()?;
+            let label = match port {
+                3000 => Some("React".to_string()),
+                5173 => Some("Vite".to_string()),
+                8080 => Some("HTTP".to_string()),
+                4200 => Some("Angular".to_string()),
+                8000 => Some("Python".to_string()),
+                4000 => Some("Phoenix".to_string()),
+                _ => None,
+            };
+            Some(PortEntryView {
+                port,
+                pid,
+                process_name,
+                workspace_name: None,
+                session_id: None,
+                label,
+                protocol: "TCP".to_string(),
+                detected_at: now.clone(),
+            })
+        })
+        .collect();
+    Ok(ports)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5847,6 +6348,9 @@ enable_entropy_guard = false
             max_retries: None,
             loop_iteration: 0,
             loop_context_json: None,
+            forked_from_task_id: None,
+            lineage_summary: None,
+            lineage_depth: 0,
         }
     }
 
@@ -6951,6 +7455,9 @@ enable_entropy_guard = false
             worktree_id: None,
             started_at: old,
             last_heartbeat: old,
+            restore_status: None,
+            exit_code: None,
+            ended_at: None,
         })
         .await
         .unwrap();

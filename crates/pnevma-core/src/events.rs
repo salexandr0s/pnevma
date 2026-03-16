@@ -49,6 +49,30 @@ pub enum EventType {
     WorkflowStageSkipped,
     WorkflowCompleted,
     WorkflowFailed,
+    // ── Feature upgrade event types ─────────────────────────────────────────
+    IntakeItemDiscovered,
+    IntakeItemPromoted,
+    IntakeItemRejected,
+    PrCreated,
+    PrStatusChanged,
+    PrChecksUpdated,
+    PrReviewReceived,
+    PrMerged,
+    PrClosed,
+    CiPipelineCompleted,
+    CiCheckFailed,
+    DeploymentCompleted,
+    FleetSnapshotCaptured,
+    SessionRestoreStarted,
+    SessionRestoreCompleted,
+    SessionOrphaned,
+    AttentionRuleTriggered,
+    ReviewFileStatusChanged,
+    ReviewCommentCreated,
+    ReviewChecklistToggled,
+    BulkActionExecuted,
+    AgentHookExecuted,
+    TaskForked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +85,10 @@ pub enum EventSource {
     Review,
     System,
     Ui,
+    Intake,
+    Pr,
+    Ci,
+    Telemetry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +274,10 @@ mod tests {
             EventSource::Review,
             EventSource::System,
             EventSource::Ui,
+            EventSource::Intake,
+            EventSource::Pr,
+            EventSource::Ci,
+            EventSource::Telemetry,
         ];
         for source in sources {
             let s = serde_json::to_string(&source).expect("serialize source");

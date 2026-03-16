@@ -742,7 +742,7 @@ fn detect_claude_cli_version() -> Option<String> {
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
     text.split_whitespace()
-        .find(|word| word.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
         .map(|v| v.trim().to_string())
 }
 

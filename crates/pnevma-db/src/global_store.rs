@@ -135,6 +135,10 @@ impl GlobalDb {
             ("source", "TEXT NOT NULL DEFAULT 'user'"),
             ("source_path", "TEXT"),
             ("user_modified", "INTEGER NOT NULL DEFAULT 0"),
+            ("thinking_level", "TEXT"),
+            ("thinking_budget", "INTEGER"),
+            ("tool_restrictions_json", "TEXT"),
+            ("extra_flags_json", "TEXT"),
         ] {
             if !Self::column_exists(&pool, "global_agent_profiles", column).await? {
                 let stmt = format!(
@@ -381,8 +385,9 @@ impl GlobalDb {
             "INSERT INTO global_agent_profiles
                 (id, name, role, provider, model, token_budget, timeout_minutes,
                  max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
-                 source, source_path, user_modified)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                 source, source_path, user_modified,
+                 thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         )
         .bind(&row.id)
         .bind(&row.name)
@@ -401,6 +406,10 @@ impl GlobalDb {
         .bind(&row.source)
         .bind(&row.source_path)
         .bind(row.user_modified)
+        .bind(&row.thinking_level)
+        .bind(row.thinking_budget)
+        .bind(&row.tool_restrictions_json)
+        .bind(&row.extra_flags_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -413,7 +422,8 @@ impl GlobalDb {
         let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
                     max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
-                    source, source_path, user_modified
+                    source, source_path, user_modified,
+                    thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
              FROM global_agent_profiles WHERE id = ?1",
         )
         .bind(id)
@@ -429,7 +439,8 @@ impl GlobalDb {
         let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
                     max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
-                    source, source_path, user_modified
+                    source, source_path, user_modified,
+                    thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
              FROM global_agent_profiles WHERE name = ?1",
         )
         .bind(name)
@@ -445,7 +456,8 @@ impl GlobalDb {
         let row = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
                     max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
-                    source, source_path, user_modified
+                    source, source_path, user_modified,
+                    thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
              FROM global_agent_profiles WHERE source_path = ?1",
         )
         .bind(source_path)
@@ -458,7 +470,8 @@ impl GlobalDb {
         let rows = sqlx::query_as::<_, GlobalAgentProfileRow>(
             "SELECT id, name, role, provider, model, token_budget, timeout_minutes,
                     max_concurrent, stations_json, config_json, system_prompt, active, created_at, updated_at,
-                    source, source_path, user_modified
+                    source, source_path, user_modified,
+                    thinking_level, thinking_budget, tool_restrictions_json, extra_flags_json
              FROM global_agent_profiles WHERE active = 1 ORDER BY name",
         )
         .fetch_all(&self.pool)
@@ -475,8 +488,10 @@ impl GlobalDb {
              SET name = ?1, role = ?2, provider = ?3, model = ?4, token_budget = ?5,
                  timeout_minutes = ?6, max_concurrent = ?7, stations_json = ?8,
                  config_json = ?9, system_prompt = ?10, active = ?11, updated_at = ?12,
-                 source = ?13, source_path = ?14, user_modified = ?15
-             WHERE id = ?16",
+                 source = ?13, source_path = ?14, user_modified = ?15,
+                 thinking_level = ?16, thinking_budget = ?17,
+                 tool_restrictions_json = ?18, extra_flags_json = ?19
+             WHERE id = ?20",
         )
         .bind(&row.name)
         .bind(&row.role)
@@ -493,6 +508,10 @@ impl GlobalDb {
         .bind(&row.source)
         .bind(&row.source_path)
         .bind(row.user_modified)
+        .bind(&row.thinking_level)
+        .bind(row.thinking_budget)
+        .bind(&row.tool_restrictions_json)
+        .bind(&row.extra_flags_json)
         .bind(&row.id)
         .execute(&self.pool)
         .await?;

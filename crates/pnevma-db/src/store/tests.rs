@@ -61,6 +61,9 @@ async fn task_roundtrip() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
 
     db.create_task(&task).await.expect("create task");
@@ -243,6 +246,9 @@ async fn upsert_review_reuses_existing_task_row_without_unique_constraint() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
     db.create_task(&task).await.expect("create task");
 
@@ -307,6 +313,9 @@ async fn append_cost_accepts_automation_run_foreign_key() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
     db.create_task(&task).await.expect("create task");
 
@@ -323,6 +332,9 @@ async fn append_cost_accepts_automation_run_foreign_key() {
         worktree_id: None,
         started_at: now,
         last_heartbeat: now,
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     };
     db.upsert_session(&session).await.expect("create session");
 
@@ -412,6 +424,9 @@ async fn task_dependencies_roundtrip() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
 
     let t1_id = Uuid::new_v4().to_string();
@@ -459,6 +474,9 @@ async fn session_roundtrip() {
         worktree_id: None,
         started_at: now,
         last_heartbeat: now,
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     };
 
     db.upsert_session(&session).await.expect("upsert session");
@@ -633,6 +651,9 @@ async fn workflow_instance_roundtrip() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_depth: 0,
+        lineage_summary: None,
     };
     db.create_task(&task_row).await.expect("create wf task");
     db.add_workflow_task(&instance.id, 0, 0, &task_row.id)
@@ -765,6 +786,9 @@ async fn worktree_roundtrip() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_depth: 0,
+        lineage_summary: None,
     };
     db.create_task(&task).await.expect("create task for wt");
 
@@ -1201,6 +1225,9 @@ async fn update_task_conditional_succeeds_when_status_matches() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_depth: 0,
+        lineage_summary: None,
     };
     db.create_task(&task).await.expect("create task");
 
@@ -1253,6 +1280,9 @@ async fn update_task_conditional_rejects_stale_status() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_depth: 0,
+        lineage_summary: None,
     };
     db.create_task(&original).await.expect("create task");
 
@@ -1312,6 +1342,9 @@ async fn list_recoverable_in_progress_tasks_detects_live_agent_session_by_worktr
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_depth: 0,
+        lineage_summary: None,
     };
     db.create_task(&recoverable_task)
         .await
@@ -1340,6 +1373,9 @@ async fn list_recoverable_in_progress_tasks_detects_live_agent_session_by_worktr
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_depth: 0,
+        lineage_summary: None,
     };
     db.create_task(&orphan_task)
         .await
@@ -1375,6 +1411,9 @@ async fn list_recoverable_in_progress_tasks_detects_live_agent_session_by_worktr
         worktree_id: recoverable_task.worktree_id.clone(),
         started_at: now,
         last_heartbeat: now,
+        ended_at: None,
+        exit_code: None,
+        restore_status: None,
     })
     .await
     .expect("create agent session");
@@ -1392,6 +1431,9 @@ async fn list_recoverable_in_progress_tasks_detects_live_agent_session_by_worktr
         worktree_id: orphan_task.worktree_id.clone(),
         started_at: now,
         last_heartbeat: now,
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     })
     .await
     .expect("create non-agent session");
@@ -1437,6 +1479,9 @@ async fn claim_next_ready_task_picks_ready_skips_others() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
     db.create_task(&planned).await.expect("create planned");
 
@@ -1463,6 +1508,9 @@ async fn claim_next_ready_task_picks_ready_skips_others() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
     db.create_task(&ready).await.expect("create ready");
 
@@ -1577,6 +1625,9 @@ async fn cost_append_and_aggregation() {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     };
     db.create_task(&task).await.expect("create task");
 
@@ -1593,6 +1644,9 @@ async fn cost_append_and_aggregation() {
         worktree_id: None,
         started_at: now,
         last_heartbeat: now,
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     };
     db.upsert_session(&session).await.expect("upsert session");
 
@@ -1655,6 +1709,9 @@ fn make_task(project_id: &str) -> TaskRow {
         max_retries: None,
         loop_iteration: 0,
         loop_context_json: None,
+        forked_from_task_id: None,
+        lineage_summary: None,
+        lineage_depth: 0,
     }
 }
 
@@ -1697,6 +1754,9 @@ fn make_session(project_id: &str) -> SessionRow {
         worktree_id: None,
         started_at: now,
         last_heartbeat: now,
+        restore_status: None,
+        exit_code: None,
+        ended_at: None,
     }
 }
 

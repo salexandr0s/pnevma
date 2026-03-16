@@ -5,8 +5,8 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO tasks
-            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries, loop_iteration, loop_context_json)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+            (id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json, priority, status, branch, worktree_id, handoff_summary, created_at, updated_at, auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries, loop_iteration, loop_context_json, forked_from_task_id, lineage_summary, lineage_depth)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
             "#,
         )
         .bind(&task.id)
@@ -31,6 +31,9 @@ impl Db {
         .bind(task.max_retries)
         .bind(task.loop_iteration)
         .bind(&task.loop_context_json)
+        .bind(&task.forked_from_task_id)
+        .bind(&task.lineage_summary)
+        .bind(task.lineage_depth)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -58,7 +61,10 @@ impl Db {
                 timeout_minutes = ?17,
                 max_retries = ?18,
                 loop_iteration = ?19,
-                loop_context_json = ?20
+                loop_context_json = ?20,
+                forked_from_task_id = ?21,
+                lineage_summary = ?22,
+                lineage_depth = ?23
             WHERE id = ?1
             "#,
         )
@@ -82,6 +88,9 @@ impl Db {
         .bind(task.max_retries)
         .bind(task.loop_iteration)
         .bind(&task.loop_context_json)
+        .bind(&task.forked_from_task_id)
+        .bind(&task.lineage_summary)
+        .bind(task.lineage_depth)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -93,7 +102,8 @@ impl Db {
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
                    priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
                    auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries,
-                   loop_iteration, loop_context_json
+                   loop_iteration, loop_context_json,
+                   forked_from_task_id, lineage_summary, lineage_depth
             FROM tasks
             WHERE id = ?1
             LIMIT 1
@@ -178,7 +188,8 @@ impl Db {
             SELECT id, project_id, title, goal, scope_json, dependencies_json, acceptance_json, constraints_json,
                    priority, status, branch, worktree_id, handoff_summary, created_at, updated_at,
                    auto_dispatch, agent_profile_override, execution_mode, timeout_minutes, max_retries,
-                   loop_iteration, loop_context_json
+                   loop_iteration, loop_context_json,
+                   forked_from_task_id, lineage_summary, lineage_depth
             FROM tasks
             WHERE project_id = ?1
             ORDER BY created_at DESC
@@ -305,8 +316,11 @@ impl Db {
                 timeout_minutes = ?17,
                 max_retries = ?18,
                 loop_iteration = ?19,
-                loop_context_json = ?20
-            WHERE id = ?1 AND status = ?21
+                loop_context_json = ?20,
+                forked_from_task_id = ?21,
+                lineage_summary = ?22,
+                lineage_depth = ?23
+            WHERE id = ?1 AND status = ?24
             "#,
         )
         .bind(&task.id)
@@ -329,6 +343,9 @@ impl Db {
         .bind(task.max_retries)
         .bind(task.loop_iteration)
         .bind(&task.loop_context_json)
+        .bind(&task.forked_from_task_id)
+        .bind(&task.lineage_summary)
+        .bind(task.lineage_depth)
         .bind(expected_status)
         .execute(&self.pool)
         .await?;
@@ -347,7 +364,8 @@ impl Db {
                    t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
                    t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
                    t.auto_dispatch, t.agent_profile_override, t.execution_mode,
-                   t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json
+                   t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json,
+                   t.forked_from_task_id, t.lineage_summary, t.lineage_depth
             FROM tasks t
             WHERE t.project_id = ?1
               AND t.status = 'InProgress'
@@ -389,7 +407,8 @@ impl Db {
                    t.acceptance_json, t.constraints_json, t.priority, t.status, t.branch,
                    t.worktree_id, t.handoff_summary, t.created_at, t.updated_at,
                    t.auto_dispatch, t.agent_profile_override, t.execution_mode,
-                   t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json
+                   t.timeout_minutes, t.max_retries, t.loop_iteration, t.loop_context_json,
+                   t.forked_from_task_id, t.lineage_summary, t.lineage_depth
             FROM tasks t
             WHERE t.project_id = ?1
               AND t.status = 'InProgress'
@@ -521,14 +540,17 @@ impl Db {
         row: &TaskExternalSourceRow,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO task_external_sources (id, project_id, task_id, kind, external_id, identifier, url, state, synced_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO task_external_sources (id, project_id, task_id, kind, external_id, identifier, url, state, synced_at, title, description, labels_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(project_id, kind, external_id) DO UPDATE SET
                 task_id = excluded.task_id,
                 identifier = excluded.identifier,
                 url = excluded.url,
                 state = excluded.state,
-                synced_at = excluded.synced_at",
+                synced_at = excluded.synced_at,
+                title = excluded.title,
+                description = excluded.description,
+                labels_json = excluded.labels_json",
         )
         .bind(&row.id)
         .bind(&row.project_id)
@@ -539,6 +561,9 @@ impl Db {
         .bind(&row.url)
         .bind(&row.state)
         .bind(row.synced_at)
+        .bind(&row.title)
+        .bind(&row.description)
+        .bind(&row.labels_json)
         .execute(&self.pool)
         .await?;
         Ok(())

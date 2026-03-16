@@ -118,6 +118,10 @@ async fn sync_discovered_global_agents(state: &AppState) -> Result<(), String> {
                 source: agent.source,
                 source_path: Some(agent.source_path),
                 user_modified: false,
+                thinking_level: None,
+                thinking_budget: None,
+                tool_restrictions_json: None,
+                extra_flags_json: None,
             };
             if let Err(e) = global_db.update_global_agent_profile(&updated).await {
                 tracing::warn!(error = %e, "failed to update discovered global agent");
@@ -151,6 +155,10 @@ async fn sync_discovered_global_agents(state: &AppState) -> Result<(), String> {
                 source: agent.source,
                 source_path: Some(agent.source_path),
                 user_modified: false,
+                thinking_level: None,
+                thinking_budget: None,
+                tool_restrictions_json: None,
+                extra_flags_json: None,
             };
             if let Err(e) = global_db.create_global_agent_profile(&row).await {
                 tracing::warn!(error = %e, "failed to insert discovered global agent");
@@ -220,6 +228,10 @@ pub async fn create_global_agent(
         source: "user".to_string(),
         source_path: None,
         user_modified: false,
+        thinking_level: None,
+        thinking_budget: None,
+        tool_restrictions_json: None,
+        extra_flags_json: None,
     };
     global_db
         .create_global_agent_profile(&row)
@@ -268,6 +280,10 @@ pub async fn update_global_agent(
         source: existing.source,
         source_path: existing.source_path,
         user_modified: true,
+        thinking_level: None,
+        thinking_budget: None,
+        tool_restrictions_json: None,
+        extra_flags_json: None,
     };
     global_db
         .update_global_agent_profile(&updated)
@@ -343,6 +359,10 @@ pub async fn copy_global_agent_to_project(id: String, state: &AppState) -> Resul
         source: "user".to_string(),
         source_path: None,
         user_modified: false,
+        thinking_level: None,
+        thinking_budget: None,
+        tool_restrictions_json: None,
+        extra_flags_json: None,
     };
     db.create_agent_profile(&row)
         .await

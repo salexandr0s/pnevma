@@ -1,12 +1,15 @@
 use crate::error::DbError;
 use crate::models::{
-    AgentProfileRow, ArtifactRow, AutomationRetryRow, AutomationRunRow, CheckResultRow,
-    CheckRunRow, CheckpointRow, ContextRuleUsageRow, CostDailyAggregateRow, CostRow,
-    ErrorSignatureDailyRow, ErrorSignatureRow, EventRow, FeedbackRow, MergeQueueRow,
-    NotificationRow, OnboardingStateRow, PaneLayoutTemplateRow, PaneRow, ProjectRow, ReviewRow,
-    RuleRow, SecretRefRow, SessionRow, SshProfileRow, StoryProgressRow, TaskExternalSourceRow,
-    TaskRow, TaskStoryRow, TelemetryEventRow, WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow,
-    WorktreeRow,
+    AgentHookRow, AgentPerformanceRow, AgentProfileRow, ArtifactRow, AttentionRuleRow,
+    AutomationRetryRow, AutomationRunRow, CheckResultRow, CheckRunRow, CheckpointRow, CiJobRow,
+    CiPipelineRow, ContextRuleUsageRow, CostDailyAggregateRow, CostRow, DeploymentRow,
+    EditorProfileRow, ErrorSignatureDailyRow, ErrorSignatureRow, EventRow, FeedbackRow,
+    FleetSnapshotRow, IntakeQueueRow, MergeQueueRow, NotificationRow, OnboardingStateRow,
+    PaneLayoutTemplateRow, PaneRow, PortAllocationRow, PrCheckRunRow, ProjectRow, PullRequestRow,
+    ReviewChecklistItemRow, ReviewCommentRow, ReviewFileRow, ReviewRow, RuleRow, SecretRefRow,
+    SessionRestoreLogRow, SessionRow, SshProfileRow, StoryProgressRow, TaskExternalSourceRow,
+    TaskLineageRow, TaskRow, TaskStoryRow, TelemetryEventRow, TelemetryMetricRow,
+    WorkflowInstanceRow, WorkflowRow, WorkflowTaskRow, WorkspaceHookRunRow, WorktreeRow,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -17,14 +20,26 @@ use sqlx::{
 use std::path::{Path, PathBuf};
 
 mod admin;
+mod agent_hooks;
+mod attention_rules;
+mod ci;
 mod costs;
+mod editor_profiles;
 mod events;
+mod intake;
+mod lineage;
 mod notifications;
+mod ports;
 mod projects;
+mod pull_requests;
+mod review_state;
 mod reviews;
+mod session_restore;
 mod sessions;
 mod tasks;
+mod telemetry_ops;
 mod workflows;
+mod workspace_hooks;
 mod worktrees;
 
 #[cfg(test)]
