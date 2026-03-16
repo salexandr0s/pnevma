@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -18,6 +19,8 @@ pub struct ProviderUsageSnapshot {
     pub days: Vec<DailyTokenUsage>,
     pub totals: UsageSummary,
     pub top_models: Vec<ModelShare>,
+    #[serde(default)]
+    pub total_estimated_cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +31,8 @@ pub struct DailyTokenUsage {
     pub cache_read_tokens: i64,
     pub cache_write_tokens: i64,
     pub requests: i64,
+    #[serde(default)]
+    pub estimated_cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +52,8 @@ pub struct ModelShare {
     pub model: String,
     pub tokens: i64,
     pub share_percent: f64,
+    #[serde(default)]
+    pub estimated_cost_usd: f64,
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -184,13 +191,245 @@ fn local_day_boundary_secs(date: NaiveDate, end_of_day: bool) -> i64 {
 
 // ─── Shared accumulator types ─────────────────────────────────────────────────
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct DayAccum {
     input_tokens: i64,
     output_tokens: i64,
     cache_read_tokens: i64,
     cache_write_tokens: i64,
     requests: i64,
+    estimated_cost_usd: f64,
+}
+
+// ─── Incremental scan cache ──────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct CachedFileResult {
+    mtime_secs: i64,
+    size: u64,
+    day_contributions: HashMap<String, DayAccum>,
+    model_token_contributions: HashMap<String, i64>,
+    model_cost_contributions: HashMap<String, f64>,
+}
+
+struct ScanCache {
+    files: HashMap<String, CachedFileResult>,
+}
+
+static SCAN_CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
+
+fn file_mtime_and_size(path: &std::path::Path) -> Option<(i64, u64)> {
+    let meta = path.metadata().ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some((mtime, meta.len()))
+}
+
+fn lookup_cached_file(path: &str, mtime: i64, size: u64) -> Option<CachedFileResult> {
+    let cache = SCAN_CACHE.get_or_init(|| {
+        Mutex::new(ScanCache {
+            files: HashMap::new(),
+        })
+    });
+    let guard = cache.lock().ok()?;
+    let entry = guard.files.get(path)?;
+    if entry.mtime_secs == mtime && entry.size == size {
+        Some(entry.clone())
+    } else {
+        None
+    }
+}
+
+fn store_cached_file(
+    path: String,
+    mtime: i64,
+    size: u64,
+    days: HashMap<String, DayAccum>,
+    tokens: HashMap<String, i64>,
+    costs: HashMap<String, f64>,
+) {
+    if let Some(cache) = SCAN_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.files.insert(
+                path,
+                CachedFileResult {
+                    mtime_secs: mtime,
+                    size,
+                    day_contributions: days,
+                    model_token_contributions: tokens,
+                    model_cost_contributions: costs,
+                },
+            );
+        }
+    }
+}
+
+fn merge_cached_contributions(
+    cached: &CachedFileResult,
+    day_map: &mut HashMap<String, DayAccum>,
+    model_tokens: &mut HashMap<String, i64>,
+    model_costs: &mut HashMap<String, f64>,
+    day_keys: &[String],
+) {
+    let day_set: HashSet<&str> = day_keys.iter().map(|s| s.as_str()).collect();
+    for (key, accum) in &cached.day_contributions {
+        if !day_set.contains(key.as_str()) {
+            continue;
+        }
+        let entry = day_map.entry(key.clone()).or_default();
+        entry.input_tokens += accum.input_tokens;
+        entry.output_tokens += accum.output_tokens;
+        entry.cache_read_tokens += accum.cache_read_tokens;
+        entry.cache_write_tokens += accum.cache_write_tokens;
+        entry.requests += accum.requests;
+        entry.estimated_cost_usd += accum.estimated_cost_usd;
+    }
+    merge_i64_maps(&cached.model_token_contributions, model_tokens);
+    merge_f64_maps(&cached.model_cost_contributions, model_costs);
+}
+
+fn merge_day_maps(src: &HashMap<String, DayAccum>, dst: &mut HashMap<String, DayAccum>) {
+    for (key, accum) in src {
+        let entry = dst.entry(key.clone()).or_default();
+        entry.input_tokens += accum.input_tokens;
+        entry.output_tokens += accum.output_tokens;
+        entry.cache_read_tokens += accum.cache_read_tokens;
+        entry.cache_write_tokens += accum.cache_write_tokens;
+        entry.requests += accum.requests;
+        entry.estimated_cost_usd += accum.estimated_cost_usd;
+    }
+}
+
+fn merge_i64_maps(src: &HashMap<String, i64>, dst: &mut HashMap<String, i64>) {
+    for (key, val) in src {
+        *dst.entry(key.clone()).or_insert(0) += val;
+    }
+}
+
+fn merge_f64_maps(src: &HashMap<String, f64>, dst: &mut HashMap<String, f64>) {
+    for (key, val) in src {
+        *dst.entry(key.clone()).or_insert(0.0) += val;
+    }
+}
+
+// ─── Pricing helpers ─────────────────────────────────────────────────────────
+
+/// Claude model pricing: (input, output, cache_create, cache_read) $/token.
+/// Prices from codexbar v0.18 / Anthropic public pricing.
+fn claude_pricing(model: &str) -> Option<(f64, f64, f64, f64)> {
+    match model {
+        "claude-opus-4-6" | "claude-opus-4-5" => Some((5e-6, 2.5e-5, 6.25e-6, 5e-7)),
+        "claude-opus-4-1" => Some((1.5e-5, 7.5e-5, 1.875e-5, 1.5e-6)),
+        "claude-sonnet-4-5" | "claude-sonnet-4-6" => Some((3e-6, 1.5e-5, 3.75e-6, 3e-7)),
+        "claude-haiku-4-5" => Some((1e-6, 5e-6, 1.25e-6, 1e-7)),
+        _ => None,
+    }
+}
+
+/// Codex/OpenAI model pricing: (input, output, cache_read) $/token.
+/// Prices from codexbar v0.18 GPT-5.x pricing tables.
+fn codex_pricing(model: &str) -> Option<(f64, f64, f64)> {
+    match model {
+        "gpt-5" | "gpt-5-codex" | "gpt-5.1" | "gpt-5.1-codex" | "gpt-5.1-codex-max" => {
+            Some((1.25e-6, 1e-5, 1.25e-7))
+        }
+        "gpt-5-mini" | "gpt-5.1-codex-mini" => Some((2.5e-7, 2e-6, 2.5e-8)),
+        "gpt-5-nano" => Some((5e-8, 4e-7, 5e-9)),
+        "gpt-5-pro" => Some((1.5e-5, 1.2e-4, 1.5e-5)),
+        "gpt-5.2" | "gpt-5.2-codex" | "gpt-5.3-codex" => Some((1.75e-6, 1.4e-5, 1.75e-7)),
+        "gpt-5.2-pro" => Some((2.1e-5, 1.68e-4, 2.1e-5)),
+        "gpt-5.4" => Some((2.5e-6, 1.5e-5, 2.5e-7)),
+        "gpt-5.4-pro" => Some((3e-5, 1.8e-4, 3e-5)),
+        "gpt-5.3-codex-spark" => Some((0.0, 0.0, 0.0)),
+        _ => None,
+    }
+}
+
+/// Normalize Claude model name: strip vendor prefix, version/date suffixes.
+fn normalize_claude_model(model: &str) -> String {
+    let mut s = model.trim().to_string();
+    if let Some(rest) = s.strip_prefix("anthropic.") {
+        s = rest.to_string();
+    }
+    // Strip ":N" version suffix
+    if let Some(idx) = s.rfind(':') {
+        if s[idx + 1..].chars().all(|c| c.is_ascii_digit()) {
+            s.truncate(idx);
+        }
+    }
+    // Strip YYYYMMDD date suffix if base is a known model
+    if let Some(idx) = s.rfind('-') {
+        let tail = &s[idx + 1..];
+        if tail.len() == 8
+            && tail.chars().all(|c| c.is_ascii_digit())
+            && claude_pricing(&s[..idx]).is_some()
+        {
+            return s[..idx].to_string();
+        }
+    }
+    s
+}
+
+/// Normalize Codex model name: strip openai/ prefix and YYYY-MM-DD date suffix.
+fn normalize_codex_model(model: &str) -> String {
+    let mut s = model.trim().to_string();
+    if let Some(rest) = s.strip_prefix("openai/") {
+        s = rest.to_string();
+    }
+    // Strip -YYYY-MM-DD date suffix if base is a known model
+    if s.len() > 11 {
+        let tail = &s[s.len() - 10..];
+        if tail.as_bytes().get(4) == Some(&b'-')
+            && tail.as_bytes().get(7) == Some(&b'-')
+            && tail
+                .bytes()
+                .filter(|b| *b != b'-')
+                .all(|b| b.is_ascii_digit())
+            && codex_pricing(&s[..s.len() - 11]).is_some()
+        {
+            return s[..s.len() - 11].to_string();
+        }
+    }
+    s
+}
+
+/// Calculate Claude cost in USD from token deltas.
+fn claude_cost_usd(
+    model: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+) -> f64 {
+    let key = normalize_claude_model(model);
+    let Some((ir, or, cwr, crr)) = claude_pricing(&key) else {
+        return 0.0;
+    };
+    input_tokens.max(0) as f64 * ir
+        + output_tokens.max(0) as f64 * or
+        + cache_read_tokens.max(0) as f64 * crr
+        + cache_creation_tokens.max(0) as f64 * cwr
+}
+
+/// Calculate Codex cost in USD from token deltas.
+fn codex_cost_usd(
+    model: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+    cached_input_tokens: i64,
+) -> f64 {
+    let key = normalize_codex_model(model);
+    let Some((ir, or, crr)) = codex_pricing(&key) else {
+        return 0.0;
+    };
+    let non_cached = (input_tokens - cached_input_tokens).max(0);
+    non_cached as f64 * ir
+        + cached_input_tokens.max(0) as f64 * crr
+        + output_tokens.max(0) as f64 * or
 }
 
 fn build_snapshot(
@@ -198,6 +437,7 @@ fn build_snapshot(
     day_keys: &[String],
     day_map: HashMap<String, DayAccum>,
     model_tokens: HashMap<String, i64>,
+    model_costs: HashMap<String, f64>,
 ) -> ProviderUsageSnapshot {
     // Build ordered daily list
     let days: Vec<DailyTokenUsage> = day_keys
@@ -211,6 +451,7 @@ fn build_snapshot(
                 cache_read_tokens: a.map_or(0, |d| d.cache_read_tokens),
                 cache_write_tokens: a.map_or(0, |d| d.cache_write_tokens),
                 requests: a.map_or(0, |d| d.requests),
+                estimated_cost_usd: a.map_or(0.0, |d| d.estimated_cost_usd),
             }
         })
         .collect();
@@ -250,10 +491,12 @@ fn build_snapshot(
             } else {
                 0.0
             };
+            let estimated_cost_usd = model_costs.get(&model).copied().unwrap_or(0.0);
             ModelShare {
                 model,
                 tokens,
                 share_percent,
+                estimated_cost_usd,
             }
         })
         .collect();
@@ -263,6 +506,8 @@ fn build_snapshot(
     } else {
         "ok".to_string()
     };
+
+    let total_estimated_cost_usd: f64 = days.iter().map(|d| d.estimated_cost_usd).sum();
 
     ProviderUsageSnapshot {
         provider: provider.to_string(),
@@ -280,6 +525,7 @@ fn build_snapshot(
             peak_day_tokens,
         },
         top_models,
+        total_estimated_cost_usd,
     }
 }
 
@@ -300,6 +546,7 @@ fn error_snapshot(provider: &str, msg: impl Into<String>) -> ProviderUsageSnapsh
             peak_day_tokens: 0,
         },
         top_models: vec![],
+        total_estimated_cost_usd: 0.0,
     }
 }
 
@@ -328,11 +575,13 @@ fn scan_claude_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
                 peak_day_tokens: 0,
             },
             top_models: vec![],
+            total_estimated_cost_usd: 0.0,
         };
     }
 
     let mut day_map: HashMap<String, DayAccum> = HashMap::new();
     let mut model_tokens: HashMap<String, i64> = HashMap::new();
+    let mut model_costs: HashMap<String, f64> = HashMap::new();
 
     for projects_dir in project_roots {
         let slug_iter = match fs::read_dir(&projects_dir) {
@@ -370,12 +619,24 @@ fn scan_claude_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
                     }
                 }
 
-                parse_claude_file(&file_path, window, &mut day_map, &mut model_tokens);
+                parse_claude_file(
+                    &file_path,
+                    window,
+                    &mut day_map,
+                    &mut model_tokens,
+                    &mut model_costs,
+                );
             }
         }
     }
 
-    build_snapshot("claude", &window.day_keys, day_map, model_tokens)
+    build_snapshot(
+        "claude",
+        &window.day_keys,
+        day_map,
+        model_tokens,
+        model_costs,
+    )
 }
 
 fn parse_claude_file(
@@ -383,7 +644,26 @@ fn parse_claude_file(
     window: &LocalUsageWindow,
     day_map: &mut HashMap<String, DayAccum>,
     model_tokens: &mut HashMap<String, i64>,
+    model_costs: &mut HashMap<String, f64>,
 ) {
+    let (mtime_secs, file_size) = match file_mtime_and_size(path) {
+        Some(v) => v,
+        None => return,
+    };
+    let path_str = path.to_string_lossy().to_string();
+
+    // Check cache — if file unchanged, merge cached contributions and skip parsing
+    if let Some(cached) = lookup_cached_file(&path_str, mtime_secs, file_size) {
+        merge_cached_contributions(
+            &cached,
+            day_map,
+            model_tokens,
+            model_costs,
+            &window.day_keys,
+        );
+        return;
+    }
+
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
@@ -391,6 +671,11 @@ fn parse_claude_file(
     let reader = BufReader::new(file);
     let day_set: HashSet<&str> = window.day_keys.iter().map(|s| s.as_str()).collect();
     let mut dedupe_state: HashMap<String, (i64, i64, i64, i64)> = HashMap::new();
+
+    // Parse into local maps so we can cache the per-file contributions
+    let mut local_days: HashMap<String, DayAccum> = HashMap::new();
+    let mut local_model_tokens: HashMap<String, i64> = HashMap::new();
+    let mut local_model_costs: HashMap<String, f64> = HashMap::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -501,18 +786,44 @@ fn parse_claude_file(
             .unwrap_or("unknown")
             .to_string();
 
-        // Accumulate into day bucket
-        let entry = day_map.entry(day_key).or_default();
+        // Compute cost for this delta
+        let cost = claude_cost_usd(
+            &model,
+            delta_input_tokens,
+            delta_output_tokens,
+            delta_cache_read,
+            delta_cache_creation,
+        );
+
+        // Accumulate into local day bucket
+        let entry = local_days.entry(day_key).or_default();
         entry.input_tokens += delta_input_tokens;
         entry.output_tokens += delta_output_tokens;
         entry.cache_read_tokens += delta_cache_read;
         entry.cache_write_tokens += delta_cache_creation;
         entry.requests += 1;
+        entry.estimated_cost_usd += cost;
 
-        // Accumulate model tokens (input + output)
-        let model_entry = model_tokens.entry(model).or_insert(0);
-        *model_entry += delta_input_tokens + delta_output_tokens;
+        // Accumulate local model tokens (input + output) and cost
+        *local_model_tokens.entry(model.clone()).or_insert(0) +=
+            delta_input_tokens + delta_output_tokens;
+        *local_model_costs.entry(model).or_insert(0.0) += cost;
     }
+
+    // Merge local into caller maps
+    merge_day_maps(&local_days, day_map);
+    merge_i64_maps(&local_model_tokens, model_tokens);
+    merge_f64_maps(&local_model_costs, model_costs);
+
+    // Store in cache for future scans
+    store_cached_file(
+        path_str,
+        mtime_secs,
+        file_size,
+        local_days,
+        local_model_tokens,
+        local_model_costs,
+    );
 }
 
 // ─── Codex CLI scanner ────────────────────────────────────────────────────────
@@ -542,11 +853,13 @@ fn scan_codex_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
                 peak_day_tokens: 0,
             },
             top_models: vec![],
+            total_estimated_cost_usd: 0.0,
         };
     }
 
     let mut day_map: HashMap<String, DayAccum> = HashMap::new();
     let mut model_tokens: HashMap<String, i64> = HashMap::new();
+    let mut model_costs: HashMap<String, f64> = HashMap::new();
 
     for key in &window.day_keys {
         let dir_suffix = match day_dir_for_key(key) {
@@ -570,7 +883,14 @@ fn scan_codex_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
                 continue;
             }
 
-            parse_codex_file(&file_path, window, key, &mut day_map, &mut model_tokens);
+            parse_codex_file(
+                &file_path,
+                window,
+                key,
+                &mut day_map,
+                &mut model_tokens,
+                &mut model_costs,
+            );
         }
     }
 
@@ -582,12 +902,25 @@ fn scan_codex_usage(window: &LocalUsageWindow) -> ProviderUsageSnapshot {
                 if ext != "jsonl" {
                     continue;
                 }
-                parse_codex_file(&file_path, window, "", &mut day_map, &mut model_tokens);
+                parse_codex_file(
+                    &file_path,
+                    window,
+                    "",
+                    &mut day_map,
+                    &mut model_tokens,
+                    &mut model_costs,
+                );
             }
         }
     }
 
-    build_snapshot("codex", &window.day_keys, day_map, model_tokens)
+    build_snapshot(
+        "codex",
+        &window.day_keys,
+        day_map,
+        model_tokens,
+        model_costs,
+    )
 }
 
 /// Per-session delta tracking state for Codex cumulative totals.
@@ -604,12 +937,36 @@ fn parse_codex_file(
     day_key: &str,
     day_map: &mut HashMap<String, DayAccum>,
     model_tokens: &mut HashMap<String, i64>,
+    model_costs: &mut HashMap<String, f64>,
 ) {
+    let (mtime_secs, file_size) = match file_mtime_and_size(path) {
+        Some(v) => v,
+        None => return,
+    };
+    let path_str = path.to_string_lossy().to_string();
+
+    // Check cache — if file unchanged, merge cached contributions and skip parsing
+    if let Some(cached) = lookup_cached_file(&path_str, mtime_secs, file_size) {
+        merge_cached_contributions(
+            &cached,
+            day_map,
+            model_tokens,
+            model_costs,
+            &window.day_keys,
+        );
+        return;
+    }
+
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
     };
     let reader = BufReader::new(file);
+
+    // Parse into local maps so we can cache the per-file contributions
+    let mut local_days: HashMap<String, DayAccum> = HashMap::new();
+    let mut local_model_tokens: HashMap<String, i64> = HashMap::new();
+    let mut local_model_costs: HashMap<String, f64> = HashMap::new();
 
     // Delta-tracking state (cumulative totals are per session file)
     let mut session_state = CodexSessionState::default();
@@ -708,19 +1065,33 @@ fn parse_codex_file(
                         continue;
                     }
 
-                    // Accumulate into day bucket
-                    let entry = day_map.entry(resolved_day_key.clone()).or_default();
                     // Non-cached input = total input minus cached input
                     let non_cached_input = delta_input.saturating_sub(delta_cached_input);
+
+                    // Compute cost for this delta (pass full input delta;
+                    // codex_cost_usd handles the cache split internally)
+                    let cost = codex_cost_usd(
+                        &current_model,
+                        delta_input,
+                        delta_output,
+                        delta_cached_input,
+                    );
+
+                    // Accumulate into local day bucket
+                    let entry = local_days.entry(resolved_day_key.clone()).or_default();
                     entry.input_tokens += non_cached_input;
                     entry.output_tokens += delta_output;
                     entry.cache_read_tokens += delta_cached_input;
+                    entry.estimated_cost_usd += cost;
                     // Codex does not expose a separate cache_write figure
                     // requests is counted from response_item assistant messages below
 
-                    // Accumulate model tokens
-                    let model_entry = model_tokens.entry(current_model.clone()).or_insert(0);
-                    *model_entry += non_cached_input + delta_output;
+                    // Accumulate local model tokens and cost
+                    *local_model_tokens.entry(current_model.clone()).or_insert(0) +=
+                        non_cached_input + delta_output;
+                    *local_model_costs
+                        .entry(current_model.clone())
+                        .or_insert(0.0) += cost;
                 }
             }
             "response_item" => {
@@ -730,13 +1101,28 @@ fn parse_codex_file(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if role == "assistant" {
-                    let entry = day_map.entry(resolved_day_key).or_default();
+                    let entry = local_days.entry(resolved_day_key).or_default();
                     entry.requests += 1;
                 }
             }
             _ => {}
         }
     }
+
+    // Merge local into caller maps
+    merge_day_maps(&local_days, day_map);
+    merge_i64_maps(&local_model_tokens, model_tokens);
+    merge_f64_maps(&local_model_costs, model_costs);
+
+    // Store in cache for future scans
+    store_cached_file(
+        path_str,
+        mtime_secs,
+        file_size,
+        local_days,
+        local_model_tokens,
+        local_model_costs,
+    );
 }
 
 fn claude_project_roots() -> Result<Vec<PathBuf>, String> {

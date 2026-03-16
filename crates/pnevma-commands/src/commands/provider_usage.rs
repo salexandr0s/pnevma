@@ -17,6 +17,9 @@ const PROVIDER_CACHE_TTL_SECS: i64 = 120;
 const CLAUDE_LIVE_FALLBACK_TTL_SECS: i64 = 21_600;
 const CODEX_RATE_LIMITS_GRACE_MS: u64 = 2_500;
 
+/// Minimum seconds of remaining validity to consider a Claude OAuth token usable.
+const CLAUDE_TOKEN_EXPIRY_MARGIN_SECS: i64 = 60;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderUsageOverviewInput {
     #[serde(default)]
@@ -621,8 +624,8 @@ async fn probe_codex_cli_rpc() -> Result<CodexCliRpcOutput, String> {
 }
 
 async fn probe_claude_oauth() -> Result<ProviderProbeOutput, String> {
-    let token = read_claude_oauth_token().await?;
-    let value = fetch_claude_usage_value(&token).await?;
+    let oauth = read_claude_oauth_token().await?;
+    let value = fetch_claude_usage_value(&oauth.access_token).await?;
     let cred_meta = read_claude_auth_from_credentials();
 
     let account_email = extract_string_at_paths(
@@ -681,6 +684,10 @@ async fn fetch_claude_usage_value_via_reqwest(token: &str) -> Result<Value, Stri
         "anthropic-beta",
         HeaderValue::from_static("oauth-2025-04-20"),
     );
+    let claude_ver = detect_claude_cli_version().unwrap_or_else(|| "2.1.0".to_string());
+    if let Ok(ua) = HeaderValue::from_str(&format!("claude-code/{claude_ver}")) {
+        headers.insert(reqwest::header::USER_AGENT, ua);
+    }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
@@ -693,8 +700,31 @@ async fn fetch_claude_usage_value_via_reqwest(token: &str) -> Result<Value, Stri
         .await
         .map_err(|e| format!("request failed: {e}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!("request failed with {}", response.status()));
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(
+            "Claude OAuth token is invalid or expired (401). Run `claude` to re-authenticate."
+                .to_string(),
+        );
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        let body = response.text().await.unwrap_or_default();
+        if body.contains("user:profile") {
+            return Err(
+                "Claude OAuth token missing 'user:profile' scope (403). Run `claude setup-token`."
+                    .to_string(),
+            );
+        }
+        return Err(format!(
+            "Claude OAuth forbidden (403): {}",
+            body.chars().take(200).collect::<String>()
+        ));
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("Claude OAuth endpoint returned 429 Too Many Requests".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("request failed with {status}"));
     }
 
     response
@@ -703,7 +733,22 @@ async fn fetch_claude_usage_value_via_reqwest(token: &str) -> Result<Value, Stri
         .map_err(|e| format!("failed to decode response: {e}"))
 }
 
+fn detect_claude_cli_version() -> Option<String> {
+    let output = std::process::Command::new(resolve_binary("claude"))
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.split_whitespace()
+        .find(|word| word.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        .map(|v| v.trim().to_string())
+}
+
 async fn fetch_claude_usage_value_via_curl(token: &str) -> Result<Value, String> {
+    let claude_ver = detect_claude_cli_version().unwrap_or_else(|| "2.1.0".to_string());
+    let user_agent = format!("claude-code/{claude_ver}");
     let mut command = provider_probe_command(resolve_binary("curl"));
     let output = command
         .args([
@@ -718,6 +763,8 @@ async fn fetch_claude_usage_value_via_curl(token: &str) -> Result<Value, String>
             &format!("Authorization: Bearer {token}"),
             "-H",
             "anthropic-beta: oauth-2025-04-20",
+            "-A",
+            &user_agent,
             "https://api.anthropic.com/api/oauth/usage",
         ])
         .stdout(std::process::Stdio::piped())
@@ -744,7 +791,24 @@ async fn fetch_claude_usage_value_via_curl(token: &str) -> Result<Value, String>
 }
 
 async fn refine_claude_auth_message(error: &str) -> Option<String> {
-    if !error.to_lowercase().contains("credentials not found") {
+    let lower = error.to_lowercase();
+    if lower.contains("expired") {
+        return Some(
+            "Claude OAuth token has expired. Run `claude` to refresh your session.".to_string(),
+        );
+    }
+    if lower.contains("user:profile") || lower.contains("setup-token") {
+        return Some(
+            "Claude OAuth token missing 'user:profile' scope. Run `claude setup-token`."
+                .to_string(),
+        );
+    }
+    if lower.contains("401") && lower.contains("re-authenticate") {
+        return Some(
+            "Claude OAuth credentials are invalid. Run `claude` to re-authenticate.".to_string(),
+        );
+    }
+    if !lower.contains("credentials not found") {
         return None;
     }
 
@@ -786,6 +850,15 @@ fn transient_error_user_message(error: &str) -> (String, String) {
 
 fn is_transient_claude_live_error(error: &str) -> bool {
     let lower = error.to_lowercase();
+    if lower.contains("expired")
+        || lower.contains("user:profile")
+        || lower.contains("setup-token")
+        || lower.contains("re-authenticate")
+        || lower.contains("not signed in")
+        || lower.contains("401")
+    {
+        return false;
+    }
     lower.contains("429")
         || lower.contains("rate limit")
         || lower.contains("rate-limiting")
@@ -793,6 +866,7 @@ fn is_transient_claude_live_error(error: &str) -> bool {
         || lower.contains("timeout")
         || lower.contains("temporarily unavailable")
         || lower.contains("connection reset")
+        || lower.contains("too many requests")
 }
 
 async fn build_local_usage_summary(provider: &str, days: u32) -> ProviderLocalUsageSummaryView {
@@ -1516,8 +1590,18 @@ fn read_claude_auth_from_credentials() -> Option<ClaudeCredentialsMetadata> {
     None
 }
 
-async fn read_claude_oauth_token() -> Result<String, String> {
+#[derive(Debug)]
+struct ClaudeOAuthToken {
+    access_token: String,
+    #[allow(dead_code)]
+    scopes: Vec<String>,
+}
+
+async fn read_claude_oauth_token() -> Result<ClaudeOAuthToken, String> {
     let paths = claude_oauth_candidate_paths()?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut found_expired = false;
+    let mut found_missing_scope = false;
     for path in paths {
         if !path.is_file() {
             continue;
@@ -1526,15 +1610,67 @@ async fn read_claude_oauth_token() -> Result<String, String> {
             .map_err(|e| format!("failed to read Claude credentials: {e}"))?;
         let value: Value = serde_json::from_str(&raw)
             .map_err(|e| format!("failed to parse Claude credentials: {e}"))?;
-        if let Some(token) = extract_claude_oauth_token(&value) {
-            return Ok(token);
+        if let Some(parsed) = extract_claude_oauth_credential(&value) {
+            if let Some(expires_at_ms) = parsed.expires_at_ms {
+                let remaining_secs = (expires_at_ms - now_ms) / 1_000;
+                if remaining_secs < CLAUDE_TOKEN_EXPIRY_MARGIN_SECS {
+                    tracing::warn!(
+                        remaining_secs,
+                        "Claude OAuth token expired or expiring soon"
+                    );
+                    found_expired = true;
+                    continue;
+                }
+            }
+            if !parsed.scopes.is_empty() && !parsed.scopes.contains(&"user:profile".to_string()) {
+                tracing::warn!(scopes = ?parsed.scopes, "Claude OAuth token missing user:profile scope");
+                found_missing_scope = true;
+                continue;
+            }
+            return Ok(ClaudeOAuthToken {
+                access_token: parsed.access_token,
+                scopes: parsed.scopes,
+            });
         }
+    }
+    if found_expired {
+        return Err("Claude OAuth token expired. Run `claude` to refresh credentials.".to_string());
+    }
+    if found_missing_scope {
+        return Err(
+            "Claude OAuth token missing 'user:profile' scope. Run `claude setup-token`."
+                .to_string(),
+        );
     }
     Err("Claude OAuth credentials not found".to_string())
 }
 
-fn extract_claude_oauth_token(value: &Value) -> Option<String> {
-    extract_string_at_paths(
+struct ParsedClaudeOAuthCredential {
+    access_token: String,
+    expires_at_ms: Option<i64>,
+    scopes: Vec<String>,
+}
+
+fn extract_claude_oauth_credential(value: &Value) -> Option<ParsedClaudeOAuthCredential> {
+    if let Some(oauth) = value.get("claudeAiOauth") {
+        let token = extract_string_at_paths(oauth, &[&["accessToken"], &["access_token"]])?;
+        let expires_at_ms = extract_i64_at_paths(oauth, &[&["expiresAt"], &["expires_at"]]);
+        let scopes = oauth
+            .get("scopes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(ParsedClaudeOAuthCredential {
+            access_token: token,
+            expires_at_ms,
+            scopes,
+        });
+    }
+    let token = extract_string_at_paths(
         value,
         &[
             &["access_token"],
@@ -1543,10 +1679,24 @@ fn extract_claude_oauth_token(value: &Value) -> Option<String> {
             &["tokens", "accessToken"],
             &["oauth", "access_token"],
             &["oauth", "accessToken"],
-            &["claudeAiOauth", "access_token"],
-            &["claudeAiOauth", "accessToken"],
         ],
-    )
+    )?;
+    let expires_at_ms = extract_i64_at_paths(
+        value,
+        &[
+            &["expiresAt"],
+            &["expires_at"],
+            &["oauth", "expiresAt"],
+            &["oauth", "expires_at"],
+            &["tokens", "expiresAt"],
+            &["tokens", "expires_at"],
+        ],
+    );
+    Some(ParsedClaudeOAuthCredential {
+        access_token: token,
+        expires_at_ms,
+        scopes: vec![],
+    })
 }
 
 fn claude_oauth_candidate_paths() -> Result<Vec<PathBuf>, String> {
@@ -2046,17 +2196,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_claude_oauth_token_supports_current_claude_ai_shape() {
+    fn extract_claude_oauth_credential_supports_current_claude_ai_shape() {
         let value = json!({
             "claudeAiOauth": {
                 "accessToken": "test-token"
             }
         });
 
-        assert_eq!(
-            extract_claude_oauth_token(&value),
-            Some("test-token".to_string())
-        );
+        let parsed = extract_claude_oauth_credential(&value).expect("credential");
+        assert_eq!(parsed.access_token, "test-token");
     }
 
     #[test]
