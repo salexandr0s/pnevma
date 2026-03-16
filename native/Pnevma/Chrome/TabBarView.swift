@@ -54,7 +54,7 @@ final class TabBarView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.applyTheme()
+            MainActor.assumeIsolated { self?.applyTheme() }
         }
         applyTheme()
     }

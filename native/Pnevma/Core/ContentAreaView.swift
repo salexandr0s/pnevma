@@ -60,15 +60,17 @@ final class ContentAreaView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateFocusBorder()
+            MainActor.assumeIsolated { self?.updateFocusBorder() }
         }
         themeObserver = NotificationCenter.default.addObserver(
             forName: GhosttyThemeProvider.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateOwnBackground()
-            self?.updateNonTerminalPaneBackgrounds()
+            MainActor.assumeIsolated {
+                self?.updateOwnBackground()
+                self?.updateNonTerminalPaneBackgrounds()
+            }
         }
         paneAttentionObserver = NotificationCenter.default.addObserver(
             forName: .paneNeedsAttention,
@@ -76,14 +78,14 @@ final class ContentAreaView: NSView {
             queue: .main
         ) { [weak self] notification in
             guard let paneID = notification.userInfo?["paneID"] as? PaneID else { return }
-            self?.showNotificationRing(for: paneID)
+            MainActor.assumeIsolated { self?.showNotificationRing(for: paneID) }
         }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     deinit {
-        removeClickMonitor()
+        MainActor.assumeIsolated { removeClickMonitor() }
         if let focusBorderObserver {
             NotificationCenter.default.removeObserver(focusBorderObserver)
         }

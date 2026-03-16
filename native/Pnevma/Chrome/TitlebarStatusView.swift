@@ -144,7 +144,7 @@ final class TitlebarStatusView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.applyThemeColors()
+            MainActor.assumeIsolated { self?.applyThemeColors() }
         }
         applyThemeColors()
     }

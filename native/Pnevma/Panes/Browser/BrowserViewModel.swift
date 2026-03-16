@@ -203,19 +203,16 @@ final class BrowserViewModel: NSObject {
 extension BrowserViewModel: WKNavigationDelegate {
     func webView(
         _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-    ) {
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
         guard let url = navigationAction.request.url else {
-            decisionHandler(.cancel)
-            return
+            return .cancel
         }
 
         // Block non-web schemes — open externally
         if url.scheme != "https" && url.scheme != "http" && url.scheme != "about" && url.scheme != "blob" {
             NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
-            return
+            return .cancel
         }
 
         // Block HTTP except localhost
@@ -224,13 +221,12 @@ extension BrowserViewModel: WKNavigationDelegate {
             var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
             components?.scheme = "https"
             if let httpsURL = components?.url {
-                decisionHandler(.cancel)
                 webView.load(URLRequest(url: httpsURL))
-                return
+                return .cancel
             }
         }
 
-        decisionHandler(.allow)
+        return .allow
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

@@ -4,7 +4,7 @@ import os
 
 /// Auto-saves and restores session state (window frame, workspaces, layouts, pane metadata).
 /// Saves to ~/.config/pnevma/session.json every 8 seconds when dirty.
-final class SessionPersistence {
+final class SessionPersistence: @unchecked Sendable {
 
     // MARK: - Types
 

@@ -25,7 +25,7 @@ final class CapsuleButton: NSView {
         setAccessibilityLabel(label)
         toolTip = label
         NotificationCenter.default.addObserver(forName: GhosttyThemeProvider.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.needsDisplay = true
+            MainActor.assumeIsolated { self?.needsDisplay = true }
         }
     }
 

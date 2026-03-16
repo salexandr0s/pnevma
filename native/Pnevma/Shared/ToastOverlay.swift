@@ -197,8 +197,10 @@ final class ToastWindowController {
             object: parentWindow,
             queue: .main
         ) { [weak overlay, weak parentWindow] _ in
-            guard let parentWindow, let overlay else { return }
-            overlay.setFrame(parentWindow.frame, display: true)
+            MainActor.assumeIsolated {
+                guard let parentWindow, let overlay else { return }
+                overlay.setFrame(parentWindow.frame, display: true)
+            }
         }
 
         moveObserver = NotificationCenter.default.addObserver(
@@ -206,8 +208,10 @@ final class ToastWindowController {
             object: parentWindow,
             queue: .main
         ) { [weak overlay, weak parentWindow] _ in
-            guard let parentWindow, let overlay else { return }
-            overlay.setFrame(parentWindow.frame, display: true)
+            MainActor.assumeIsolated {
+                guard let parentWindow, let overlay else { return }
+                overlay.setFrame(parentWindow.frame, display: true)
+            }
         }
 
         overlay.setFrame(parentWindow.frame, display: true)

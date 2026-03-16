@@ -213,6 +213,7 @@ struct RightInspectorView: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                     .foregroundStyle(
                         sectionBinding.wrappedValue == section
                             ? .primary
@@ -903,27 +904,11 @@ private struct InspectorChangesSection: View {
 private struct InspectorChangeRow: View {
     let change: WorkspaceChangeItem
 
-    private var badgeText: String {
-        if change.conflicted { return "Conflict" }
-        if change.untracked { return "New" }
-        if change.staged && change.modified { return "Staged + Modified" }
-        if change.staged { return "Staged" }
-        return "Modified"
-    }
-
-    private var badgeColor: Color {
+    private var indicatorColor: Color {
         if change.conflicted { return .red }
         if change.untracked { return .green }
         if change.staged { return .blue }
         return .orange
-    }
-
-    private var statusIcon: String {
-        if change.conflicted { return "exclamationmark.triangle.fill" }
-        if change.untracked { return "plus.circle.fill" }
-        if change.staged && change.modified { return "pencil.circle.fill" }
-        if change.staged { return "checkmark.circle.fill" }
-        return "pencil.circle"
     }
 
     private var fileName: String {
@@ -932,9 +917,9 @@ private struct InspectorChangeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: statusIcon)
-                .font(.system(size: 12))
-                .foregroundStyle(badgeColor)
+            Image(systemName: "square.fill")
+                .font(.system(size: 6))
+                .foregroundStyle(indicatorColor)
                 .frame(width: 16)
 
             Text(fileName)
@@ -943,9 +928,20 @@ private struct InspectorChangeRow: View {
 
             Spacer()
 
-            Text(badgeText)
-                .font(.caption2)
-                .foregroundStyle(badgeColor)
+            if let additions = change.additions, let deletions = change.deletions {
+                HStack(spacing: 4) {
+                    Text("+\(additions)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.green)
+                    Text("-\(deletions)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            } else if let additions = change.additions {
+                Text("+\(additions)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.green)
+            }
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1610,6 +1606,8 @@ struct WorkspaceChangeItem: Identifiable, Decodable, Hashable {
     let staged: Bool
     let conflicted: Bool
     let untracked: Bool
+    let additions: Int64?
+    let deletions: Int64?
 }
 
 private struct SelectableDiffDocumentView: NSViewRepresentable {
@@ -1980,7 +1978,7 @@ final class WorkspaceChangesViewModel {
     }
 }
 
-@ViewBuilder
+@MainActor @ViewBuilder
 private func sectionToolbar(
     subtitle: String,
     onRefresh: @escaping () -> Void

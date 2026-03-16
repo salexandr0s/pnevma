@@ -3905,8 +3905,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             object: popover,
             queue: .main
         ) { [weak self] _ in
-            ResourceMonitorStore.shared.setInteractiveMode(false)
-            self?.resourceMonitorPopover = nil
+            MainActor.assumeIsolated {
+                ResourceMonitorStore.shared.setInteractiveMode(false)
+                self?.resourceMonitorPopover = nil
+            }
         }
     }
 

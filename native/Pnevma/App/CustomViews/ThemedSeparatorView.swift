@@ -17,7 +17,7 @@ final class ThemedSeparatorView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateColor()
+            MainActor.assumeIsolated { self?.updateColor() }
         }
     }
 

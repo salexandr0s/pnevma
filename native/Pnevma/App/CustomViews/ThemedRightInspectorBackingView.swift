@@ -39,14 +39,14 @@ final class ThemedRightInspectorBackingView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateBackgroundColor()
+            MainActor.assumeIsolated { self?.updateBackgroundColor() }
         }
         tintObserver = NotificationCenter.default.addObserver(
             forName: .backgroundTintDidChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateBackgroundColor()
+            MainActor.assumeIsolated { self?.updateBackgroundColor() }
         }
     }
 

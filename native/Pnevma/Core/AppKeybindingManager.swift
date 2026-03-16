@@ -122,21 +122,18 @@ final class AppKeybindingManager {
     // MARK: - Menu Application
 
     /// Walk NSMenu tree, update keyEquivalent on items tagged with action IDs.
-    /// Items whose action ID is not in `bindings` or whose shortcut fails to parse
-    /// have their shortcut cleared to prevent stale ghost shortcuts.
+    /// Only overrides shortcuts when a matching binding exists — items without
+    /// bindings keep their defaults (e.g. Cmd+Q set during menu creation).
     func applyToMenu(_ menu: NSMenu) {
         for item in menu.items {
-            if let actionID = item.identifier?.rawValue {
-                if let shortcut = bindings[actionID],
-                   let parsed = Self.parse(shortcut) {
-                    item.keyEquivalent = parsed.key
-                    item.keyEquivalentModifierMask = parsed.modifiers
-                } else {
-                    // Binding removed or unparseable — clear the shortcut
-                    item.keyEquivalent = ""
-                    item.keyEquivalentModifierMask = []
-                }
+            if let actionID = item.identifier?.rawValue,
+               let shortcut = bindings[actionID],
+               let parsed = Self.parse(shortcut) {
+                item.keyEquivalent = parsed.key
+                item.keyEquivalentModifierMask = parsed.modifiers
             }
+            // Do NOT clear key equivalents for items without bindings —
+            // this preserves defaults set during menu creation (e.g. Cmd+Q).
 
             if let submenu = item.submenu {
                 applyToMenu(submenu)

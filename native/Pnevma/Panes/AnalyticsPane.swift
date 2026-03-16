@@ -26,7 +26,7 @@ nonisolated(unsafe) private let usageTimestampParserNoFraction: ISO8601DateForma
 
 nonisolated(unsafe) private let usageRelativeFormatter = RelativeDateTimeFormatter()
 
-nonisolated(unsafe) private let usageRequestDayFormatter: DateFormatter = {
+private let usageRequestDayFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.calendar = .autoupdatingCurrent
     formatter.locale = Locale(identifier: "en_US_POSIX")

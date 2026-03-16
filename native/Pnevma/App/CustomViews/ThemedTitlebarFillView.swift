@@ -16,7 +16,7 @@ final class ThemedTitlebarFillView: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateBackgroundColor()
+            MainActor.assumeIsolated { self?.updateBackgroundColor() }
         }
     }
 
@@ -36,9 +36,13 @@ final class ThemedTitlebarFillView: NSView {
         let threshold: CGFloat = 5
         // Top edge — let NSThemeFrame handle resize
         if windowPoint.y > window.frame.height - threshold { return nil }
+        // Left edge
+        if windowPoint.x < threshold { return nil }
+        // Right edge
+        if windowPoint.x > window.frame.width - threshold { return nil }
         // Top-left / top-right corners
         if windowPoint.y > window.frame.height - 15
-            && (windowPoint.x < threshold || windowPoint.x > window.frame.width - threshold) {
+            && (windowPoint.x < 15 || windowPoint.x > window.frame.width - 15) {
             return nil
         }
         return super.hitTest(point)
