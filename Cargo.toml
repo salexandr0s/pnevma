@@ -45,7 +45,7 @@ serde_yml = "0.0.12"
 sha2 = "0.10"
 subtle = "2"
 axum = { version = "0.8", features = ["ws", "macros"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "limit", "trace"] }
 tokio-rustls = "0.26"
