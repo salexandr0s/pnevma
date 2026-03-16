@@ -55,6 +55,8 @@ docs/implementation-status.md
 docs/macos-website-release-plan.md
 docs/idea-nonpersistence.md
 docs/agent-command-center-gap-analysis.md
+docs/UI-HARDENING-PLAN.md
+docs/swift_upgrade.md
 
 # Superset local config
 .superset/
