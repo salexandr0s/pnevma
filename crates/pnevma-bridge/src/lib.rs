@@ -1610,4 +1610,259 @@ mod tests {
             "global generation must be strictly increasing"
         );
     }
+
+    // ── FFI stress tests ────────────────────────────────────────────────────
+
+    /// Spawn 50 async calls from 50 threads simultaneously via a barrier,
+    /// exercising thread-safety of `pnevma_call_async`'s pointer handling,
+    /// ParkingMutex contention, and pending-callback bookkeeping.
+    #[test]
+    fn stress_concurrent_async_calls() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(!handle.is_null());
+
+        let count = 50usize;
+        let states: Vec<Arc<AsyncCallbackState>> = (0..count)
+            .map(|_| Arc::new(AsyncCallbackState::default()))
+            .collect();
+
+        // SAFETY: PnevmaHandle uses internal synchronization (ParkingMutex,
+        // AtomicU64, Arc-based fields). The FFI contract allows concurrent
+        // calls from any thread — this is what Swift/AppKit does in practice.
+        let handle_addr = handle as usize;
+        let barrier = Arc::new(std::sync::Barrier::new(count));
+
+        let threads: Vec<_> = states
+            .iter()
+            .map(|state| {
+                let state = Arc::clone(state);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let method = CString::new("task.list").unwrap();
+                    let params = CString::new("{}").unwrap();
+                    // Barrier ensures all 50 threads fire simultaneously
+                    barrier.wait();
+                    pnevma_call_async(
+                        handle_addr as *mut PnevmaHandle,
+                        method.as_ptr(),
+                        params.as_ptr(),
+                        params.as_bytes().len(),
+                        test_async_cb,
+                        async_callback_ctx(&state),
+                        test_async_release_cb,
+                    );
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().expect("caller thread must not panic");
+        }
+
+        // Wait for all async tasks to complete on the Tokio runtime
+        std::thread::sleep(std::time::Duration::from_secs(5));
+
+        let total_called: u64 = states.iter().map(|s| s.called.load(Ordering::SeqCst)).sum();
+        assert_eq!(
+            total_called, count as u64,
+            "all {count} async callbacks must fire"
+        );
+
+        pnevma_destroy(handle);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        for (i, state) in states.iter().enumerate() {
+            assert_eq!(
+                state.released.load(Ordering::SeqCst),
+                1,
+                "callback {i} context must be released exactly once"
+            );
+        }
+    }
+
+    /// Rapidly create and destroy 100 PnevmaHandle instances, each exercising
+    /// a full Tokio runtime + async call lifecycle, verifying no resource leak
+    /// causes a crash, hang, or double-free across cycles.
+    #[test]
+    fn stress_create_destroy_cycles() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        for i in 0..100 {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(
+                !handle.is_null(),
+                "create must return non-null on cycle {i}"
+            );
+
+            // Fire an async call each cycle to exercise the full runtime lifecycle
+            // (runtime spawn → task execute → callback → context release → runtime shutdown).
+            let state = Arc::new(AsyncCallbackState::default());
+            let method = CString::new("task.list").unwrap();
+            let params = CString::new("{}").unwrap();
+            pnevma_call_async(
+                handle,
+                method.as_ptr(),
+                params.as_ptr(),
+                params.as_bytes().len(),
+                test_async_cb,
+                async_callback_ctx(&state),
+                test_async_release_cb,
+            );
+
+            // Destroy while the async call may still be in flight — exercises
+            // both the "completed before destroy" and "pending at destroy" paths
+            // across 100 iterations.
+            pnevma_destroy(handle);
+
+            // Verify the callback context was released (either via normal
+            // completion or destroy cleanup) — a leak here would mean the
+            // Arc-to-raw-pointer round-trip is broken.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert_eq!(
+                state.released.load(Ordering::SeqCst),
+                1,
+                "cycle {i}: callback context must be released exactly once"
+            );
+        }
+    }
+
+    /// Submit async calls from multiple threads, then immediately destroy
+    /// the handle before the Tokio runtime has completed them. This exercises
+    /// the generation guard: async tasks that finish after destroy must not
+    /// invoke their callback, and every context must be released exactly once.
+    ///
+    /// Note: the destroy happens AFTER all submissions complete (join), not
+    /// concurrently — concurrent destroy + call is UB by FFI contract (Swift
+    /// serializes these). The race being tested is between async task
+    /// completion on the Tokio runtime and the destroy/shutdown path.
+    #[test]
+    fn stress_callback_after_destroy_race() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+
+        // Run multiple rounds to increase the chance of hitting the race window
+        for round in 0..10 {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(!handle.is_null());
+
+            let count = 10usize;
+            let states: Vec<Arc<AsyncCallbackState>> = (0..count)
+                .map(|_| Arc::new(AsyncCallbackState::default()))
+                .collect();
+
+            // SAFETY: handle remains valid until pnevma_destroy below.
+            // All threads join before destroy.
+            let handle_addr = handle as usize;
+            let barrier = Arc::new(std::sync::Barrier::new(count));
+
+            // Spawn caller threads that submit async calls simultaneously
+            let callers: Vec<_> = states
+                .iter()
+                .map(|state| {
+                    let state = Arc::clone(state);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        let method = CString::new("task.list").unwrap();
+                        let params = CString::new("{}").unwrap();
+                        barrier.wait();
+                        pnevma_call_async(
+                            handle_addr as *mut PnevmaHandle,
+                            method.as_ptr(),
+                            params.as_ptr(),
+                            params.as_bytes().len(),
+                            test_async_cb,
+                            async_callback_ctx(&state),
+                            test_async_release_cb,
+                        );
+                    })
+                })
+                .collect();
+
+            // Wait for all submissions to complete
+            for t in callers {
+                t.join().expect("caller thread must not panic");
+            }
+
+            // Destroy immediately — async tasks may still be running on the
+            // Tokio runtime. The generation guard must prevent stale invocations.
+            pnevma_destroy(handle);
+            std::thread::sleep(std::time::Duration::from_millis(250));
+
+            for (i, state) in states.iter().enumerate() {
+                assert_eq!(
+                    state.released.load(Ordering::SeqCst),
+                    1,
+                    "round {round} callback {i}: context must be released exactly once"
+                );
+                assert!(
+                    state.called.load(Ordering::SeqCst) <= 1,
+                    "round {round} callback {i}: must fire at most once"
+                );
+            }
+        }
+    }
+
+    /// Submit 20 async calls from 20 threads under contention and verify
+    /// that no callback is lost — every single one must fire exactly once
+    /// and have its context released.
+    #[test]
+    fn stress_no_callback_lost_under_contention() {
+        extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
+        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        assert!(!handle.is_null());
+
+        let count = 20usize;
+        let states: Vec<Arc<AsyncCallbackState>> = (0..count)
+            .map(|_| Arc::new(AsyncCallbackState::default()))
+            .collect();
+
+        let handle_addr = handle as usize;
+        let barrier = Arc::new(std::sync::Barrier::new(count));
+
+        let threads: Vec<_> = states
+            .iter()
+            .map(|state| {
+                let state = Arc::clone(state);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let method = CString::new("task.list").unwrap();
+                    let params = CString::new("{}").unwrap();
+                    barrier.wait();
+                    pnevma_call_async(
+                        handle_addr as *mut PnevmaHandle,
+                        method.as_ptr(),
+                        params.as_ptr(),
+                        params.as_bytes().len(),
+                        test_async_cb,
+                        async_callback_ctx(&state),
+                        test_async_release_cb,
+                    );
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().expect("caller thread must not panic");
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        for (i, state) in states.iter().enumerate() {
+            assert_eq!(
+                state.called.load(Ordering::SeqCst),
+                1,
+                "callback {i} must not be lost under contention"
+            );
+        }
+
+        pnevma_destroy(handle);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        for (i, state) in states.iter().enumerate() {
+            assert_eq!(
+                state.released.load(Ordering::SeqCst),
+                1,
+                "callback {i} context must be released"
+            );
+        }
+    }
 }

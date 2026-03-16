@@ -38,7 +38,7 @@ Pnevma already has significant release infrastructure in place:
 Current known gaps:
 
 - the remaining hardened-runtime exception is `com.apple.security.cs.disable-library-validation`; it still needs periodic revalidation against signed release builds,
-- the public release target is `v0.1.1`, but the repository and bundle metadata still need to stay aligned on every candidate,
+- the public release target is `v0.2.0`, but the repository and bundle metadata still need to stay aligned on every candidate,
 - the DMG packaging and verification path must fully replace the current `tar.gz` rehearsal shape,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
 - rehearsal lanes must be green and stable on `main`.
@@ -96,7 +96,7 @@ Make versioning and product identity internally consistent across the bundle, re
 
 Tasks:
 
-- ship `v0.1.1` as the first public notarized release,
+- ship `v0.2.0` as the first public notarized release,
 - align `Cargo.toml` workspace version with the app release versioning approach,
 - align `CFBundleShortVersionString`,
 - align `CFBundleVersion` with a monotonically increasing build number or release build sequence,
@@ -112,7 +112,7 @@ Checks:
 Exit criteria:
 
 - one documented versioning policy exists,
-- the `v0.1.1` RC can be tagged without any metadata ambiguity.
+- the `v0.2.0` RC can be tagged without any metadata ambiguity.
 
 ### Phase 2: Apple credentials and operator setup
 

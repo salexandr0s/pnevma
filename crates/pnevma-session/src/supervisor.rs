@@ -2389,4 +2389,153 @@ mod tests {
         let content: String = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(content, "nothing secret here");
     }
+
+    // ── Scrollback permission tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_open_append_only_creates_with_0600() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append-only.log");
+        let _file = super::open_append_only_file(&path)
+            .await
+            .expect("create file");
+        let metadata = std::fs::metadata(&path).expect("stat file");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "append-only file must have 0600 permissions");
+    }
+
+    #[tokio::test]
+    async fn test_open_scrollback_rw_creates_with_0600() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scrollback-rw.log");
+        let _file = super::open_scrollback_rw(&path).await.expect("create file");
+        let metadata = std::fs::metadata(&path).expect("stat file");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "scrollback rw file must have 0600 permissions");
+    }
+
+    // ── Redaction end-to-end matrix via spawn_reader_task ────────────────────
+
+    async fn assert_spawn_reader_redacts(input_chunks: &[&[u8]], forbidden: &[&str]) {
+        let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
+        let supervisor = SessionSupervisor::new(&root);
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scrollback_path = root.join("scrollback").join(format!("{session_id}.log"));
+        let scrollback_index_path = scrollback_path.with_extension("idx");
+
+        let _ = supervisor
+            .register_restored(SessionMetadata {
+                id: session_id,
+                project_id: Uuid::new_v4(),
+                name: "redact-matrix".to_string(),
+                status: SessionStatus::Running,
+                health: SessionHealth::Active,
+                pid: None,
+                cwd: ".".to_string(),
+                command: "zsh".to_string(),
+                branch: None,
+                worktree_id: None,
+                started_at: now,
+                last_heartbeat: now,
+                scrollback_path: scrollback_path.to_string_lossy().to_string(),
+                exit_code: None,
+                ended_at: None,
+            })
+            .await;
+
+        tokio::fs::create_dir_all(scrollback_path.parent().unwrap())
+            .await
+            .expect("create scrollback dir");
+        let shared_file = {
+            let f = super::open_scrollback_rw(&scrollback_path)
+                .await
+                .expect("open scrollback rw");
+            Arc::new(tokio::sync::Mutex::new(f))
+        };
+
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        supervisor.spawn_reader_task(
+            session_id,
+            reader,
+            shared_file,
+            scrollback_index_path,
+            Arc::new(RwLock::new(Vec::new())),
+        );
+
+        for chunk in input_chunks {
+            writer.write_all(chunk).await.expect("write chunk");
+        }
+        writer.shutdown().await.expect("shutdown writer");
+        drop(writer);
+
+        let persisted = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(contents) = tokio::fs::read_to_string(&scrollback_path).await {
+                    if !contents.is_empty() {
+                        break contents;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("persisted scrollback");
+
+        for pattern in forbidden {
+            assert!(
+                !persisted.contains(pattern),
+                "scrollback must not contain forbidden pattern '{pattern}': {persisted}"
+            );
+        }
+        assert!(
+            persisted.contains("[REDACTED]"),
+            "scrollback must contain redaction marker: {persisted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_reader_redacts_aws_access_key() {
+        assert_spawn_reader_redacts(
+            &[b"found key AKIAIOSFODNN7EXAMPLE in config"],
+            &["AKIAIOSFODNN7EXAMPLE"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn spawn_reader_redacts_github_pat() {
+        assert_spawn_reader_redacts(
+            &[b"token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123"],
+            &["ghp_"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn spawn_reader_redacts_pem_private_key() {
+        assert_spawn_reader_redacts(
+            &[b"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK"],
+            &["BEGIN RSA PRIVATE KEY"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn spawn_reader_redacts_connection_string() {
+        assert_spawn_reader_redacts(
+            &[b"postgres://user:secretpass@localhost:5432/db"],
+            &["secretpass"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn spawn_reader_redacts_env_var_assignment() {
+        assert_spawn_reader_redacts(
+            &[b"API_SECRET=supersecretvalue123456789"],
+            &["supersecretvalue123456789"],
+        )
+        .await;
+    }
 }

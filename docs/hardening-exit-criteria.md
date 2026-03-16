@@ -37,7 +37,7 @@ The following do not merge during hardening:
 - `Release Rehearsal / Release package preflight`
 - `Release Rehearsal / Release sign/notarize dry run`
 
-The rehearsal lanes are expected to validate the public `v0.1.1` DMG release
+The rehearsal lanes are expected to validate the public `v0.2.0` DMG release
 path, not a legacy `tar.gz` archive path.
 
 ## Smoke Commands

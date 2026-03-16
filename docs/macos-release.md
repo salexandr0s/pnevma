@@ -1,6 +1,6 @@
 # macOS Release Signing + Notarization
 
-Pnevma `v0.1.1` targets a public website release distributed as a notarized,
+Pnevma `v0.2.0` targets a public website release distributed as a notarized,
 stapled `arm64` macOS `.dmg`. The release workflow still signs and validates the
 inner `.app` first, then packages and notarizes the public DMG artifact.
 
@@ -116,7 +116,7 @@ spctl --assess --type exec --verbose=4 "$APP_PATH"
 Package and validate the public DMG artifact from the stapled app:
 
 ```bash
-export VERSION="0.1.1"
+export VERSION="0.2.0"
 export DMG_DIR="$PWD/native/build/dmg"
 export DMG_STAGING="$DMG_DIR/Pnevma"
 export DMG_PATH="$PWD/Pnevma-${VERSION}-macos-arm64.dmg"
@@ -164,7 +164,7 @@ Each release should preserve:
 - DMG mount or extraction smoke logs
 - remote/manual security test results
 
-For `v0.1.1`, the expected evidence set is:
+For `v0.2.0`, the expected evidence set is:
 
 - entitlement allowlist check output
 - effective entitlements plist from the signed app
@@ -173,7 +173,7 @@ For `v0.1.1`, the expected evidence set is:
 - app notarization submission and stapling logs
 - DMG notarization submission and stapling logs
 - packaged launch smoke output from a DMG-extracted app
-- `Pnevma-0.1.1-macos-arm64.dmg.sha256`
+- `Pnevma-0.2.0-macos-arm64.dmg.sha256`
 - SBOM artifact(s)
 
 The GitHub release workflow should upload both the public DMG and a release
@@ -196,7 +196,7 @@ Default notarization archive path:
 
 Default public artifact path:
 
-- `Pnevma-0.1.1-macos-arm64.dmg`
+- `Pnevma-0.2.0-macos-arm64.dmg`
 
 ## Version checking and update status
 
