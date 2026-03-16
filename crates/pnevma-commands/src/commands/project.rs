@@ -2545,8 +2545,7 @@ pub async fn list_workspace_changes(state: &AppState) -> Result<Vec<ProjectFileV
         .collect::<Vec<_>>();
 
     // Merge diff stats (additions/deletions) from numstat
-    let mut stats: std::collections::HashMap<String, (i64, i64)> =
-        std::collections::HashMap::new();
+    let mut stats: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
     // Unstaged changes
     if let Ok(numstat) = git_output(&project_path, &["diff", "--numstat"]).await {
         parse_numstat_into(&numstat, &mut stats);
