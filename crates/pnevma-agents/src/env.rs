@@ -21,6 +21,27 @@ const BLOCKED_EXACT_NAMES: &[&str] = &[
     "OPENAI_API_KEY",
 ];
 
+/// Allowlist of extra env names that may reach agent processes at spawn time.
+const ALLOWED_EXTRA_ENV_NAMES: &[&str] = &[
+    "PNEVMA_LOG_LEVEL",
+    "PNEVMA_DEBUG",
+    "NODE_ENV",
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "CI",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "API_ENDPOINT",
+    "API_BASE_URL",
+    "SUPABASE_URL",
+    "NEXT_PUBLIC_SUPABASE_URL",
+];
+
+/// Prefixes that are allowed in addition to the exact names above.
+const ALLOWED_EXTRA_ENV_PREFIXES: &[&str] = &["TEST_", "STAGING_", "NEXT_PUBLIC_", "VITE_"];
+
 pub const MAX_AGENT_ENV_NAME_BYTES: usize = 128;
 pub const MAX_AGENT_ENV_VALUE_BYTES: usize = 16 * 1024;
 
@@ -111,6 +132,78 @@ pub fn validate_agent_env_name(name: &str) -> Result<(), String> {
             "environment variable name {name:?} is blocked by the agent sandbox policy"
         ));
     }
+    // Allowlist gate: only permitted names/prefixes reach agent processes.
+    // Denylist above is retained as defense-in-depth.
+    if !is_allowed_extra_env_name(name) {
+        return Err(format!(
+            "environment variable name {name:?} is not in the agent environment allowlist"
+        ));
+    }
+    Ok(())
+}
+
+/// Check if a name matches the agent environment allowlist.
+fn is_allowed_extra_env_name(name: &str) -> bool {
+    let normalized = normalize_env_name(name);
+    if ALLOWED_EXTRA_ENV_NAMES
+        .iter()
+        .any(|allowed| normalized == *allowed)
+    {
+        return true;
+    }
+    ALLOWED_EXTRA_ENV_PREFIXES
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
+}
+
+/// Registration-time name validation: shape + denylist checks only (no allowlist).
+/// Use this when storing secrets — the allowlist is enforced at spawn time, not registration.
+pub fn validate_agent_env_name_for_registration(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("environment variable name must not be empty".to_string());
+    }
+    if name.len() > MAX_AGENT_ENV_NAME_BYTES {
+        return Err(format!(
+            "environment variable name exceeds {MAX_AGENT_ENV_NAME_BYTES} bytes"
+        ));
+    }
+
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err("environment variable name must not be empty".to_string());
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err("environment variable name must start with an ASCII letter or '_'".to_string());
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(
+            "environment variable name must contain only ASCII letters, digits, or '_'".to_string(),
+        );
+    }
+    if is_reserved_agent_env_name(name) {
+        return Err(format!(
+            "environment variable name {name:?} is reserved by the runtime"
+        ));
+    }
+    if is_blocked_agent_env_name(name) {
+        return Err(format!(
+            "environment variable name {name:?} is blocked by the agent sandbox policy"
+        ));
+    }
+    Ok(())
+}
+
+/// Registration-time entry validation: shape + denylist + value checks (no allowlist).
+pub fn validate_agent_env_entry_for_registration(name: &str, value: &str) -> Result<(), String> {
+    validate_agent_env_name_for_registration(name)?;
+    if value.len() > MAX_AGENT_ENV_VALUE_BYTES {
+        return Err(format!(
+            "environment variable {name:?} exceeds {MAX_AGENT_ENV_VALUE_BYTES} bytes"
+        ));
+    }
+    if value.contains('\0') {
+        return Err(format!("environment variable {name:?} contains a NUL byte"));
+    }
     Ok(())
 }
 
@@ -156,6 +249,14 @@ pub fn build_agent_environment(extra_env: &[(String, String)]) -> Vec<(String, S
     for (name, value) in extra_env {
         match validate_agent_env_entry(name, value) {
             Ok(()) => {}
+            Err(ref error) if error.contains("not in the agent environment allowlist") => {
+                tracing::warn!(
+                    name,
+                    %error,
+                    "registered secret skipped at spawn time — name is not in the agent environment allowlist"
+                );
+                continue;
+            }
             Err(error) => {
                 tracing::warn!(name, %error, "skipping unsafe agent environment variable");
                 continue;
@@ -214,14 +315,55 @@ mod tests {
     #[test]
     fn rejects_invalid_values() {
         let oversized = "x".repeat(MAX_AGENT_ENV_VALUE_BYTES + 1);
-        assert!(validate_agent_env_entry("MY_CUSTOM_VAR", &oversized).is_err());
-        assert!(validate_agent_env_entry("MY_CUSTOM_VAR", "abc\0def").is_err());
+        assert!(validate_agent_env_entry("NODE_ENV", &oversized).is_err());
+        assert!(validate_agent_env_entry("NODE_ENV", "abc\0def").is_err());
+    }
+
+    // ── Allowlist tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn allowlisted_name_passes() {
+        assert!(validate_agent_env_name("NODE_ENV").is_ok());
+        assert!(validate_agent_env_name("PNEVMA_LOG_LEVEL").is_ok());
+        assert!(validate_agent_env_name("PNEVMA_DEBUG").is_ok());
+        assert!(validate_agent_env_name("CI").is_ok());
+        assert!(validate_agent_env_name("RUST_LOG").is_ok());
+        assert!(validate_agent_env_name("DATABASE_URL").is_ok());
+        assert!(validate_agent_env_name("FORCE_COLOR").is_ok());
+        assert!(validate_agent_env_name("NO_COLOR").is_ok());
+    }
+
+    #[test]
+    fn allowlisted_prefix_passes() {
+        assert!(validate_agent_env_name("TEST_DB_URL").is_ok());
+        assert!(validate_agent_env_name("STAGING_API_KEY_NAME").is_ok());
+        assert!(validate_agent_env_name("NEXT_PUBLIC_APP_URL").is_ok());
+        assert!(validate_agent_env_name("VITE_API_URL").is_ok());
+    }
+
+    #[test]
+    fn unknown_extra_name_fails() {
+        assert!(validate_agent_env_name("MY_CUSTOM_VAR").is_err());
+        assert!(validate_agent_env_name("RANDOM_THING").is_err());
+        assert!(validate_agent_env_name("FOO_BAR").is_err());
+    }
+
+    #[test]
+    fn registration_permits_non_allowlisted_names() {
+        // Registration-time: shape + denylist only, no allowlist
+        assert!(validate_agent_env_name_for_registration("MY_CUSTOM_VAR").is_ok());
+        assert!(validate_agent_env_name_for_registration("RANDOM_THING").is_ok());
+        // But denylist still blocks
+        assert!(validate_agent_env_name_for_registration("ANTHROPIC_API_KEY").is_err());
+        assert!(validate_agent_env_name_for_registration("GITHUB_TOKEN").is_err());
+        // And spawn-time blocks non-allowlisted
+        assert!(validate_agent_env_name("MY_CUSTOM_VAR").is_err());
     }
 
     #[test]
     fn builds_safe_agent_environment() {
         let env = build_agent_environment(&[
-            ("MY_CUSTOM_VAR".to_string(), "hello".to_string()),
+            ("NODE_ENV".to_string(), "production".to_string()),
             ("PATH".to_string(), "/tmp/bin".to_string()),
             (
                 "DYLD_INSERT_LIBRARIES".to_string(),
@@ -229,15 +371,37 @@ mod tests {
             ),
             ("OPENAI_API_KEY".to_string(), "sk-test".to_string()),
             ("GITHUB_TOKEN".to_string(), "ghp_abc".to_string()),
+            ("MY_CUSTOM_VAR".to_string(), "hello".to_string()),
         ]);
 
         assert!(env.iter().any(|(name, _)| name == "PATH"));
         assert!(env
             .iter()
-            .any(|(name, value)| name == "MY_CUSTOM_VAR" && value == "hello"));
+            .any(|(name, value)| name == "NODE_ENV" && value == "production"));
         assert!(!env.iter().any(|(name, _)| name == "DYLD_INSERT_LIBRARIES"));
         assert!(!env.iter().any(|(name, _)| name == "OPENAI_API_KEY"));
         assert!(!env.iter().any(|(name, _)| name == "GITHUB_TOKEN"));
+        // MY_CUSTOM_VAR is not allowlisted — should be skipped
+        assert!(!env.iter().any(|(name, _)| name == "MY_CUSTOM_VAR"));
         assert_eq!(env.iter().filter(|(name, _)| name == "PATH").count(), 1);
+    }
+
+    #[test]
+    fn duplicate_names_skipped() {
+        let env = build_agent_environment(&[
+            ("NODE_ENV".to_string(), "production".to_string()),
+            ("NODE_ENV".to_string(), "development".to_string()),
+        ]);
+        assert_eq!(env.iter().filter(|(name, _)| name == "NODE_ENV").count(), 1);
+        // First value wins
+        assert!(env
+            .iter()
+            .any(|(name, value)| name == "NODE_ENV" && value == "production"));
+    }
+
+    #[test]
+    fn oversized_values_fail() {
+        let oversized = "x".repeat(MAX_AGENT_ENV_VALUE_BYTES + 1);
+        assert!(validate_agent_env_entry_for_registration("NODE_ENV", &oversized).is_err());
     }
 }

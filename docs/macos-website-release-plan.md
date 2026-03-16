@@ -37,9 +37,9 @@ Pnevma already has significant release infrastructure in place:
 
 Current known gaps:
 
-- the remaining hardened-runtime exception is `com.apple.security.cs.disable-library-validation`; it still needs periodic revalidation against signed release builds,
+- the remaining hardened-runtime exception is `com.apple.security.cs.disable-library-validation` (required for GhosttyKit); entitlement necessity must be validated against a signed release build before ship,
 - the public release target is `v0.2.0`, but the repository and bundle metadata still need to stay aligned on every candidate,
-- the DMG packaging and verification path must fully replace the current `tar.gz` rehearsal shape,
+- release workflows use DMG packaging; clean-machine website download flow validation is pending,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
 - rehearsal lanes must be green and stable on `main`.
 

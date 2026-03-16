@@ -22,4 +22,7 @@ pub enum AgentError {
 
     #[error("rate limited: retry after {retry_after_ms}ms")]
     RateLimit { retry_after_ms: u64 },
+
+    #[error("invalid agent config: {0}")]
+    InvalidConfig(String),
 }

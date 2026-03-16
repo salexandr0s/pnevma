@@ -18,9 +18,10 @@ Current release target:
 
 Primary remaining work:
 
+- resolve `disable-library-validation` entitlement story (remove or retain with signed-build evidence)
 - achieve 10 consecutive green CI runs across native and release-rehearsal lanes
 - execute manual smoke and security tests against the candidate DMG artifact
-- complete formal hardening exit checklist and sign-off
+- assemble final hardening evidence bundle and complete sign-off
 
 ## Confirmed In-Tree Capabilities
 

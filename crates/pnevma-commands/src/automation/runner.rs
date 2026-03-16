@@ -677,6 +677,20 @@ pub async fn prepare(
             .map(|c| c.allow_npx)
             .unwrap_or(false),
     };
+    let npx_allowed_packages = match provider.as_str() {
+        "codex" => config
+            .agents
+            .codex
+            .as_ref()
+            .map(|c| c.npx_allowed_packages.clone())
+            .unwrap_or_default(),
+        _ => config
+            .agents
+            .claude_code
+            .as_ref()
+            .map(|c| c.npx_allowed_packages.clone())
+            .unwrap_or_default(),
+    };
 
     let target_branch = config.branches.target.clone();
     let permit_holder = Arc::new(std::sync::Mutex::new(Some(permit)));
@@ -716,7 +730,7 @@ pub async fn prepare(
         model,
         auto_approve,
         allow_npx,
-        npx_allowed_packages: vec![],
+        npx_allowed_packages,
         allow_full_sandbox_access: false,
         task,
         task_row,

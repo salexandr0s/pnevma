@@ -2,10 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Required for loading GhosttyKit under the hardened runtime.
-         Ghostty's own macOS app also retains this entitlement in its checked-in release/local profiles. -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
     <key>com.apple.security.network.client</key>
     <true/>
 </dict>

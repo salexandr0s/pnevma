@@ -94,7 +94,7 @@ pub async fn upsert_project_secret(
     if value.is_empty() {
         return Err("secret value must not be empty".to_string());
     }
-    pnevma_agents::validate_agent_env_entry(&name, &value)?;
+    pnevma_agents::validate_agent_env_entry_for_registration(&name, &value)?;
 
     let id = existing
         .as_ref()
@@ -276,7 +276,7 @@ pub async fn import_project_secrets(
     let mut error_names = Vec::new();
     for (name, value) in parsed {
         if normalize_secret_name(&name).is_err()
-            || pnevma_agents::validate_agent_env_entry(&name, &value).is_err()
+            || pnevma_agents::validate_agent_env_entry_for_registration(&name, &value).is_err()
         {
             error_names.push(name);
             continue;

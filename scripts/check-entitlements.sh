@@ -6,7 +6,6 @@ ENTITLEMENTS_PATH="${ENTITLEMENTS_PATH:-$ROOT_DIR/native/Pnevma/Pnevma.entitleme
 APP_PATH="${APP_PATH:-}"
 
 allowed_keys=(
-  "com.apple.security.cs.disable-library-validation"
   "com.apple.security.network.client"
 )
 

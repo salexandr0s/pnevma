@@ -109,7 +109,7 @@ Remote auth now records a subject and safe token identifier for issued, used, an
 
 ### `npx` in agent command allowlist
 
-The `npx` binary can execute arbitrary npm packages. The current allowlist permits `npx` without restricting which packages it can run. Restricting to known runner patterns (e.g. `npx @anthropic-ai/claude-code`) is a future improvement.
+The `npx` binary can execute arbitrary npm packages. Agent access to `npx` requires explicit package names in `npx_allowed_packages`; wildcard access is rejected at config validation time. When `allow_npx` is true but `npx_allowed_packages` is empty, the config is rejected with an `InvalidConfig` error — no wildcard fallback exists.
 
 ### SBOM attestation
 
@@ -117,6 +117,6 @@ Release SBOMs are generated (CycloneDX JSON) and attested via GitHub Actions bui
 
 ## Residual risks to track
 
-- the hardened-runtime exception set is now reduced to `com.apple.security.cs.disable-library-validation` and `com.apple.security.network.client`; validate regularly whether GhosttyKit still requires the library-validation exception on signed release builds
+- the hardened-runtime exception set is `com.apple.security.cs.disable-library-validation` (required for GhosttyKit dynamic library loading) and `com.apple.security.network.client`; the library-validation exception is validated against signed release builds
 - project-level data retention can prune stale review packs, knowledge artifacts, feedback attachments, telemetry exports, and completed session scrollback when enabled in `pnevma.toml`
 - no supported native auto-updater exists yet, so release distribution remains manual

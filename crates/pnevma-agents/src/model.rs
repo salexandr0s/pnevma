@@ -40,6 +40,21 @@ pub struct AgentConfig {
     pub dynamic_tools: Vec<DynamicToolDef>,
 }
 
+impl AgentConfig {
+    /// Validate config invariants before spawning an agent.
+    /// Fails closed: `allow_npx = true` requires a non-empty `npx_allowed_packages` list.
+    pub fn validate(&self) -> Result<(), AgentError> {
+        if self.allow_npx && self.npx_allowed_packages.is_empty() {
+            return Err(AgentError::InvalidConfig(
+                "allow_npx is true but npx_allowed_packages is empty — \
+                 explicit package names are required when npx access is enabled"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn default_output_format() -> String {
     "stream-json".to_string()
 }

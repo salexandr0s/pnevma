@@ -71,19 +71,13 @@ fn auto_approve_allowed_tools(cfg: &AgentConfig) -> Vec<String> {
         "Grep".to_string(),
     ];
     if cfg.allow_npx {
-        if cfg.npx_allowed_packages.is_empty() {
-            warn!("allow_npx is true but npx_allowed_packages is empty — falling back to wildcard npx access");
-            allowed_tools.push("Bash(npm exec)".to_string());
-            allowed_tools.push("Bash(npm exec *)".to_string());
-            allowed_tools.push("Bash(npx)".to_string());
-            allowed_tools.push("Bash(npx *)".to_string());
-        } else {
-            for pkg in &cfg.npx_allowed_packages {
-                allowed_tools.push(format!("Bash(npx {pkg})"));
-                allowed_tools.push(format!("Bash(npx {pkg} *)"));
-                allowed_tools.push(format!("Bash(npm exec {pkg})"));
-                allowed_tools.push(format!("Bash(npm exec {pkg} *)"));
-            }
+        // Validation guarantees npx_allowed_packages is non-empty when allow_npx is true.
+        // No wildcard fallback — only explicitly named packages are permitted.
+        for pkg in &cfg.npx_allowed_packages {
+            allowed_tools.push(format!("Bash(npx {pkg})"));
+            allowed_tools.push(format!("Bash(npx {pkg} *)"));
+            allowed_tools.push(format!("Bash(npm exec {pkg})"));
+            allowed_tools.push(format!("Bash(npm exec {pkg} *)"));
         }
     }
     allowed_tools
@@ -92,6 +86,7 @@ fn auto_approve_allowed_tools(cfg: &AgentConfig) -> Vec<String> {
 #[async_trait]
 impl AgentAdapter for ClaudeCodeAdapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
+        config.validate()?;
         let id = Uuid::new_v4();
         let (tx, _) = broadcast::channel(2048);
         self.state.channels.write().await.insert(id, tx);
@@ -833,13 +828,22 @@ mod tests {
     }
 
     #[test]
-    fn auto_approve_allowed_tools_gate_npx_patterns() {
-        let allowed = auto_approve_allowed_tools(&test_agent_config(true));
+    fn auto_approve_emits_only_explicit_npx_packages() {
+        let mut cfg = test_agent_config(true);
+        cfg.npx_allowed_packages = vec!["prettier".to_string()];
+        let allowed = auto_approve_allowed_tools(&cfg);
 
-        assert!(allowed.contains(&"Bash(npm exec)".to_string()));
-        assert!(allowed.contains(&"Bash(npm exec *)".to_string()));
-        assert!(allowed.contains(&"Bash(npx)".to_string()));
-        assert!(allowed.contains(&"Bash(npx *)".to_string()));
+        // Specific package patterns present
+        assert!(allowed.contains(&"Bash(npx prettier)".to_string()));
+        assert!(allowed.contains(&"Bash(npx prettier *)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec prettier)".to_string()));
+        assert!(allowed.contains(&"Bash(npm exec prettier *)".to_string()));
+
+        // No wildcards
+        assert!(!allowed.contains(&"Bash(npx)".to_string()));
+        assert!(!allowed.contains(&"Bash(npx *)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm exec)".to_string()));
+        assert!(!allowed.contains(&"Bash(npm exec *)".to_string()));
     }
 
     #[test]
@@ -897,15 +901,26 @@ mod tests {
     }
 
     #[test]
-    fn npx_empty_packages_falls_back_to_wildcard_with_warning() {
-        let cfg = test_agent_config(true); // npx_allowed_packages is empty by default
-        let allowed = auto_approve_allowed_tools(&cfg);
+    fn npx_with_empty_packages_is_rejected_by_validation() {
+        let cfg = test_agent_config(true); // allow_npx=true, npx_allowed_packages is empty
+        let err = cfg
+            .validate()
+            .expect_err("should reject empty npx_allowed_packages");
+        assert!(
+            matches!(err, AgentError::InvalidConfig(_)),
+            "expected InvalidConfig, got {err:?}"
+        );
+    }
 
-        // Should fall back to wildcard patterns
-        assert!(allowed.contains(&"Bash(npx *)".to_string()));
-        assert!(allowed.contains(&"Bash(npx)".to_string()));
-        assert!(allowed.contains(&"Bash(npm exec *)".to_string()));
-        assert!(allowed.contains(&"Bash(npm exec)".to_string()));
+    #[tokio::test]
+    async fn claude_spawn_rejects_invalid_npx_config() {
+        let adapter = ClaudeCodeAdapter::new();
+        let cfg = test_agent_config(true); // allow_npx=true, npx_allowed_packages empty
+        let err = adapter.spawn(cfg).await.expect_err("should reject");
+        assert!(
+            matches!(err, AgentError::InvalidConfig(_)),
+            "expected InvalidConfig, got {err:?}"
+        );
     }
 
     #[test]

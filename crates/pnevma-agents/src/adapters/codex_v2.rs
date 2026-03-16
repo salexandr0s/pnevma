@@ -290,6 +290,7 @@ impl CodexV2Adapter {
 #[async_trait]
 impl AgentAdapter for CodexV2Adapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
+        config.validate()?;
         let id = Uuid::new_v4();
         let (event_tx, _) = broadcast::channel(2048);
 
@@ -814,6 +815,19 @@ mod tests {
             thread_id: None,
             turn_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_invalid_npx_config() {
+        let adapter = CodexV2Adapter::new();
+        let mut cfg = make_config();
+        cfg.allow_npx = true;
+        cfg.npx_allowed_packages = vec![];
+        let err = adapter.spawn(cfg).await.expect_err("should reject");
+        assert!(
+            matches!(err, AgentError::InvalidConfig(_)),
+            "expected InvalidConfig, got {err:?}"
+        );
     }
 
     #[test]

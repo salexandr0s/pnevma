@@ -74,6 +74,10 @@ pub struct AgentProviderConfig {
     /// Allow npm exec / npx access for auto-approved Claude sessions.
     #[serde(default)]
     pub allow_npx: bool,
+    /// Specific npm packages allowed via npx/npm-exec when `allow_npx` is true.
+    /// Must be non-empty when `allow_npx` is true (fail closed).
+    #[serde(default)]
+    pub npx_allowed_packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -601,6 +605,19 @@ fn validate_project_config(cfg: &ProjectConfig) -> Result<(), CoreError> {
                 .to_string(),
         ));
     }
+    // Validate npx config: allow_npx requires non-empty npx_allowed_packages (fail closed).
+    for provider_cfg in [&cfg.agents.claude_code, &cfg.agents.codex]
+        .into_iter()
+        .flatten()
+    {
+        if provider_cfg.allow_npx && provider_cfg.npx_allowed_packages.is_empty() {
+            return Err(CoreError::InvalidConfig(
+                "allow_npx is true but npx_allowed_packages is empty — \
+                 explicit package names are required when npx access is enabled"
+                    .to_string(),
+            ));
+        }
+    }
     for origin in &cfg.remote.allowed_origins {
         if !looks_like_valid_origin(origin) {
             return Err(CoreError::InvalidConfig(format!(
@@ -826,6 +843,35 @@ mod tests {
             redaction: RedactionSection::default(),
             tracker: TrackerSection::default(),
         }
+    }
+
+    #[test]
+    fn npx_allow_without_packages_is_rejected() {
+        let mut cfg = valid_project_config();
+        cfg.agents.claude_code = Some(AgentProviderConfig {
+            model: None,
+            token_budget: 100_000,
+            timeout_minutes: 30,
+            auto_approve: true,
+            allow_npx: true,
+            npx_allowed_packages: vec![],
+        });
+        let err = validate_project_config(&cfg).expect_err("should reject empty npx packages");
+        assert!(err.to_string().contains("npx_allowed_packages"));
+    }
+
+    #[test]
+    fn npx_allow_with_packages_passes() {
+        let mut cfg = valid_project_config();
+        cfg.agents.claude_code = Some(AgentProviderConfig {
+            model: None,
+            token_budget: 100_000,
+            timeout_minutes: 30,
+            auto_approve: true,
+            allow_npx: true,
+            npx_allowed_packages: vec!["prettier".to_string()],
+        });
+        validate_project_config(&cfg).expect("should pass with explicit packages");
     }
 
     #[test]

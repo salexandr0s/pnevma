@@ -10,8 +10,8 @@ pub mod resilience;
 
 pub use env::{
     build_agent_environment, is_blocked_agent_env_name, is_reserved_agent_env_name,
-    validate_agent_env_entry, validate_agent_env_name, MAX_AGENT_ENV_NAME_BYTES,
-    MAX_AGENT_ENV_VALUE_BYTES,
+    validate_agent_env_entry, validate_agent_env_entry_for_registration, validate_agent_env_name,
+    validate_agent_env_name_for_registration, MAX_AGENT_ENV_NAME_BYTES, MAX_AGENT_ENV_VALUE_BYTES,
 };
 pub use error::AgentError;
 pub use model::{

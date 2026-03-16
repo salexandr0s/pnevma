@@ -35,6 +35,7 @@ impl CodexAdapter {
 #[async_trait]
 impl AgentAdapter for CodexAdapter {
     async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle, AgentError> {
+        config.validate()?;
         let id = Uuid::new_v4();
         let (tx, _) = broadcast::channel(2048);
         self.channels.write().await.insert(id, tx);
@@ -531,6 +532,19 @@ mod tests {
         assert!(
             matches!(err, AgentError::Unavailable(_)),
             "expected Unavailable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_invalid_npx_config() {
+        let adapter = CodexAdapter::new();
+        let mut cfg = make_config();
+        cfg.allow_npx = true;
+        cfg.npx_allowed_packages = vec![];
+        let err = adapter.spawn(cfg).await.expect_err("should reject");
+        assert!(
+            matches!(err, AgentError::InvalidConfig(_)),
+            "expected InvalidConfig, got {err:?}"
         );
     }
 
