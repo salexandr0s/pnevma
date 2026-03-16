@@ -6225,6 +6225,76 @@ pub async fn list_ports(_state: &AppState) -> Result<Vec<PortEntryView>, String>
     Ok(ports)
 }
 
+// ── GitHub issues via `gh` CLI ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubIssueView {
+    pub number: i64,
+    pub title: String,
+    pub state: String,
+    pub labels: Vec<String>,
+    pub author: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueJson {
+    number: i64,
+    title: String,
+    state: String,
+    labels: Vec<GhLabelJson>,
+    author: GhAuthorJson,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhLabelJson {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhAuthorJson {
+    login: String,
+}
+
+pub async fn list_github_issues(state: &AppState) -> Result<Vec<GitHubIssueView>, String> {
+    let project_path = {
+        let current = state.current.lock().await;
+        current
+            .as_ref()
+            .ok_or("no open project")?
+            .project_path
+            .clone()
+    };
+    let output = TokioCommand::new("gh")
+        .args([
+            "issue",
+            "list",
+            "--json",
+            "number,title,state,labels,author",
+            "--limit",
+            "50",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh issue list failed: {stderr}"));
+    }
+    let items: Vec<GhIssueJson> =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))?;
+    Ok(items
+        .into_iter()
+        .map(|i| GitHubIssueView {
+            number: i.number,
+            title: i.title,
+            state: i.state,
+            labels: i.labels.into_iter().map(|l| l.name).collect(),
+            author: i.author.login,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
