@@ -635,7 +635,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDockHost.setAccessibilityIdentifier("tool-dock.view")
         toolDockHost.wantsLayer = true
         toolDockHost.layer?.masksToBounds = true
-        self.toolDockHostView = toolDockHost
+
+        let toolDockContainer = ToolDockContainerView()
+        toolDockContainer.wantsLayer = true
+        toolDockContainer.addSubview(toolDockHost)
+        toolDockHost.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            toolDockHost.leadingAnchor.constraint(equalTo: toolDockContainer.leadingAnchor),
+            toolDockHost.trailingAnchor.constraint(equalTo: toolDockContainer.trailingAnchor),
+            toolDockHost.topAnchor.constraint(equalTo: toolDockContainer.topAnchor),
+            toolDockHost.bottomAnchor.constraint(equalTo: toolDockContainer.bottomAnchor),
+        ])
+        self.toolDockHostView = toolDockContainer
 
         let trigger = BottomEdgeTracker()
         trigger.onHoverChanged = { [weak self] isHovering in
@@ -4003,6 +4014,10 @@ extension AppDelegate {
 // MARK: - NSWindowDelegate
 
 extension AppDelegate: NSWindowDelegate {
+    public func windowDidResize(_ notification: Notification) {
+        contentAreaView?.needsLayout = true
+    }
+
     public func windowDidEnterFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = true
 
@@ -4021,6 +4036,7 @@ extension AppDelegate: NSWindowDelegate {
             sidebarToggleWidthConstraint?.animator().constant = 23
             sidebarToggleHeightConstraint?.animator().constant = 20
         }
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     public func windowDidExitFullScreen(_ notification: Notification) {
@@ -4038,6 +4054,7 @@ extension AppDelegate: NSWindowDelegate {
             sidebarToggleWidthConstraint?.animator().constant = 26
             sidebarToggleHeightConstraint?.animator().constant = 22
         }
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {

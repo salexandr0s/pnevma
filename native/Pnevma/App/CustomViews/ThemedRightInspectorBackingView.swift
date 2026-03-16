@@ -1,39 +1,18 @@
 import Cocoa
 
-/// Container for the tool dock NSHostingView that passes through mouse
-/// events near the bottom and bottom-right window edges so the resize
-/// handles remain accessible.
-final class ToolDockContainerView: NSView {
+final class ThemedRightInspectorBackingView: NSView {
+    private var themeObserver: NSObjectProtocol?
+    private var tintObserver: NSObjectProtocol?
+    private let leftSeparator = NSView()
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let window else { return super.hitTest(point) }
         let windowPoint = convert(point, to: nil)
         let threshold: CGFloat = 5
-        // Bottom edge
-        if windowPoint.y < threshold { return nil }
-        // Bottom-left corner
-        if windowPoint.y < 15 && windowPoint.x < 15 { return nil }
+        // Right edge
+        if windowPoint.x > window.frame.width - threshold { return nil }
         // Bottom-right corner
-        if windowPoint.y < 15 && windowPoint.x > window.frame.width - 15 { return nil }
-        return super.hitTest(point)
-    }
-}
-
-/// Sidebar backing view that uses the ghostty theme background color
-/// instead of the system NSVisualEffectView blur, so the sidebar matches
-/// the terminal's color scheme.
-final class ThemedSidebarBackingView: NSView {
-    private var themeObserver: NSObjectProtocol?
-    private var tintObserver: NSObjectProtocol?
-    private let rightSeparator = NSView()
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard window != nil else { return super.hitTest(point) }
-        let windowPoint = convert(point, to: nil)
-        let threshold: CGFloat = 5
-        // Left edge
-        if windowPoint.x < threshold { return nil }
-        // Bottom-left corner
-        if windowPoint.y < threshold && windowPoint.x < 15 { return nil }
+        if windowPoint.y < threshold && windowPoint.x > window.frame.width - 15 { return nil }
         return super.hitTest(point)
     }
 
@@ -43,15 +22,14 @@ final class ThemedSidebarBackingView: NSView {
         layer?.isOpaque = true
         layer?.masksToBounds = true
 
-        // Right-edge separator matching ghostty split dividers
-        rightSeparator.wantsLayer = true
-        rightSeparator.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(rightSeparator)
+        leftSeparator.wantsLayer = true
+        leftSeparator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(leftSeparator)
         NSLayoutConstraint.activate([
-            rightSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
-            rightSeparator.topAnchor.constraint(equalTo: topAnchor),
-            rightSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
-            rightSeparator.widthAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
+            leftSeparator.leadingAnchor.constraint(equalTo: leadingAnchor),
+            leftSeparator.topAnchor.constraint(equalTo: topAnchor),
+            leftSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            leftSeparator.widthAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
         ])
 
         updateBackgroundColor()
@@ -87,7 +65,7 @@ final class ThemedSidebarBackingView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let theme = GhosttyThemeProvider.shared
         let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
+        let offset = RightInspectorPreferences.backgroundOffset
         if offset == 0 {
             bg.setFill()
         } else {
@@ -99,7 +77,7 @@ final class ThemedSidebarBackingView: NSView {
     private func updateBackgroundColor() {
         let theme = GhosttyThemeProvider.shared
         let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
+        let offset = RightInspectorPreferences.backgroundOffset
         let resolved: NSColor
         if offset == 0 {
             resolved = bg
@@ -107,7 +85,7 @@ final class ThemedSidebarBackingView: NSView {
             resolved = bg.blended(withFraction: offset, of: .white) ?? bg
         }
         layer?.backgroundColor = resolved.cgColor
-        rightSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
+        leftSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
         needsDisplay = true
     }
 }

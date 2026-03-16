@@ -105,6 +105,7 @@
 		946B6A90DBBA4FD2BC43CD67 /* BrowserFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0A1DBF6363C1B411F7A7E4 /* BrowserFind.swift */; };
 		946D4E7730B872F842B3DCD3 /* BrowserWorkspaceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BA9604B4A442B703E1F4D65 /* BrowserWorkspaceSession.swift */; };
 		959DD98492FA05388B3126AF /* DiffModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6491699B8E190F510BA8274F /* DiffModels.swift */; };
+		95CF0AAED8CC5CBE61B004F5 /* ThemedRightInspectorBackingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5233A3F9FDC5726CAC43D0CF /* ThemedRightInspectorBackingView.swift */; };
 		97086114FEA70019E43694E4 /* AppKeybindingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A55570E2FEC1C956983131 /* AppKeybindingManager.swift */; };
 		9B0FC3FB9B74C995E6BADEB0 /* CommandCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716265615CEC70180EE15AC4 /* CommandCenterView.swift */; };
 		9F4F9BF7D4570B304F1CA97B /* WorkspacePathDisplayFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F426EDB5E268E8E8C0E7908 /* WorkspacePathDisplayFormatter.swift */; };
@@ -189,6 +190,7 @@
 		F7C0A8AEF61DB4E3A0201DB9 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 24C6D98E237464B9CC1F10DD /* AppIcon.icon */; };
 		F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0504F30FC49F942FD7AD3F1B /* TerminalHostView.swift */; };
 		FA0E47CF4F1FA87498D54927 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB3422024FC4975E1C7FBB3C /* Cocoa.framework */; };
+		FA5FD1FFFCA5E4DC91BD5ED6 /* RightInspectorResizeHandleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD62FF2B943600878797A68B /* RightInspectorResizeHandleView.swift */; };
 		FB3F9D0E98E663D6A363E2B6 /* PortsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AA68A2B85A5F3E4A2A88E3 /* PortsPane.swift */; };
 		FC909B27A07721ABC7737BF5 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2384B2D98B340A6F16B39955 /* Extensions.swift */; };
 		FD538ED8D005E680D7DD07DD /* SshManagerModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAB3A9FD21A3B4DDE1B3EB9B /* SshManagerModelsTests.swift */; };
@@ -274,6 +276,7 @@
 		4DA8D93A9DA7AD679F94E734 /* RulesManagerPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RulesManagerPaneTests.swift; sourceTree = "<group>"; };
 		4EA2A930481E2A694CFBAA39 /* AppLaunchContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLaunchContext.swift; sourceTree = "<group>"; };
 		5102701F8777ED8EDFD2770F /* FileBrowserPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserPaneTests.swift; sourceTree = "<group>"; };
+		5233A3F9FDC5726CAC43D0CF /* ThemedRightInspectorBackingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemedRightInspectorBackingView.swift; sourceTree = "<group>"; };
 		52D17A817492A2A41BCB3B35 /* SecretsManagerPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretsManagerPane.swift; sourceTree = "<group>"; };
 		56318EF43381C584FD82F1DB /* ReviewViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewViewModel.swift; sourceTree = "<group>"; };
 		56FFA62C53B156737FB105D1 /* GhosttyThemeBrowserViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyThemeBrowserViewModel.swift; sourceTree = "<group>"; };
@@ -381,6 +384,7 @@
 		DB3422024FC4975E1C7FBB3C /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		DC85FB0C895C8CA4BD53F0C5 /* TerminalArchivedScrollbackFormatterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalArchivedScrollbackFormatterTests.swift; sourceTree = "<group>"; };
 		DD26939D91144DC9D123CDBC /* CommandCenterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandCenterStore.swift; sourceTree = "<group>"; };
+		DD62FF2B943600878797A68B /* RightInspectorResizeHandleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightInspectorResizeHandleView.swift; sourceTree = "<group>"; };
 		DF72258523A9B37DDE84802D /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
 		E4AC9BC79B2FB6A595AAA274 /* ReplayPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplayPaneTests.swift; sourceTree = "<group>"; };
 		E4C972AFE7A81DC36FE7DBA2 /* WorkspaceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRow.swift; sourceTree = "<group>"; };
@@ -506,6 +510,8 @@
 			isa = PBXGroup;
 			children = (
 				BF842F0B8B5A87699DB64472 /* HoverTintButton.swift */,
+				DD62FF2B943600878797A68B /* RightInspectorResizeHandleView.swift */,
+				5233A3F9FDC5726CAC43D0CF /* ThemedRightInspectorBackingView.swift */,
 				3FC246E92BE007216291692D /* ThemedSeparatorView.swift */,
 				97D1F4638EBBF5A2A0FE4138 /* ThemedSidebarBackingView.swift */,
 				EBFA0B3B0FFB1DD5D1B0146A /* ThemedTitlebarFillView.swift */,
@@ -1035,6 +1041,7 @@
 				573E73105E89966185B75A13 /* ReviewModels.swift in Sources */,
 				26ECDCE314120B77635D0905 /* ReviewPane.swift in Sources */,
 				4FB028DC86AF0D7D41BCB14B /* ReviewViewModel.swift in Sources */,
+				FA5FD1FFFCA5E4DC91BD5ED6 /* RightInspectorResizeHandleView.swift in Sources */,
 				E5C5EE9936D5523B2878884C /* RightInspectorView.swift in Sources */,
 				D5E2354A1C8BA741399DAD00 /* RulesManagerPane.swift in Sources */,
 				77A40247DB25D4639B897245 /* SecretsManagerPane.swift in Sources */,
@@ -1064,6 +1071,7 @@
 				32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */,
 				F961C3FE4F08F4605396E0F4 /* TerminalHostView.swift in Sources */,
 				587B9ADBC09AF402EDB4AA2E /* TerminalSurface.swift in Sources */,
+				95CF0AAED8CC5CBE61B004F5 /* ThemedRightInspectorBackingView.swift in Sources */,
 				437D64849AABA45E028A072B /* ThemedSeparatorView.swift in Sources */,
 				29364166C912B55D6922186A /* ThemedSidebarBackingView.swift in Sources */,
 				869EF3AF2B4F8292035599FA /* ThemedTitlebarFillView.swift in Sources */,
