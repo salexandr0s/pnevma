@@ -80,11 +80,10 @@ struct PortRow: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button {
+                Button("Copy address", systemImage: "doc.on.doc") {
                     viewModel.copyAddress(port: port)
-                } label: {
-                    Image(systemName: "doc.on.doc")
                 }
+                .labelStyle(.iconOnly)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Copy address")

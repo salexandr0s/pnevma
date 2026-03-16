@@ -77,7 +77,7 @@ struct CommandCenterView: View {
                     onClear: { handleWorkspaceSelection(nil) }
                 )
 
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: DesignTokens.Spacing.sm) {
                         ForEach(CommandCenterStore.Filter.allCases) { filter in
                             FilterPill(
@@ -91,6 +91,7 @@ struct CommandCenterView: View {
                     }
                     .padding(.vertical, 1)
                 }
+                .scrollIndicators(.hidden)
 
                 if store.hasActiveConstraints {
                     Button("Clear") {
@@ -105,7 +106,7 @@ struct CommandCenterView: View {
 
                 Spacer(minLength: DesignTokens.Spacing.sm)
 
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: DesignTokens.Spacing.sm) {
                         MetricCapsule(title: "Attention", value: "\(store.attentionRunCount)", accent: .systemOrange)
                         MetricCapsule(title: "Active", value: "\(store.fleetSummary.activeCount)", accent: .systemGreen)
@@ -122,6 +123,7 @@ struct CommandCenterView: View {
                     }
                     .padding(.vertical, 1)
                 }
+                .scrollIndicators(.hidden)
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
             .padding(.bottom, 10)
@@ -206,7 +208,7 @@ struct CommandCenterView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: DesignTokens.Spacing.sm) {
                         KeyboardHintToken(keys: "⌘1–7", description: "filter")
                         KeyboardHintToken(keys: "↑↓", description: "move")
@@ -215,6 +217,7 @@ struct CommandCenterView: View {
                         KeyboardHintToken(keys: "Esc", description: "clear")
                     }
                 }
+                .scrollIndicators(.hidden)
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
             .padding(.top, DesignTokens.Spacing.md)

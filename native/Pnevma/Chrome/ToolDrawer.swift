@@ -120,12 +120,13 @@ private struct ToolDrawerResizeHandle: View {
                         NSCursor.closedHand.push()
                         dragStartHeight = currentHeight
                     }
+                    guard let startHeight = dragStartHeight else { return }
                     var t = Transaction()
                     t.disablesAnimations = true
                     withTransaction(t) {
                         onHeightChanged(
                             ToolDrawerSizing.clamp(
-                                dragStartHeight! - value.translation.height,
+                                startHeight - value.translation.height,
                                 availableHeight: availableHeight
                             )
                         )

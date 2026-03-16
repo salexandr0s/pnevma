@@ -101,7 +101,9 @@ enum BrowserFindJavaScript {
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Int] {
                 return dict["total"] ?? 0
             }
-        } catch {}
+        } catch {
+            Log.browser.debug("Find search JS evaluation failed: \(error.localizedDescription)")
+        }
         return 0
     }
 
@@ -141,7 +143,9 @@ enum BrowserFindJavaScript {
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Int] {
                 return (dict["current"] ?? 0, dict["total"] ?? 0)
             }
-        } catch {}
+        } catch {
+            Log.browser.debug("Find navigate JS evaluation failed: \(error.localizedDescription)")
+        }
         return (0, 0)
     }
 

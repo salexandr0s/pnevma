@@ -8,6 +8,7 @@ enum Log {
     static let persistence = Logger(subsystem: "com.pnevma.app", category: "persistence")
     static let workspace = Logger(subsystem: "com.pnevma.app", category: "workspace")
     static let performance = Logger(subsystem: "com.pnevma.app", category: "performance")
+    static let browser = Logger(subsystem: "com.pnevma.app", category: "browser")
 }
 
 enum ChromeTransitionReason: Hashable {

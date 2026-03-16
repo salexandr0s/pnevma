@@ -19,6 +19,7 @@ private func inspectorIdentifierComponent(_ value: String) -> String {
 }
 
 @Observable
+@MainActor
 final class RightInspectorChromeState {
     var isVisible = true
     var overlayHorizontalOffset: CGFloat = 0

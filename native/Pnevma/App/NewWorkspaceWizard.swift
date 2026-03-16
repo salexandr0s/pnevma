@@ -10,7 +10,7 @@ struct NewWorkspaceWizard: View {
     var body: some View {
         HStack(spacing: 0) {
             // Source picker (left)
-            sourceList
+            WizardSourceList(viewModel: viewModel)
                 .frame(width: 200)
                 .background(Color(nsColor: theme.backgroundColor).opacity(0.5))
 
@@ -54,9 +54,31 @@ struct NewWorkspaceWizard: View {
         .accessibilityIdentifier("newWorkspaceWizard")
     }
 
-    // MARK: - Source List
+    @ViewBuilder
+    private var detailForm: some View {
+        switch viewModel.selectedSource {
+        case .localFolder:
+            WizardLocalFolderForm(viewModel: viewModel)
+        case .remoteSSH:
+            WizardRemoteSSHForm(viewModel: viewModel)
+        case .fromBranch:
+            WizardFromBranchForm(viewModel: viewModel)
+        case .fromPR:
+            WizardFromPRForm(viewModel: viewModel)
+        case .fromIssue:
+            WizardFromIssueForm(viewModel: viewModel)
+        case .importWorktree:
+            WizardImportWorktreeForm(viewModel: viewModel)
+        }
+    }
+}
 
-    private var sourceList: some View {
+// MARK: - Source List
+
+struct WizardSourceList: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("NEW WORKSPACE")
                 .font(.caption.weight(.semibold))
@@ -94,28 +116,14 @@ struct NewWorkspaceWizard: View {
         }
         .padding(DesignTokens.Spacing.sm)
     }
+}
 
-    // MARK: - Detail Form
+// MARK: - Form Views
 
-    @ViewBuilder
-    private var detailForm: some View {
-        switch viewModel.selectedSource {
-        case .localFolder:
-            localFolderForm
-        case .remoteSSH:
-            remoteSSHForm
-        case .fromBranch:
-            fromBranchForm
-        case .fromPR:
-            fromPRForm
-        case .fromIssue:
-            fromIssueForm
-        case .importWorktree:
-            importWorktreeForm
-        }
-    }
+struct WizardLocalFolderForm: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
 
-    private var localFolderForm: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Open Local Folder")
                 .font(.headline)
@@ -124,7 +132,7 @@ struct NewWorkspaceWizard: View {
                 TextField("Project path", text: $viewModel.projectPath)
                     .textFieldStyle(.roundedBorder)
 
-                Button("Browse…") {
+                Button("Browse\u{2026}") {
                     let panel = NSOpenPanel()
                     panel.canChooseFiles = false
                     panel.canChooseDirectories = true
@@ -135,11 +143,15 @@ struct NewWorkspaceWizard: View {
                 }
             }
 
-            terminalModePicker
+            WizardTerminalModePicker(viewModel: viewModel)
         }
     }
+}
 
-    private var remoteSSHForm: some View {
+struct WizardRemoteSSHForm: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Open Remote SSH")
                 .font(.headline)
@@ -162,11 +174,15 @@ struct NewWorkspaceWizard: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            terminalModePicker
+            WizardTerminalModePicker(viewModel: viewModel)
         }
     }
+}
 
-    private var fromBranchForm: some View {
+struct WizardFromBranchForm: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Create from Branch")
                 .font(.headline)
@@ -175,7 +191,7 @@ struct NewWorkspaceWizard: View {
                 TextField("Project path", text: $viewModel.projectPath)
                     .textFieldStyle(.roundedBorder)
 
-                Button("Browse…") {
+                Button("Browse\u{2026}") {
                     let panel = NSOpenPanel()
                     panel.canChooseFiles = false
                     panel.canChooseDirectories = true
@@ -191,18 +207,22 @@ struct NewWorkspaceWizard: View {
                     .textFieldStyle(.roundedBorder)
             } else {
                 Picker("Branch", selection: $viewModel.branchName) {
-                    Text("Select branch…").tag("")
+                    Text("Select branch\u{2026}").tag("")
                     ForEach(viewModel.availableBranches, id: \.self) { branch in
                         Text(branch).tag(branch)
                     }
                 }
             }
 
-            terminalModePicker
+            WizardTerminalModePicker(viewModel: viewModel)
         }
     }
+}
 
-    private var fromPRForm: some View {
+struct WizardFromPRForm: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("From GitHub PR")
                 .font(.headline)
@@ -226,7 +246,7 @@ struct NewWorkspaceWizard: View {
                     Text(title)
                         .font(.body.weight(.medium))
                     if let head = viewModel.prHeadBranch, let base = viewModel.prBaseBranch {
-                        Text("\(head) → \(base)")
+                        Text("\(head) \u{2192} \(base)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -235,11 +255,15 @@ struct NewWorkspaceWizard: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
             }
 
-            terminalModePicker
+            WizardTerminalModePicker(viewModel: viewModel)
         }
     }
+}
 
-    private var fromIssueForm: some View {
+struct WizardFromIssueForm: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("From Issue URL")
                 .font(.headline)
@@ -268,11 +292,15 @@ struct NewWorkspaceWizard: View {
             TextField("Project path", text: $viewModel.projectPath)
                 .textFieldStyle(.roundedBorder)
 
-            terminalModePicker
+            WizardTerminalModePicker(viewModel: viewModel)
         }
     }
+}
 
-    private var importWorktreeForm: some View {
+struct WizardImportWorktreeForm: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Import Worktree")
                 .font(.headline)
@@ -281,7 +309,7 @@ struct NewWorkspaceWizard: View {
                 TextField("Worktree path", text: $viewModel.worktreePath)
                     .textFieldStyle(.roundedBorder)
 
-                Button("Browse…") {
+                Button("Browse\u{2026}") {
                     let panel = NSOpenPanel()
                     panel.canChooseFiles = false
                     panel.canChooseDirectories = true
@@ -292,11 +320,17 @@ struct NewWorkspaceWizard: View {
                 }
             }
 
-            terminalModePicker
+            WizardTerminalModePicker(viewModel: viewModel)
         }
     }
+}
 
-    private var terminalModePicker: some View {
+// MARK: - Shared Components
+
+struct WizardTerminalModePicker: View {
+    @Bindable var viewModel: NewWorkspaceWizardViewModel
+
+    var body: some View {
         Picker("Terminal Mode", selection: $viewModel.terminalMode) {
             Text("Persistent").tag(WorkspaceTerminalMode.persistent)
             Text("Non-Persistent").tag(WorkspaceTerminalMode.nonPersistent)

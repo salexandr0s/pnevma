@@ -22,10 +22,11 @@ struct CommandCenterRunCard: View {
     }
 
     private var elapsed: String {
-        let interval = Date().timeIntervalSince(startedAt)
+        let interval = Date.now.timeIntervalSince(startedAt)
         if interval < 60 { return "\(Int(interval))s" }
         if interval < 3600 { return "\(Int(interval / 60))m" }
-        return String(format: "%.1fh", interval / 3600)
+        let hours = interval / 3600
+        return hours.formatted(.number.precision(.fractionLength(1))) + "h"
     }
 
     var body: some View {
@@ -53,7 +54,7 @@ struct CommandCenterRunCard: View {
                 }
                 Spacer()
                 if costUSD > 0 {
-                    Text(String(format: "$%.2f", costUSD))
+                    Text(costUSD, format: .currency(code: "USD"))
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }

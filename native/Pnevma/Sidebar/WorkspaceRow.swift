@@ -47,127 +47,130 @@ struct WorkspaceRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Pin icon or active indicator dot
-            if workspace.isPinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(indicatorColor)
-                    .frame(width: 8, height: 8)
-            } else {
-                Circle()
-                    .fill(indicatorColor)
-                    .frame(width: 8, height: 8)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                // Line 1: Name
-                if isRenaming {
-                    TextField("Name", text: $renameText)
-                        .textFieldStyle(.plain)
-                        .font(.body)
-                        .fontWeight(.semibold)
-                        .focused($isRenameFieldFocused)
-                        .onSubmit {
-                            let trimmed = renameText.trimmingCharacters(in: .whitespaces)
-                            if !trimmed.isEmpty {
-                                onRename?(trimmed)
-                            }
-                            isRenaming = false
-                        }
-                        .onExitCommand {
-                            isRenaming = false
-                        }
+        Button(action: onSelect) {
+            HStack(spacing: 8) {
+                // Pin icon or active indicator dot
+                if workspace.isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(indicatorColor)
+                        .frame(width: 8, height: 8)
                 } else {
-                    Text(workspace.name)
-                        .font(.body)
-                        .fontWeight(isActive ? .semibold : .regular)
-                        .lineLimit(1)
+                    Circle()
+                        .fill(indicatorColor)
+                        .frame(width: 8, height: 8)
                 }
 
-                // Line 2: Signal chips
-                HStack(spacing: 4) {
-                    if workspace.showsProjectToolsInUI && workspace.gitBranch == nil && isActive {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.7)
+                VStack(alignment: .leading, spacing: 2) {
+                    // Line 1: Name
+                    if isRenaming {
+                        TextField("Name", text: $renameText)
+                            .textFieldStyle(.plain)
+                            .font(.body)
+                            .fontWeight(.semibold)
+                            .focused($isRenameFieldFocused)
+                            .onSubmit {
+                                let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                                if !trimmed.isEmpty {
+                                    onRename?(trimmed)
+                                }
+                                isRenaming = false
+                            }
+                            .onExitCommand {
+                                isRenaming = false
+                            }
+                    } else {
+                        Text(workspace.name)
+                            .font(.body)
+                            .fontWeight(isActive ? .semibold : .regular)
+                            .lineLimit(1)
                     }
 
-                    // Branch + dirty
-                    if let branch = workspace.gitBranch {
-                        HStack(spacing: 2) {
-                            Label(branch, systemImage: "arrow.triangle.branch")
+                    // Line 2: Signal chips
+                    HStack(spacing: 4) {
+                        if workspace.showsProjectToolsInUI && workspace.gitBranch == nil && isActive {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.7)
+                        }
+
+                        // Branch + dirty
+                        if let branch = workspace.gitBranch {
+                            HStack(spacing: 2) {
+                                Label(branch, systemImage: "arrow.triangle.branch")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                if workspace.gitDirty {
+                                    Text("*")
+                                        .font(.caption2)
+                                        .bold()
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            .lineLimit(1)
+                        }
+
+                        // Diff stats chip
+                        if let ins = workspace.diffInsertions, let dels = workspace.diffDeletions,
+                           ins > 0 || dels > 0 {
+                            DiffStatsChip(insertions: ins, deletions: dels)
+                        }
+
+                        // PR chip
+                        if let prNum = workspace.linkedPRNumber {
+                            PRChip(number: prNum, url: workspace.linkedPRURL)
+                        }
+
+                        // CI chip
+                        if let ci = workspace.ciStatus, ci != "none" {
+                            CIChip(status: ci)
+                        }
+
+                        // Attention chip
+                        if let reason = workspace.attentionReason {
+                            AttentionChip(reason: reason)
+                        }
+
+                        // Mode pills — only on hover or active
+                        if isActive || isHovering {
+                            Text(modeLabel)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            if workspace.gitDirty {
-                                Text("*")
-                                    .font(.caption2)
-                                    .bold()
-                                    .foregroundStyle(.orange)
-                            }
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                                .fixedSize()
                         }
-                        .lineLimit(1)
-                    }
 
-                    // Diff stats chip
-                    if let ins = workspace.diffInsertions, let dels = workspace.diffDeletions,
-                       ins > 0 || dels > 0 {
-                        DiffStatsChip(insertions: ins, deletions: dels)
+                        if failureMessage != nil {
+                            Label("Activation Failed", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .fixedSize()
+                        }
                     }
+                    .lineLimit(1)
+                    .clipped()
 
-                    // PR chip
-                    if let prNum = workspace.linkedPRNumber {
-                        PRChip(number: prNum, url: workspace.linkedPRURL)
-                    }
-
-                    // CI chip
-                    if let ci = workspace.ciStatus, ci != "none" {
-                        CIChip(status: ci)
-                    }
-
-                    // Attention chip
-                    if let reason = workspace.attentionReason {
-                        AttentionChip(reason: reason)
-                    }
-
-                    // Mode pills — only on hover or active
-                    if isActive || isHovering {
-                        Text(modeLabel)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
-                            .fixedSize()
-                    }
-
-                    if failureMessage != nil {
-                        Label("Activation Failed", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption2)
+                    // Failure detail
+                    if let failureMessage {
+                        Text(failureMessage)
+                            .font(.system(size: 10))
                             .foregroundStyle(.orange)
-                            .fixedSize()
+                            .lineLimit(2)
                     }
                 }
-                .lineLimit(1)
-                .clipped()
 
-                // Failure detail
-                if let failureMessage {
-                    Text(failureMessage)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.orange)
-                        .lineLimit(2)
+                Spacer()
+
+                // Notification badge (backend + terminal notifications combined)
+                if totalNotifications > 0 {
+                    NotificationBadge(count: totalNotifications)
+                        .opacity(isHovering && !workspace.isPermanent ? 0 : 1)
                 }
-            }
-
-            Spacer()
-
-            // Notification badge (backend + terminal notifications combined)
-            if totalNotifications > 0 {
-                NotificationBadge(count: totalNotifications)
-                    .opacity(isHovering && !workspace.isPermanent ? 0 : 1)
             }
         }
+        .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(
@@ -181,8 +184,6 @@ struct WorkspaceRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { onSelect() }
-        .accessibilityAddTraits(.isButton)
         .onHover { isHovering = $0 }
         .onChange(of: isRenaming) {
             if isRenaming {

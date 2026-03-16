@@ -14,7 +14,7 @@ struct AgentStripView: View {
 
     var body: some View {
         if state.hasEntries {
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: 4) {
                     ForEach(state.entries) { entry in
                         AgentStripChip(
@@ -26,6 +26,7 @@ struct AgentStripView: View {
                 }
                 .padding(.horizontal, 8)
             }
+            .scrollIndicators(.hidden)
             .frame(height: DesignTokens.Layout.agentStripHeight)
             .background(stripBackground.opacity(0.95))
             .overlay(alignment: .bottom) {

@@ -14,12 +14,11 @@ struct ShortcutSheetView: View {
                 Text("Keyboard Shortcuts")
                     .font(.headline)
                 Spacer()
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
+                Button("Dismiss", systemImage: "xmark.circle.fill", action: onDismiss)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)
             }
             .padding(DesignTokens.Spacing.md)
 

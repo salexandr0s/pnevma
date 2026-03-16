@@ -117,7 +117,8 @@ struct BrowserView: View {
     }
 
     private var omnibar: some View {
-        HStack(spacing: 6) {
+        @Bindable var vm = session.viewModel
+        return HStack(spacing: 6) {
             // Back
             Button(action: { viewModel.goBack() }) {
                 Image(systemName: "chevron.left")
@@ -153,10 +154,7 @@ struct BrowserView: View {
                     .frame(height: 28)
 
                 OmnibarTextField(
-                    text: Binding(
-                        get: { viewModel.omnibarText },
-                        set: { viewModel.omnibarText = $0 }
-                    ),
+                    text: $vm.omnibarText,
                     focusToken: viewModel.omnibarFocusToken,
                     onCommit: {
                         viewModel.showSuggestions = false

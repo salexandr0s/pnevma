@@ -143,10 +143,12 @@ func sidebarToolDefinition(paneType: String) -> SidebarToolItem? {
     allSidebarTools.first { $0.paneType == paneType }
 }
 
+@MainActor
 func sidebarTool(id: String, in workspace: Workspace?) -> SidebarToolItem? {
     sidebarTools(for: workspace).first { $0.id == id }
 }
 
+@MainActor
 func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
     let allowedIDs: Set<String>
     if let workspace, workspace.showsProjectToolsInUI {
