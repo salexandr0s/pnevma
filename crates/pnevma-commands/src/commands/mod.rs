@@ -201,6 +201,8 @@ pub struct ProjectFileView {
     pub staged: bool,
     pub conflicted: bool,
     pub untracked: bool,
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

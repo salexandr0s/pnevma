@@ -9,52 +9,58 @@ struct SidebarSectionHeader: View {
     var onToggle: (() -> Void)?
     var onAdd: (() -> Void)?
 
-    @State private var isHovering = false
+    @Environment(GhosttyThemeProvider.self) private var theme
 
     var body: some View {
-        Button(action: { if isCollapsible { onToggle?() } }) {
-            HStack(spacing: 4) {
-                if isCollapsible {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                        .frame(width: 12)
-                }
-
-                Text(title)
+        HStack(spacing: 8) {
+            // Project initial circle
+            let initial = title.prefix(1).uppercased()
+            ZStack {
+                Circle()
+                    .fill(Color(nsColor: theme.foregroundColor).opacity(0.12))
+                    .frame(width: 24, height: 24)
+                Text(initial)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
-
-                if let count {
-                    Text("\(count)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.secondary.opacity(0.1)))
-                }
-
-                Spacer()
-
-                if let onAdd, isHovering {
-                    Button(action: onAdd) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Add workspace to \(title)")
-                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            if let count {
+                Text("(\(count))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+
+            Spacer()
+
+            if let onAdd {
+                Button(action: onAdd) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Add workspace to \(title)")
+            }
+
+            if isCollapsible {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    .frame(width: 12)
+            }
         }
-        .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { if isCollapsible { onToggle?() } }
         .accessibilityLabel("\(title) section\(isCollapsed ? ", collapsed" : "")")
         .accessibilityIdentifier("sidebar.section.\(title.lowercased())")
     }

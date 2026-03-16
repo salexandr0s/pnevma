@@ -38,7 +38,7 @@ struct AppResourceGroup: Decodable, Sendable {
 }
 
 struct SessionResources: Decodable, Sendable, Identifiable {
-    let sessionId: String
+    let sessionID: String
     let sessionName: String
     let status: String
     let process: ProcessMetrics?
@@ -46,7 +46,7 @@ struct SessionResources: Decodable, Sendable, Identifiable {
     let totalCpuPercent: Float
     let totalMemoryBytes: UInt64
 
-    var id: String { sessionId }
+    var id: String { sessionID }
 }
 
 struct ResourceTotals: Decodable, Sendable {

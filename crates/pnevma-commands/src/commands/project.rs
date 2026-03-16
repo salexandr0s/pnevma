@@ -2543,6 +2543,25 @@ pub async fn list_workspace_changes(state: &AppState) -> Result<Vec<ProjectFileV
         .into_iter()
         .map(|(path, status)| project_file_view(path, status))
         .collect::<Vec<_>>();
+
+    // Merge diff stats (additions/deletions) from numstat
+    let mut stats: std::collections::HashMap<String, (i64, i64)> =
+        std::collections::HashMap::new();
+    // Unstaged changes
+    if let Ok(numstat) = git_output(&project_path, &["diff", "--numstat"]).await {
+        parse_numstat_into(&numstat, &mut stats);
+    }
+    // Staged changes
+    if let Ok(numstat) = git_output(&project_path, &["diff", "--cached", "--numstat"]).await {
+        parse_numstat_into(&numstat, &mut stats);
+    }
+    for file in &mut files {
+        if let Some(&(add, del)) = stats.get(&file.path) {
+            file.additions = Some(add);
+            file.deletions = Some(del);
+        }
+    }
+
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
 }
@@ -2629,6 +2648,49 @@ pub async fn get_workspace_change_diff(
     Ok(Some(merged))
 }
 
+fn parse_numstat_into(numstat: &str, stats: &mut std::collections::HashMap<String, (i64, i64)>) {
+    for line in numstat.lines() {
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        if parts.len() == 3 {
+            // Binary files show "-\t-\tpath" — skip them so they stay as None
+            if parts[0] == "-" || parts[1] == "-" {
+                continue;
+            }
+            let add = parts[0].parse::<i64>().unwrap_or(0);
+            let del = parts[1].parse::<i64>().unwrap_or(0);
+            // Renames show paths like "{old => new}/file.txt" — normalize to new path
+            let path = normalize_numstat_path(parts[2]);
+            let entry = stats.entry(path).or_insert((0, 0));
+            entry.0 += add;
+            entry.1 += del;
+        }
+    }
+}
+
+/// Normalize numstat rename paths like `{old => new}/file.txt` to `new/file.txt`.
+fn normalize_numstat_path(raw: &str) -> String {
+    if !raw.contains(" => ") {
+        return raw.to_string();
+    }
+    // Pattern: prefix{old => new}suffix  or  old => new (no braces)
+    if let Some(start) = raw.find('{') {
+        if let Some(end) = raw.find('}') {
+            let prefix = &raw[..start];
+            let suffix = &raw[end + 1..];
+            let inner = &raw[start + 1..end];
+            if let Some(arrow) = inner.find(" => ") {
+                let new_part = &inner[arrow + 4..];
+                return format!("{prefix}{new_part}{suffix}");
+            }
+        }
+    }
+    // Bare "old => new" without braces
+    if let Some(arrow) = raw.find(" => ") {
+        return raw[arrow + 4..].to_string();
+    }
+    raw.to_string()
+}
+
 fn project_file_view(path: String, status: String) -> ProjectFileView {
     let staged = status.chars().next().is_some_and(|c| c != ' ' && c != '?');
     let modified = status.chars().nth(1).is_some_and(|c| c != ' ' && c != '?');
@@ -2641,6 +2703,8 @@ fn project_file_view(path: String, status: String) -> ProjectFileView {
         staged,
         conflicted,
         untracked,
+        additions: None,
+        deletions: None,
     }
 }
 

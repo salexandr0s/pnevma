@@ -46,143 +46,99 @@ struct WorkspaceRow: View {
         return workspace.activationFailureMessage
     }
 
+    private var workspaceTypeIcon: String {
+        switch workspace.kind {
+        case .terminal: return "terminal"
+        case .project:
+            return workspace.location == .remote ? "network" : "laptopcomputer"
+        }
+    }
+
+    private var branchSubtitle: String? {
+        guard let branch = workspace.gitBranch, branch != workspace.name else { return nil }
+        let dirty = workspace.gitDirty ? " *" : ""
+        return branch + dirty
+    }
+
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 8) {
-                // Pin icon or active indicator dot
-                if workspace.isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(indicatorColor)
-                        .frame(width: 8, height: 8)
-                } else {
-                    Circle()
-                        .fill(indicatorColor)
-                        .frame(width: 8, height: 8)
-                }
+            HStack(spacing: 0) {
+                // Left indicator bar (active only)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(isActive ? indicatorColor : .clear)
+                    .frame(width: 2)
+                    .padding(.vertical, 2)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    // Line 1: Name
-                    if isRenaming {
-                        TextField("Name", text: $renameText)
-                            .textFieldStyle(.plain)
-                            .font(.body)
-                            .fontWeight(.semibold)
-                            .focused($isRenameFieldFocused)
-                            .onSubmit {
-                                let trimmed = renameText.trimmingCharacters(in: .whitespaces)
-                                if !trimmed.isEmpty {
-                                    onRename?(trimmed)
+                HStack(spacing: 10) {
+                    // Workspace type icon
+                    Image(systemName: workspaceTypeIcon)
+                        .font(.system(size: 14))
+                        .foregroundStyle(isActive ? .primary : .secondary)
+                        .frame(width: 16, height: 16)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        // Name
+                        if isRenaming {
+                            TextField("Name", text: $renameText)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13))
+                                .fontWeight(.semibold)
+                                .focused($isRenameFieldFocused)
+                                .onSubmit {
+                                    let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                                    if !trimmed.isEmpty {
+                                        onRename?(trimmed)
+                                    }
+                                    isRenaming = false
                                 }
-                                isRenaming = false
-                            }
-                            .onExitCommand {
-                                isRenaming = false
-                            }
-                    } else {
-                        Text(workspace.name)
-                            .font(.body)
-                            .fontWeight(isActive ? .semibold : .regular)
-                            .lineLimit(1)
-                    }
-
-                    // Line 2: Signal chips
-                    HStack(spacing: 4) {
-                        if workspace.showsProjectToolsInUI && workspace.gitBranch == nil && isActive {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .scaleEffect(0.7)
-                        }
-
-                        // Branch + dirty
-                        if let branch = workspace.gitBranch {
-                            HStack(spacing: 2) {
-                                Label(branch, systemImage: "arrow.triangle.branch")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                if workspace.gitDirty {
-                                    Text("*")
-                                        .font(.caption2)
-                                        .bold()
-                                        .foregroundStyle(.orange)
+                                .onExitCommand {
+                                    isRenaming = false
                                 }
-                            }
-                            .lineLimit(1)
+                        } else {
+                            Text(workspace.name)
+                                .font(.system(size: 13))
+                                .fontWeight(isActive ? .semibold : .regular)
+                                .lineLimit(1)
                         }
 
-                        // Diff stats chip
-                        if let ins = workspace.diffInsertions, let dels = workspace.diffDeletions,
-                           ins > 0 || dels > 0 {
-                            DiffStatsChip(insertions: ins, deletions: dels)
+                        // Branch subtitle
+                        if let subtitle = branchSubtitle {
+                            Text(subtitle)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
                         }
 
-                        // PR chip
-                        if let prNum = workspace.linkedPRNumber {
-                            PRChip(number: prNum, url: workspace.linkedPRURL)
-                        }
-
-                        // CI chip
-                        if let ci = workspace.ciStatus, ci != "none" {
-                            CIChip(status: ci)
-                        }
-
-                        // Attention chip
-                        if let reason = workspace.attentionReason {
-                            AttentionChip(reason: reason)
-                        }
-
-                        // Mode pills — only on hover or active
-                        if isActive || isHovering {
-                            Text(modeLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Color.secondary.opacity(0.12)))
-                                .fixedSize()
-                        }
-
-                        if failureMessage != nil {
-                            Label("Activation Failed", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption2)
+                        // Failure detail
+                        if let failureMessage {
+                            Text(failureMessage)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.orange)
-                                .fixedSize()
+                                .lineLimit(2)
                         }
                     }
-                    .lineLimit(1)
-                    .clipped()
 
-                    // Failure detail
-                    if let failureMessage {
-                        Text(failureMessage)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.orange)
-                            .lineLimit(2)
+                    Spacer()
+
+                    // Trailing: close button, diff stats, or notification badge
+                    if isHovering && !workspace.isPermanent {
+                        CloseButton(action: onClose)
+                    } else if let ins = workspace.diffInsertions, let dels = workspace.diffDeletions,
+                              ins > 0 || dels > 0 {
+                        DiffStatsChip(insertions: ins, deletions: dels)
+                    } else if totalNotifications > 0 {
+                        NotificationBadge(count: totalNotifications)
                     }
                 }
-
-                Spacer()
-
-                // Notification badge (backend + terminal notifications combined)
-                if totalNotifications > 0 {
-                    NotificationBadge(count: totalNotifications)
-                        .opacity(isHovering && !workspace.isPermanent ? 0 : 1)
-                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
             }
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActive ? indicatorColor.opacity(0.12) : Color.clear)
         )
-        .overlay(alignment: .trailing) {
-            if isHovering && !workspace.isPermanent {
-                CloseButton(action: onClose)
-                    .padding(.trailing, 4)
-            }
-        }
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onChange(of: isRenaming) {
