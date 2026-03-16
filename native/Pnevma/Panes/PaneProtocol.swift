@@ -317,6 +317,10 @@ enum PaneFactory {
         paneTuple(HarnessConfigPaneView(frame: .zero))
     }
 
+    static func makePorts() -> (PaneID, NSView & PaneContent) {
+        paneTuple(PortsPaneView(paneID: PaneID()))
+    }
+
     static func make(from persistedPane: PersistedPane) -> (PaneID, NSView & PaneContent) {
         let inner: (NSView & PaneContent)
         switch persistedPane.type {
@@ -365,6 +369,8 @@ enum PaneFactory {
             inner = BrowserPaneView.fromMetadata(persistedPane.metadataJSON)
         case "harness_config":
             inner = HarnessConfigPaneView(frame: .zero)
+        case "ports":
+            inner = PortsPaneView(paneID: persistedPane.paneID)
         default:
             inner = RestoreErrorPaneView(
                 paneID: persistedPane.paneID,
@@ -400,6 +406,7 @@ enum PaneFactory {
         case "secrets":       return makeSecretsManager()
         case "browser":        return makeBrowser()
         case "harness_config": return makeHarnessConfig()
+        case "ports":          return makePorts()
         default:              return nil
         }
     }
@@ -429,6 +436,7 @@ enum PaneFactory {
                 "rules",
                 "secrets",
                 "harness_config",
+                "ports",
             ]
         }
         return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"]

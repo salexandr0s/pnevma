@@ -5,16 +5,6 @@ import GhosttyKit
 import SwiftUI
 import os
 
-private enum OpenWorkspaceDestination {
-    case localFolder
-    case remoteSSH
-}
-
-private struct OpenWorkspaceSelection {
-    let destination: OpenWorkspaceDestination
-    let terminalMode: WorkspaceTerminalMode
-}
-
 private enum UITestReadinessState: String {
     case terminalReady = "terminal-ready"
     case projectOpening = "project-opening"
@@ -70,8 +60,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var uiTestReadinessView: UITestReadinessView?
     private var contentLeadingConstraint: NSLayoutConstraint?
     private var tabBarLeadingConstraint: NSLayoutConstraint?
-    private var contentTopToTabBar: NSLayoutConstraint?
-    private var contentTopToSafeArea: NSLayoutConstraint?
+    private var agentStripTopToTabBar: NSLayoutConstraint?
+    private var agentStripTopToToolbarSep: NSLayoutConstraint?
     private var toolbarSeparator: NSView?
     private var titlebarFillBottomConstraint: NSLayoutConstraint?
     private var titlebarFillMinHeightConstraint: NSLayoutConstraint?
@@ -84,8 +74,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarToggleWidthConstraint: NSLayoutConstraint?
     private var sidebarToggleHeightConstraint: NSLayoutConstraint?
     private var commandPalette: CommandPalette?
+    private let agentStripState = AgentStripState()
+    private var agentStripHostView: NSView?
+    private var agentStripHeightConstraint: NSLayoutConstraint?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
+    private var currentSidebarMode: SidebarMode = SidebarPreferences.sidebarMode
+    private var collapsedRailHostView: NSView?
+    private var isFocusMode = false
+    private var focusModeEscapeHatchWindow: NSWindow?
+    private var focusModeResizeObserver: NSObjectProtocol?
+    private var preFocusSidebarVisible = true
+    private var preFocusInspectorVisible = false
+    private var preFocusSidebarMode: SidebarMode = .expanded
     private var isRightInspectorVisible = true
     private var sidebarTransitionGeneration: UInt64 = 0
     private var rightInspectorTransitionGeneration: UInt64 = 0
@@ -99,6 +100,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let toolDrawerContentModel = ToolDrawerContentModel()
     private var browserToolBridge: BrowserToolBridge?
     private var terminalOpenURLObserver: NSObjectProtocol?
+    private var nativeNotificationBridgeObserverID: UUID?
     private var browserSessions: [UUID: BrowserWorkspaceSession] = [:]
     private var browserSessionPrewarmTask: Task<Void, Never>?
     private weak var browserDrawerPreviousFirstResponder: NSResponder?
@@ -123,7 +125,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smokeTimeoutWorkItem: DispatchWorkItem?
     private var runtimeSettingsObserver: NSObjectProtocol?
     private var providerUsageStoreObserver: NSObjectProtocol?
-    private var openWorkspaceModalSelection: OpenWorkspaceDestination?
+    private var wizardViewModel: NewWorkspaceWizardViewModel?
+    private var wizardPanel: NSPanel?
     private let toolDockState = ToolDockState()
     private var isToolDockContentHovered = false
     private var isToolDockEdgeHovered = false
@@ -169,6 +172,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create and show main window
         createMainWindow(showWindow: true)
+
+        // Request notification permission and register delegate
+        NativeNotificationManager.shared.setup()
 
         // Reload ghostty config now that window exists so appearance-conditional
         // themes (e.g. light:X,dark:Y) resolve correctly.
@@ -352,6 +358,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.titlebarStatusView?.updateAgents(0)
             }
             self?.updateNotificationBadge()
+            self?.refreshAgentStrip()
         }
         workspaceManager?.onNotificationCountChanged = { [weak self] _ in
             self?.updateNotificationBadge()
@@ -366,6 +373,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                   let url = URL(string: rawURL) else { return }
             Task { @MainActor [weak self] in
                 self?.openBrowserInWorkspace(url: url, source: .terminal)
+            }
+        }
+
+        // Forward bridge notification_created events to native macOS notifications
+        nativeNotificationBridgeObserverID = BridgeEventHub.shared.addObserver { event in
+            guard event.name == "notification_created" else { return }
+            struct NotificationPayload: Decodable {
+                let title: String?
+                let body: String?
+            }
+            if let data = event.payloadJSON.data(using: .utf8),
+               let payload = try? JSONDecoder().decode(NotificationPayload.self, from: data) {
+                Task { @MainActor in
+                    NativeNotificationManager.shared.postNotification(
+                        title: payload.title ?? "Pnevma",
+                        body: payload.body ?? ""
+                    )
+                }
             }
         }
 
@@ -393,6 +418,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func shutdownRuntime() {
+        hideFocusModeEscapeHatch()
         smokeTimeoutWorkItem?.cancel()
         smokeTimeoutWorkItem = nil
         browserSessionPrewarmTask?.cancel()
@@ -403,6 +429,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let terminalOpenURLObserver {
             NotificationCenter.default.removeObserver(terminalOpenURLObserver)
             self.terminalOpenURLObserver = nil
+        }
+        if let nativeNotificationBridgeObserverID {
+            BridgeEventHub.shared.removeObserver(nativeNotificationBridgeObserverID)
+            self.nativeNotificationBridgeObserverID = nil
         }
         if let runtimeSettingsObserver {
             NotificationCenter.default.removeObserver(runtimeSettingsObserver)
@@ -541,6 +571,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         titlebarStatusView = TitlebarStatusView()
         titlebarStatusView?.onSessionsClicked = { [weak self] in self?.showSessionManager() }
+        titlebarStatusView?.onBranchClicked = { [weak self] in self?.showBranchPicker() }
+        titlebarStatusView?.onPRClicked = { [weak self] in self?.openLinkedPRInBrowser() }
         if let sessionStore {
             titlebarStatusView?.bindSessionStore(sessionStore)
         }
@@ -571,6 +603,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.sidebarHostView = sidebarBacking
         self.sidebarContentView = sidebarHost
+
+        // Collapsed sidebar rail — icon-only mode
+        let collapsedRailView = SidebarCollapsedRailView(
+            workspaceManager: workspaceManager,
+            onSelectWorkspace: { [weak self] id in
+                self?.workspaceManager?.switchToWorkspace(id)
+            }
+        ).environment(GhosttyThemeProvider.shared)
+        let collapsedRailHost = NSHostingView(rootView: AnyView(collapsedRailView))
+        collapsedRailHost.translatesAutoresizingMaskIntoConstraints = false
+        collapsedRailHost.isHidden = true
+        sidebarBacking.addSubview(collapsedRailHost)
+        NSLayoutConstraint.activate([
+            collapsedRailHost.leadingAnchor.constraint(equalTo: sidebarBacking.leadingAnchor),
+            collapsedRailHost.trailingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            collapsedRailHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor),
+            collapsedRailHost.bottomAnchor.constraint(equalTo: sidebarBacking.bottomAnchor),
+        ])
+        self.collapsedRailHostView = collapsedRailHost
 
         let toolDockView = ToolDockBarView(
             workspaceManager: workspaceManager,
@@ -802,7 +853,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         pushBtn.action = #selector(titlebarPushAction)
         self.titlebarPushBtn = pushBtn
 
-        for view in [sidebarBacking, tabBar, contentArea, toolDock, toolbarSep,
+        // Agent strip — horizontal bar of agent chips above content area
+        let agentStripView = AgentStripView(
+            state: agentStripState,
+            selectedSessionID: nil as String?,
+            onSelectSession: { _ in
+                // Session selection is visual only; terminal focus is managed by pane layout
+            }
+        ).environment(GhosttyThemeProvider.shared)
+        let agentStrip = NSHostingView(rootView: AnyView(agentStripView))
+        agentStrip.setAccessibilityIdentifier("agentStrip.host")
+        self.agentStripHostView = agentStrip
+
+        for view in [sidebarBacking, tabBar, agentStrip, contentArea, toolDock, toolbarSep,
                       rightInspectorBacking, rightInspectorResizer,
                       sidebarToggleBtn, notificationsBtn, usageBtn, settingsBtn, addWorkspaceBtn,
                       templateBtn, titlebarStatus,
@@ -840,20 +903,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let tblc = tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let toolDockHeightConstraint = toolDock.heightAnchor.constraint(equalToConstant: toolDockHeight)
 
-        // Content area top: switches between below-tab-bar and directly below toolbar separator
-        let topToTab = contentArea.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
-        let topToSafe = contentArea.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor)
-        // Tab bar starts hidden (single tab), so content goes to safe area
-        topToTab.isActive = false
-        topToSafe.isActive = true
+        // Agent strip height — 0 initially (no active sessions), expanded when sessions exist
+        let agentStripHeight = agentStrip.heightAnchor.constraint(equalToConstant: 0)
+        self.agentStripHeightConstraint = agentStripHeight
+
+        // Agent strip top: switches between below-tab-bar and directly below toolbar separator.
+        // Content area always sits below the agent strip.
+        let stripTopToTab = agentStrip.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
+        let stripTopToSep = agentStrip.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor)
+        // Tab bar starts hidden (single tab), so agent strip goes directly below toolbar sep
+        stripTopToTab.isActive = false
+        stripTopToSep.isActive = true
 
         sidebarWidthConstraint = swc
         rightInspectorWidthConstraint = rightInspectorWidth
         contentLeadingConstraint = clc
         tabBarLeadingConstraint = tblc
         self.toolDockHeightConstraint = toolDockHeightConstraint
-        contentTopToTabBar = topToTab
-        contentTopToSafeArea = topToSafe
+        agentStripTopToTabBar = stripTopToTab
+        agentStripTopToToolbarSep = stripTopToSep
 
         // Titlebar fill bottom tracks the safe area in windowed mode but
         // gets a minimum height in fullscreen so buttons don't get clipped.
@@ -896,6 +964,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             tabBar.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
             tabBar.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: tabBarHeight),
+
+            // Agent strip: between tab bar / toolbar sep and content area
+            agentStrip.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            agentStrip.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
+            agentStripHeight,
+
+            // Content area always sits below agent strip
+            contentArea.topAnchor.constraint(equalTo: agentStrip.bottomAnchor),
 
             clc,
             contentArea.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
@@ -1240,6 +1316,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         commandCenterItem.keyEquivalentModifierMask = [.command, .shift]
         commandCenterItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_command_center")
         viewMenu.addItem(commandCenterItem)
+
+        let focusModeItem = NSMenuItem(
+            title: "Toggle Focus Mode",
+            action: #selector(toggleFocusMode),
+            keyEquivalent: "F"
+        )
+        focusModeItem.keyEquivalentModifierMask = [.command, .shift]
+        focusModeItem.identifier = NSUserInterfaceItemIdentifier("menu.toggle_focus_mode")
+        viewMenu.addItem(focusModeItem)
+
         let browserDrawerItem = NSMenuItem(
             title: "Toggle Browser Drawer",
             action: #selector(toggleBrowserDrawerAction),
@@ -1279,6 +1365,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         cmdPalette.keyEquivalentModifierMask = [.command, .shift]
         cmdPalette.identifier = NSUserInterfaceItemIdentifier("menu.command_palette")
         viewMenu.addItem(cmdPalette)
+
+        let quickOpenItem = NSMenuItem(title: "Quick Open File", action: #selector(showFileQuickOpen), keyEquivalent: "p")
+        quickOpenItem.identifier = NSUserInterfaceItemIdentifier("menu.quick_open_file")
+        viewMenu.addItem(quickOpenItem)
+
+        let shortcutsItem = NSMenuItem(title: "Keyboard Shortcuts", action: #selector(showShortcutSheet), keyEquivalent: "/")
+        shortcutsItem.keyEquivalentModifierMask = [.command, .shift]
+        shortcutsItem.identifier = NSUserInterfaceItemIdentifier("menu.keyboard_shortcuts")
+        viewMenu.addItem(shortcutsItem)
+
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
@@ -1473,11 +1569,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard visible != currentlyVisible else { return }
         tabBarView?.isHidden = !visible
         if visible {
-            contentTopToSafeArea?.isActive = false
-            contentTopToTabBar?.isActive = true
+            agentStripTopToToolbarSep?.isActive = false
+            agentStripTopToTabBar?.isActive = true
         } else {
-            contentTopToTabBar?.isActive = false
-            contentTopToSafeArea?.isActive = true
+            agentStripTopToTabBar?.isActive = false
+            agentStripTopToToolbarSep?.isActive = true
         }
         window?.contentView?.needsLayout = true
     }
@@ -1623,28 +1719,65 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFullScreenAction() { window?.toggleFullScreen(nil) }
 
     @objc private func toggleSidebar() {
-        isSidebarVisible.toggle()
-        rightInspectorChromeState.overlayShouldAnimateAlignment = true
+        cycleSidebarMode()
+    }
+
+    private func cycleSidebarMode() {
+        currentSidebarMode = currentSidebarMode.next
+        SidebarPreferences.sidebarMode = currentSidebarMode
+        applySidebarMode(animated: true)
+    }
+
+    private func applySidebarMode(animated: Bool) {
+        rightInspectorChromeState.overlayShouldAnimateAlignment = animated
         sidebarTransitionGeneration &+= 1
         let transitionGeneration = sidebarTransitionGeneration
-        let width = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
+
+        let width: CGFloat
+        switch currentSidebarMode {
+        case .expanded:
+            width = SidebarPreferences.sidebarWidth
+            isSidebarVisible = true
+            sidebarContentView?.isHidden = false
+            collapsedRailHostView?.isHidden = true
+            sidebarHostView?.isHidden = false
+        case .collapsed:
+            width = DesignTokens.Layout.sidebarCollapsedWidth
+            isSidebarVisible = true
+            sidebarContentView?.isHidden = true
+            collapsedRailHostView?.isHidden = false
+            sidebarHostView?.isHidden = false
+        case .hidden:
+            width = 0
+            isSidebarVisible = false
+        }
+
         let signpost = PerformanceDiagnostics.shared.beginInterval("sidebar.toggle")
         ChromeTransitionCoordinator.shared.begin(.sidebar)
-        if isSidebarVisible { sidebarHostView?.isHidden = false }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DesignTokens.Motion.normal
-            ctx.allowsImplicitAnimation = true
-            sidebarWidthConstraint?.animator().constant = width
-        }, completionHandler: {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                ChromeTransitionCoordinator.shared.end(.sidebar)
-                PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
-                guard self.sidebarTransitionGeneration == transitionGeneration else { return }
-                if !self.isSidebarVisible { self.sidebarHostView?.isHidden = true }
-                self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
-            }
-        })
+
+        if animated {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = DesignTokens.Motion.normal
+                ctx.allowsImplicitAnimation = true
+                sidebarWidthConstraint?.animator().constant = width
+            }, completionHandler: {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    ChromeTransitionCoordinator.shared.end(.sidebar)
+                    PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
+                    guard self.sidebarTransitionGeneration == transitionGeneration else { return }
+                    if self.currentSidebarMode == .hidden { self.sidebarHostView?.isHidden = true }
+                    self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
+                }
+            })
+        } else {
+            sidebarWidthConstraint?.constant = width
+            ChromeTransitionCoordinator.shared.end(.sidebar)
+            PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
+            if currentSidebarMode == .hidden { sidebarHostView?.isHidden = true }
+            rightInspectorChromeState.overlayShouldAnimateAlignment = false
+        }
+
         updateWindowMinWidth()
         updateRightInspectorOverlayAlignment()
         persistence?.markDirty()
@@ -1661,6 +1794,207 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             showCommandCenter(makeKey: true)
         }
+    }
+
+    @objc private func toggleFocusMode() {
+        isFocusMode.toggle()
+        if isFocusMode {
+            // Save current state
+            preFocusSidebarVisible = isSidebarVisible
+            preFocusInspectorVisible = isRightInspectorVisible
+            preFocusSidebarMode = currentSidebarMode
+            // Hide chrome
+            if currentSidebarMode != .hidden {
+                currentSidebarMode = .hidden
+                applySidebarMode(animated: true)
+            }
+            if isRightInspectorVisible { toggleRightInspector() }
+            showFocusModeEscapeHatch()
+        } else {
+            // Restore pre-focus state
+            if preFocusSidebarMode != .hidden && currentSidebarMode == .hidden {
+                currentSidebarMode = preFocusSidebarMode
+                applySidebarMode(animated: true)
+            }
+            if preFocusInspectorVisible && !isRightInspectorVisible { toggleRightInspector() }
+            hideFocusModeEscapeHatch()
+        }
+    }
+
+    private func showFocusModeEscapeHatch() {
+        guard let mainWindow = window else { return }
+        let escapeView = FocusModeEscapeHatch(onExitFocusMode: { [weak self] in
+            self?.toggleFocusMode()
+        })
+        let hostingView = NSHostingView(rootView: escapeView)
+
+        let hatchSize = NSSize(width: 120, height: 50)
+
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: hatchSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.contentView = hostingView
+        panel.ignoresMouseEvents = false
+
+        positionFocusModeEscapeHatch(panel, in: mainWindow)
+        mainWindow.addChildWindow(panel, ordered: .above)
+        panel.orderFront(nil)
+        focusModeEscapeHatchWindow = panel
+
+        // Reposition on window resize
+        focusModeResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: mainWindow,
+            queue: .main
+        ) { [weak self, weak panel, weak mainWindow] _ in
+            guard let panel, let mainWindow else { return }
+            Task { @MainActor in
+                self?.positionFocusModeEscapeHatch(panel, in: mainWindow)
+            }
+        }
+    }
+
+    private func positionFocusModeEscapeHatch(_ panel: NSWindow, in mainWindow: NSWindow) {
+        let hatchSize = panel.frame.size
+        let mainFrame = mainWindow.frame
+        let origin = NSPoint(
+            x: mainFrame.maxX - hatchSize.width - 12,
+            y: mainFrame.maxY - hatchSize.height - 12
+        )
+        panel.setFrameOrigin(origin)
+    }
+
+    private func hideFocusModeEscapeHatch() {
+        if let observer = focusModeResizeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            focusModeResizeObserver = nil
+        }
+        if let hatchWindow = focusModeEscapeHatchWindow {
+            window?.removeChildWindow(hatchWindow)
+            hatchWindow.orderOut(nil)
+            focusModeEscapeHatchWindow = nil
+        }
+    }
+
+    private func showBranchPicker() {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              workspace.projectPath != nil,
+              let bus = commandBus else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let branches: [String] = try await bus.call(method: "git.list_branches")
+                let currentBranch = workspace.gitBranch
+
+                let popover = NSPopover()
+                popover.behavior = .transient
+                popover.contentSize = NSSize(width: 260, height: 340)
+                let pickerView = BranchPickerPopover(
+                    branches: branches,
+                    currentBranch: currentBranch,
+                    onSelect: { [weak self] branch in
+                        popover.close()
+                        self?.switchBranch(branch)
+                    },
+                    onDismiss: { popover.close() }
+                ).environment(GhosttyThemeProvider.shared)
+                popover.contentViewController = NSHostingController(rootView: pickerView)
+
+                if let branchButton = self.titlebarStatusView?.subviews.first(where: {
+                    $0.accessibilityLabel() == "Git branch"
+                }) ?? self.titlebarStatusView {
+                    popover.show(
+                        relativeTo: branchButton.bounds,
+                        of: branchButton,
+                        preferredEdge: .maxY
+                    )
+                }
+            } catch {
+                ToastManager.shared.show(
+                    "Failed to list branches: \(error.localizedDescription)",
+                    icon: "exclamationmark.triangle",
+                    style: .error
+                )
+            }
+        }
+    }
+
+    private func switchBranch(_ branch: String) {
+        guard let bus = commandBus else { return }
+        struct CheckoutParams: Encodable { let branch: String }
+        Task { @MainActor [weak self] in
+            do {
+                let _: Bool = try await bus.call(
+                    method: "git.checkout",
+                    params: CheckoutParams(branch: branch)
+                )
+                self?.workspaceManager?.activeWorkspace?.gitBranch = branch
+                self?.titlebarStatusView?.updateBranch(branch)
+                ToastManager.shared.show("Switched to \(branch)", icon: "arrow.triangle.branch", style: .success)
+            } catch {
+                ToastManager.shared.show(
+                    "Checkout failed: \(error.localizedDescription)",
+                    icon: "exclamationmark.triangle",
+                    style: .error
+                )
+            }
+        }
+    }
+
+    private func refreshAgentStrip() {
+        guard let sessionStore, let commandCenterStore else { return }
+
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        let sessions = sessionStore.sessions.compactMap { session -> LiveSessionEntry? in
+            let started = dateFormatter.date(from: session.startedAt) ?? Date()
+            let lastActivity = dateFormatter.date(from: session.lastHeartbeat) ?? started
+            return LiveSessionEntry(
+                id: session.id,
+                name: session.name,
+                status: session.status,
+                startedAt: started,
+                lastActivityAt: lastActivity
+            )
+        }
+
+        let runs = commandCenterStore.workspaceSnapshots.flatMap(\.runs).map { fleetRun in
+            CommandCenterRunEntry(
+                sessionID: fleetRun.run.sessionID,
+                taskTitle: fleetRun.run.taskTitle,
+                provider: fleetRun.run.provider,
+                model: fleetRun.run.model,
+                costUSD: fleetRun.run.costUsd,
+                attentionReason: fleetRun.run.attentionReason
+            )
+        }
+        agentStripState.update(from: sessions, runs: runs)
+
+        let targetHeight: CGFloat = agentStripState.hasEntries ? DesignTokens.Layout.agentStripHeight : 0
+        if agentStripHeightConstraint?.constant != targetHeight {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = DesignTokens.Motion.fast
+                ctx.allowsImplicitAnimation = true
+                agentStripHeightConstraint?.animator().constant = targetHeight
+            }
+        }
+    }
+
+    private func openLinkedPRInBrowser() {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              let prURL = workspace.linkedPRURL,
+              let url = URL(string: prURL) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func openRightInspector(section: RightInspectorSection) {
@@ -1739,7 +2073,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateWindowMinWidth() {
         let basePaneMinWidth: CGFloat = 800 - DesignTokens.Layout.sidebarWidth
-        let leftWidth = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
+        let leftWidth: CGFloat = switch currentSidebarMode {
+        case .expanded: SidebarPreferences.sidebarWidth
+        case .collapsed: DesignTokens.Layout.sidebarCollapsedWidth
+        case .hidden: 0
+        }
         let rightWidth = isRightInspectorPresented ? rightInspectorStoredWidth : 0
         window?.minSize.width = basePaneMinWidth + leftWidth + rightWidth
     }
@@ -1749,6 +2087,35 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showCommandPalette() { commandPalette?.show() }
+
+    @objc private func showFileQuickOpen() {
+        // TODO: When palette supports prefix mode, pre-fill with ":"
+        commandPalette?.show()
+    }
+
+    @objc private func showShortcutSheet() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 520),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.isMovableByWindowBackground = true
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating
+
+        let sheetView = ShortcutSheetView(
+            shortcuts: ShortcutSheetView.defaultShortcuts,
+            onDismiss: { panel.close() }
+        ).environment(GhosttyThemeProvider.shared)
+
+        panel.contentView = NSHostingView(rootView: sheetView)
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+    }
 
     @objc private func nextWorkspace() {
         guard let mgr = workspaceManager, !mgr.workspaces.isEmpty else { return }
@@ -1842,6 +2209,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandItem(id: "view.command_center", title: "Toggle Command Center", category: "view", shortcut: "Shift+Cmd+C", description: "Open the fleet command center window") { [weak self] in
                 self?.toggleCommandCenter()
             },
+            CommandItem(id: "view.focus_mode", title: "Toggle Focus Mode", category: "view", shortcut: "Shift+Cmd+F", description: "Hide all chrome for distraction-free terminal use") { [weak self] in
+                self?.toggleFocusMode()
+            },
             CommandItem(id: "inspector.files", title: "Show Files Inspector", category: "view", shortcut: nil, description: "Reveal the right inspector and select Files") { [weak self] in
                 self?.openRightInspector(section: .files)
             },
@@ -1931,26 +2301,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentOpenWorkspacePanel() {
-        guard let selection = runOpenWorkspaceDialog() else { return }
-        switch selection.destination {
-        case .localFolder:
-            presentOpenLocalWorkspacePanel(terminalMode: selection.terminalMode)
-        case .remoteSSH:
-            Task { @MainActor [weak self] in
-                await self?.presentOpenRemoteWorkspacePanel(terminalMode: selection.terminalMode)
-            }
-        }
-    }
+        let vm = NewWorkspaceWizardViewModel()
+        wizardViewModel = vm
 
-    private func runOpenWorkspaceDialog() -> OpenWorkspaceSelection? {
-        let contentWidth: CGFloat = 332
-        let persistenceToggle = makePersistenceToggle()
-        let dialogContent = makeOpenWorkspaceDialogContent(
-            toggle: persistenceToggle,
-            width: contentWidth
-        )
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: contentWidth + 32, height: 10),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -1963,37 +2318,67 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.level = .modalPanel
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.contentView = dialogContent
-        panel.setContentSize(dialogContent.fittingSize)
-        panel.minSize = panel.frame.size
-        panel.maxSize = panel.frame.size
-        layoutOpenWorkspaceWindowButtons(in: panel)
-        panel.center()
+        wizardPanel = panel
 
-        openWorkspaceModalSelection = nil
-        let closeObserver = NotificationCenter.default.addObserver(
+        let wizardView = NewWorkspaceWizard(
+            viewModel: vm,
+            onSubmit: { [weak self] viewModel in
+                panel.close()
+                self?.handleWizardSubmit(viewModel)
+            },
+            onCancel: { [weak self] in
+                panel.close()
+                self?.wizardViewModel = nil
+                self?.wizardPanel = nil
+            }
+        ).environment(GhosttyThemeProvider.shared)
+
+        // Clean up if user closes panel via the window close button
+        NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: panel,
             queue: .main
-        ) { _ in
-            NSApp.stopModal()
-        }
-        defer {
-            NotificationCenter.default.removeObserver(closeObserver)
-            openWorkspaceModalSelection = nil
+        ) { [weak self] _ in
+            self?.wizardViewModel = nil
+            self?.wizardPanel = nil
         }
 
-        NSApp.activate(ignoringOtherApps: true)
+        let hostingView = NSHostingView(rootView: wizardView)
+        panel.contentView = hostingView
+        panel.setContentSize(NSSize(width: 620, height: 420))
+        panel.center()
         panel.makeKeyAndOrderFront(nil)
-        layoutOpenWorkspaceWindowButtons(in: panel)
-        _ = NSApp.runModal(for: panel)
-        panel.orderOut(nil)
+    }
 
-        guard let destination = openWorkspaceModalSelection else { return nil }
-        return OpenWorkspaceSelection(
-            destination: destination,
-            terminalMode: workspaceTerminalMode(for: persistenceToggle.state)
-        )
+    private func handleWizardSubmit(_ viewModel: NewWorkspaceWizardViewModel) {
+        let terminalMode = viewModel.terminalMode
+        switch viewModel.selectedSource {
+        case .localFolder:
+            if viewModel.projectPath.isEmpty {
+                presentOpenLocalWorkspacePanel(terminalMode: terminalMode)
+            } else {
+                openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
+            }
+        case .remoteSSH:
+            Task { @MainActor [weak self] in
+                await self?.presentOpenRemoteWorkspacePanel(terminalMode: terminalMode)
+            }
+        case .fromBranch:
+            guard !viewModel.projectPath.isEmpty, !viewModel.branchName.isEmpty else { return }
+            openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
+        case .fromPR:
+            guard viewModel.prHeadBranch != nil, !viewModel.projectPath.isEmpty else { return }
+            // TODO: Check out prHeadBranch after opening workspace
+            openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
+        case .fromIssue:
+            guard !viewModel.projectPath.isEmpty else { return }
+            openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
+        case .importWorktree:
+            guard !viewModel.worktreePath.isEmpty else { return }
+            openLocalWorkspace(path: viewModel.worktreePath, terminalMode: terminalMode)
+        }
+        wizardViewModel = nil
+        wizardPanel = nil
     }
 
     private func presentOpenLocalWorkspacePanel(terminalMode: WorkspaceTerminalMode) {
@@ -2215,185 +2600,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return label
     }
 
-    private func makeOpenWorkspaceAccessory(toggle: NSSwitch, width: CGFloat) -> NSView {
-        makeAlertAccessoryStack(
-            width: width,
-            views: [
-                makeAlertCard(
-                    width: width,
-                    views: [
-                        makeOpenWorkspaceChoiceRow(
-                            symbolName: "folder",
-                            title: "Local workspace",
-                            description: "Open a project directory on this Mac."
-                        ),
-                        makeOpenWorkspaceChoiceRow(
-                            symbolName: "network",
-                            title: "Remote workspace",
-                            description: "Connect with an SSH preset and a remote project path."
-                        ),
-                    ]
-                ),
-                makePersistenceAccessory(
-                    toggle: toggle,
-                    width: width
-                ),
-            ]
-        )
-    }
-
-    private func makeOpenWorkspaceDialogContent(toggle: NSSwitch, width: CGFloat) -> NSView {
-        let iconView = NSImageView(image: NSApp.applicationIconImage)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        iconView.heightAnchor.constraint(equalToConstant: 44).isActive = true
-
-        let titleLabel = NSTextField(labelWithString: "Open Workspace")
-        titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
-
-        let descriptionLabel = NSTextField(
-            wrappingLabelWithString: "Choose where to open the workspace and whether the session should stay reconnectable."
-        )
-        descriptionLabel.textColor = .secondaryLabelColor
-        descriptionLabel.preferredMaxLayoutWidth = width - 56
-
-        let headerCopy = NSStackView(views: [titleLabel, descriptionLabel])
-        headerCopy.orientation = .vertical
-        headerCopy.alignment = .leading
-        headerCopy.spacing = 6
-
-        let headerRow = NSStackView(views: [iconView, headerCopy])
-        headerRow.orientation = .horizontal
-        headerRow.alignment = .top
-        headerRow.spacing = 12
-
-        let inset: CGFloat = 16
-        let panelWidth = width + inset * 2
-        let innerWidth = width
-
-        let choiceCard = makeAlertCard(
-            width: innerWidth,
-            views: [
-                makeOpenWorkspaceChoiceRow(
-                    symbolName: "folder",
-                    title: "Local workspace",
-                    description: "Open a project directory on this Mac."
-                ),
-                makeOpenWorkspaceChoiceRow(
-                    symbolName: "network",
-                    title: "Remote workspace",
-                    description: "Connect with an SSH preset and a remote project path."
-                ),
-            ]
-        )
-        let persistenceCard = makePersistenceAccessory(toggle: toggle, width: innerWidth)
-        let actionRow = makeOpenWorkspaceActionRow(width: innerWidth)
-
-        let contentStack = NSStackView(views: [
-            headerRow,
-            choiceCard,
-            persistenceCard,
-            actionRow,
-        ])
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = 12
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: 1))
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        container.setAccessibilityIdentifier("openWorkspace.dialog")
-        container.addSubview(contentStack)
-
-        NSLayoutConstraint.activate([
-            contentStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
-            contentStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
-            contentStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
-            contentStack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -inset),
-        ])
-
-        container.layoutSubtreeIfNeeded()
-        container.frame.size = NSSize(width: panelWidth, height: container.fittingSize.height)
-        return container
-    }
-
-    private func makeOpenWorkspaceActionRow(width: CGFloat) -> NSView {
-        let cancelButton = makeOpenWorkspaceActionButton(
-            title: "Cancel",
-            identifier: "cancel",
-            keyEquivalent: "\u{1b}"
-        )
-        let remoteButton = makeOpenWorkspaceActionButton(
-            title: "Remote SSH",
-            identifier: "remote"
-        )
-        let localButton = makeOpenWorkspaceActionButton(
-            title: "Local Folder",
-            identifier: "local",
-            keyEquivalent: "\r"
-        )
-
-        let row = NSStackView(views: [cancelButton, remoteButton, localButton])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.distribution = .fillEqually
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: width).isActive = true
-        return row
-    }
-
-    private func makeOpenWorkspaceActionButton(
-        title: String,
-        identifier: String,
-        keyEquivalent: String = ""
-    ) -> NSView {
-        let isDefault = keyEquivalent == "\r"
-
-        let button = NSButton(title: "", target: self, action: #selector(handleOpenWorkspaceDialogAction(_:)))
-        button.title = title
-        button.identifier = NSUserInterfaceItemIdentifier(identifier)
-        button.isBordered = false
-        button.keyEquivalent = keyEquivalent
-        button.keyEquivalentModifierMask = []
-        button.setAccessibilityLabel(title)
-        button.setAccessibilityIdentifier("openWorkspace.\(identifier)")
-        button.translatesAutoresizingMaskIntoConstraints = false
-
-        let textColor: NSColor = .white.withAlphaComponent(isDefault ? 1.0 : 0.85)
-        button.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: textColor,
-            .font: NSFont.systemFont(ofSize: 13, weight: isDefault ? .semibold : .regular),
-        ])
-
-        let pill = NSView()
-        pill.wantsLayer = true
-        pill.layer?.cornerRadius = 6
-        pill.layer?.backgroundColor = isDefault
-            ? NSColor.controlAccentColor.cgColor
-            : NSColor.white.withAlphaComponent(0.10).cgColor
-        pill.translatesAutoresizingMaskIntoConstraints = false
-
-        let wrapper = NSView()
-        wrapper.addSubview(pill)
-        wrapper.addSubview(button)
-        wrapper.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            pill.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
-            pill.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
-            pill.topAnchor.constraint(equalTo: wrapper.topAnchor),
-            pill.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
-            button.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
-            button.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
-            button.topAnchor.constraint(equalTo: wrapper.topAnchor),
-            button.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
-            wrapper.heightAnchor.constraint(equalToConstant: 30),
-        ])
-        return wrapper
-    }
-
     private func makePersistenceAccessory(
         toggle: NSSwitch,
         width: CGFloat
@@ -2419,39 +2625,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         row.detachesHiddenViews = false
 
         return makeAlertCard(width: width, views: [row])
-    }
-
-    private func makeOpenWorkspaceChoiceRow(
-        symbolName: String,
-        title: String,
-        description: String
-    ) -> NSView {
-        let iconView = NSImageView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
-        iconView.image = NSImage(
-            systemSymbolName: symbolName,
-            accessibilityDescription: title
-        )?.withSymbolConfiguration(.init(pointSize: 15, weight: .semibold))
-        iconView.contentTintColor = .secondaryLabelColor
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.widthAnchor.constraint(equalToConstant: 20).isActive = true
-        iconView.heightAnchor.constraint(equalToConstant: 20).isActive = true
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .preferredFont(forTextStyle: .headline)
-
-        let descriptionLabel = NSTextField(wrappingLabelWithString: description)
-        descriptionLabel.textColor = .secondaryLabelColor
-
-        let copyStack = NSStackView(views: [titleLabel, descriptionLabel])
-        copyStack.orientation = .vertical
-        copyStack.alignment = .leading
-        copyStack.spacing = DesignTokens.Spacing.xs
-
-        let row = NSStackView(views: [iconView, copyStack])
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = DesignTokens.Spacing.sm
-        return row
     }
 
     private func makeAlertAccessoryStack(width: CGFloat, views: [NSView]) -> NSView {
@@ -2496,28 +2669,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         container.layoutSubtreeIfNeeded()
         container.frame.size = NSSize(width: width, height: container.fittingSize.height)
         return container
-    }
-
-    @objc
-    private func handleOpenWorkspaceDialogAction(_ sender: NSButton) {
-        switch sender.identifier?.rawValue {
-        case "local":
-            openWorkspaceModalSelection = .localFolder
-        case "remote":
-            openWorkspaceModalSelection = .remoteSSH
-        default:
-            openWorkspaceModalSelection = nil
-        }
-        NSApp.stopModal()
-        sender.window?.close()
-    }
-
-    private func layoutOpenWorkspaceWindowButtons(in panel: NSPanel) {
-        guard let closeButton = panel.standardWindowButton(.closeButton),
-              let superview = closeButton.superview else { return }
-        superview.layoutSubtreeIfNeeded()
-        let y = (superview.bounds.height - closeButton.frame.height) / 2
-        closeButton.setFrameOrigin(NSPoint(x: 7, y: y))
     }
 
     private func installUITestReadinessView(in windowContent: NSView) {
@@ -3511,9 +3662,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyRestoredState(_ state: SessionPersistence.SessionState) {
-        isSidebarVisible = state.sidebarVisible
-        sidebarWidthConstraint?.constant = isSidebarVisible ? DesignTokens.Layout.sidebarWidth : 0
-        sidebarHostView?.isHidden = !isSidebarVisible
+        // Restore sidebar mode from persisted preferences; fall back to visible/hidden boolean
+        currentSidebarMode = SidebarPreferences.sidebarMode
+        if !state.sidebarVisible && currentSidebarMode != .hidden {
+            currentSidebarMode = .hidden
+        }
+        applySidebarMode(animated: false)
         isRightInspectorVisible = state.rightInspectorVisible
         restoredCommandCenterWindowFrame = state.commandCenterWindowFrame?.nsRect
         restoredCommandCenterVisible = state.commandCenterVisible
