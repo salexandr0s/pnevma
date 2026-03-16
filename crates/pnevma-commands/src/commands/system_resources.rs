@@ -151,10 +151,10 @@ fn build_snapshot(session_meta: Vec<SessionMeta>) -> Result<ResourceSnapshot, St
         .map(|p| process_to_metrics(p, total_mem))
         .collect();
 
-    let app_total_cpu = main_metrics.cpu_percent
-        + helpers.iter().map(|h| h.cpu_percent).sum::<f32>();
-    let app_total_mem = main_metrics.memory_bytes
-        + helpers.iter().map(|h| h.memory_bytes).sum::<u64>();
+    let app_total_cpu =
+        main_metrics.cpu_percent + helpers.iter().map(|h| h.cpu_percent).sum::<f32>();
+    let app_total_mem =
+        main_metrics.memory_bytes + helpers.iter().map(|h| h.memory_bytes).sum::<u64>();
     let app_total_mem_pct = if total_mem > 0 {
         (app_total_mem as f64 / total_mem as f64 * 100.0) as f32
     } else {
@@ -216,10 +216,12 @@ fn build_snapshot(session_meta: Vec<SessionMeta>) -> Result<ResourceSnapshot, St
     } else {
         0.0
     };
-    let process_count =
-        1 + app.helpers.len() + sessions.iter().map(|s| {
-            (if s.process.is_some() { 1 } else { 0 }) + s.children.len()
-        }).sum::<usize>();
+    let process_count = 1
+        + app.helpers.len()
+        + sessions
+            .iter()
+            .map(|s| (if s.process.is_some() { 1 } else { 0 }) + s.children.len())
+            .sum::<usize>();
 
     let totals = ResourceTotals {
         cpu_percent: total_cpu,

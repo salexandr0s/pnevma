@@ -8,14 +8,19 @@ final class ThemedRightInspectorBackingView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let window else { return super.hitTest(point) }
-        let windowPoint = convert(point, to: nil)
+        // point is in the superview's coordinate system; convert correctly to window coords
+        let windowPoint = superview?.convert(point, to: nil) ?? point
         let threshold: CGFloat = 5
-        // Right edge
+        // Right edge — allow window resize handle to work
         if windowPoint.x > window.frame.width - threshold { return nil }
         // Bottom-right corner
         if windowPoint.y < threshold && windowPoint.x > window.frame.width - 15 { return nil }
         return super.hitTest(point)
     }
+
+    /// Accept clicks even when the window is not key so that the first click
+    /// both activates the window and forwards the event to SwiftUI buttons.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

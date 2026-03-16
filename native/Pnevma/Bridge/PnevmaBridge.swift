@@ -216,7 +216,7 @@ final class PnevmaBridge: @unchecked Sendable {
 
         handle = pnevma_create(callback, nil)
         if handle == nil {
-            Log.bridge.error("Failed to create PnevmaHandle")
+            Log.bridge.error("Failed to create PnevmaHandle — pnevma_create returned NULL")
         } else if let handle {
             pnevma_set_session_output_callback(handle, Self.defaultSessionOutputCallback, nil)
         }

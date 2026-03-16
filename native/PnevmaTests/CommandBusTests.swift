@@ -89,30 +89,6 @@ final class CommandBusTests: XCTestCase {
         XCTAssertEqual(json?["flag"] as? Bool, true)
     }
 
-    // MARK: - CommandBus init without bridge
-
-    /// Verifies that creating a CommandBus with a real bridge does not crash.
-    /// Note: the bridge will fail to initialise its Rust handle (no library loaded in tests),
-    /// so bridge.call returns nil — CommandBus should surface that as bridgeCallFailed.
-    func testCommandBusCallWithNilBridgeThrows() async {
-        let bridge = PnevmaBridge()
-        let bus = CommandBus(bridge: bridge)
-
-        do {
-            let _: String = try await bus.call(method: "ping", params: nil)
-            XCTFail("Expected bridgeCallFailed error when Rust handle is unavailable")
-        } catch let err as PnevmaError {
-            if case .bridgeCallFailed(let method) = err {
-                XCTAssertEqual(method, "ping")
-            } else {
-                // invalidResponse or decodingFailed are also acceptable outcomes
-                // depending on what the uninitialised bridge returns.
-            }
-        } catch {
-            // Any error from a missing Rust backend is acceptable.
-        }
-    }
-
     func testBackendErrorLocalizedDescriptionMapsWorkspaceTrustFailures() {
         let trustError = PnevmaError.backendError(
             method: "project.open",

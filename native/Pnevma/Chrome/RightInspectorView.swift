@@ -213,7 +213,6 @@ struct RightInspectorView: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .contentShape(Rectangle())
                     .foregroundStyle(
                         sectionBinding.wrappedValue == section
                             ? .primary
@@ -224,6 +223,7 @@ struct RightInspectorView: View {
                             ? Color.primary.opacity(0.06) : Color.clear
                     )
                 }
+                .contentShape(Rectangle())
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("right-inspector-tab-\(section.rawValue)")
             }
@@ -238,8 +238,8 @@ struct RightInspectorView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
             }
+            .contentShape(Rectangle())
             .buttonStyle(.plain)
             .help("Close inspector")
             .padding(.trailing, 4)

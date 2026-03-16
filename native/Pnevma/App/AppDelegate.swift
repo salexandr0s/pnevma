@@ -1100,7 +1100,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let trigger = toolDockTriggerView {
             NSLayoutConstraint.activate([
                 trigger.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
-                trigger.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+                // Stop at the inspector leading edge so the tracker never covers the inspector area.
+                trigger.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
                 trigger.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
                 trigger.heightAnchor.constraint(equalToConstant: 10),
             ])
