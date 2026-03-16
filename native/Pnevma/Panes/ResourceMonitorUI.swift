@@ -22,25 +22,24 @@ struct ResourceMonitorPopoverView: View {
             .padding(.top, DesignTokens.Spacing.md)
             .padding(.bottom, DesignTokens.Spacing.sm)
 
-            Divider()
-
             Group {
                 if let snapshot = store.snapshot {
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            ResourceSummaryCard(
-                                totals: snapshot.totals,
-                                totalMemory: snapshot.host.totalMemoryBytes
-                            )
+                    VStack(spacing: 0) {
+                        ResourceSummaryCard(
+                            totals: snapshot.totals,
+                            totalMemory: snapshot.host.totalMemoryBytes
+                        )
 
-                            Divider()
+                        Divider()
+                            .padding(.horizontal, DesignTokens.Spacing.md)
 
-                            ResourceAppSection(app: snapshot.app)
+                        ResourceAppSection(app: snapshot.app)
+                            .padding(.horizontal, DesignTokens.Spacing.md)
+                            .padding(.vertical, DesignTokens.Spacing.sm)
 
-                            Divider()
-
-                            ResourceSessionsSection(sessions: snapshot.sessions)
-                        }
+                        ResourceSessionsSection(sessions: snapshot.sessions)
+                            .padding(.horizontal, DesignTokens.Spacing.md)
+                            .padding(.bottom, DesignTokens.Spacing.sm)
                     }
                 } else if let error = store.errorMessage {
                     ContentUnavailableView(
@@ -54,15 +53,18 @@ struct ResourceMonitorPopoverView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .frame(minHeight: 240)
+            .frame(minHeight: 200)
 
-            Divider()
+            if onOpenMonitor != nil {
+                Divider()
+                    .padding(.horizontal, DesignTokens.Spacing.md)
 
-            ResourceMonitorFooter(onOpenMonitor: onOpenMonitor)
-                .padding(.horizontal, DesignTokens.Spacing.md)
-                .padding(.vertical, DesignTokens.Spacing.sm + DesignTokens.Spacing.md)
+                ResourceMonitorFooter(onOpenMonitor: onOpenMonitor)
+                    .padding(.horizontal, DesignTokens.Spacing.md)
+                    .padding(.vertical, DesignTokens.Spacing.sm)
+            }
         }
-        .frame(width: 380)
+        .frame(width: 360)
         .background(Color(nsColor: .windowBackgroundColor))
         .task {
             await store.activate()
@@ -77,15 +79,11 @@ private struct ResourceMonitorHeader: View {
     let onRefresh: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: DesignTokens.Spacing.md) {
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-                Text("Resource Usage")
-                    .font(.headline)
-                    .bold()
-                Text("Pnevma process metrics")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+        HStack(alignment: .center, spacing: DesignTokens.Spacing.md) {
+            Text("RESOURCE USAGE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(.primary)
 
             Spacer(minLength: DesignTokens.Spacing.sm)
 
@@ -96,6 +94,7 @@ private struct ResourceMonitorHeader: View {
                         .frame(minWidth: 16)
                 } else {
                     Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11))
                 }
             }
             .buttonStyle(.borderless)
@@ -112,25 +111,22 @@ private struct ResourceSummaryCard: View {
     let totalMemory: UInt64
 
     var body: some View {
-        HStack(spacing: DesignTokens.Spacing.lg) {
+        HStack(spacing: 0) {
             ResourceStatBadge(
                 label: "CPU",
-                value: resourceFormatCpu(totals.cpuPercent),
-                color: resourceSeverityColor(totals.cpuPercent)
+                value: resourceFormatCpu(totals.cpuPercent)
             )
             ResourceStatBadge(
                 label: "MEMORY",
-                value: resourceFormatMemory(totals.memoryBytes),
-                color: resourceSeverityColor(totals.memoryPercent)
+                value: resourceFormatMemory(totals.memoryBytes)
             )
             ResourceStatBadge(
                 label: "RAM SHARE",
-                value: resourceFormatCpu(totals.memoryPercent),
-                color: resourceSeverityColor(totals.memoryPercent)
+                value: resourceFormatPercent(totals.memoryPercent)
             )
         }
         .padding(.horizontal, DesignTokens.Spacing.md)
-        .padding(.vertical, DesignTokens.Spacing.sm)
+        .padding(.vertical, DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
         .accessibilityElement(children: .contain)
     }
 }
@@ -138,19 +134,17 @@ private struct ResourceSummaryCard: View {
 private struct ResourceStatBadge: View {
     let label: String
     let value: String
-    let color: Color
 
     var body: some View {
-        VStack(alignment: .center, spacing: DesignTokens.Spacing.xs) {
-            Text(value)
-                .font(.system(.callout, design: .monospaced))
-                .bold()
-                .foregroundStyle(color)
+        VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.caption2)
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.primary)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel(label)
         .accessibilityValue(value)
     }
@@ -160,82 +154,76 @@ private struct ResourceStatBadge: View {
 
 private struct ResourceAppSection: View {
     let app: AppResourceGroup
-    @State private var isExpanded = true
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(spacing: 0) {
-                ResourceProcessRow(
-                    name: app.main.name,
-                    pid: app.main.pid,
-                    cpuPercent: app.main.cpuPercent,
-                    memoryBytes: app.main.memoryBytes
-                )
+        VStack(spacing: 0) {
+            // Section header
+            HStack {
+                Text("Pnevma App")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(resourceFormatCpu(app.totalCpuPercent))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text(resourceFormatMemory(app.totalMemoryBytes))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, DesignTokens.Spacing.xs)
 
-                if !app.helpers.isEmpty {
+            // Process rows
+            ResourceProcessRow(
+                name: "Main",
+                cpuPercent: app.main.cpuPercent,
+                memoryBytes: app.main.memoryBytes
+            )
+
+            if !app.helpers.isEmpty {
+                // Group small helpers into "Other" if there are multiple
+                if app.helpers.count > 2 {
+                    let totalCpu = app.helpers.reduce(Float(0)) { $0 + $1.cpuPercent }
+                    let totalMem = app.helpers.reduce(UInt64(0)) { $0 + $1.memoryBytes }
+                    ResourceProcessRow(
+                        name: "Other",
+                        cpuPercent: totalCpu,
+                        memoryBytes: totalMem
+                    )
+                } else {
                     ForEach(app.helpers) { helper in
-                        Divider()
-                            .padding(.leading, DesignTokens.Spacing.md)
                         ResourceProcessRow(
-                            name: helper.name,
-                            pid: helper.pid,
+                            name: helper.name.capitalized,
                             cpuPercent: helper.cpuPercent,
                             memoryBytes: helper.memoryBytes
                         )
                     }
                 }
             }
-        } label: {
-            HStack(spacing: DesignTokens.Spacing.sm) {
-                Image(systemName: "app.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                Text("Pnevma App")
-                    .font(.subheadline)
-                    .bold()
-                Spacer()
-                Text(resourceFormatCpu(app.totalCpuPercent))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(resourceSeverityColor(app.totalCpuPercent))
-                Text(resourceFormatMemory(app.totalMemoryBytes))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityLabel("Pnevma App")
-            .accessibilityValue(
-                "CPU \(resourceFormatCpu(app.totalCpuPercent)), Memory \(resourceFormatMemory(app.totalMemoryBytes))"
-            )
         }
-        .padding(.horizontal, DesignTokens.Spacing.md)
-        .padding(.vertical, DesignTokens.Spacing.sm)
     }
 }
 
 private struct ResourceProcessRow: View {
     let name: String
-    let pid: UInt32
     let cpuPercent: Float
     let memoryBytes: UInt64
 
     var body: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
             Text(name)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Text("(\(pid))")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.tertiary)
             Spacer()
             Text(resourceFormatCpu(cpuPercent))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(resourceSeverityColor(cpuPercent))
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
             Text(resourceFormatMemory(memoryBytes))
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, DesignTokens.Spacing.md)
-        .padding(.vertical, DesignTokens.Spacing.xs)
+        .padding(.leading, DesignTokens.Spacing.md)
+        .padding(.vertical, 2)
         .accessibilityLabel(name)
         .accessibilityValue(
             "CPU \(resourceFormatCpu(cpuPercent)), Memory \(resourceFormatMemory(memoryBytes))"
@@ -247,51 +235,33 @@ private struct ResourceProcessRow: View {
 
 private struct ResourceSessionsSection: View {
     let sessions: [SessionResources]
-    @State private var isExpanded = true
+
+    private var activeSessions: [SessionResources] {
+        sessions.filter { session in
+            let isActive = session.status == "running" || session.status == "active"
+            let hasResources = session.totalCpuPercent > 0 || session.totalMemoryBytes > 0
+            return isActive || hasResources
+        }
+    }
 
     var body: some View {
-        if sessions.isEmpty {
-            HStack {
-                Image(systemName: "terminal")
-                    .foregroundStyle(.tertiary)
-                    .font(.caption)
-                Text("No active sessions")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.sm)
-            .accessibilityLabel("No active sessions")
+        if activeSessions.isEmpty {
+            Text("No active terminal sessions")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, DesignTokens.Spacing.md)
+                .accessibilityLabel("No active terminal sessions")
         } else {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                VStack(spacing: 0) {
-                    ForEach(sessions) { session in
-                        if session.id != sessions.first?.id {
-                            Divider()
-                                .padding(.leading, DesignTokens.Spacing.md)
-                        }
-                        ResourceSessionRow(session: session)
-                    }
+            Divider()
+                .padding(.horizontal, 0)
+                .padding(.bottom, DesignTokens.Spacing.sm)
+
+            VStack(spacing: 0) {
+                ForEach(activeSessions) { session in
+                    ResourceSessionRow(session: session)
                 }
-            } label: {
-                HStack(spacing: DesignTokens.Spacing.sm) {
-                    Image(systemName: "terminal")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                    Text("Sessions")
-                        .font(.subheadline)
-                        .bold()
-                    Text("(\(sessions.count))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .accessibilityLabel("Sessions")
-                .accessibilityValue("\(sessions.count) active")
             }
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.sm)
         }
     }
 }
@@ -310,22 +280,21 @@ private struct ResourceSessionRow: View {
                 .accessibilityHidden(true)
 
             Text(session.sessionName)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 12))
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             Spacer()
 
             Text(resourceFormatCpu(session.totalCpuPercent))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(resourceSeverityColor(session.totalCpuPercent))
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
 
             Text(resourceFormatMemory(session.totalMemoryBytes))
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, DesignTokens.Spacing.md)
-        .padding(.vertical, DesignTokens.Spacing.xs)
+        .padding(.vertical, 2)
         .accessibilityLabel(session.sessionName)
         .accessibilityValue(
             "\(session.status), CPU \(resourceFormatCpu(session.totalCpuPercent)), Memory \(resourceFormatMemory(session.totalMemoryBytes))"
@@ -342,6 +311,7 @@ private struct ResourceMonitorFooter: View {
         HStack {
             Button(action: { onOpenMonitor?() }) {
                 Text("Open Monitor")
+                    .font(.system(size: 12))
             }
             .buttonStyle(.borderless)
             Spacer()
@@ -354,7 +324,7 @@ private struct ResourceMonitorFooter: View {
 private func resourceFormatMemory(_ bytes: UInt64) -> String {
     let mb = Double(bytes) / (1024 * 1024)
     if mb >= 1024 {
-        return String(format: "%.2f GB", mb / 1024)
+        return String(format: "%.1f GB", mb / 1024)
     }
     return String(format: "%.1f MB", mb)
 }
@@ -363,10 +333,11 @@ private func resourceFormatCpu(_ percent: Float) -> String {
     String(format: "%.1f%%", percent)
 }
 
-private func resourceSeverityColor(_ percent: Float) -> Color {
-    if percent >= 80 { return .red }
-    if percent >= 50 { return .orange }
-    return .green
+private func resourceFormatPercent(_ percent: Float) -> String {
+    if percent >= 10 {
+        return String(format: "%.0f%%", percent)
+    }
+    return String(format: "%.1f%%", percent)
 }
 
 private func resourceSessionStatusColor(_ status: String) -> Color {
