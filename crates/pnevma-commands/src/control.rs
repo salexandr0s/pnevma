@@ -906,6 +906,18 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.list_prs" => serde_json::to_value(
+            commands::pr_list(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.list_issues" => serde_json::to_value(
+            commands::list_github_issues(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "git.list_branches" => serde_json::to_value(
             commands::list_branches(state)
                 .await
@@ -2581,6 +2593,12 @@ pub async fn route_method(
             serde_json::to_value(snapshots)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "system.resource_snapshot" => serde_json::to_value(
+            commands::get_resource_snapshot(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "analytics.usage_breakdown" => {
             let days = parse_optional_i64_param(params, "days");
             serde_json::to_value(

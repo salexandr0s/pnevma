@@ -125,8 +125,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smokeTimeoutWorkItem: DispatchWorkItem?
     private var runtimeSettingsObserver: NSObjectProtocol?
     private var providerUsageStoreObserver: NSObjectProtocol?
-    private var wizardViewModel: NewWorkspaceWizardViewModel?
-    private var wizardPanel: NSPanel?
+    private var openerViewModel: WorkspaceOpenerViewModel?
+    private var openerPanel: NSPanel?
     private let toolDockState = ToolDockState()
     private var isToolDockContentHovered = false
     private var isToolDockEdgeHovered = false
@@ -592,11 +592,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarBacking.addSubview(sidebarHost)
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
 
-        let topToTitlebar = sidebarHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor)
-        topToTitlebar.isActive = true
-        self.sidebarTopToTitlebar = topToTitlebar
-
         NSLayoutConstraint.activate([
+            sidebarHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor),
             sidebarHost.leadingAnchor.constraint(equalTo: sidebarBacking.leadingAnchor),
             sidebarHost.trailingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
             sidebarHost.bottomAnchor.constraint(equalTo: sidebarBacking.bottomAnchor),
@@ -616,9 +613,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         collapsedRailHost.isHidden = true
         sidebarBacking.addSubview(collapsedRailHost)
         NSLayoutConstraint.activate([
+            collapsedRailHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor),
             collapsedRailHost.leadingAnchor.constraint(equalTo: sidebarBacking.leadingAnchor),
             collapsedRailHost.trailingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
-            collapsedRailHost.topAnchor.constraint(equalTo: sidebarBacking.topAnchor),
             collapsedRailHost.bottomAnchor.constraint(equalTo: sidebarBacking.bottomAnchor),
         ])
         self.collapsedRailHostView = collapsedRailHost
@@ -816,6 +813,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusDot = StatusDotOverlayView(frame: NSRect(x: 16, y: 3, width: 8, height: 8))
         usageBtn.addSubview(statusDot)
         usageStatusDot = statusDot
+        let resourceMonitorBtn = makeTitlebarButton(
+            symbolName: "gauge.with.dots.needle.bottom.50percent",
+            accessibilityDescription: "Resources",
+            toolTip: "Resources",
+            action: #selector(showResourceMonitorPopover),
+            size: titlebarButtonSize,
+            symbolConfig: titlebarSymbolConfig,
+            hoverTintColor: .systemTeal
+        )
+        resourceMonitorToolbarButton = resourceMonitorBtn
         let addWorkspaceBtn = makeTitlebarButton(
             symbolName: "plus",
             accessibilityDescription: "Open Workspace",
@@ -878,7 +885,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         for view in [sidebarBacking, tabBar, agentStrip, contentArea, toolDock, toolbarSep,
                       rightInspectorBacking, rightInspectorResizer,
-                      sidebarToggleBtn, notificationsBtn, usageBtn, settingsBtn, addWorkspaceBtn,
+                      sidebarToggleBtn, notificationsBtn, usageBtn, resourceMonitorBtn, settingsBtn, addWorkspaceBtn,
                       templateBtn, titlebarStatus,
                       openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -963,7 +970,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             titlebarFill.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
 
             sidebarBacking.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
-            sidebarBacking.topAnchor.constraint(equalTo: windowContent.topAnchor),
+            sidebarBacking.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
             swc,
 
             rightInspectorBacking.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
@@ -1002,9 +1009,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorResizer.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
             rightInspectorResizer.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
 
-            // Horizontal separator between titlebar and content (not over sidebar)
+            // Horizontal separator between titlebar and content — spans full width (Superset-style)
             toolbarSep.topAnchor.constraint(equalTo: titlebarFill.bottomAnchor),
-            toolbarSep.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
+            toolbarSep.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
             toolbarSep.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
             toolbarSep.heightAnchor.constraint(equalToConstant: DesignTokens.Layout.dividerWidth),
 
@@ -1019,9 +1026,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             notificationsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
             usageBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            usageBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -4),
+            usageBtn.trailingAnchor.constraint(equalTo: resourceMonitorBtn.leadingAnchor, constant: -4),
             usageBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             usageBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
+
+            resourceMonitorBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
+            resourceMonitorBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -4),
+            resourceMonitorBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
+            resourceMonitorBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
             settingsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             settingsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
@@ -2312,11 +2324,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentOpenWorkspacePanel() {
-        let vm = NewWorkspaceWizardViewModel()
-        wizardViewModel = vm
+        let vm = WorkspaceOpenerViewModel()
+        if let wm = workspaceManager {
+            vm.loadProjects(from: wm)
+        }
+        openerViewModel = vm
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 500),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -2329,18 +2344,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.level = .modalPanel
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        wizardPanel = panel
+        openerPanel = panel
 
-        let wizardView = NewWorkspaceWizard(
+        guard let bus = commandBus ?? CommandBus.shared else { return }
+        let openerView = WorkspaceOpenerView(
             viewModel: vm,
+            commandBus: bus,
             onSubmit: { [weak self] viewModel in
                 panel.close()
-                self?.handleWizardSubmit(viewModel)
+                self?.handleOpenerSubmit(viewModel)
             },
             onCancel: { [weak self] in
                 panel.close()
-                self?.wizardViewModel = nil
-                self?.wizardPanel = nil
+                self?.openerViewModel = nil
+                self?.openerPanel = nil
             }
         ).environment(GhosttyThemeProvider.shared)
 
@@ -2351,47 +2368,54 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.wizardViewModel = nil
-                self?.wizardPanel = nil
+                self?.openerViewModel = nil
+                self?.openerPanel = nil
             }
         }
 
-        let hostingView = NSHostingView(rootView: wizardView)
+        let hostingView = NSHostingView(rootView: openerView)
         panel.contentView = hostingView
-        panel.setContentSize(NSSize(width: 620, height: 420))
+        panel.setContentSize(NSSize(width: 680, height: 500))
         panel.center()
         panel.makeKeyAndOrderFront(nil)
+
+        // Trigger initial data load if a project is already selected
+        if vm.selectedProjectPath != nil {
+            vm.onProjectChanged(using: bus)
+        }
     }
 
-    private func handleWizardSubmit(_ viewModel: NewWorkspaceWizardViewModel) {
+    private func handleOpenerSubmit(_ viewModel: WorkspaceOpenerViewModel) {
         let terminalMode = viewModel.terminalMode
-        switch viewModel.selectedSource {
-        case .localFolder:
-            if viewModel.projectPath.isEmpty {
-                presentOpenLocalWorkspacePanel(terminalMode: terminalMode)
+
+        switch viewModel.selectedTab {
+        case .prompt:
+            if viewModel.sshEnabled {
+                Task { @MainActor [weak self] in
+                    await self?.presentOpenRemoteWorkspacePanel(terminalMode: terminalMode)
+                }
+            } else if let path = viewModel.selectedProjectPath {
+                openLocalWorkspace(path: path, terminalMode: terminalMode)
             } else {
-                openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
+                presentOpenLocalWorkspacePanel(terminalMode: terminalMode)
             }
-        case .remoteSSH:
-            Task { @MainActor [weak self] in
-                await self?.presentOpenRemoteWorkspacePanel(terminalMode: terminalMode)
-            }
-        case .fromBranch:
-            guard !viewModel.projectPath.isEmpty, !viewModel.branchName.isEmpty else { return }
-            openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
-        case .fromPR:
-            guard viewModel.prHeadBranch != nil, !viewModel.projectPath.isEmpty else { return }
-            // TODO: Check out prHeadBranch after opening workspace
-            openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
-        case .fromIssue:
-            guard !viewModel.projectPath.isEmpty else { return }
-            openLocalWorkspace(path: viewModel.projectPath, terminalMode: terminalMode)
-        case .importWorktree:
-            guard !viewModel.worktreePath.isEmpty else { return }
-            openLocalWorkspace(path: viewModel.worktreePath, terminalMode: terminalMode)
+
+        case .issues:
+            guard let path = viewModel.selectedProjectPath else { return }
+            openLocalWorkspace(path: path, terminalMode: terminalMode)
+
+        case .pullRequests:
+            guard let path = viewModel.selectedProjectPath else { return }
+            // TODO: Check out PR head branch after opening workspace
+            openLocalWorkspace(path: path, terminalMode: terminalMode)
+
+        case .branches:
+            guard let path = viewModel.selectedProjectPath else { return }
+            openLocalWorkspace(path: path, terminalMode: terminalMode)
         }
-        wizardViewModel = nil
-        wizardPanel = nil
+
+        openerViewModel = nil
+        openerPanel = nil
     }
 
     private func presentOpenLocalWorkspacePanel(terminalMode: WorkspaceTerminalMode) {
@@ -3728,11 +3752,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var notificationsPopover: NSPopover?
     private var usagePopover: NSPopover?
+    private var resourceMonitorPopover: NSPopover?
     private var sessionsPopover: NSPopover?
     private weak var notificationToolbarButton: NSButton?
     private weak var notificationBadge: BadgeOverlayView?
     private weak var usageToolbarButton: NSButton?
     private weak var usageStatusDot: StatusDotOverlayView?
+    private weak var resourceMonitorToolbarButton: NSButton?
 
     private func startSessionFromSessionManager() {
         sessionsPopover?.performClose(nil)
@@ -3841,6 +3867,43 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openUsageDashboard() {
         AnalyticsNavigationHub.shared.request(segmentRawValue: "providers")
         openToolWithDefaultPresentation("analytics")
+    }
+
+    @objc private func showResourceMonitorPopover() {
+        if let popover = resourceMonitorPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let button = resourceMonitorToolbarButton else { return }
+
+        ResourceMonitorStore.shared.setInteractiveMode(true)
+        Task { await ResourceMonitorStore.shared.activate() }
+
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 400, height: 460)
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: ResourceMonitorPopoverView(onOpenMonitor: { [weak self, weak popover] in
+                popover?.performClose(nil)
+                self?.openResourceMonitorPane()
+            })
+            .environment(GhosttyThemeProvider.shared)
+        )
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        resourceMonitorPopover = popover
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.willCloseNotification,
+            object: popover,
+            queue: .main
+        ) { [weak self] _ in
+            ResourceMonitorStore.shared.setInteractiveMode(false)
+            self?.resourceMonitorPopover = nil
+        }
+    }
+
+    private func openResourceMonitorPane() {
+        openToolWithDefaultPresentation("resource_monitor")
     }
 }
 
@@ -4022,13 +4085,6 @@ extension AppDelegate: NSWindowDelegate {
     public func windowDidEnterFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = true
 
-        // Drop sidebar content below the toolbar separator so it aligns with tab bars
-        if sidebarTopToToolbarSep == nil, let sidebarContent = sidebarContentView, let toolbarSep = toolbarSeparator {
-            sidebarTopToToolbarSep = sidebarContent.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor)
-        }
-        sidebarTopToTitlebar?.isActive = false
-        sidebarTopToToolbarSep?.isActive = true
-
         // Traffic lights are hidden in fullscreen — pull sidebar toggle to the left edge and shrink 10%
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = DesignTokens.Motion.normal
@@ -4042,10 +4098,6 @@ extension AppDelegate: NSWindowDelegate {
 
     public func windowDidExitFullScreen(_ notification: Notification) {
         titlebarFillMinHeightConstraint?.isActive = false
-
-        // Restore sidebar to fill titlebar area
-        sidebarTopToToolbarSep?.isActive = false
-        sidebarTopToTitlebar?.isActive = true
 
         // Traffic lights reappear — restore gap and size
         NSAnimationContext.runAnimationGroup { ctx in
