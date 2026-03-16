@@ -129,6 +129,7 @@ enum RightInspectorDiffRenderer {
 struct RightInspectorView: View {
     @Bindable var workspaceManager: WorkspaceManager
     let onStateChanged: () -> Void
+    let onClose: () -> Void
     let fileBrowserViewModel: FileBrowserViewModel
     let workspaceChangesViewModel: WorkspaceChangesViewModel
     let reviewViewModel: ReviewViewModel
@@ -137,6 +138,7 @@ struct RightInspectorView: View {
     init(
         workspaceManager: WorkspaceManager,
         onStateChanged: @escaping () -> Void,
+        onClose: @escaping () -> Void,
         fileBrowserViewModel: FileBrowserViewModel,
         workspaceChangesViewModel: WorkspaceChangesViewModel,
         reviewViewModel: ReviewViewModel,
@@ -144,6 +146,7 @@ struct RightInspectorView: View {
     ) {
         self.workspaceManager = workspaceManager
         self.onStateChanged = onStateChanged
+        self.onClose = onClose
         self.fileBrowserViewModel = fileBrowserViewModel
         self.workspaceChangesViewModel = workspaceChangesViewModel
         self.reviewViewModel = reviewViewModel
@@ -189,16 +192,16 @@ struct RightInspectorView: View {
             InspectorFilesSection(viewModel: fileBrowserViewModel)
         case .changes:
             InspectorChangesSection(viewModel: workspaceChangesViewModel)
-        case .review:
-            InspectorReviewSection(viewModel: reviewViewModel)
-        case .mergeQueue:
-            InspectorMergeQueueSection(viewModel: mergeQueueViewModel)
+        case .review, .mergeQueue:
+            // Fallback: persisted .review/.mergeQueue sections gracefully redirect to files
+            InspectorFilesSection(viewModel: fileBrowserViewModel)
         }
     }
 
     private var inspectorSectionTabs: some View {
-        HStack(spacing: 3) {
-            ForEach(RightInspectorSection.allCases, id: \.self) { section in
+        HStack(spacing: 0) {
+            // 2 primary tabs
+            ForEach(RightInspectorSection.tabBarCases, id: \.self) { section in
                 Button {
                     sectionBinding.wrappedValue = section
                 } label: {
@@ -207,23 +210,40 @@ struct RightInspectorView: View {
                             .font(.system(size: 10, weight: .semibold))
                         Text(section.title)
                             .font(.system(size: 11, weight: .medium))
-                            .lineLimit(1)
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Capsule())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .foregroundStyle(
+                        sectionBinding.wrappedValue == section
+                            ? .primary
+                            : Color.secondary.opacity(0.7)
+                    )
+                    .background(
+                        sectionBinding.wrappedValue == section
+                            ? Color.primary.opacity(0.06) : Color.clear
+                    )
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("right-inspector-tab-\(section.rawValue)")
-                .background(
-                    Capsule()
-                        .fill(sectionBinding.wrappedValue == section ? Color.accentColor.opacity(0.14) : Color.clear)
-                )
             }
+
+            Spacer()
+
+            // Close button
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close inspector")
+            .padding(.trailing, 4)
         }
-        .padding(.horizontal, DesignTokens.Spacing.sm)
-        .padding(.vertical, DesignTokens.Spacing.xs)
+        .padding(.leading, DesignTokens.Spacing.xs)
     }
 }
 
@@ -694,8 +714,8 @@ private struct InspectorFileTreeRow: View {
                         .accessibilityHidden(true)
                 }
 
-                Image(systemName: node.isDirectory ? "folder" : "doc.text")
-                    .foregroundStyle(node.isDirectory ? Color.accentColor : .secondary)
+                Image(systemName: fileTypeIcon(for: node))
+                    .foregroundStyle(node.isDirectory ? Color.accentColor : fileTypeColor(for: node))
                     .frame(width: 16)
 
                 Text(node.name)
@@ -727,6 +747,36 @@ private struct InspectorFileTreeRow: View {
                     InspectorFileTreeRow(node: child, depth: depth + 1, viewModel: viewModel, onSelect: onSelect)
                 }
             }
+        }
+    }
+
+    private func fileTypeIcon(for node: FileNode) -> String {
+        if node.isDirectory { return "folder.fill" }
+        let ext = (node.name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "swift": return "swift"
+        case "rs": return "gearshape.2"
+        case "ts", "tsx", "js", "jsx": return "chevron.left.forwardslash.chevron.right"
+        case "json": return "curlybraces"
+        case "md": return "doc.richtext"
+        case "toml", "yaml", "yml": return "gearshape"
+        case "png", "jpg", "jpeg", "gif", "svg": return "photo"
+        case "lock": return "lock"
+        default: return "doc"
+        }
+    }
+
+    private func fileTypeColor(for node: FileNode) -> Color {
+        let ext = (node.name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "swift": return .orange
+        case "rs": return Color(nsColor: .systemBrown)
+        case "ts", "tsx": return .blue
+        case "js", "jsx": return .yellow
+        case "json": return .purple
+        case "md": return .cyan
+        case "png", "jpg", "jpeg", "gif", "svg": return .green
+        default: return .secondary
         }
     }
 }
@@ -868,19 +918,38 @@ private struct InspectorChangeRow: View {
         return .orange
     }
 
+    private var statusIcon: String {
+        if change.conflicted { return "exclamationmark.triangle.fill" }
+        if change.untracked { return "plus.circle.fill" }
+        if change.staged && change.modified { return "pencil.circle.fill" }
+        if change.staged { return "checkmark.circle.fill" }
+        return "pencil.circle"
+    }
+
+    private var fileName: String {
+        (change.path as NSString).lastPathComponent
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(change.path)
-                .font(.system(.body, design: .monospaced))
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: 8) {
+            Image(systemName: statusIcon)
+                .font(.system(size: 12))
+                .foregroundStyle(badgeColor)
+                .frame(width: 16)
+
+            Text(fileName)
+                .font(.system(size: 12, design: .monospaced))
+                .lineLimit(1)
+
+            Spacer()
 
             Text(badgeText)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(badgeColor)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .help(change.path)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("right-inspector-change-row-\(inspectorIdentifierComponent(change.path))")
     }

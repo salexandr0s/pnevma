@@ -1543,6 +1543,12 @@ pub async fn route_method(
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "session.new" => {
+            {
+                let current = state.current.lock().await;
+                if current.is_none() {
+                    return Err(("no_project".to_string(), "no open project".to_string()));
+                }
+            }
             let name = parse_optional_string_param(params, "name")
                 .unwrap_or_else(|| "session".to_string());
             let cwd = parse_optional_string_param(params, "cwd").unwrap_or_else(|| ".".to_string());
@@ -1644,6 +1650,12 @@ pub async fn route_method(
             let session_id =
                 parse_string_param_aliases(params, &["session_id", "id"], "session_id")
                     .map_err(|e| ("invalid_params".to_string(), e))?;
+            {
+                let current = state.current.lock().await;
+                if current.is_none() {
+                    return Err(("no_project".to_string(), "no open project".to_string()));
+                }
+            }
             serde_json::to_value(
                 commands::get_session_binding(session_id, state)
                     .await

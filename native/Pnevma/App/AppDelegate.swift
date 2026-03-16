@@ -654,6 +654,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let rightInspectorView = RightInspectorView(
             workspaceManager: workspaceManager,
             onStateChanged: { [weak self] in self?.persistence?.markDirty() },
+            onClose: { [weak self] in self?.toggleRightInspector() },
             fileBrowserViewModel: rightInspectorFileBrowserViewModel,
             workspaceChangesViewModel: rightInspectorWorkspaceChangesViewModel,
             reviewViewModel: rightInspectorReviewViewModel,
@@ -1254,7 +1255,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettingsAction), keyEquivalent: ","))
         appMenu.addItem(.separator())
-        appMenu.addItem(NSMenuItem(title: "Quit Pnevma", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quitItem = NSMenuItem(title: "Quit Pnevma", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitItem.identifier = NSUserInterfaceItemIdentifier("menu.quit")
+        appMenu.addItem(quitItem)
         let appMenuItem = NSMenuItem()
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)

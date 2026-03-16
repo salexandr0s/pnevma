@@ -928,7 +928,10 @@ pub extern "C" fn pnevma_call_async(
                 .await;
             let result = match result {
                 Ok(result) => result,
-                Err(_) => return,
+                Err(panic_info) => {
+                    tracing::error!(method = %method_str, "route_method panicked: {:?}", panic_info);
+                    return;
+                }
             };
             let r = match result {
                 Ok(val) => {
