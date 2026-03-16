@@ -104,6 +104,12 @@ private let allSidebarTools: [SidebarToolItem] = [
         paneType: "analytics",
     ),
     SidebarToolItem(
+        id: "resource_monitor",
+        title: "Resources",
+        icon: "gauge.with.dots.needle.bottom.50percent",
+        paneType: "resource_monitor",
+    ),
+    SidebarToolItem(
         id: "brief",
         title: "Daily Brief",
         icon: "newspaper",
@@ -162,6 +168,7 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "replay",
             "browser",
             "analytics",
+            "resource_monitor",
             "brief",
             "rules",
             "secrets",
@@ -169,7 +176,7 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "settings",
         ]
     } else {
-        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "settings"]
+        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor", "settings"]
     }
 
     return allSidebarTools.filter { allowedIDs.contains($0.id) }

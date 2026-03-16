@@ -283,6 +283,10 @@ enum PaneFactory {
         paneTuple(UsagePaneView(frame: .zero))
     }
 
+    static func makeResourceMonitor() -> (PaneID, NSView & PaneContent) {
+        paneTuple(ResourceMonitorPaneView(frame: .zero))
+    }
+
     static func makeSettings() -> (PaneID, NSView & PaneContent) {
         paneTuple(SettingsPaneView(frame: .zero))
     }
@@ -355,6 +359,8 @@ enum PaneFactory {
             inner = DiffPaneView(frame: .zero)
         case "analytics":
             inner = UsagePaneView(frame: .zero)
+        case "resource_monitor":
+            inner = ResourceMonitorPaneView(frame: .zero)
         case "settings":
             inner = SettingsPaneView(frame: .zero)
         case "notifications":
@@ -399,6 +405,7 @@ enum PaneFactory {
         case "review":        return makeReview()
         case "diff":          return makeDiff()
         case "analytics":     return makeAnalytics()
+        case "resource_monitor": return makeResourceMonitor()
         case "settings":      return makeSettings()
         case "notifications": return makeNotifications()
         case "daily_brief":   return makeDailyBrief()
@@ -417,7 +424,7 @@ enum PaneFactory {
 
     static func availablePaneTypes(for workspace: Workspace?) -> Set<String> {
         guard let workspace else {
-            return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"]
+            return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "resource_monitor", "harness_config"]
         }
         if workspace.showsProjectToolsInUI {
             return [
@@ -432,6 +439,7 @@ enum PaneFactory {
                 "review",
                 "diff",
                 "analytics",
+                "resource_monitor",
                 "daily_brief",
                 "rules",
                 "secrets",
