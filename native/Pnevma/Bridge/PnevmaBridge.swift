@@ -184,6 +184,8 @@ struct BridgeCallResult {
 final class PnevmaBridge: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let handleLock = NSLock()
+    private var isDestroying = false
+    private let inflightFFI = DispatchGroup()
     private static let defaultSessionOutputCallback: SessionOutputCallback = { sessionID, data, len, _ in
         guard let sessionID, let data else { return }
         let chunk = String(
@@ -222,40 +224,38 @@ final class PnevmaBridge: @unchecked Sendable {
         }
     }
 
+    private func withLiveHandle<T>(_ body: (OpaquePointer) -> T?) -> T? {
+        handleLock.lock()
+        guard !isDestroying, let h = handle else {
+            handleLock.unlock()
+            return nil
+        }
+        inflightFFI.enter()
+        handleLock.unlock()
+        defer { inflightFFI.leave() }
+        return body(h)
+    }
+
     /// Synchronous call to the Rust backend. Must NOT be called from main thread.
     func call(method: String, params: String) -> BridgeCallResult? {
-        handleLock.lock()
-        let h = handle
-        handleLock.unlock()
-        guard let h = h else { return nil }
-
-        return method.withCString { methodPtr in
-            params.withCString { paramsPtr in
-                let result = pnevma_call(h, methodPtr, paramsPtr, UInt(params.utf8.count))
-                guard let result = result else { return nil as BridgeCallResult? }
-                defer { pnevma_free_result(result) }
-
-                guard let dataPtr = result.pointee.data else { return nil as BridgeCallResult? }
-                return BridgeCallResult(
-                    ok: result.pointee.ok != 0,
-                    payload: String(cString: dataPtr)
-                )
+        withLiveHandle { h in
+            method.withCString { methodPtr in
+                params.withCString { paramsPtr in
+                    let result = pnevma_call(h, methodPtr, paramsPtr, UInt(params.utf8.count))
+                    guard let result else { return nil as BridgeCallResult? }
+                    defer { pnevma_free_result(result) }
+                    guard let dataPtr = result.pointee.data else { return nil as BridgeCallResult? }
+                    return BridgeCallResult(
+                        ok: result.pointee.ok != 0,
+                        payload: String(cString: dataPtr)
+                    )
+                }
             }
         }
     }
 
     /// Async call to the Rust backend with callback.
     func callAsync(method: String, params: String, completion: @escaping @Sendable (BridgeCallResult?) -> Void) {
-        handleLock.lock()
-        let h = handle
-        handleLock.unlock()
-        guard let h = h else {
-            completion(nil)
-            return
-        }
-
-        let context = Unmanaged.passRetained(CompletionBox(completion) as AnyObject).toOpaque()
-
         let callback: @convention(c) (UnsafePointer<PnevmaResult>?, UnsafeMutableRawPointer?) -> Void = { result, ctx in
             guard let ctx = ctx else { return }
             let rawObj = Unmanaged<AnyObject>.fromOpaque(ctx).takeUnretainedValue()
@@ -281,27 +281,42 @@ final class PnevmaBridge: @unchecked Sendable {
             Unmanaged<AnyObject>.fromOpaque(ctx).release()
         }
 
-        method.withCString { methodPtr in
-            params.withCString { paramsPtr in
-                pnevma_call_async(
-                    h,
-                    methodPtr,
-                    paramsPtr,
-                    UInt(params.utf8.count),
-                    callback,
-                    context,
-                    releaseContext
-                )
+        let submitted = withLiveHandle { h -> Bool in
+            let context = Unmanaged.passRetained(CompletionBox(completion) as AnyObject).toOpaque()
+            method.withCString { methodPtr in
+                params.withCString { paramsPtr in
+                    pnevma_call_async(
+                        h,
+                        methodPtr,
+                        paramsPtr,
+                        UInt(params.utf8.count),
+                        callback,
+                        context,
+                        releaseContext
+                    )
+                }
             }
+            return true
+        }
+        if submitted == nil {
+            completion(nil)
         }
     }
 
     func destroy() {
         handleLock.lock()
+        guard !isDestroying else {
+            handleLock.unlock()
+            return
+        }
+        isDestroying = true
         let h = handle
         handle = nil
         handleLock.unlock()
-        if let h = h {
+
+        inflightFFI.wait()
+
+        if let h {
             pnevma_destroy(h)
         }
     }

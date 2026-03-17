@@ -724,10 +724,10 @@ pub extern "C" fn pnevma_call(
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`. The
-        // increment keeps it alive during this call even if `pnevma_destroy` fires
-        // concurrently. `Arc::from_raw` converts back to an owned reference that
-        // will be dropped at scope exit, decrementing the refcount.
+        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`.
+        // The Swift bridge guarantees no concurrent `pnevma_destroy` by using an
+        // in-flight submission barrier. The Arc increment provides a second line
+        // of defense, keeping the handle alive for the duration of this call.
         unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
         let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 
@@ -828,10 +828,10 @@ pub extern "C" fn pnevma_call_async(
     }
 
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`. The
-        // increment keeps it alive during this call even if `pnevma_destroy` fires
-        // concurrently. `Arc::from_raw` converts back to an owned reference that
-        // will be dropped at scope exit, decrementing the refcount.
+        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`.
+        // The Swift bridge guarantees no concurrent `pnevma_destroy` by using an
+        // in-flight submission barrier. The Arc increment provides a second line
+        // of defense, keeping the handle alive for the duration of this call.
         unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
         let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 
@@ -1008,10 +1008,10 @@ pub extern "C" fn pnevma_set_session_output_callback(
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`. The
-        // increment keeps it alive during this call even if `pnevma_destroy` fires
-        // concurrently. `Arc::from_raw` converts back to an owned reference that
-        // will be dropped at scope exit, decrementing the refcount.
+        // SAFETY: `handle` was created via `Arc::into_raw` in `pnevma_create`.
+        // The Swift bridge guarantees no concurrent `pnevma_destroy` by using an
+        // in-flight submission barrier. The Arc increment provides a second line
+        // of defense, keeping the handle alive for the duration of this call.
         unsafe { Arc::increment_strong_count(handle as *const PnevmaHandle) };
         let handle = unsafe { Arc::from_raw(handle as *const PnevmaHandle) };
 

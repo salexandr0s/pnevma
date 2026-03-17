@@ -12,9 +12,9 @@ final class ThemedRightInspectorBackingView: NSView {
         let windowPoint = superview?.convert(point, to: nil) ?? point
         let threshold: CGFloat = 5
         // Right edge — allow window resize handle to work
-        if windowPoint.x > window.frame.width - threshold { return nil }
+        if windowPoint.x >= window.frame.width - threshold { return nil }
         // Bottom-right corner
-        if windowPoint.y < threshold && windowPoint.x > window.frame.width - 15 { return nil }
+        if windowPoint.y < threshold && windowPoint.x >= window.frame.width - 15 { return nil }
         return super.hitTest(point)
     }
 

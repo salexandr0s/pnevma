@@ -103,13 +103,13 @@ final class ContentAreaView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let window else { return super.hitTest(point) }
-        let windowPoint = convert(point, to: nil)
+        let windowPoint = superview?.convert(point, to: nil) ?? point
         let edgeThreshold: CGFloat = 5
         let cornerThreshold: CGFloat = 15
         // Right edge — let NSThemeFrame handle horizontal resize
-        if windowPoint.x > window.frame.width - edgeThreshold { return nil }
+        if windowPoint.x >= window.frame.width - edgeThreshold { return nil }
         // Bottom-right corner
-        if windowPoint.y < cornerThreshold && windowPoint.x > window.frame.width - cornerThreshold { return nil }
+        if windowPoint.y < cornerThreshold && windowPoint.x >= window.frame.width - cornerThreshold { return nil }
         return super.hitTest(point)
     }
 

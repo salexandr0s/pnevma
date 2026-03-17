@@ -7,17 +7,17 @@ import Cocoa
 final class ToolDockContainerView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let window else { return super.hitTest(point) }
-        let windowPoint = convert(point, to: nil)
+        let windowPoint = superview?.convert(point, to: nil) ?? point
         let threshold: CGFloat = 5
         let cornerSize: CGFloat = 15
         // Bottom edge
         if windowPoint.y < threshold { return nil }
         // Right edge — let NSThemeFrame handle horizontal resize
-        if windowPoint.x > window.frame.width - threshold { return nil }
+        if windowPoint.x >= window.frame.width - threshold { return nil }
         // Bottom-left corner
         if windowPoint.y < cornerSize && windowPoint.x < cornerSize { return nil }
         // Bottom-right corner
-        if windowPoint.y < cornerSize && windowPoint.x > window.frame.width - cornerSize { return nil }
+        if windowPoint.y < cornerSize && windowPoint.x >= window.frame.width - cornerSize { return nil }
         return super.hitTest(point)
     }
 }
@@ -32,7 +32,7 @@ final class ThemedSidebarBackingView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard window != nil else { return super.hitTest(point) }
-        let windowPoint = convert(point, to: nil)
+        let windowPoint = superview?.convert(point, to: nil) ?? point
         let threshold: CGFloat = 5
         // Left edge
         if windowPoint.x < threshold { return nil }

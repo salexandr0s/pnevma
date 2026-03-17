@@ -59,6 +59,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toolDrawerOverlayHostView: ToolDrawerOverlayHostingView<AnyView>?
     private var uiTestReadinessView: UITestReadinessView?
     private var contentLeadingConstraint: NSLayoutConstraint?
+    private var contentMinWidthConstraint: NSLayoutConstraint?
     private var tabBarLeadingConstraint: NSLayoutConstraint?
     private var agentStripTopToTabBar: NSLayoutConstraint?
     private var agentStripTopToToolbarSep: NSLayoutConstraint?
@@ -963,6 +964,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.sidebarToggleHeightConstraint = sidebarToggleHeight
 
         let minContentWidth = win.minSize.width - sidebarWidth
+        let contentMinWidth = contentArea.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth)
+        self.contentMinWidthConstraint = contentMinWidth
         NSLayoutConstraint.activate([
             sidebarToggleLeading,
             titlebarFill.topAnchor.constraint(equalTo: windowContent.topAnchor),
@@ -995,7 +998,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             clc,
             contentArea.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
             contentArea.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
-            contentArea.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth),
+            contentMinWidth,
 
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             rightInspectorBacking.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
@@ -2106,7 +2109,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         case .hidden: 0
         }
         let rightWidth = isRightInspectorPresented ? rightInspectorStoredWidth : 0
-        window?.minSize.width = basePaneMinWidth + leftWidth + rightWidth
+        // Content area minimum shrinks to accommodate the inspector; window minSize stays ~800.
+        let minContent = max(basePaneMinWidth - rightWidth, 200)
+        window?.minSize.width = leftWidth + minContent + rightWidth
+        contentMinWidthConstraint?.constant = minContent
     }
 
     private func updateRightInspectorOverlayAlignment() {
@@ -4170,6 +4176,23 @@ extension AppDelegate {
                 onCancel?()
             }
         }
+    }
+}
+
+// MARK: - ResizableWindowContentView
+
+/// Window content view that yields ALL edge hits to NSThemeFrame for resize.
+/// With fullSizeContentView, subviews cover the resize handles. We must check
+/// edges BEFORE traversing subviews — otherwise any subview at the edge steals
+/// the hit and resize breaks.
+private final class ResizableWindowContentView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let window else { return super.hitTest(point) }
+        let windowPoint = superview?.convert(point, to: nil) ?? point
+        let edge: CGFloat = 5
+        if windowPoint.x < edge || windowPoint.x >= window.frame.width - edge { return nil }
+        if windowPoint.y < edge || windowPoint.y >= window.frame.height - edge { return nil }
+        return super.hitTest(point)
     }
 }
 

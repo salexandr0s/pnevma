@@ -92,47 +92,7 @@ class TerminalSurface {
             return
         }
 
-        var runtimeConfig = ghostty_runtime_config_s(
-            userdata: nil,
-            supports_selection_clipboard: false,
-            wakeup_cb: { _ in
-                Task { @MainActor in
-                    if let app = TerminalSurface.ghosttyApp {
-                        ghostty_app_tick(app)
-                    }
-                }
-            },
-            action_cb: { userdata, target, action in
-                return TerminalSurface.handleAction(userdata: userdata, action: action, target: target)
-            },
-            read_clipboard_cb: { userdata, _, statePtr in
-                guard let surface = TerminalSurface.surface(from: userdata) else { return }
-                Task { @MainActor in
-                    surface.completeClipboardRead(state: statePtr, confirmed: false)
-                }
-            },
-            confirm_read_clipboard_cb: { userdata, _, statePtr, _ in
-                guard let surface = TerminalSurface.surface(from: userdata) else { return }
-                Task { @MainActor in
-                    surface.completeClipboardRead(state: statePtr, confirmed: true)
-                }
-            },
-            write_clipboard_cb: { _, str, _, confirm in
-                guard !confirm, let str else { return }
-                let string = String(cString: str)
-                guard !string.isEmpty else { return }
-                Task { @MainActor in
-                    TerminalSurface.writeClipboardString(string)
-                }
-            },
-            close_surface_cb: { userdata, processAlive in
-                guard let userdata else { return }
-                let surface = Unmanaged<TerminalSurface>.fromOpaque(userdata).takeRetainedValue()
-                Task { @MainActor in
-                    surface.handleClose(processAlive: processAlive)
-                }
-            }
-        )
+        var runtimeConfig = Self.makeRuntimeConfig()
 
         ghosttyApp = ghostty_app_new(&runtimeConfig, ghosttyConfig)
         if ghosttyApp == nil {
@@ -459,6 +419,67 @@ class TerminalSurface {
         data.withCString { ptr in
             ghostty_surface_complete_clipboard_request(surface, ptr, state, confirmed)
         }
+    }
+
+    // MARK: - Runtime Config (nonisolated)
+
+    /// Build the ghostty runtime config with C callbacks.
+    /// MUST be nonisolated — ghostty calls these callbacks from its io-reader
+    /// background thread. Defining them inside an @MainActor method causes
+    /// Swift 6 to add runtime isolation checks that crash on the wrong queue.
+    nonisolated static func makeRuntimeConfig() -> ghostty_runtime_config_s {
+        ghostty_runtime_config_s(
+            userdata: nil,
+            supports_selection_clipboard: false,
+            wakeup_cb: { _ in
+                Task { @MainActor in
+                    if let app = TerminalSurface.ghosttyApp {
+                        ghostty_app_tick(app)
+                    }
+                }
+            },
+            action_cb: { userdata, target, action in
+                return TerminalSurface.handleAction(userdata: userdata, action: action, target: target)
+            },
+            read_clipboard_cb: { userdata, _, statePtr in
+                // Convert pointers to Int (Sendable) so we can cross the actor boundary.
+                let udBits = userdata.map { Int(bitPattern: $0) }
+                let spBits = statePtr.map { Int(bitPattern: $0) }
+                Task { @MainActor in
+                    let ud = udBits.flatMap { UnsafeMutableRawPointer(bitPattern: $0) }
+                    guard let surface = TerminalSurface.surface(from: ud) else { return }
+                    let sp = spBits.flatMap { UnsafeMutableRawPointer(bitPattern: $0) }
+                    surface.completeClipboardRead(state: sp, confirmed: false)
+                }
+            },
+            confirm_read_clipboard_cb: { userdata, _, statePtr, _ in
+                let udBits = userdata.map { Int(bitPattern: $0) }
+                let spBits = statePtr.map { Int(bitPattern: $0) }
+                Task { @MainActor in
+                    let ud = udBits.flatMap { UnsafeMutableRawPointer(bitPattern: $0) }
+                    guard let surface = TerminalSurface.surface(from: ud) else { return }
+                    let sp = spBits.flatMap { UnsafeMutableRawPointer(bitPattern: $0) }
+                    surface.completeClipboardRead(state: sp, confirmed: true)
+                }
+            },
+            write_clipboard_cb: { _, str, _, confirm in
+                guard !confirm, let str else { return }
+                let string = String(cString: str)
+                guard !string.isEmpty else { return }
+                Task { @MainActor in
+                    TerminalSurface.writeClipboardString(string)
+                }
+            },
+            close_surface_cb: { userdata, processAlive in
+                guard let userdata else { return }
+                let udBits = Int(bitPattern: userdata)
+                Task { @MainActor in
+                    guard let ptr = UnsafeMutableRawPointer(bitPattern: udBits) else { return }
+                    let surface = Unmanaged<TerminalSurface>.fromOpaque(ptr).takeRetainedValue()
+                    surface.handleClose(processAlive: processAlive)
+                }
+            }
+        )
     }
 
     private static func surface(from userdata: UnsafeMutableRawPointer?) -> TerminalSurface? {

@@ -71,6 +71,15 @@ final class TabBarView: NSView {
 
     override var isFlipped: Bool { true }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let window else { return super.hitTest(point) }
+        let windowPoint = superview?.convert(point, to: nil) ?? point
+        let threshold: CGFloat = 5
+        if windowPoint.x >= window.frame.width - threshold { return nil }
+        if windowPoint.y < threshold && windowPoint.x >= window.frame.width - 15 { return nil }
+        return super.hitTest(point)
+    }
+
     // MARK: - Rebuild (only on data change)
 
     private func rebuild() {

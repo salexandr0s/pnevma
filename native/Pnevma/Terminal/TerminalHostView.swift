@@ -182,7 +182,27 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: currentCursor)
+        // Don't register a cursor rect in the rightmost 5pt of the window — that zone
+        // belongs to NSThemeFrame's resize handle. Covering it with the terminal cursor
+        // would hide the resize cursor and prevent horizontal window resize.
+        let resizeEdge: CGFloat = 5
+        let insetRect: NSRect
+        if let window, convertedRightEdgeIsWindowEdge(resizeEdge: resizeEdge, window: window) {
+            insetRect = NSRect(x: bounds.minX, y: bounds.minY,
+                               width: max(bounds.width - resizeEdge, 0), height: bounds.height)
+        } else {
+            insetRect = bounds
+        }
+        if !insetRect.isEmpty {
+            addCursorRect(insetRect, cursor: currentCursor)
+        }
+    }
+
+    /// Returns true when this view's right edge coincides with the window's right edge.
+    private func convertedRightEdgeIsWindowEdge(resizeEdge: CGFloat, window: NSWindow) -> Bool {
+        // Convert right edge from self's local coordinate system to window coordinates.
+        let myRightInWindow = convert(NSPoint(x: bounds.maxX, y: bounds.midY), to: nil).x
+        return myRightInWindow >= window.frame.width - resizeEdge
     }
 
     override func setFrameSize(_ newSize: NSSize) {
