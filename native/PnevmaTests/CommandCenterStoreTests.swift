@@ -240,11 +240,15 @@ private actor CommandCenterRoutingMockBus: CommandCalling {
 final class CommandCenterStoreTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        CommandCenterDeepLinkStore.shared.clearPendingTaskIDs()
+        MainActor.assumeIsolated {
+            CommandCenterDeepLinkStore.shared.clearPendingTaskIDs()
+        }
     }
 
     override func tearDown() {
-        CommandCenterDeepLinkStore.shared.clearPendingTaskIDs()
+        MainActor.assumeIsolated {
+            CommandCenterDeepLinkStore.shared.clearPendingTaskIDs()
+        }
         super.tearDown()
     }
 

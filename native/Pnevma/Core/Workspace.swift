@@ -486,6 +486,23 @@ final class Workspace: Identifiable {
         activeTabIndex = index
     }
 
+    /// Rename a tab by index. Returns true if the title was accepted.
+    @discardableResult
+    func renameTab(at index: Int, to newTitle: String) -> Bool {
+        guard index >= 0, index < tabs.count else { return false }
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        tabs[index].title = trimmed
+        return true
+    }
+
+    /// Rename a tab by ID. Returns true if the title was accepted.
+    @discardableResult
+    func renameTab(id: UUID, to newTitle: String) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        return renameTab(at: index, to: newTitle)
+    }
+
     @discardableResult
     func ensureActiveTabHasDisplayableRootPane() -> Bool {
         ensureTabHasDisplayableRootPane(at: activeTabIndex)

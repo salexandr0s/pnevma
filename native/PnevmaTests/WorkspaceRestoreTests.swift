@@ -105,7 +105,9 @@ private actor ActivationPaneCommandBus: CommandCalling {
 final class WorkspaceRestoreTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     private func waitUntil(

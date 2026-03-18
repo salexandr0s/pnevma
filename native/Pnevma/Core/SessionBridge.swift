@@ -115,7 +115,6 @@ protocol SessionBridging: Sendable {
     func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice
     func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult
     func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async
-    func sessionExists(_ sessionID: String) async -> Bool
 }
 
 extension SessionBridging {
@@ -199,17 +198,6 @@ final class SessionBridge: SessionBridging {
         }
     }
 
-    func sessionExists(_ sessionID: String) async -> Bool {
-        do {
-            let _: SessionBindingDescriptor = try await commandBus.call(
-                method: "session.binding",
-                params: SessionBindingParams(sessionID: sessionID)
-            )
-            return true
-        } catch {
-            return false
-        }
-    }
 }
 
 actor ActiveSessionBridge: SessionBridging {
@@ -259,8 +247,4 @@ actor ActiveSessionBridge: SessionBridging {
         await current?.sendResize(sessionID: sessionID, columns: columns, rows: rows)
     }
 
-    func sessionExists(_ sessionID: String) async -> Bool {
-        guard let current else { return false }
-        return await current.sessionExists(sessionID)
-    }
 }

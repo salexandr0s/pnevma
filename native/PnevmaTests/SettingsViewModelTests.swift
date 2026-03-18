@@ -55,7 +55,9 @@ actor SettingsCommandBusStub: CommandCalling {
 @MainActor
 final class SettingsViewModelTests: XCTestCase {
     override func tearDown() {
-        AppRuntimeSettings.shared.apply(.defaults)
+        MainActor.assumeIsolated {
+            AppRuntimeSettings.shared.apply(.defaults)
+        }
         super.tearDown()
     }
 

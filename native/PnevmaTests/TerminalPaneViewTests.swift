@@ -141,11 +141,31 @@ private actor ExistingSessionTerminalPaneCommandBus: CommandCalling {
     }
 }
 
+private actor MissingSessionTerminalPaneCommandBus: CommandCalling {
+    private var bindingCallCountValue = 0
+
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
+        switch method {
+        case "session.binding":
+            bindingCallCountValue += 1
+            throw PnevmaError.backendError(method: method, message: "session not found: session-missing")
+        default:
+            throw NSError(domain: "MissingSessionTerminalPaneCommandBus", code: 1)
+        }
+    }
+
+    func bindingCallCount() -> Int {
+        bindingCallCountValue
+    }
+}
+
 @MainActor
 final class TerminalPaneViewTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     private func waitUntil(
@@ -259,6 +279,47 @@ final class TerminalPaneViewTests: XCTestCase {
 
         XCTAssertEqual(createSessionCallCount, 0)
         XCTAssertEqual(lastBoundSessionID, "session-existing")
+        XCTAssertEqual(
+            TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
+            .managedSession
+        )
+    }
+
+    func testTerminalPaneClearsMissingRestoredSessionIntoStaleState() async throws {
+        let bus = MissingSessionTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        let priorWorkspaceProvider = PaneFactory.activeWorkspaceProvider
+        PaneFactory.sessionBridge = bridge
+        PaneFactory.activeWorkspaceProvider = {
+            Workspace(name: "Project", projectPath: "/tmp/project")
+        }
+        defer {
+            PaneFactory.sessionBridge = priorBridge
+            PaneFactory.activeWorkspaceProvider = priorWorkspaceProvider
+        }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        pane.loadSession(sessionID: "session-missing", workingDirectory: "/tmp/project")
+
+        try await waitUntil {
+            await bus.bindingCallCount() == 1 && pane.sessionID == nil
+        }
+
         XCTAssertEqual(
             TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
             .managedSession

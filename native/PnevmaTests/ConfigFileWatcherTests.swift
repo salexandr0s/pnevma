@@ -2,7 +2,6 @@ import Foundation
 import XCTest
 @testable import Pnevma
 
-@MainActor
 final class ConfigFileWatcherTests: XCTestCase {
 
     private var tempDir: URL!
@@ -19,6 +18,7 @@ final class ConfigFileWatcherTests: XCTestCase {
         super.tearDown()
     }
 
+    @MainActor
     func testCallbackFiredOnFileWrite() {
         let fileURL = tempDir.appendingPathComponent("test.toml")
         FileManager.default.createFile(atPath: fileURL.path, contents: Data("initial".utf8))
@@ -38,9 +38,11 @@ final class ConfigFileWatcherTests: XCTestCase {
         watcher.stop()
     }
 
+    @MainActor
     func testCallbackFiredOnAtomicRename() {
         let fileURL = tempDir.appendingPathComponent("config.toml")
         FileManager.default.createFile(atPath: fileURL.path, contents: Data("v1".utf8))
+        let tempDir = self.tempDir!
 
         let expectation = expectation(description: "onChange called after rename")
         let watcher = ConfigFileWatcher(url: fileURL, debounceInterval: 0.05) {
@@ -50,7 +52,7 @@ final class ConfigFileWatcherTests: XCTestCase {
 
         // Simulate Vim-style atomic write: write to temp, rename over original
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            let tmpURL = self.tempDir.appendingPathComponent("config.toml.tmp")
+            let tmpURL = tempDir.appendingPathComponent("config.toml.tmp")
             try? "v2".write(to: tmpURL, atomically: false, encoding: .utf8)
             try? FileManager.default.removeItem(at: fileURL)
             try? FileManager.default.moveItem(at: tmpURL, to: fileURL)
@@ -60,6 +62,7 @@ final class ConfigFileWatcherTests: XCTestCase {
         watcher.stop()
     }
 
+    @MainActor
     func testStopPreventsCallback() {
         let fileURL = tempDir.appendingPathComponent("stopped.toml")
         FileManager.default.createFile(atPath: fileURL.path, contents: Data("initial".utf8))

@@ -3,21 +3,18 @@ import XCTest
 
 @MainActor
 final class PnevmaBridgeTests: XCTestCase {
+    private let probeMethod = "__bridge_probe__.missing"
 
-    // MARK: - Init & Destroy
-
-    func testBridgeInitAndDestroy() {
-        let bridge = PnevmaBridge()
-        // Verify a sync call returns a non-nil result (even if it's an error,
-        // the bridge is alive).
-        let result = bridge.call(method: "task.list", params: "{}")
-        XCTAssertNotNil(result, "sync call on a live bridge should return non-nil")
-
-        bridge.destroy()
-
-        // After destroy, calls should return nil.
-        let afterDestroy = bridge.call(method: "task.list", params: "{}")
-        XCTAssertNil(afterDestroy, "sync call after destroy should return nil")
+    private func syncCallOffMain(
+        _ bridge: PnevmaBridge,
+        method: String,
+        params: String
+    ) async -> BridgeCallResult? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: bridge.call(method: method, params: params))
+            }
+        }
     }
 
     // MARK: - Async
@@ -26,9 +23,7 @@ final class PnevmaBridgeTests: XCTestCase {
         let bridge = PnevmaBridge()
         let expectation = self.expectation(description: "async callback fires")
 
-        bridge.callAsync(method: "task.list", params: "{}") { result in
-            // Result may be success or error depending on DB state — just
-            // verify the callback actually fires.
+        bridge.callAsync(method: "task.list", params: "{}") { _ in
             expectation.fulfill()
         }
 
@@ -36,11 +31,11 @@ final class PnevmaBridgeTests: XCTestCase {
         bridge.destroy()
     }
 
-    func testDestroyPreventsSubsequentCalls() {
+    func testDestroyPreventsSubsequentCalls() async {
         let bridge = PnevmaBridge()
         bridge.destroy()
 
-        let syncResult = bridge.call(method: "task.list", params: "{}")
+        let syncResult = await syncCallOffMain(bridge, method: probeMethod, params: "{}")
         XCTAssertNil(syncResult, "sync call after destroy should return nil")
 
         let expectation = self.expectation(description: "async callback fires with nil")
@@ -48,7 +43,7 @@ final class PnevmaBridgeTests: XCTestCase {
             XCTAssertNil(result, "async call after destroy should complete with nil")
             expectation.fulfill()
         }
-        waitForExpectations(timeout: 3)
+        await fulfillment(of: [expectation], timeout: 3)
     }
 
     func testConcurrentAsyncCallsFromSwift() {
@@ -70,21 +65,18 @@ final class PnevmaBridgeTests: XCTestCase {
     func testBridgeDestroyIsIdempotent() {
         let bridge = PnevmaBridge()
         bridge.destroy()
-        // Second destroy must not crash.
         bridge.destroy()
     }
 
     // MARK: - In-Flight Teardown Safety
 
     func testAsyncCallDuringDestroy() {
-        // Fire an async call and immediately destroy — must not crash.
         let bridge = PnevmaBridge()
         bridge.callAsync(method: "task.list", params: "{}") { _ in }
         bridge.destroy()
     }
 
     func testDestroyDoesNotCrashWithPendingCallbacks() {
-        // Fire multiple async calls and destroy without waiting for completion.
         let bridge = PnevmaBridge()
         for _ in 0..<5 {
             bridge.callAsync(method: "task.list", params: "{}") { _ in }

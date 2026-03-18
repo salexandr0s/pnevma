@@ -1,7 +1,6 @@
 import XCTest
 @testable import Pnevma
 
-@MainActor
 final class SessionPersistenceTests: XCTestCase {
 
     private var persistence: SessionPersistence!
@@ -51,6 +50,7 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restored?.rightInspectorWidth, 340)
     }
 
+    @MainActor
     func testMarkDirtyAndSaveIfDirtyTriggersSave() {
         var saveCalled = false
         let state = SessionPersistence.SessionState(
@@ -141,6 +141,7 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(decoded.rightInspectorWidth)
     }
 
+    @MainActor
     func testSaveAndRestorePreservesWorkspaceSnapshots() {
         let workspace = Workspace(name: "Persisted")
         let state = SessionPersistence.SessionState(
@@ -185,11 +186,12 @@ final class SessionPersistenceTests: XCTestCase {
         // Verify thread-safety of markDirty — should not crash or race.
         let group = DispatchGroup()
         let iterations = 1000
+        let persistence = persistence!
 
         for _ in 0..<iterations {
             group.enter()
             DispatchQueue.global().async {
-                self.persistence.markDirty()
+                persistence.markDirty()
                 group.leave()
             }
         }
@@ -198,6 +200,7 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(result, .success, "All markDirty calls should complete without deadlock")
     }
 
+    @MainActor
     func testDirtyStateIsSavedAfterPersistenceIsReenabled() {
         let state = SessionPersistence.SessionState(
             windowFrame: nil,

@@ -236,7 +236,7 @@ final class PnevmaBridge: @unchecked Sendable {
         return body(h)
     }
 
-    /// Synchronous call to the Rust backend. Must NOT be called from main thread.
+    /// Synchronous call to the Rust backend. Must NOT be called from the main thread.
     func call(method: String, params: String) -> BridgeCallResult? {
         withLiveHandle { h in
             method.withCString { methodPtr in

@@ -522,6 +522,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
         tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
         tabBar.onAddTab = { [weak self] in self?.newTab() }
+        tabBar.onRenameTab = { [weak self] tabID, title in
+            self?.renameTab(id: tabID, to: title)
+        }
         tabBar.isHidden = true
         self.tabBarView = tabBar
 
@@ -1569,6 +1572,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.performCloseTab(at: index)
             }
         }
+    }
+
+    private func renameTab(id: UUID, to title: String) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        guard workspace.renameTab(id: id, to: title) else { return }
+        updateTabBar()
+        persistence?.markDirty()
     }
 
     private func performCloseTab(at index: Int) {

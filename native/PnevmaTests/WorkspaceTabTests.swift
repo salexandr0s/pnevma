@@ -174,6 +174,34 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(workspace.activeTabIndex, 0)
     }
 
+    func testRenameTabUpdatesOnlyTargetTitle() {
+        let workspace = Workspace(name: "Test")
+        _ = workspace.addTab(title: "Review")
+
+        XCTAssertTrue(workspace.renameTab(at: 1, to: "Fixes"))
+        XCTAssertEqual(workspace.tabs[0].title, "Terminal")
+        XCTAssertEqual(workspace.tabs[1].title, "Fixes")
+    }
+
+    func testRenameTabRejectsBlankTitles() {
+        let workspace = Workspace(name: "Test")
+        let originalTitle = workspace.tabs[0].title
+
+        XCTAssertFalse(workspace.renameTab(at: 0, to: "   "))
+        XCTAssertEqual(workspace.tabs[0].title, originalTitle)
+    }
+
+    func testRenamedTabTitleSurvivesSnapshotRestore() {
+        let workspace = Workspace(name: "Test")
+        _ = workspace.addTab(title: "Review")
+        XCTAssertTrue(workspace.renameTab(at: 1, to: "Fixes"))
+
+        let restored = Workspace(snapshot: workspace.snapshot())
+
+        XCTAssertEqual(restored.tabs.count, 2)
+        XCTAssertEqual(restored.tabs[1].title, "Fixes")
+    }
+
     // MARK: - Layout Engine Identity
 
     func testLayoutEngineReturnsActiveTabEngine() {

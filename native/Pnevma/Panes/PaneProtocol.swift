@@ -1073,20 +1073,19 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             )
             loadTask = Task { @MainActor [weak self] in
                 guard let self else { return }
-                let exists = await sessionBridge.sessionExists(sessionID)
-                guard exists else {
-                    self.currentSessionID = nil
-                    self.notifyPersistedStateChanged()
-                    await self.handleSessionLoadFailure(
-                        SessionBridgeError.staleSession(sessionID)
-                    )
-                    return
-                }
                 do {
                     let binding = try await sessionBridge.binding(for: sessionID)
                     await self.apply(binding: binding, isNewSession: false)
                 } catch {
-                    await self.handleSessionLoadFailure(error)
+                    if PnevmaError.isMissingSession(error) {
+                        self.currentSessionID = nil
+                        self.notifyPersistedStateChanged()
+                        await self.handleSessionLoadFailure(
+                            SessionBridgeError.staleSession(sessionID)
+                        )
+                    } else {
+                        await self.handleSessionLoadFailure(error)
+                    }
                 }
             }
             return

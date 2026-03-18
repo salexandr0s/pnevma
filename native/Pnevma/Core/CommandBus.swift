@@ -241,6 +241,14 @@ enum PnevmaError: Error, LocalizedError {
         return desc.contains("No active project") || desc.contains("no open project")
     }
 
+    /// Returns true when the error indicates the requested session is gone.
+    static func isMissingSession(_ error: Error) -> Bool {
+        if case .backendError(_, let message) = error as? PnevmaError {
+            return message.hasPrefix("session not found:")
+        }
+        return error.localizedDescription.contains("session not found:")
+    }
+
     private static func describeBackendMessage(_ message: String) -> String {
         switch message {
         case "workspace_not_trusted":

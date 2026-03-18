@@ -6,7 +6,9 @@ import XCTest
 final class BrowserReaderFindControllerTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     func testSearchUsesRawQueryWithoutTrimming() {

@@ -49,7 +49,9 @@ private final class CloseDecisionTerminalPane: NSView, TerminalPaneControlling {
 final class ContentAreaViewTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     func testActivePaneCloseConfirmationUsesExplicitTerminalDecision() {

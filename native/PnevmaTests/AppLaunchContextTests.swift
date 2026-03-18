@@ -4,7 +4,9 @@ import XCTest
 @MainActor
 final class AppLaunchContextTests: XCTestCase {
     override func tearDown() {
-        AppRuntimeSettings.shared.apply(.defaults)
+        MainActor.assumeIsolated {
+            AppRuntimeSettings.shared.apply(.defaults)
+        }
         super.tearDown()
     }
 

@@ -20,9 +20,11 @@ final class TabBarView: NSView {
     var onSelectTab: ((Int) -> Void)?
     var onCloseTab: ((Int) -> Void)?
     var onAddTab: (() -> Void)?
+    var onRenameTab: ((UUID, String) -> Void)?
 
     private var tabButtons: [TabButton] = []
     private var addButton: NSButton?
+    private var renamingTabID: UUID?
     nonisolated(unsafe) var themeObserver: NSObjectProtocol?
 
     private static let addButtonWidth: CGFloat = 20
@@ -92,6 +94,7 @@ final class TabBarView: NSView {
 
         for (index, tab) in tabs.enumerated() {
             let button = TabButton(
+                tabID: tab.id,
                 frame: NSRect(x: 0, y: 0, width: 100, height: height),
                 title: tab.title,
                 isActive: tab.isActive,
@@ -101,6 +104,18 @@ final class TabBarView: NSView {
             )
             button.onSelect = { [weak self] in self?.onSelectTab?(index) }
             button.onClose = { [weak self] in self?.onCloseTab?(index) }
+            button.onBeginRename = { [weak self] in
+                self?.beginRenamingTab(id: tab.id, index: index)
+            }
+            button.onRename = { [weak self] title in
+                self?.renamingTabID = nil
+                self?.onRenameTab?(tab.id, title)
+            }
+            button.onCancelRename = { [weak self] in
+                if self?.renamingTabID == tab.id {
+                    self?.renamingTabID = nil
+                }
+            }
             addSubview(button)
             tabButtons.append(button)
         }
@@ -126,10 +141,29 @@ final class TabBarView: NSView {
         addButton = plusBtn
 
         needsLayout = true
+        focusRenamingTabIfNeeded()
     }
 
     @objc private func addButtonClicked() {
         onAddTab?()
+    }
+
+    private func beginRenamingTab(id: UUID, index: Int) {
+        renamingTabID = id
+        if tabs.indices.contains(index), !tabs[index].isActive {
+            onSelectTab?(index)
+            DispatchQueue.main.async { [weak self] in
+                self?.focusRenamingTabIfNeeded()
+            }
+        } else {
+            focusRenamingTabIfNeeded()
+        }
+    }
+
+    private func focusRenamingTabIfNeeded() {
+        guard let renamingTabID else { return }
+        guard let button = tabButtons.first(where: { $0.tabID == renamingTabID }) else { return }
+        button.beginRenaming()
     }
 
     // MARK: - Layout
@@ -184,25 +218,47 @@ private final class TabButton: NSView {
         static let titleHeight: CGFloat = 14
     }
 
+    let tabID: UUID
+
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
+    var onBeginRename: (() -> Void)?
+    var onRename: ((String) -> Void)?
+    var onCancelRename: (() -> Void)?
 
     private let titleLabel: NSTextField
+    private let renameField: NSTextField
     private let closeButton: NSButton
     private let isActive: Bool
     private let hasNotification: Bool
+    private let showsCloseButton: Bool
     private var isHovering = false
+    private var isRenaming = false
     private var trackingArea: NSTrackingArea?
 
-    init(frame: NSRect, title: String, isActive: Bool, showClose: Bool, hasNotification: Bool, theme: GhosttyThemeProvider) {
+    init(tabID: UUID, frame: NSRect, title: String, isActive: Bool, showClose: Bool, hasNotification: Bool, theme: GhosttyThemeProvider) {
+        self.tabID = tabID
         self.isActive = isActive
         self.hasNotification = hasNotification
+        self.showsCloseButton = showClose
 
         titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: DesignTokens.Font.caption, weight: isActive ? .semibold : .regular)
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
+
+        renameField = NSTextField(string: title)
+        renameField.font = .systemFont(ofSize: DesignTokens.Font.caption, weight: .semibold)
+        renameField.isBordered = false
+        renameField.isBezeled = false
+        renameField.drawsBackground = false
+        renameField.focusRingType = .none
+        renameField.isEditable = true
+        renameField.isSelectable = true
+        renameField.isHidden = true
+        renameField.lineBreakMode = .byTruncatingTail
+        renameField.textColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.primary)
 
         let normalCloseAlpha: CGFloat = isActive ? 0.58 : 0.36
         closeButton = HoverTintButton(
@@ -224,9 +280,11 @@ private final class TabButton: NSView {
         super.init(frame: frame)
 
         addSubview(titleLabel)
+        addSubview(renameField)
         addSubview(closeButton)
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
+        renameField.delegate = self
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -250,6 +308,7 @@ private final class TabButton: NSView {
             width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : touchTarget + Metrics.closeGap),
             height: Metrics.titleHeight
         )
+        renameField.frame = titleLabel.frame
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -285,7 +344,11 @@ private final class TabButton: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        onSelect?()
+        if event.clickCount == 2 {
+            onBeginRename?()
+        } else {
+            onSelect?()
+        }
     }
 
     @objc private func closeClicked() {
@@ -319,6 +382,71 @@ private final class TabButton: NSView {
 
     func applyTheme(_ theme: GhosttyThemeProvider) {
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary)
+        renameField.textColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.primary)
         needsDisplay = true
+    }
+
+    func beginRenaming() {
+        guard !isRenaming else { return }
+        isRenaming = true
+        renameField.stringValue = titleLabel.stringValue
+        titleLabel.isHidden = true
+        renameField.isHidden = false
+        closeButton.isHidden = true
+        needsLayout = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self.renameField)
+            self.renameField.selectText(nil)
+        }
+    }
+
+    private func finishRenaming() {
+        isRenaming = false
+        titleLabel.isHidden = false
+        renameField.isHidden = true
+        closeButton.isHidden = !showsCloseButton
+        needsLayout = true
+    }
+
+    private func commitRename() {
+        guard isRenaming else { return }
+        let trimmed = renameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            cancelRename()
+            return
+        }
+        titleLabel.stringValue = trimmed
+        finishRenaming()
+        onRename?(trimmed)
+    }
+
+    private func cancelRename() {
+        guard isRenaming else { return }
+        renameField.stringValue = titleLabel.stringValue
+        finishRenaming()
+        onCancelRename?()
+    }
+}
+
+extension TabButton: NSTextFieldDelegate {
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        switch commandSelector {
+        case #selector(NSResponder.insertNewline(_:)):
+            commitRename()
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            cancelRename()
+            return true
+        default:
+            return false
+        }
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        if isRenaming {
+            commitRename()
+        }
     }
 }

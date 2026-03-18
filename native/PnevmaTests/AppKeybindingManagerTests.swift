@@ -6,9 +6,11 @@ import XCTest
 final class AppKeybindingManagerTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
-        // Reset to empty state
-        AppKeybindingManager.shared.update(from: [])
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+            // Reset to empty state
+            AppKeybindingManager.shared.update(from: [])
+        }
     }
 
     // MARK: - Shortcut Parser
