@@ -246,23 +246,3 @@ final class RightInspectorOverlayHostingView<Content: View>: NSHostingView<Conte
         return super.hitTest(point)
     }
 }
-
-final class BrowserDrawerOverlayBlockerView: NSView {
-    override var isFlipped: Bool { true }
-    var capturesPointerEvents = false
-    var overlayHitRect: CGRect = .zero
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-}
-
-final class BrowserDrawerOverlayHostingView<Content: View>: NSHostingView<Content> {
-    var capturesPointerEvents = false
-    var overlayHitRect: CGRect = .zero
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard capturesPointerEvents else { return nil }
-        return super.hitTest(point)
-    }
-}

@@ -67,7 +67,9 @@ struct ToolsSectionHeader: View {
 
     var body: some View {
         Button(action: {
-            withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.15))) { isExpanded.toggle() }
+            withAnimation(ChromeMotion.animation(for: .disclosure)) {
+                isExpanded.toggle()
+            }
         }) {
             HStack {
                 Text("TOOLS")

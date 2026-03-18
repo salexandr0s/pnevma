@@ -50,7 +50,7 @@ enum DesignTokens {
         static let rightInspectorMinWidth: CGFloat = 280
         static let rightInspectorMaxWidth: CGFloat = 520
         static let toolDockHeight: CGFloat = 44
-        static let toolDockRevealHeight: CGFloat = 0
+        static let toolDockRevealHeight: CGFloat = 6
         static let statusBarHeight: CGFloat = 28
         static let dividerWidth: CGFloat = 1
         static let dividerHoverWidth: CGFloat = 5

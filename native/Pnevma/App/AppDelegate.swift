@@ -53,8 +53,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rightInspectorResizerView: NSView?
     private var rightInspectorOverlayBlockerView: RightInspectorOverlayBlockerView?
     private var rightInspectorOverlayHostView: RightInspectorOverlayHostingView<AnyView>?
-    private var browserDrawerOverlayBlockerView: BrowserDrawerOverlayBlockerView?
-    private var browserDrawerOverlayHostView: BrowserDrawerOverlayHostingView<AnyView>?
     private var toolDrawerOverlayBlockerView: ToolDrawerOverlayBlockerView?
     private var toolDrawerOverlayHostView: ToolDrawerOverlayHostingView<AnyView>?
     private var uiTestReadinessView: UITestReadinessView?
@@ -95,8 +93,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restoredCommandCenterWindowFrame: NSRect?
     private var restoredCommandCenterVisible = false
     private let rightInspectorChromeState = RightInspectorChromeState()
-    private let browserDrawerChromeState = BrowserDrawerChromeState()
-    private let browserDrawerPresentationModel = BrowserDrawerPresentationModel()
     private let toolDrawerChromeState = ToolDrawerChromeState()
     private let toolDrawerContentModel = ToolDrawerContentModel()
     private var browserToolBridge: BrowserToolBridge?
@@ -104,7 +100,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var nativeNotificationBridgeObserverID: UUID?
     private var browserSessions: [UUID: BrowserWorkspaceSession] = [:]
     private var browserSessionPrewarmTask: Task<Void, Never>?
-    private weak var browserDrawerPreviousFirstResponder: NSResponder?
     private weak var toolDrawerPreviousFirstResponder: NSResponder?
     private lazy var rightInspectorFileBrowserViewModel = FileBrowserViewModel(
         commandBus: commandBus ?? CommandBus.shared
@@ -353,7 +348,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 workspace.terminalNotificationCount = self?.contentAreaView?.paneIDsWithNotificationRings.count ?? 0
             }
             self?.syncRightInspectorPresentation(animated: false)
-            self?.refreshBrowserDrawerOverlayRootView()
+            self?.refreshBottomDrawerBrowserSession()
             if let workspace = self?.workspaceManager?.activeWorkspace {
                 self?.scheduleBrowserSessionPrewarm(for: workspace)
                 self?.titlebarStatusView?.updateBranch(workspace.gitBranch)
@@ -643,10 +638,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDockHost.sizingOptions = []
         toolDockHost.setAccessibilityIdentifier("tool-dock.view")
         toolDockHost.wantsLayer = true
-        toolDockHost.layer?.masksToBounds = true
+        toolDockHost.layer?.masksToBounds = false
 
         let toolDockContainer = ToolDockContainerView()
         toolDockContainer.wantsLayer = true
+        toolDockContainer.layer?.masksToBounds = false
         toolDockContainer.addSubview(toolDockHost)
         toolDockHost.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -717,34 +713,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         rightInspectorOverlayHost.capturesPointerEvents = false
         self.rightInspectorOverlayHostView = rightInspectorOverlayHost
-
-        let browserDrawerBlocker = BrowserDrawerOverlayBlockerView(frame: .zero)
-        browserDrawerBlocker.capturesPointerEvents = false
-        self.browserDrawerOverlayBlockerView = browserDrawerBlocker
-
-        let browserSession = workspaceManager.activeWorkspace.flatMap { self.existingBrowserSession(for: $0) }
-        browserDrawerPresentationModel.session = browserSession
-        let browserDrawerOverlay = BrowserDrawerOverlayView(
-            chromeState: browserDrawerChromeState,
-            presentationModel: browserDrawerPresentationModel,
-            onClose: { [weak self] in self?.closeBrowserDrawer() },
-            onPinToPane: { [weak self] in self?.pinBrowserToPane() },
-            onOpenAsTab: { [weak self] in self?.openBrowserAsTab() },
-            onVisibilityChanged: { [weak self] isVisible in
-                self?.browserDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
-                self?.browserDrawerOverlayHostView?.capturesPointerEvents = isVisible
-            },
-            onHitRectChanged: { [weak self] rect in
-                self?.browserDrawerOverlayBlockerView?.overlayHitRect = rect
-                self?.browserDrawerOverlayHostView?.overlayHitRect = rect
-            }
-        )
-        let browserDrawerHost = BrowserDrawerOverlayHostingView(
-            rootView: AnyView(browserDrawerOverlay.environment(GhosttyThemeProvider.shared))
-        )
-        PerformanceDiagnostics.shared.recordBrowserDrawerRootViewAssignment()
-        browserDrawerHost.capturesPointerEvents = false
-        self.browserDrawerOverlayHostView = browserDrawerHost
 
         // Tool drawer overlay — generic drawer for non-browser tools
         let toolDrawerBlocker = ToolDrawerOverlayBlockerView(frame: .zero)
@@ -915,10 +883,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowContent.addSubview(rightInspectorOverlayBlocker)
         rightInspectorOverlayHost.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(rightInspectorOverlayHost)
-        browserDrawerBlocker.translatesAutoresizingMaskIntoConstraints = false
-        windowContent.addSubview(browserDrawerBlocker)
-        browserDrawerHost.translatesAutoresizingMaskIntoConstraints = false
-        windowContent.addSubview(browserDrawerHost)
         toolDrawerBlocker.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(toolDrawerBlocker)
         toolDrawerHost.translatesAutoresizingMaskIntoConstraints = false
@@ -1097,16 +1061,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorOverlayHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
             rightInspectorOverlayHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
 
-            browserDrawerBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
-            browserDrawerBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
-            browserDrawerBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
-            browserDrawerBlocker.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
-
-            browserDrawerHost.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
-            browserDrawerHost.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
-            browserDrawerHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
-            browserDrawerHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
-
             toolDrawerBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
             toolDrawerBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
             toolDrawerBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
@@ -1129,12 +1083,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         rightInspectorBacking.isHidden = !isRightInspectorPresented
         rightInspectorResizer.isHidden = !isRightInspectorPresented
-        browserDrawerChromeState.isPresented = false
-        browserDrawerBlocker.capturesPointerEvents = false
-        browserDrawerHost.capturesPointerEvents = false
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
-        refreshBrowserDrawerOverlayRootView()
+        refreshBottomDrawerBrowserSession()
         if let workspace = workspaceManager.activeWorkspace {
             scheduleBrowserSessionPrewarm(for: workspace)
         }
@@ -1782,8 +1732,80 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         applySidebarMode(animated: true)
     }
 
+    private func setSidebarContentVisibility(for mode: SidebarMode) {
+        switch mode {
+        case .expanded:
+            sidebarContentView?.isHidden = false
+            sidebarContentView?.alphaValue = 1
+            collapsedRailHostView?.alphaValue = 0
+            collapsedRailHostView?.isHidden = true
+        case .collapsed:
+            collapsedRailHostView?.isHidden = false
+            collapsedRailHostView?.alphaValue = 1
+            sidebarContentView?.alphaValue = 0
+            sidebarContentView?.isHidden = true
+        case .hidden:
+            break
+        }
+    }
+
+    private func animateSidebarContentSwapIfNeeded(to mode: SidebarMode, animated: Bool) {
+        guard mode != .hidden,
+              let sidebarContentView,
+              let collapsedRailHostView else {
+            return
+        }
+
+        let showExpandedContent = mode == .expanded
+        let targetContentAlpha: CGFloat = showExpandedContent ? 1 : 0
+        let targetRailAlpha: CGFloat = showExpandedContent ? 0 : 1
+
+        sidebarContentView.isHidden = false
+        collapsedRailHostView.isHidden = false
+
+        guard animated, ChromeMotion.duration(for: .disclosure) > 0 else {
+            if showExpandedContent {
+                sidebarContentView.isHidden = false
+                sidebarContentView.alphaValue = 1
+                collapsedRailHostView.alphaValue = 0
+                collapsedRailHostView.isHidden = true
+            } else {
+                collapsedRailHostView.isHidden = false
+                collapsedRailHostView.alphaValue = 1
+                sidebarContentView.alphaValue = 0
+                sidebarContentView.isHidden = true
+            }
+            return
+        }
+
+        if sidebarContentView.alphaValue == collapsedRailHostView.alphaValue {
+            sidebarContentView.alphaValue = showExpandedContent ? 0 : 1
+            collapsedRailHostView.alphaValue = showExpandedContent ? 1 : 0
+        }
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = ChromeMotion.duration(for: .disclosure)
+            context.timingFunction = ChromeMotion.timingFunction(for: .disclosure)
+            context.allowsImplicitAnimation = true
+            sidebarContentView.animator().alphaValue = targetContentAlpha
+            collapsedRailHostView.animator().alphaValue = targetRailAlpha
+        }, completionHandler: {
+            if showExpandedContent {
+                sidebarContentView.isHidden = false
+                sidebarContentView.alphaValue = 1
+                collapsedRailHostView.alphaValue = 0
+                collapsedRailHostView.isHidden = true
+            } else {
+                collapsedRailHostView.isHidden = false
+                collapsedRailHostView.alphaValue = 1
+                sidebarContentView.alphaValue = 0
+                sidebarContentView.isHidden = true
+            }
+        })
+    }
+
     private func applySidebarMode(animated: Bool) {
-        rightInspectorChromeState.overlayShouldAnimateAlignment = animated
+        let shouldAnimate = animated && ChromeMotion.duration(for: .sidebar) > 0
         sidebarTransitionGeneration &+= 1
         let transitionGeneration = sidebarTransitionGeneration
 
@@ -1792,14 +1814,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         case .expanded:
             width = SidebarPreferences.sidebarWidth
             isSidebarVisible = true
-            sidebarContentView?.isHidden = false
-            collapsedRailHostView?.isHidden = true
             sidebarHostView?.isHidden = false
         case .collapsed:
             width = DesignTokens.Layout.sidebarCollapsedWidth
             isSidebarVisible = true
-            sidebarContentView?.isHidden = true
-            collapsedRailHostView?.isHidden = false
             sidebarHostView?.isHidden = false
         case .hidden:
             width = 0
@@ -1809,31 +1827,51 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let signpost = PerformanceDiagnostics.shared.beginInterval("sidebar.toggle")
         ChromeTransitionCoordinator.shared.begin(.sidebar)
 
-        if animated {
+        if currentSidebarMode != .hidden, let sidebarHostView {
+            let wasHidden = sidebarHostView.isHidden
+            sidebarHostView.isHidden = false
+            if wasHidden {
+                sidebarHostView.alphaValue = 0
+            }
+        }
+
+        if shouldAnimate {
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DesignTokens.Motion.normal
+                ctx.duration = ChromeMotion.duration(for: .sidebar)
+                ctx.timingFunction = ChromeMotion.timingFunction(for: .sidebar)
                 ctx.allowsImplicitAnimation = true
                 sidebarWidthConstraint?.animator().constant = width
+                sidebarHostView?.animator().alphaValue = currentSidebarMode == .hidden ? 0 : 1
             }, completionHandler: {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     ChromeTransitionCoordinator.shared.end(.sidebar)
                     PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
                     guard self.sidebarTransitionGeneration == transitionGeneration else { return }
-                    if self.currentSidebarMode == .hidden { self.sidebarHostView?.isHidden = true }
-                    self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
+                    if self.currentSidebarMode == .hidden {
+                        self.sidebarHostView?.isHidden = true
+                        self.sidebarHostView?.alphaValue = 0
+                    } else {
+                        self.sidebarHostView?.alphaValue = 1
+                        self.animateSidebarContentSwapIfNeeded(to: self.currentSidebarMode, animated: true)
+                    }
                 }
             })
         } else {
             sidebarWidthConstraint?.constant = width
             ChromeTransitionCoordinator.shared.end(.sidebar)
             PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
-            if currentSidebarMode == .hidden { sidebarHostView?.isHidden = true }
-            rightInspectorChromeState.overlayShouldAnimateAlignment = false
+            if currentSidebarMode == .hidden {
+                sidebarHostView?.isHidden = true
+                sidebarHostView?.alphaValue = 0
+            } else {
+                sidebarHostView?.isHidden = false
+                sidebarHostView?.alphaValue = 1
+                setSidebarContentVisibility(for: currentSidebarMode)
+            }
         }
 
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
         persistence?.markDirty()
     }
 
@@ -2069,7 +2107,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let transitionGeneration = rightInspectorTransitionGeneration
         let shouldPresent = isRightInspectorPresented
         rightInspectorChromeState.isVisible = shouldPresent
-        rightInspectorChromeState.overlayShouldAnimateAlignment = animated
+        let shouldAnimate = animated && ChromeMotion.duration(for: .rightInspector) > 0
         let targetWidth = shouldPresent ? rightInspectorStoredWidth : 0
         let hostView = rightInspectorHostView
         let resizerView = rightInspectorResizerView
@@ -2080,11 +2118,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let updates = { [weak self] in
             self?.rightInspectorWidthConstraint?.animator().constant = targetWidth
         }
-        if animated {
+        if shouldAnimate {
             let signpost = PerformanceDiagnostics.shared.beginInterval("right_inspector.toggle")
             ChromeTransitionCoordinator.shared.begin(.rightInspector)
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DesignTokens.Motion.normal
+                ctx.duration = ChromeMotion.duration(for: .rightInspector)
+                ctx.timingFunction = ChromeMotion.timingFunction(for: .rightInspector)
                 ctx.allowsImplicitAnimation = true
                 updates()
             }, completionHandler: {
@@ -2093,7 +2132,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     ChromeTransitionCoordinator.shared.end(.rightInspector)
                     PerformanceDiagnostics.shared.endInterval("right_inspector.toggle", signpost)
                     guard self.rightInspectorTransitionGeneration == transitionGeneration else { return }
-                    self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
                     if !self.isRightInspectorPresented {
                         hostView?.isHidden = true
                         resizerView?.isHidden = true
@@ -2101,7 +2139,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             })
         } else {
-            rightInspectorChromeState.overlayShouldAnimateAlignment = false
             rightInspectorWidthConstraint?.constant = targetWidth
             if !shouldPresent {
                 hostView?.isHidden = true
@@ -2109,11 +2146,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
     }
 
     private func adjustRightInspectorWidth(by delta: CGFloat) {
-        rightInspectorChromeState.overlayShouldAnimateAlignment = false
         rightInspectorStoredWidth = min(
             max(rightInspectorStoredWidth - delta, DesignTokens.Layout.rightInspectorMinWidth),
             DesignTokens.Layout.rightInspectorMaxWidth
@@ -2121,7 +2156,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard isRightInspectorPresented else { return }
         rightInspectorWidthConstraint?.constant = rightInspectorStoredWidth
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
         persistence?.markDirty()
     }
 
@@ -2179,10 +2213,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if frame.height > visible.height { frame.size.height = visible.height; frame.origin.y = visible.minY }
         }
         win.setFrame(frame, display: true)
-    }
-
-    private func updateRightInspectorOverlayAlignment() {
-        rightInspectorChromeState.overlayHorizontalOffset = 0
     }
 
     @objc private func showCommandPalette() { commandPalette?.show() }
@@ -2961,21 +2991,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let activeWorkspace = self.workspaceManager?.activeWorkspace else { return }
             guard self.existingBrowserSession(for: activeWorkspace) == nil else { return }
             _ = self.browserSession(for: activeWorkspace)
-            self.refreshBrowserDrawerOverlayRootView()
+            self.refreshBottomDrawerBrowserSession()
         }
     }
 
-    private func refreshBrowserDrawerOverlayRootView() {
-        guard let host = browserDrawerOverlayHostView else { return }
-        browserDrawerPresentationModel.session = workspaceManager?.activeWorkspace.flatMap {
-            existingBrowserSession(for: $0)
+    private func refreshBottomDrawerBrowserSession() {
+        if toolDrawerContentModel.activeToolID == "browser" {
+            toolDrawerContentModel.activeBrowserSession = workspaceManager?.activeWorkspace.map {
+                browserSession(for: $0)
+            }
         }
-        browserDrawerChromeState.isPresented = false
-        host.capturesPointerEvents = false
-        browserDrawerOverlayBlockerView?.capturesPointerEvents = false
-        browserDrawerChromeState.drawerHitRect = .zero
-        host.overlayHitRect = .zero
-        browserDrawerOverlayBlockerView?.overlayHitRect = .zero
         updateToolDockState()
     }
 
@@ -3174,8 +3199,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func closeToolDrawer() {
-        toolDrawerChromeState.isPresented = false
-        toolDrawerChromeState.drawerHitRect = .zero
         toolDockState.activeToolID = nil
         if let previous = toolDrawerPreviousFirstResponder {
             window?.makeFirstResponder(previous)
@@ -3183,17 +3206,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             window?.makeFirstResponder(pane)
         }
         toolDrawerPreviousFirstResponder = nil
-        // Defer cleanup so the dismiss animation can play
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard let self, !self.toolDrawerChromeState.isPresented else { return }
-            self.toolDrawerContentModel.activePaneView?.removeFromSuperview()
-            self.toolDrawerContentModel.activePaneView = nil
-            self.toolDrawerContentModel.activePaneID = nil
-            self.toolDrawerContentModel.activeToolID = nil
-            self.toolDrawerContentModel.activeToolTitle = nil
-            self.toolDrawerContentModel.activeBrowserSession = nil
+        if let animation = ChromeMotion.animation(for: .bottomDrawerClose) {
+            withAnimation(animation) {
+                toolDrawerChromeState.isPresented = false
+                toolDrawerChromeState.drawerHitRect = .zero
+            } completion: {
+                self.clearClosedToolDrawerContentIfNeeded()
+            }
+        } else {
+            toolDrawerChromeState.isPresented = false
+            toolDrawerChromeState.drawerHitRect = .zero
+            clearClosedToolDrawerContentIfNeeded()
         }
+    }
+
+    private func clearClosedToolDrawerContentIfNeeded() {
+        guard !toolDrawerChromeState.isPresented else { return }
+        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+        toolDrawerContentModel.activePaneView = nil
+        toolDrawerContentModel.activePaneID = nil
+        toolDrawerContentModel.activeToolID = nil
+        toolDrawerContentModel.activeToolTitle = nil
+        toolDrawerContentModel.activeBrowserSession = nil
     }
 
     private func pinToolDrawerToPane() {
@@ -3399,7 +3433,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.setToolDockExpanded(false, animated: true)
         }
         toolDockCollapseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ChromeMotion.dockHideDelay, execute: workItem)
     }
 
     private func refreshToolDockAutoHide(animated: Bool) {
@@ -3412,18 +3446,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let toolDockHeightConstraint else { return }
         let targetHeight = isExpanded || !AppRuntimeSettings.shared.bottomToolBarAutoHide
             ? DesignTokens.Layout.toolDockHeight
-            : DesignTokens.Layout.toolDockRevealHeight
-        guard toolDockHeightConstraint.constant != targetHeight else { return }
+            : ChromeMotion.dockRevealHeight
+        let targetAlpha: CGFloat = isExpanded || !AppRuntimeSettings.shared.bottomToolBarAutoHide
+            ? 1
+            : ChromeMotion.dockCollapsedOpacity
+        let currentAlpha = toolDockHostView?.alphaValue ?? 1
+        guard toolDockHeightConstraint.constant != targetHeight || abs(currentAlpha - targetAlpha) > 0.001 else {
+            return
+        }
 
-        if animated {
+        let shouldAnimate = animated && ChromeMotion.duration(for: .overlay) > 0
+        if shouldAnimate {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = DesignTokens.Motion.normal
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.duration = ChromeMotion.duration(for: .overlay)
+                context.timingFunction = ChromeMotion.timingFunction(for: .overlay)
                 toolDockHeightConstraint.animator().constant = targetHeight
+                toolDockHostView?.animator().alphaValue = targetAlpha
                 window?.contentView?.layoutSubtreeIfNeeded()
             }
         } else {
             toolDockHeightConstraint.constant = targetHeight
+            toolDockHostView?.alphaValue = targetAlpha
             window?.contentView?.layoutSubtreeIfNeeded()
         }
     }
@@ -3771,7 +3814,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         rightInspectorHostView?.isHidden = !isRightInspectorPresented
         rightInspectorResizerView?.isHidden = !isRightInspectorPresented
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
 
         if let frame = state.windowFrame?.nsRect, let win = window {
             var restored = frame
@@ -3802,7 +3844,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
         }
         syncRightInspectorPresentation(animated: false)
-        refreshBrowserDrawerOverlayRootView()
+        refreshBottomDrawerBrowserSession()
         updateTabBar()
     }
 

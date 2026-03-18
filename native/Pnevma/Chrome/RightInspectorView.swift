@@ -22,8 +22,6 @@ private func inspectorIdentifierComponent(_ value: String) -> String {
 @MainActor
 final class RightInspectorChromeState {
     var isVisible = true
-    var overlayHorizontalOffset: CGFloat = 0
-    var overlayShouldAnimateAlignment = false
     var overlayHitRect: CGRect = .zero
 }
 
@@ -290,7 +288,6 @@ struct RightInspectorOverlayView: View {
                         .allowsHitTesting(false)
 
                     overlayCard(in: geometry.size)
-                        .offset(x: chromeState.overlayHorizontalOffset)
                         .background(
                             GeometryReader { proxy in
                                 Color.clear.preference(
@@ -305,13 +302,7 @@ struct RightInspectorOverlayView: View {
         }
         .coordinateSpace(name: "rightInspectorOverlaySpace")
         .allowsHitTesting(showsOverlay)
-        .animation(.easeInOut(duration: DesignTokens.Motion.normal), value: showsOverlay)
-        .animation(
-            chromeState.overlayShouldAnimateAlignment
-                ? .easeInOut(duration: DesignTokens.Motion.normal)
-                : nil,
-            value: chromeState.overlayHorizontalOffset
-        )
+        .animation(ChromeMotion.animation(for: .overlay), value: showsOverlay)
         .onAppear {
             onVisibilityChanged(showsOverlay)
             let hitRect = showsOverlay ? chromeState.overlayHitRect : .zero

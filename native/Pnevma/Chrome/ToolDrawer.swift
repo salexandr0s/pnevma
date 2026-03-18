@@ -1,16 +1,16 @@
 import Observation
 import SwiftUI
 
-// MARK: - State
+// MARK: - Shared bottom drawer state
 
 @Observable @MainActor
-final class ToolDrawerChromeState {
+final class BottomDrawerChromeState {
     var isPresented = false
     var drawerHitRect: CGRect = .zero
 }
 
 @Observable @MainActor
-final class ToolDrawerContentModel {
+final class BottomDrawerContentModel {
     var activeToolID: String?
     var activeToolTitle: String?
     var activePaneView: (NSView & PaneContent)?
@@ -18,6 +18,9 @@ final class ToolDrawerContentModel {
     var activeBrowserSession: BrowserWorkspaceSession?
     var drawerHeight: CGFloat?
 }
+
+typealias ToolDrawerChromeState = BottomDrawerChromeState
+typealias ToolDrawerContentModel = BottomDrawerContentModel
 
 // MARK: - NSView wrapper for pane content
 
@@ -39,7 +42,6 @@ struct PaneContentBridge: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // If the pane view is already the current child, nothing to do.
         if nsView.subviews.first === paneView { return }
         nsView.subviews.forEach { $0.removeFromSuperview() }
         paneView.translatesAutoresizingMaskIntoConstraints = false
@@ -55,7 +57,7 @@ struct PaneContentBridge: NSViewRepresentable {
 
 // MARK: - Preference key
 
-private struct ToolDrawerFramePreferenceKey: PreferenceKey {
+private struct BottomDrawerFramePreferenceKey: PreferenceKey {
     nonisolated(unsafe) static var defaultValue: CGRect = .zero
 
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
@@ -65,10 +67,10 @@ private struct ToolDrawerFramePreferenceKey: PreferenceKey {
 
 // MARK: - Overlay view
 
-struct ToolDrawerOverlayView: View {
+struct BottomDrawerOverlayView: View {
     @Environment(GhosttyThemeProvider.self) private var theme
-    @Bindable var chromeState: ToolDrawerChromeState
-    @Bindable var contentModel: ToolDrawerContentModel
+    @Bindable var chromeState: BottomDrawerChromeState
+    @Bindable var contentModel: BottomDrawerContentModel
     let onClose: () -> Void
     let onPinToPane: () -> Void
     let onOpenAsTab: () -> Void
@@ -78,6 +80,12 @@ struct ToolDrawerOverlayView: View {
     @State private var isMaximized = false
     @State private var heightBeforeMaximize: CGFloat?
 
+    private var transitionAnimation: Animation? {
+        chromeState.isPresented
+            ? ChromeMotion.animation(for: .bottomDrawerOpen)
+            : ChromeMotion.animation(for: .bottomDrawerClose)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
@@ -86,22 +94,22 @@ struct ToolDrawerOverlayView: View {
                         .background(
                             GeometryReader { proxy in
                                 Color.clear.preference(
-                                    key: ToolDrawerFramePreferenceKey.self,
-                                    value: proxy.frame(in: .named("toolDrawerOverlaySpace"))
+                                    key: BottomDrawerFramePreferenceKey.self,
+                                    value: proxy.frame(in: .named("bottomDrawerOverlaySpace"))
                                 )
                             }
                         )
-                        .offset(y: chromeState.isPresented ? 0 : geometry.size.height + 24)
+                        .offset(y: chromeState.isPresented ? 0 : ChromeMotion.drawerHiddenOffset(for: geometry.size.height))
                         .opacity(chromeState.isPresented ? 1 : 0)
                         .allowsHitTesting(chromeState.isPresented)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .animation(.easeInOut(duration: DesignTokens.Motion.normal), value: chromeState.isPresented)
+            .animation(transitionAnimation, value: chromeState.isPresented)
         }
-        .coordinateSpace(name: "toolDrawerOverlaySpace")
+        .coordinateSpace(name: "bottomDrawerOverlaySpace")
         .allowsHitTesting(chromeState.isPresented)
-        .onPreferenceChange(ToolDrawerFramePreferenceKey.self) { rect in
+        .onPreferenceChange(BottomDrawerFramePreferenceKey.self) { rect in
             let resolvedRect = chromeState.isPresented ? rect : .zero
             chromeState.drawerHitRect = resolvedRect
             onHitRectChanged(resolvedRect)
@@ -117,11 +125,22 @@ struct ToolDrawerOverlayView: View {
             onVisibilityChanged(chromeState.isPresented)
             onHitRectChanged(chromeState.isPresented ? chromeState.drawerHitRect : .zero)
         }
-        .accessibilityIdentifier("tool.drawer.overlay")
+        .accessibilityIdentifier("bottom.drawer.overlay")
     }
 
     private var hasActiveContent: Bool {
         contentModel.activePaneView != nil || contentModel.activeBrowserSession != nil
+    }
+
+    private var drawerTitle: String {
+        if let session = contentModel.activeBrowserSession {
+            return session.viewModel.pageTitle.isEmpty ? "Browser" : session.viewModel.pageTitle
+        }
+        return contentModel.activeToolTitle ?? "Tool"
+    }
+
+    private var drawerSubtitle: String? {
+        contentModel.activeBrowserSession?.currentURL?.host(percentEncoded: false)
     }
 
     @ViewBuilder
@@ -147,9 +166,18 @@ struct ToolDrawerOverlayView: View {
             .padding(.top, 8)
 
             HStack(spacing: 8) {
-                Text(contentModel.activeToolTitle ?? "Tool")
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(drawerTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+
+                    if let drawerSubtitle {
+                        Text(drawerSubtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer()
 
@@ -249,9 +277,11 @@ struct ToolDrawerOverlayView: View {
     }
 }
 
-// MARK: - Overlay hosting views (same pattern as browser drawer)
+typealias ToolDrawerOverlayView = BottomDrawerOverlayView
 
-final class ToolDrawerOverlayBlockerView: NSView {
+// MARK: - Overlay hosting views
+
+final class BottomDrawerOverlayBlockerView: NSView {
     override var isFlipped: Bool { true }
     var capturesPointerEvents = false
     var overlayHitRect: CGRect = .zero
@@ -261,7 +291,7 @@ final class ToolDrawerOverlayBlockerView: NSView {
     }
 }
 
-final class ToolDrawerOverlayHostingView<Content: View>: NSHostingView<Content> {
+final class BottomDrawerOverlayHostingView<Content: View>: NSHostingView<Content> {
     var capturesPointerEvents = false
     var overlayHitRect: CGRect = .zero
 
@@ -270,3 +300,6 @@ final class ToolDrawerOverlayHostingView<Content: View>: NSHostingView<Content> 
         return super.hitTest(point)
     }
 }
+
+typealias ToolDrawerOverlayBlockerView = BottomDrawerOverlayBlockerView
+typealias ToolDrawerOverlayHostingView<Content: View> = BottomDrawerOverlayHostingView<Content>

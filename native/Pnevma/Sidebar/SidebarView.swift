@@ -100,10 +100,13 @@ struct SidebarView: View {
                     .padding(.top, 6)
 
                     if !collapsed {
-                        subgroupSection("Needs Attention", workspaces: group.attention)
-                        subgroupSection("Active", workspaces: group.active)
-                        subgroupSection("In Review", workspaces: group.review)
-                        subgroupSection("Idle", workspaces: group.idle)
+                        VStack(alignment: .leading, spacing: 0) {
+                            subgroupSection("Needs Attention", workspaces: group.attention)
+                            subgroupSection("Active", workspaces: group.active)
+                            subgroupSection("In Review", workspaces: group.review)
+                            subgroupSection("Idle", workspaces: group.idle)
+                        }
+                        .transition(.opacity)
                     }
                 }
 

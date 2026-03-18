@@ -102,12 +102,9 @@ private struct NewWorkspaceButton: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                Spacer()
-
-                Text("\u{2318}N")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary.opacity(0.5))
+                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(
