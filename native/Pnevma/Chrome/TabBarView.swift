@@ -77,16 +77,13 @@ final class TabBarView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point) else { return nil }
 
-        if let addButton {
-            let addPoint = convert(point, to: addButton)
-            if let addHit = addButton.hitTest(addPoint) {
-                return addHit
-            }
+        if let addButton, addButton.frame.contains(point) {
+            return addButton
         }
 
         for button in tabButtons.reversed() {
             let buttonPoint = convert(point, to: button)
-            if let buttonHit = button.hitTest(buttonPoint) {
+            if let buttonHit = button.interactiveHitView(at: buttonPoint) {
                 return buttonHit
             }
         }
@@ -224,6 +221,21 @@ final class TabBarView: NSView {
 
 // MARK: - TabButton
 
+private final class TabTitleHitView: NSView {
+    var onSelect: (() -> Void)?
+    var onBeginRename: (() -> Void)?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onBeginRename?()
+        } else {
+            onSelect?()
+        }
+    }
+}
+
 private final class TabButton: NSView {
     private enum Metrics {
         static let horizontalInset: CGFloat = 2
@@ -244,6 +256,7 @@ private final class TabButton: NSView {
     var onCancelRename: (() -> Void)?
 
     private let titleLabel: NSTextField
+    private let titleHitView: TabTitleHitView
     private let renameField: NSTextField
     private let closeButton: NSButton
     private let isActive: Bool
@@ -265,6 +278,8 @@ private final class TabButton: NSView {
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
+
+        titleHitView = TabTitleHitView(frame: .zero)
 
         renameField = NSTextField(string: title)
         renameField.font = .systemFont(ofSize: DesignTokens.Font.caption, weight: .semibold)
@@ -298,11 +313,14 @@ private final class TabButton: NSView {
         super.init(frame: frame)
 
         addSubview(titleLabel)
+        addSubview(titleHitView)
         addSubview(renameField)
         addSubview(closeButton)
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
         renameField.delegate = self
+        titleHitView.onSelect = { [weak self] in self?.onSelect?() }
+        titleHitView.onBeginRename = { [weak self] in self?.onBeginRename?() }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -327,7 +345,39 @@ private final class TabButton: NSView {
             width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : touchTarget + Metrics.closeGap),
             height: Metrics.titleHeight
         )
+        titleHitView.frame = titleLabel.frame
         renameField.frame = titleLabel.frame
+    }
+
+    func interactiveHitView(at point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+
+        if isRenaming {
+            let renamePoint = convert(point, to: renameField)
+            if renameField.bounds.contains(renamePoint) {
+                return renameField
+            }
+        }
+
+        if !closeButton.isHidden {
+            let closePoint = convert(point, to: closeButton)
+            if closeButton.bounds.contains(closePoint) {
+                return closeButton
+            }
+        }
+
+        if !titleHitView.isHidden {
+            let titlePoint = convert(point, to: titleHitView)
+            if titleHitView.bounds.contains(titlePoint) {
+                return titleHitView
+            }
+        }
+
+        return self
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        interactiveHitView(at: point)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -360,26 +410,6 @@ private final class TabButton: NSView {
             NSColor.systemOrange.setFill()
             NSBezierPath(ovalIn: dotRect).fill()
         }
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard bounds.contains(point) else { return nil }
-
-        if isRenaming {
-            let renamePoint = convert(point, to: renameField)
-            if let renameHit = renameField.hitTest(renamePoint) {
-                return renameHit
-            }
-        }
-
-        if !closeButton.isHidden {
-            let closePoint = convert(point, to: closeButton)
-            if let closeHit = closeButton.hitTest(closePoint) {
-                return closeHit
-            }
-        }
-
-        return self
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -431,6 +461,7 @@ private final class TabButton: NSView {
         hasActivatedRenameField = false
         renameField.stringValue = titleLabel.stringValue
         titleLabel.isHidden = true
+        titleHitView.isHidden = true
         renameField.isHidden = false
         closeButton.isHidden = true
         needsLayout = true
@@ -452,6 +483,7 @@ private final class TabButton: NSView {
         isRenaming = false
         hasActivatedRenameField = false
         titleLabel.isHidden = false
+        titleHitView.isHidden = false
         renameField.isHidden = true
         closeButton.isHidden = !showsCloseButton
         needsLayout = true
