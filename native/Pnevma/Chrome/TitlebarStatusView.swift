@@ -37,7 +37,7 @@ final class TitlebarStatusView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 420, height: 24)
+        NSSize(width: NSView.noIntrinsicMetric, height: 24)
     }
 
     private func setupUI() {

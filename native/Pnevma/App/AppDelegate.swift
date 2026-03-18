@@ -202,6 +202,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             setUITestReadiness(.terminalReady)
         }
 
+        // Enforce minimum frame after all restoration paths — catches any external
+        // corruption (macOS state restoration, corrupt session data, etc.)
+        enforceMinimumWindowFrame()
+
         // Build menu bar, then apply any custom keybindings from the loaded settings.
         // (AppRuntimeSettings.apply() called applyToMenu before the menu existed.)
         NSApplication.shared.mainMenu = buildMainMenu()
@@ -523,6 +527,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         win.center()
         win.minSize = NSSize(width: 800, height: 500)
+        win.isRestorable = false
 
         guard let windowContent = win.contentView else { return }
         installUITestReadinessView(in: windowContent)
@@ -588,6 +593,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onAddWorkspace: { [weak self] in self?.openWorkspace() }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
+        sidebarHost.sizingOptions = []
         let sidebarBacking = ThemedSidebarBackingView()
         sidebarBacking.setAccessibilityIdentifier("sidebar.view")
         sidebarBacking.addSubview(sidebarHost)
@@ -610,6 +616,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         ).environment(GhosttyThemeProvider.shared)
         let collapsedRailHost = NSHostingView(rootView: AnyView(collapsedRailView))
+        collapsedRailHost.sizingOptions = []
         collapsedRailHost.translatesAutoresizingMaskIntoConstraints = false
         collapsedRailHost.isHidden = true
         sidebarBacking.addSubview(collapsedRailHost)
@@ -630,6 +637,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onHoverChanged: { [weak self] isHovering in self?.setToolDockContentHovering(isHovering) }
         )
         let toolDockHost = NSHostingView(rootView: toolDockView.environment(GhosttyThemeProvider.shared))
+        toolDockHost.sizingOptions = []
         toolDockHost.setAccessibilityIdentifier("tool-dock.view")
         toolDockHost.wantsLayer = true
         toolDockHost.layer?.masksToBounds = true
@@ -664,6 +672,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let rightInspectorHost = NSHostingView(
             rootView: rightInspectorView.environment(GhosttyThemeProvider.shared)
         )
+        rightInspectorHost.sizingOptions = []
         let rightInspectorBacking = ThemedRightInspectorBackingView()
         rightInspectorBacking.addSubview(rightInspectorHost)
         rightInspectorHost.translatesAutoresizingMaskIntoConstraints = false
@@ -882,6 +891,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         ).environment(GhosttyThemeProvider.shared)
         let agentStrip = NSHostingView(rootView: AnyView(agentStripView))
+        agentStrip.sizingOptions = []
         agentStrip.setAccessibilityIdentifier("agentStrip.host")
         self.agentStripHostView = agentStrip
 
@@ -965,7 +975,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let minContentWidth = win.minSize.width - sidebarWidth
         let contentMinWidth = contentArea.widthAnchor.constraint(greaterThanOrEqualToConstant: minContentWidth)
+        // Priority below NSWindow-current-width (500) so this minimum doesn't
+        // drive the window's size and prevent horizontal resize. Must be high
+        // enough for internal layout to work correctly (> 250).
+        contentMinWidth.priority = NSLayoutConstraint.Priority(490)
         self.contentMinWidthConstraint = contentMinWidth
+
         NSLayoutConstraint.activate([
             sidebarToggleLeading,
             titlebarFill.topAnchor.constraint(equalTo: windowContent.topAnchor),
@@ -2111,8 +2126,50 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let rightWidth = isRightInspectorPresented ? rightInspectorStoredWidth : 0
         // Content area minimum shrinks to accommodate the inspector; window minSize stays ~800.
         let minContent = max(basePaneMinWidth - rightWidth, 200)
-        window?.minSize.width = leftWidth + minContent + rightWidth
+        let requiredWidth = leftWidth + minContent + rightWidth
+        window?.minSize.width = requiredWidth
         contentMinWidthConstraint?.constant = minContent
+
+        // Auto-expand if narrower than the new minimum.
+        guard let win = window, win.frame.width < requiredWidth else { return }
+        var newFrame = win.frame
+        let deficit = requiredWidth - newFrame.width
+        newFrame.size.width = requiredWidth
+        newFrame.origin.x -= deficit
+        if let visible = (win.screen ?? NSScreen.main)?.visibleFrame {
+            newFrame.origin.x = max(newFrame.origin.x, visible.minX)
+            if newFrame.maxX > visible.maxX { newFrame.origin.x = visible.maxX - newFrame.width }
+            if newFrame.width > visible.width { newFrame.size.width = visible.width; newFrame.origin.x = visible.minX }
+        }
+        win.setFrame(newFrame, display: true, animate: true)
+    }
+
+    /// Startup safety net: if the window frame is below minSize, expand it.
+    private func enforceMinimumWindowFrame() {
+        guard let win = window else { return }
+        let minW = win.minSize.width
+        let minH = win.minSize.height
+        guard win.frame.width < minW || win.frame.height < minH else { return }
+        var frame = win.frame
+        if frame.width < minW {
+            let deficit = minW - frame.width
+            frame.size.width = minW
+            frame.origin.x -= deficit
+        }
+        if frame.height < minH {
+            let deficit = minH - frame.height
+            frame.size.height = minH
+            frame.origin.y -= deficit
+        }
+        if let visible = (win.screen ?? NSScreen.main)?.visibleFrame {
+            frame.origin.x = max(frame.origin.x, visible.minX)
+            if frame.maxX > visible.maxX { frame.origin.x = visible.maxX - frame.width }
+            if frame.width > visible.width { frame.size.width = visible.width; frame.origin.x = visible.minX }
+            frame.origin.y = max(frame.origin.y, visible.minY)
+            if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
+            if frame.height > visible.height { frame.size.height = visible.height; frame.origin.y = visible.minY }
+        }
+        win.setFrame(frame, display: true)
     }
 
     private func updateRightInspectorOverlayAlignment() {
@@ -3700,7 +3757,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildSessionState() -> SessionPersistence.SessionState {
         contentAreaView?.syncPersistedPanes()
-        let frame = window.map { SessionPersistence.CodableRect($0.frame) }
+        let frame: SessionPersistence.CodableRect? = window.flatMap { win in
+            let f = win.frame
+            guard f.width >= win.minSize.width, f.height >= win.minSize.height else { return nil }
+            return SessionPersistence.CodableRect(f)
+        }
         return SessionPersistence.SessionState(
             windowFrame: frame,
             commandCenterWindowFrame: commandCenterWindowController?.currentFrame().map(SessionPersistence.CodableRect.init)
@@ -3738,10 +3799,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         updateWindowMinWidth()
         updateRightInspectorOverlayAlignment()
 
-        if let frame = state.windowFrame?.nsRect,
-           let minSize = window?.minSize,
-           frame.width >= minSize.width, frame.height >= minSize.height {
-            window?.setFrame(frame, display: true)
+        if let frame = state.windowFrame?.nsRect, let win = window {
+            var restored = frame
+            restored.size.width = max(restored.size.width, win.minSize.width)
+            restored.size.height = max(restored.size.height, win.minSize.height)
+            if let screen = NSScreen.screens.first(where: { $0.frame.intersects(restored) }) ?? NSScreen.main {
+                let visible = screen.visibleFrame
+                if restored.maxX > visible.maxX { restored.origin.x = visible.maxX - restored.width }
+                if restored.origin.x < visible.minX { restored.origin.x = visible.minX }
+                if restored.width > visible.width { restored.size.width = visible.width; restored.origin.x = visible.minX }
+                if restored.maxY > visible.maxY { restored.origin.y = visible.maxY - restored.height }
+                if restored.origin.y < visible.minY { restored.origin.y = visible.minY }
+                if restored.height > visible.height { restored.size.height = visible.height; restored.origin.y = visible.minY }
+            }
+            win.setFrame(restored, display: true)
         }
 
         workspaceManager?.restore(
@@ -4176,23 +4247,6 @@ extension AppDelegate {
                 onCancel?()
             }
         }
-    }
-}
-
-// MARK: - ResizableWindowContentView
-
-/// Window content view that yields ALL edge hits to NSThemeFrame for resize.
-/// With fullSizeContentView, subviews cover the resize handles. We must check
-/// edges BEFORE traversing subviews — otherwise any subview at the edge steals
-/// the hit and resize breaks.
-private final class ResizableWindowContentView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let window else { return super.hitTest(point) }
-        let windowPoint = superview?.convert(point, to: nil) ?? point
-        let edge: CGFloat = 5
-        if windowPoint.x < edge || windowPoint.x >= window.frame.width - edge { return nil }
-        if windowPoint.y < edge || windowPoint.y >= window.frame.height - edge { return nil }
-        return super.hitTest(point)
     }
 }
 
