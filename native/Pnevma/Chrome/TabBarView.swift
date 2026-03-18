@@ -5,13 +5,6 @@ import Cocoa
 /// Positioned by parent constraints to track the sidebar edge.
 /// Hidden when there is only one tab.
 final class TabBarView: NSView {
-    private enum DeferredClickAction {
-        case addTab
-        case selectTab(Int)
-        case closeTab(Int)
-        case beginRename(UUID, Int)
-    }
-
     struct Tab {
         let id: UUID
         var title: String
@@ -31,7 +24,6 @@ final class TabBarView: NSView {
     private var tabButtons: [TabButton] = []
     private var addButton: NSButton?
     private var renamingTabID: UUID?
-    nonisolated(unsafe) private var renamingEventMonitor: Any?
     nonisolated(unsafe) var themeObserver: NSObjectProtocol?
 
     private static let addButtonWidth: CGFloat = 20
@@ -53,9 +45,6 @@ final class TabBarView: NSView {
     deinit {
         if let themeObserver {
             NotificationCenter.default.removeObserver(themeObserver)
-        }
-        if let renamingEventMonitor {
-            NSEvent.removeMonitor(renamingEventMonitor)
         }
     }
 
@@ -94,8 +83,8 @@ final class TabBarView: NSView {
 
         for button in tabButtons.reversed() {
             let buttonPoint = convert(point, to: button)
-            if let buttonHit = button.interactiveHitView(at: buttonPoint) {
-                return buttonHit
+            if let hit = button.hitTest(buttonPoint) {
+                return hit
             }
         }
 
@@ -105,6 +94,24 @@ final class TabBarView: NSView {
         if windowPoint.x >= window.frame.width - threshold { return nil }
         if windowPoint.y < threshold && windowPoint.x >= window.frame.width - 15 { return nil }
         return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+
+        if let addButton, addButton.frame.contains(point) {
+            onAddTab?()
+            return
+        }
+
+        for button in tabButtons.reversed() {
+            let buttonPoint = convert(point, to: button)
+            if button.handlePrimaryClick(at: buttonPoint, clickCount: event.clickCount) {
+                return
+            }
+        }
+
+        super.mouseDown(with: event)
     }
 
     // MARK: - Rebuild (only on data change)
@@ -173,7 +180,6 @@ final class TabBarView: NSView {
 
     private func beginRenamingTab(id: UUID, index: Int) {
         renamingTabID = id
-        installRenamingEventMonitorIfNeeded()
         if tabs.indices.contains(index), !tabs[index].isActive {
             onSelectTab?(index)
             DispatchQueue.main.async { [weak self] in
@@ -196,91 +202,6 @@ final class TabBarView: NSView {
     private func endRenamingSession(for tabID: UUID) {
         guard renamingTabID == tabID else { return }
         renamingTabID = nil
-        removeRenamingEventMonitor()
-    }
-
-    private func deferredClickAction(at point: NSPoint, clickCount: Int) -> DeferredClickAction? {
-        guard bounds.contains(point) else { return nil }
-
-        if let addButton, addButton.frame.contains(point) {
-            return .addTab
-        }
-
-        for (index, button) in tabButtons.enumerated().reversed() {
-            let buttonPoint = convert(point, to: button)
-            guard let interactionTarget = button.interactionTarget(at: buttonPoint) else { continue }
-            switch interactionTarget {
-            case .renameField:
-                return nil
-            case .closeButton:
-                return .closeTab(index)
-            case .titleSurface, .tabBody:
-                if clickCount >= 2 {
-                    return .beginRename(button.tabID, index)
-                }
-                return .selectTab(index)
-            }
-        }
-
-        return nil
-    }
-
-    private func performDeferredClickAction(_ action: DeferredClickAction) {
-        switch action {
-        case .addTab:
-            onAddTab?()
-        case let .selectTab(index):
-            onSelectTab?(index)
-        case let .closeTab(index):
-            onCloseTab?(index)
-        case let .beginRename(tabID, index):
-            beginRenamingTab(id: tabID, index: index)
-        }
-    }
-
-    private func installRenamingEventMonitorIfNeeded() {
-        guard renamingEventMonitor == nil else { return }
-        renamingEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-            guard let self,
-                  let window = self.window,
-                  event.window === window,
-                  let renamingTabID = self.renamingTabID
-            else {
-                return event
-            }
-
-            guard let button = self.tabButtons.first(where: { $0.tabID == renamingTabID }) else {
-                self.endRenamingSession(for: renamingTabID)
-                return event
-            }
-
-            let pointInTabBar = self.convert(event.locationInWindow, from: nil)
-            if button.renameFieldFrame(in: self).contains(pointInTabBar) {
-                return event
-            }
-
-            let deferredAction = self.deferredClickAction(at: pointInTabBar, clickCount: event.clickCount)
-            let committedTitle = button.commitRenameForExternalInteraction()
-            self.endRenamingSession(for: renamingTabID)
-
-            DispatchQueue.main.async { [weak self] in
-                if let committedTitle {
-                    self?.onRenameTab?(renamingTabID, committedTitle)
-                }
-                if let deferredAction {
-                    self?.performDeferredClickAction(deferredAction)
-                }
-            }
-
-            return deferredAction == nil ? event : nil
-        }
-    }
-
-    private func removeRenamingEventMonitor() {
-        if let renamingEventMonitor {
-            NSEvent.removeMonitor(renamingEventMonitor)
-            self.renamingEventMonitor = nil
-        }
     }
 
     // MARK: - Layout
@@ -323,27 +244,10 @@ final class TabBarView: NSView {
 }
 
 // MARK: - TabButton
-private final class TabTitleHitView: NSView {
-    var onSelect: (() -> Void)?
-    var onBeginRename: (() -> Void)?
-
-    override var mouseDownCanMoveWindow: Bool { false }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        if event.clickCount >= 2 {
-            onBeginRename?()
-        } else {
-            onSelect?()
-        }
-    }
-}
-
 private final class TabButton: NSView {
-    enum InteractionTarget {
+    private enum ClickTarget {
         case renameField
         case closeButton
-        case titleSurface
         case tabBody
     }
 
@@ -366,7 +270,6 @@ private final class TabButton: NSView {
     var onCancelRename: (() -> Void)?
 
     private let titleLabel: NSTextField
-    private let titleHitView: TabTitleHitView
     private let renameField: NSTextField
     private let closeButton: NSButton
     private let isActive: Bool
@@ -388,8 +291,6 @@ private final class TabButton: NSView {
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
-
-        titleHitView = TabTitleHitView(frame: .zero)
 
         renameField = NSTextField(string: title)
         renameField.font = .systemFont(ofSize: DesignTokens.Font.caption, weight: .semibold)
@@ -423,14 +324,11 @@ private final class TabButton: NSView {
         super.init(frame: frame)
 
         addSubview(titleLabel)
-        addSubview(titleHitView)
         addSubview(renameField)
         addSubview(closeButton)
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
         renameField.delegate = self
-        titleHitView.onSelect = { [weak self] in self?.onSelect?() }
-        titleHitView.onBeginRename = { [weak self] in self?.onBeginRename?() }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -456,44 +354,45 @@ private final class TabButton: NSView {
             width: bounds.width - padding * 2 - (closeButton.isHidden ? 0 : touchTarget + Metrics.closeGap),
             height: Metrics.titleHeight
         )
-        let titleHitMaxX = closeButton.isHidden ? bounds.width : closeButton.frame.minX - 1
-        titleHitView.frame = NSRect(
-            x: 0,
-            y: 0,
-            width: max(0, titleHitMaxX),
-            height: bounds.height
-        )
         renameField.frame = titleLabel.frame
     }
 
-    func interactiveHitView(at point: NSPoint) -> NSView? {
-        guard bounds.contains(point) else { return nil }
-
-        if isRenaming {
-            let renamePoint = convert(point, to: renameField)
-            if renameField.bounds.contains(renamePoint) {
-                return renameField
-            }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        switch clickTarget(at: point) {
+        case .renameField:
+            return renameField
+        case .closeButton:
+            return closeButton
+        case .tabBody:
+            return self
+        case nil:
+            return nil
         }
-
-        if !closeButton.isHidden {
-            let closePoint = convert(point, to: closeButton)
-            if closeButton.bounds.contains(closePoint) {
-                return closeButton
-            }
-        }
-
-        if !titleHitView.isHidden {
-            let titlePoint = convert(point, to: titleHitView)
-            if titleHitView.bounds.contains(titlePoint) {
-                return titleHitView
-            }
-        }
-
-        return self
     }
 
-    func interactionTarget(at point: NSPoint) -> InteractionTarget? {
+    func handlePrimaryClick(at point: NSPoint, clickCount: Int) -> Bool {
+        guard let target = clickTarget(at: point) else { return false }
+
+        switch target {
+        case .renameField:
+            guard let window else { return true }
+            _ = window.makeFirstResponder(renameField)
+            renameField.selectText(nil)
+            return true
+        case .closeButton:
+            onClose?()
+            return true
+        case .tabBody:
+            if clickCount >= 2 {
+                onBeginRename?()
+            } else {
+                onSelect?()
+            }
+            return true
+        }
+    }
+
+    private func clickTarget(at point: NSPoint) -> ClickTarget? {
         guard bounds.contains(point) else { return nil }
 
         if isRenaming {
@@ -510,18 +409,7 @@ private final class TabButton: NSView {
             }
         }
 
-        if !titleHitView.isHidden {
-            let titlePoint = convert(point, to: titleHitView)
-            if titleHitView.bounds.contains(titlePoint) {
-                return .titleSurface
-            }
-        }
-
         return .tabBody
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        interactiveHitView(at: point)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -605,7 +493,6 @@ private final class TabButton: NSView {
         hasActivatedRenameField = false
         renameField.stringValue = titleLabel.stringValue
         titleLabel.isHidden = true
-        titleHitView.isHidden = true
         renameField.isHidden = false
         closeButton.isHidden = true
         needsLayout = true
@@ -642,7 +529,6 @@ private final class TabButton: NSView {
         isRenaming = false
         hasActivatedRenameField = false
         titleLabel.isHidden = false
-        titleHitView.isHidden = false
         renameField.isHidden = true
         closeButton.isHidden = !showsCloseButton
         needsLayout = true
@@ -667,29 +553,6 @@ private final class TabButton: NSView {
         onCancelRename?()
     }
 
-    func renameFieldFrame(in ancestor: NSView) -> NSRect {
-        ancestor.convert(renameField.bounds, from: renameField)
-    }
-
-    @discardableResult
-    func commitRenameForExternalInteraction() -> String? {
-        guard isRenaming else { return nil }
-        let trimmed = renameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            renameField.stringValue = titleLabel.stringValue
-            finishRenaming()
-            if let window {
-                _ = window.makeFirstResponder(nil)
-            }
-            return nil
-        }
-        titleLabel.stringValue = trimmed
-        finishRenaming()
-        if let window {
-            _ = window.makeFirstResponder(nil)
-        }
-        return trimmed
-    }
 }
 
 extension TabButton: NSTextFieldDelegate {
