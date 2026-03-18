@@ -26,7 +26,7 @@ Pnevma gives you one place to create tasks, launch agents such as Claude Code an
 
 ## Status
 
-Pnevma is currently in active release hardening. The native app, Rust backend, Ghostty terminal integration, remote access server, and release tooling are already in the repository. The current priority is stabilizing CI, packaging, and clean-machine validation for a polished macOS release.
+Pnevma is actively shipping and evolving. The native app, Rust backend, Ghostty terminal integration, remote access server, and release tooling are already in the repository. Current work spans release quality, maintainability improvements, and product refinement for a polished macOS release.
 
 Current development target:
 
@@ -172,8 +172,8 @@ developer, operator, and release guides.
   credential handling
 - [macOS Release Runbook](docs/macos-release.md): signing, notarization, and
   release steps
-- [Hardening Exit Criteria](docs/hardening-exit-criteria.md): merge policy
-  during release hardening
+- [Release Readiness](docs/release-readiness.md): release quality gates
+  and validation checks
 - [Implementation Status](docs/implementation-status.md): current repo status
   and priorities
 

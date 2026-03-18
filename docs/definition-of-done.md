@@ -1,15 +1,12 @@
 # Pnevma — Definition of Done
 
-Pnevma is currently in release hardening. While that remains true, scope is further limited by
-[`hardening-exit-criteria.md`](./hardening-exit-criteria.md): only bug fixes, tests, CI/build
-hardening, release-pipeline hardening, and Ghostty/runtime verification changes may merge.
+Pnevma uses this checklist as the default quality bar for changes to the repository. Release-sensitive work may require the higher-assurance items below, but the project does not use a standing release-hardening freeze as merge policy.
 
 ## Global Checklist
 
 Every change merged to `main` must satisfy all of the following:
 
-- [ ] **Scope is allowed** — the change fits the active hardening merge policy, and it is one
-      logical task on one branch/worktree.
+- [ ] **Scope is coherent** — the change is one logical task on one branch/worktree, with clear boundaries and reviewable intent.
 - [ ] **Boundaries are respected** — workflow logic stays in Rust, Swift remains a thin view
       layer, and any new `unsafe` block includes a `// SAFETY:` explanation.
 - [ ] **Required local gates pass for the touched surface**:
@@ -122,7 +119,6 @@ Approval required:
 
 The following are **not waivable**:
 
-- the active hardening merge policy
 - no secrets or signing credentials in the diff
 - `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`
 - the required CI jobs for the touched surface

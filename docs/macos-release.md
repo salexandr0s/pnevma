@@ -229,5 +229,5 @@ not added in this release. Distribution remains manual:
 ## See also
 
 - [Implementation Status](./implementation-status.md)
-- [Hardening Exit Criteria](./hardening-exit-criteria.md)
+- [Release Readiness](./release-readiness.md)
 - [macOS Website Release Plan](./macos-website-release-plan.md)
