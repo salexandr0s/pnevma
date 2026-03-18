@@ -2,10 +2,14 @@ import SwiftUI
 
 struct IssuesTabView: View {
     @Bindable var viewModel: WorkspaceOpenerViewModel
+    let commandBus: any CommandCalling
 
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.issuesAvailable {
+            if viewModel.isLoadingGitHubStatus || viewModel.isConnectingGitHub {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.issuesAvailable {
                 // Search field
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
@@ -47,10 +51,13 @@ struct IssuesTabView: View {
                 }
             } else {
                 EmptyStateView(
-                    icon: "exclamationmark.bubble",
-                    title: "Connect GitHub",
-                    message: "Link a GitHub repository to browse issues",
-                    actionTitle: "Connect"
+                    icon: viewModel.gitHubEmptyStateIcon,
+                    title: viewModel.gitHubEmptyStateTitle,
+                    message: viewModel.gitHubEmptyStateMessage,
+                    actionTitle: viewModel.gitHubActionTitle,
+                    action: {
+                        viewModel.connectGitHub(using: commandBus)
+                    }
                 )
             }
         }

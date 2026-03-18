@@ -1019,7 +1019,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorBacking.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
 
             toolDock.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
-            toolDock.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            toolDock.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
             toolDock.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             toolDockHeightConstraint,
 
@@ -1126,10 +1126,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         rightInspectorBacking.isHidden = !isRightInspectorPresented
         rightInspectorResizer.isHidden = !isRightInspectorPresented
-        let isBrowserDrawerVisible = browserSession?.isDrawerVisible ?? false
-        browserDrawerChromeState.isPresented = isBrowserDrawerVisible
-        browserDrawerBlocker.capturesPointerEvents = isBrowserDrawerVisible
-        browserDrawerHost.capturesPointerEvents = isBrowserDrawerVisible
+        browserDrawerChromeState.isPresented = false
+        browserDrawerBlocker.capturesPointerEvents = false
+        browserDrawerHost.capturesPointerEvents = false
         updateWindowMinWidth()
         updateRightInspectorOverlayAlignment()
         refreshBrowserDrawerOverlayRootView()
@@ -2958,39 +2957,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshBrowserDrawerOverlayRootView() {
         guard let host = browserDrawerOverlayHostView else { return }
-        let previousSession = browserDrawerPresentationModel.session
-
-        guard let workspace = workspaceManager?.activeWorkspace else {
-            previousSession?.cancelPendingDrawerRestore()
-            browserDrawerPresentationModel.session = nil
-            browserDrawerChromeState.isPresented = false
-            host.capturesPointerEvents = false
-            browserDrawerOverlayBlockerView?.capturesPointerEvents = false
-            browserDrawerChromeState.drawerHitRect = .zero
-            host.overlayHitRect = .zero
-            browserDrawerOverlayBlockerView?.overlayHitRect = .zero
-            updateToolDockState()
-            return
+        browserDrawerPresentationModel.session = workspaceManager?.activeWorkspace.flatMap {
+            existingBrowserSession(for: $0)
         }
-
-        let session = existingBrowserSession(for: workspace)
-        if let previousSession, previousSession !== session {
-            previousSession.cancelPendingDrawerRestore()
-        }
-        browserDrawerPresentationModel.session = session
-        let captures = session?.isDrawerVisible ?? false
-        // Enforce single-drawer: dismiss tool drawer when browser drawer presents
-        if captures && toolDrawerChromeState.isPresented {
-            closeToolDrawer()
-        }
-        browserDrawerChromeState.isPresented = captures
-        host.capturesPointerEvents = captures
-        browserDrawerOverlayBlockerView?.capturesPointerEvents = captures
-        if !captures {
-            browserDrawerChromeState.drawerHitRect = .zero
-            host.overlayHitRect = .zero
-            browserDrawerOverlayBlockerView?.overlayHitRect = .zero
-        }
+        browserDrawerChromeState.isPresented = false
+        host.capturesPointerEvents = false
+        browserDrawerOverlayBlockerView?.capturesPointerEvents = false
+        browserDrawerChromeState.drawerHitRect = .zero
+        host.overlayHitRect = .zero
+        browserDrawerOverlayBlockerView?.overlayHitRect = .zero
         updateToolDockState()
     }
 
@@ -3010,29 +2985,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let session = activeBrowserSession() else { return }
-        if session.isDrawerVisible {
+        if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
             closeBrowserDrawer()
         } else {
-            if toolDrawerChromeState.isPresented { closeToolDrawer() }
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-            session.showDrawer()
-            refreshBrowserDrawerOverlayRootView()
+            openToolInDrawer("browser")
             persistence?.markDirty()
         }
     }
 
     private func closeBrowserDrawer() {
-        guard let session = existingActiveBrowserSession(), session.isDrawerVisible else { return }
-        session.hideDrawer()
-        browserDrawerChromeState.drawerHitRect = .zero
-        refreshBrowserDrawerOverlayRootView()
-        if let previous = browserDrawerPreviousFirstResponder {
-            window?.makeFirstResponder(previous)
-        } else if let pane = contentAreaView?.activePaneView {
-            window?.makeFirstResponder(pane)
-        }
-        browserDrawerPreviousFirstResponder = nil
+        guard toolDrawerChromeState.isPresented,
+              toolDrawerContentModel.activeToolID == "browser" else { return }
+        closeToolDrawer()
         persistence?.markDirty()
     }
 
@@ -3042,46 +3006,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let session = activeBrowserSession() else { return }
-        if !session.isDrawerVisible {
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-        }
-        if toolDrawerChromeState.isPresented { closeToolDrawer() }
-        session.showDrawer()
-        session.requestOmnibarFocus()
-        refreshBrowserDrawerOverlayRootView()
+        openToolInDrawer("browser")
+        activeBrowserSession()?.requestOmnibarFocus()
         persistence?.markDirty()
     }
 
     private func resizeBrowserDrawer(by delta: CGFloat) {
         guard let session = activeBrowserSession() else { return }
-        if !session.isDrawerVisible {
+        if !toolDrawerChromeState.isPresented || toolDrawerContentModel.activeToolID != "browser" {
             guard !activeWorkspaceHasBrowserPane() else { return }
-            if toolDrawerChromeState.isPresented { closeToolDrawer() }
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-            session.showDrawer(focusOmnibar: false)
+            openToolInDrawer("browser")
         }
 
-        let availableHeight = browserDrawerOverlayHostView?.bounds.height
+        let availableHeight = toolDrawerOverlayHostView?.bounds.height
             ?? contentAreaView?.bounds.height
             ?? window?.contentView?.bounds.height
             ?? 0
         session.adjustDrawerHeight(by: delta, availableHeight: availableHeight)
-        refreshBrowserDrawerOverlayRootView()
         persistence?.markDirty()
     }
 
     private func openBrowserInWorkspace(url: URL?, source: BrowserOpenSource) {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         let session = browserSession(for: workspace)
-
-        // Close the generic tool drawer if it's open, carrying height to browser
-        if toolDrawerChromeState.isPresented {
-            if let h = toolDrawerContentModel.drawerHeight {
-                session.setDrawerHeight(h)
-            }
-            closeToolDrawer()
-        }
 
         if focusExistingBrowserPaneIfPresent() {
             if let url {
@@ -3093,39 +3040,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if !session.isDrawerVisible {
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-        }
+        openToolInDrawer("browser")
         if let url {
-            session.navigate(to: url)
+            session.navigate(to: url, revealInDrawer: false)
         } else {
-            session.showDrawer()
+            session.restoreIfNeeded()
         }
 
         if source == .command && url == nil {
             session.requestOmnibarFocus()
         }
 
-        refreshBrowserDrawerOverlayRootView()
         persistence?.markDirty()
     }
 
     private func pinBrowserToPane() {
-        guard let session = activeBrowserSession() else { return }
-        session.hideDrawer()
-        refreshBrowserDrawerOverlayRootView()
-        Task { @MainActor [weak self] in
-            self?.openToolAsPane("browser")
+        if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
+            pinToolDrawerToPane()
+            return
         }
+        openToolAsPane("browser")
     }
 
     private func openBrowserAsTab() {
-        guard let session = activeBrowserSession() else { return }
-        session.hideDrawer()
-        refreshBrowserDrawerOverlayRootView()
-        Task { @MainActor [weak self] in
-            self?.openToolAsTab("browser")
+        if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
+            openToolDrawerAsTab()
+            return
         }
+        openToolAsTab("browser")
     }
 
     // MARK: - Generic tool drawer
@@ -3133,18 +3075,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openToolInDrawer(_ toolID: String) {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace) else { return }
-
-        // Close browser drawer if open, carrying height to tool drawer
-        if browserDrawerChromeState.isPresented {
-            let browserHeight = existingActiveBrowserSession()?.preferredDrawerHeight
-            if let session = existingActiveBrowserSession() {
-                session.hideDrawer()
-            }
-            refreshBrowserDrawerOverlayRootView()
-            if let h = browserHeight {
-                toolDrawerContentModel.drawerHeight = h
-            }
-        }
 
         // Same tool — toggle the drawer
         if toolDrawerContentModel.activeToolID == toolID {
@@ -3154,6 +3084,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
                 toolDrawerChromeState.isPresented = true
                 toolDockState.activeToolID = toolID
+                if toolID == "browser" {
+                    activeBrowserSession()?.requestOmnibarFocus()
+                }
             }
             return
         }
@@ -3163,14 +3096,48 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Discard previous pane
         toolDrawerContentModel.activePaneView?.removeFromSuperview()
-
-        // Create a fresh pane for the new tool
-        guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
-              let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
+        if toolDrawerContentModel.activeToolID == "browser",
+           let previousBrowserHeight = toolDrawerContentModel.activeBrowserSession?.preferredDrawerHeight {
+            toolDrawerContentModel.drawerHeight = previousBrowserHeight
+        }
+        toolDrawerContentModel.activeBrowserSession = nil
 
         if !alreadyPresented {
             toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
         }
+
+        if toolID == "browser" {
+            let session = browserSession(for: workspace)
+            if alreadyPresented, let preservedHeight = toolDrawerContentModel.drawerHeight {
+                session.setDrawerHeight(preservedHeight)
+            }
+
+            if alreadyPresented {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    toolDrawerContentModel.activeToolID = toolID
+                    toolDrawerContentModel.activeToolTitle = tool.title
+                    toolDrawerContentModel.activePaneView = nil
+                    toolDrawerContentModel.activePaneID = nil
+                    toolDrawerContentModel.activeBrowserSession = session
+                }
+            } else {
+                toolDrawerContentModel.activeToolID = toolID
+                toolDrawerContentModel.activeToolTitle = tool.title
+                toolDrawerContentModel.activePaneView = nil
+                toolDrawerContentModel.activePaneID = nil
+                toolDrawerContentModel.activeBrowserSession = session
+                toolDrawerChromeState.isPresented = true
+            }
+            toolDockState.activeToolID = toolID
+            session.restoreIfNeeded()
+            return
+        }
+
+        // Create a fresh pane for the new tool
+        guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
+              let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
 
         // Swap content without animation when replacing
         if alreadyPresented {
@@ -3181,6 +3148,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 toolDrawerContentModel.activeToolTitle = tool.title
                 toolDrawerContentModel.activePaneView = paneView
                 toolDrawerContentModel.activePaneID = paneID
+                toolDrawerContentModel.activeBrowserSession = nil
                 // Keep current drawer height — don't reset on tool switch
             }
         } else {
@@ -3188,6 +3156,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             toolDrawerContentModel.activeToolTitle = tool.title
             toolDrawerContentModel.activePaneView = paneView
             toolDrawerContentModel.activePaneID = paneID
+            toolDrawerContentModel.activeBrowserSession = nil
             toolDrawerContentModel.drawerHeight = DrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
         }
@@ -3213,28 +3182,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.toolDrawerContentModel.activePaneID = nil
             self.toolDrawerContentModel.activeToolID = nil
             self.toolDrawerContentModel.activeToolTitle = nil
+            self.toolDrawerContentModel.activeBrowserSession = nil
         }
     }
 
     private func pinToolDrawerToPane() {
-        guard let paneView = toolDrawerContentModel.activePaneView,
-              let toolID = toolDrawerContentModel.activeToolID else { return }
-        // Detach the pane view from the drawer before moving it
-        paneView.removeFromSuperview()
-        toolDrawerChromeState.isPresented = false
-        toolDockState.activeToolID = nil
-        toolDrawerContentModel.activePaneView = nil
-        toolDrawerContentModel.activePaneID = nil
-        toolDrawerContentModel.activeToolID = nil
-        toolDrawerContentModel.activeToolTitle = nil
-        Task { @MainActor [weak self] in
-            self?.openToolAsPane(toolID)
-        }
-    }
-
-    private func openToolDrawerAsTab() {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
-        // Detach the pane view from the drawer
         toolDrawerContentModel.activePaneView?.removeFromSuperview()
         toolDrawerChromeState.isPresented = false
         toolDockState.activeToolID = nil
@@ -3242,6 +3195,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDrawerContentModel.activePaneID = nil
         toolDrawerContentModel.activeToolID = nil
         toolDrawerContentModel.activeToolTitle = nil
+        toolDrawerContentModel.activeBrowserSession = nil
+        Task { @MainActor [weak self] in
+            self?.openToolAsPane(toolID)
+        }
+    }
+
+    private func openToolDrawerAsTab() {
+        guard let toolID = toolDrawerContentModel.activeToolID else { return }
+        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+        toolDrawerChromeState.isPresented = false
+        toolDockState.activeToolID = nil
+        toolDrawerContentModel.activePaneView = nil
+        toolDrawerContentModel.activePaneID = nil
+        toolDrawerContentModel.activeToolID = nil
+        toolDrawerContentModel.activeToolTitle = nil
+        toolDrawerContentModel.activeBrowserSession = nil
         Task { @MainActor [weak self] in
             self?.openToolAsTab(toolID)
         }
@@ -3376,9 +3345,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if existingBrowserSession(for: workspace)?.isDrawerVisible == true,
-           sidebarTool(id: "browser", in: workspace) != nil {
-            toolDockState.activeToolID = "browser"
+        if toolDrawerChromeState.isPresented,
+           let activeToolID = toolDrawerContentModel.activeToolID,
+           sidebarTool(id: activeToolID, in: workspace) != nil {
+            toolDockState.activeToolID = activeToolID
         } else if let paneType = contentAreaView?.activePaneView?.paneType,
                   let tool = sidebarToolDefinition(paneType: paneType),
                   sidebarTool(id: tool.id, in: workspace) != nil {
@@ -3453,14 +3423,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             openSettingsPane()
             return
         }
-        if toolID == "browser" {
-            // Close the generic tool drawer if it's open
-            if toolDrawerChromeState.isPresented {
-                closeToolDrawer()
-            }
-            openBrowserInWorkspace(url: nil, source: .command)
-            return
-        }
         openToolInDrawer(toolID)
     }
 
@@ -3486,9 +3448,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace),
               PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace) else { return }
-        if toolID == "browser" {
-            activeBrowserSession()?.hideDrawer()
-            refreshBrowserDrawerOverlayRootView()
+        if toolID == "browser",
+           toolDrawerChromeState.isPresented,
+           toolDrawerContentModel.activeToolID == "browser" {
+            closeToolDrawer()
         }
         if focusExistingTool(tool, scope: .anyTab) {
             return
@@ -3506,8 +3469,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openToolAsPane(_ toolID: String) {
         guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else { return }
         if toolID == "browser" {
-            activeBrowserSession()?.hideDrawer()
-            refreshBrowserDrawerOverlayRootView()
+            if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
+                closeToolDrawer()
+            }
             if focusExistingTool(tool, scope: .anyTab) {
                 return
             }

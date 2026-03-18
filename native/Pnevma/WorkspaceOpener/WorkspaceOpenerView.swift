@@ -30,9 +30,9 @@ struct WorkspaceOpenerView: View {
                 case .prompt:
                     PromptTabView(viewModel: viewModel)
                 case .issues:
-                    IssuesTabView(viewModel: viewModel)
+                    IssuesTabView(viewModel: viewModel, commandBus: commandBus)
                 case .pullRequests:
-                    PullRequestsTabView(viewModel: viewModel)
+                    PullRequestsTabView(viewModel: viewModel, commandBus: commandBus)
                 case .branches:
                     BranchesTabView(viewModel: viewModel)
                 }

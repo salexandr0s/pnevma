@@ -10,9 +10,16 @@ struct SidebarCollapsedRailView: View {
     var canNavigateForward: Bool = false
 
     @Environment(GhosttyThemeProvider.self) private var theme
+    @AppStorage("sidebarBackgroundOffset") private var sidebarOffset: Double = BackgroundTint.defaultOffset
 
     private var railBackground: Color {
-        Color(nsColor: theme.backgroundColor)
+        let bg = theme.backgroundColor
+        let offset = BackgroundTint.clamped(sidebarOffset)
+        if offset == 0 {
+            return Color(nsColor: bg)
+        }
+        let tinted = bg.blended(withFraction: offset, of: .white) ?? bg
+        return Color(nsColor: tinted)
     }
 
     var body: some View {

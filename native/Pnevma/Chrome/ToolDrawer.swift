@@ -15,6 +15,7 @@ final class ToolDrawerContentModel {
     var activeToolTitle: String?
     var activePaneView: (NSView & PaneContent)?
     var activePaneID: PaneID?
+    var activeBrowserSession: BrowserWorkspaceSession?
     var drawerHeight: CGFloat?
 }
 
@@ -80,7 +81,7 @@ struct ToolDrawerOverlayView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
-                if contentModel.activePaneView != nil {
+                if hasActiveContent {
                     drawerCard(in: geometry.size)
                         .background(
                             GeometryReader { proxy in
@@ -119,13 +120,13 @@ struct ToolDrawerOverlayView: View {
         .accessibilityIdentifier("tool.drawer.overlay")
     }
 
+    private var hasActiveContent: Bool {
+        contentModel.activePaneView != nil || contentModel.activeBrowserSession != nil
+    }
+
     @ViewBuilder
     private func drawerCard(in size: CGSize) -> some View {
-        let effectiveHeight = DrawerSizing.clamp(
-            contentModel.drawerHeight
-                ?? DrawerSizing.resolvedHeight(availableHeight: size.height),
-            availableHeight: size.height
-        )
+        let effectiveHeight = resolvedDrawerHeight(for: size.height)
         let maxDrawerHeight = DrawerSizing.maxHeight(for: size.height)
         let cardBackgroundColor = Color(nsColor: theme.backgroundColor)
 
@@ -134,8 +135,12 @@ struct ToolDrawerOverlayView: View {
                 currentHeight: effectiveHeight,
                 availableHeight: size.height,
                 onHeightChanged: { newHeight in
-                    contentModel.drawerHeight = newHeight
-                    DrawerSizing.setStoredHeight(newHeight)
+                    if let session = contentModel.activeBrowserSession {
+                        session.setDrawerHeight(newHeight)
+                    } else {
+                        contentModel.drawerHeight = newHeight
+                        DrawerSizing.setStoredHeight(newHeight)
+                    }
                     isMaximized = false
                 }
             )
@@ -151,12 +156,11 @@ struct ToolDrawerOverlayView: View {
                 Button(action: {
                     if isMaximized {
                         let restored = heightBeforeMaximize ?? effectiveHeight
-                        contentModel.drawerHeight = restored
-                        DrawerSizing.setStoredHeight(restored)
+                        applyDrawerHeight(restored)
                         isMaximized = false
                     } else {
                         heightBeforeMaximize = effectiveHeight
-                        contentModel.drawerHeight = maxDrawerHeight
+                        applyDrawerHeight(maxDrawerHeight)
                         isMaximized = true
                     }
                 }) {
@@ -188,7 +192,10 @@ struct ToolDrawerOverlayView: View {
 
             Divider()
 
-            if chromeState.isPresented, let paneView = contentModel.activePaneView {
+            if chromeState.isPresented, let session = contentModel.activeBrowserSession {
+                BrowserView(session: session)
+                    .id(session.workspaceID)
+            } else if chromeState.isPresented, let paneView = contentModel.activePaneView {
                 PaneContentBridge(paneView: paneView)
                     .id(contentModel.activePaneID)
             } else {
@@ -218,6 +225,27 @@ struct ToolDrawerOverlayView: View {
             .strokeBorder(Color.primary.opacity(0.08))
         )
         .shadow(color: Color.black.opacity(0.18), radius: 12, y: -4)
+    }
+
+    private func resolvedDrawerHeight(for availableHeight: CGFloat) -> CGFloat {
+        if let session = contentModel.activeBrowserSession {
+            return session.resolvedDrawerHeight(for: availableHeight)
+        }
+
+        return DrawerSizing.clamp(
+            contentModel.drawerHeight
+                ?? DrawerSizing.resolvedHeight(availableHeight: availableHeight),
+            availableHeight: availableHeight
+        )
+    }
+
+    private func applyDrawerHeight(_ height: CGFloat) {
+        if let session = contentModel.activeBrowserSession {
+            session.setDrawerHeight(height)
+        } else {
+            contentModel.drawerHeight = height
+            DrawerSizing.setStoredHeight(height)
+        }
     }
 }
 

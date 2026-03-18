@@ -54,3 +54,20 @@ struct PullRequestItem: Identifiable {
     let status: String
     var id: Int64 { number }
 }
+
+enum WorkspaceOpenerGitHubState: String, Decodable {
+    case ready
+    case missingGhCLI = "missing_gh_cli"
+    case notAuthenticated = "not_authenticated"
+    case noGitHubRemote = "no_github_remote"
+    case noDefaultRepo = "no_default_repo"
+    case notGitRepo = "not_git_repo"
+    case error
+}
+
+struct WorkspaceOpenerGitHubStatus: Decodable {
+    let state: WorkspaceOpenerGitHubState
+    let message: String
+    let detail: String?
+    let resolvedRepo: String?
+}

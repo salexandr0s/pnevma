@@ -693,3 +693,84 @@ async fn fleet_snapshot_without_open_project_returns_catalog_projects() {
     assert_eq!(snapshot.projects[0].state, "cataloged");
     assert_eq!(snapshot.projects[0].project_id, "closed-1");
 }
+
+#[tokio::test]
+async fn github_status_for_path_reports_not_git_repo_for_plain_folder() {
+    let temp = tempdir().expect("tempdir");
+    let status = github_status_for_path(WorkspaceOpenerPathInput {
+        path: temp.path().to_string_lossy().to_string(),
+    })
+    .await
+    .expect("github status");
+
+    assert_eq!(status.state, "not_git_repo");
+}
+
+#[tokio::test]
+async fn list_branches_for_path_uses_selected_repository_path() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    std::fs::create_dir_all(&project_root).expect("create repo dir");
+
+    let init = std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(&project_root)
+        .output()
+        .expect("git init");
+    assert!(
+        init.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    std::fs::write(project_root.join("README.md"), "hello\n").expect("write readme");
+    let add = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&project_root)
+        .output()
+        .expect("git add");
+    assert!(
+        add.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let commit = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        ])
+        .current_dir(&project_root)
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let branch = std::process::Command::new("git")
+        .args(["branch", "feature/workspace-opener"])
+        .current_dir(&project_root)
+        .output()
+        .expect("git branch");
+    assert!(
+        branch.status.success(),
+        "git branch failed: {}",
+        String::from_utf8_lossy(&branch.stderr)
+    );
+
+    let branches = list_branches_for_path(WorkspaceOpenerPathInput {
+        path: project_root.to_string_lossy().to_string(),
+    })
+    .await
+    .expect("list branches");
+
+    assert!(branches.contains(&"main".to_string()));
+    assert!(branches.contains(&"feature/workspace-opener".to_string()));
+}

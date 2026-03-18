@@ -2,10 +2,14 @@ import SwiftUI
 
 struct PullRequestsTabView: View {
     @Bindable var viewModel: WorkspaceOpenerViewModel
+    let commandBus: any CommandCalling
 
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.githubAvailable {
+            if viewModel.isLoadingGitHubStatus || viewModel.isConnectingGitHub {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.githubAvailable {
                 // Search field
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
@@ -47,10 +51,13 @@ struct PullRequestsTabView: View {
                 }
             } else {
                 EmptyStateView(
-                    icon: "arrow.triangle.pull",
-                    title: "Connect GitHub",
-                    message: "Link a GitHub repository to browse pull requests",
-                    actionTitle: "Connect"
+                    icon: viewModel.gitHubEmptyStateIcon,
+                    title: viewModel.gitHubEmptyStateTitle,
+                    message: viewModel.gitHubEmptyStateMessage,
+                    actionTitle: viewModel.gitHubActionTitle,
+                    action: {
+                        viewModel.connectGitHub(using: commandBus)
+                    }
                 )
             }
         }

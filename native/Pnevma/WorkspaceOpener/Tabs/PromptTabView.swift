@@ -3,6 +3,13 @@ import SwiftUI
 struct PromptTabView: View {
     @Bindable var viewModel: WorkspaceOpenerViewModel
 
+    private var promptHeightRange: ClosedRange<CGFloat> {
+        if viewModel.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return 68...68
+        }
+        return 120...220
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Agent picker
@@ -45,7 +52,11 @@ struct PromptTabView: View {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color.primary.opacity(DesignTokens.Opacity.subtle))
                 )
-                .frame(minHeight: 120)
+                .frame(
+                    minHeight: promptHeightRange.lowerBound,
+                    maxHeight: promptHeightRange.upperBound,
+                    alignment: .top
+                )
                 .overlay(alignment: .topLeading) {
                     if viewModel.promptText.isEmpty {
                         Text("What do you want to do?")

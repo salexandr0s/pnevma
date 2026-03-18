@@ -918,6 +918,56 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "workspace_opener.list_branches" => {
+            let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::list_branches_for_path(input)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace_opener.github_status" => {
+            let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::github_status_for_path(input)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace_opener.github_connect" => {
+            let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::github_connect_for_path(input)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace_opener.list_issues" => {
+            let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::list_github_issues_for_path(input)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace_opener.list_prs" => {
+            let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::list_github_pull_requests_for_path(input)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "git.list_branches" => serde_json::to_value(
             commands::list_branches(state)
                 .await

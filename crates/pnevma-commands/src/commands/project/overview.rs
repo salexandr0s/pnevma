@@ -1,4 +1,5 @@
 use super::*;
+use std::path::{Path, PathBuf};
 
 fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
     let mut insertions: Option<i64> = None;
@@ -15,6 +16,421 @@ fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
 }
 
 const FLEET_MACHINE_ID_KEY: &str = "fleet.machine_id";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerPathInput {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubRepoStatusView {
+    pub state: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub resolved_repo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubPullRequestView {
+    pub number: i64,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhRepoViewJson {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPullRequestJson {
+    number: i64,
+    title: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
+    state: String,
+}
+
+fn project_path_from_input(input: &WorkspaceOpenerPathInput) -> Result<PathBuf, String> {
+    ensure_safe_path_input(&input.path, "project path")?;
+    Ok(PathBuf::from(&input.path))
+}
+
+async fn git_repo_root_for_path(path: &Path) -> Result<PathBuf, String> {
+    let output = TokioCommand::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    if !output.status.success() {
+        return Err("Selected folder is not a git repository.".to_string());
+    }
+
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return Err("Could not determine the repository root.".to_string());
+    }
+
+    Ok(PathBuf::from(root))
+}
+
+async fn gh_cli_available() -> bool {
+    TokioCommand::new("gh")
+        .arg("--version")
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+async fn gh_auth_ready() -> Result<(), String> {
+    let output = TokioCommand::new("gh")
+        .args(["auth", "status", "--hostname", "github.com"])
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err("GitHub CLI is not authenticated.".to_string())
+    } else {
+        Err(stderr)
+    }
+}
+
+fn parse_github_remote_spec(remote_url: &str) -> Option<String> {
+    let trimmed = remote_url.trim().trim_end_matches('/');
+    let suffix = [
+        "git@github.com:",
+        "ssh://git@github.com/",
+        "https://github.com/",
+        "http://github.com/",
+        "git://github.com/",
+    ]
+    .iter()
+    .find_map(|prefix| trimmed.strip_prefix(prefix))?;
+
+    let normalized = suffix.trim_end_matches(".git").trim_matches('/');
+    let mut parts = normalized.split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim();
+
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return None;
+    }
+
+    Some(format!("{owner}/{repo}"))
+}
+
+async fn github_remote_spec_for_path(project_path: &Path) -> Result<Option<String>, String> {
+    let output = TokioCommand::new("git")
+        .args(["remote", "-v"])
+        .current_dir(project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to inspect git remotes: {e}"))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut fallback: Option<String> = None;
+
+    for line in stdout.lines() {
+        let mut fields = line.split_whitespace();
+        let remote_name = fields.next().unwrap_or_default();
+        let remote_url = fields.next().unwrap_or_default();
+        let spec = parse_github_remote_spec(remote_url);
+
+        if remote_name == "origin" && spec.is_some() {
+            return Ok(spec);
+        }
+        if fallback.is_none() {
+            fallback = spec;
+        }
+    }
+
+    Ok(fallback)
+}
+
+async fn gh_resolved_repo_for_path(project_path: &Path) -> Result<String, String> {
+    let output = TokioCommand::new("gh")
+        .args(["repo", "view", "--json", "nameWithOwner"])
+        .current_dir(project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Could not resolve the GitHub repository for this folder.".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let repo: GhRepoViewJson =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))?;
+    Ok(repo.name_with_owner)
+}
+
+fn github_status_view(
+    state: &str,
+    message: impl Into<String>,
+    detail: Option<String>,
+    resolved_repo: Option<String>,
+) -> GitHubRepoStatusView {
+    GitHubRepoStatusView {
+        state: state.to_string(),
+        message: message.into(),
+        detail,
+        resolved_repo,
+    }
+}
+
+pub async fn github_status_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<GitHubRepoStatusView, String> {
+    let requested_path = project_path_from_input(&input)?;
+    let repo_root = match git_repo_root_for_path(&requested_path).await {
+        Ok(root) => root,
+        Err(message) => {
+            return Ok(github_status_view(
+                "not_git_repo",
+                "This folder is not a git repository.",
+                Some(message),
+                None,
+            ));
+        }
+    };
+
+    if !gh_cli_available().await {
+        return Ok(github_status_view(
+            "missing_gh_cli",
+            "GitHub CLI (`gh`) is not installed.",
+            Some("Install GitHub CLI to browse issues and pull requests.".to_string()),
+            None,
+        ));
+    }
+
+    let remote_repo = github_remote_spec_for_path(&repo_root).await?;
+    if remote_repo.is_none() {
+        return Ok(github_status_view(
+            "no_github_remote",
+            "This repository has no GitHub remote.",
+            Some("Add a GitHub remote before browsing issues or pull requests.".to_string()),
+            None,
+        ));
+    }
+
+    if let Err(detail) = gh_auth_ready().await {
+        return Ok(github_status_view(
+            "not_authenticated",
+            "GitHub CLI is not authenticated.",
+            Some(detail),
+            remote_repo,
+        ));
+    }
+
+    match gh_resolved_repo_for_path(&repo_root).await {
+        Ok(resolved_repo) => Ok(github_status_view(
+            "ready",
+            "GitHub is connected for this repository.",
+            None,
+            Some(resolved_repo),
+        )),
+        Err(detail) => Ok(github_status_view(
+            "no_default_repo",
+            "GitHub CLI needs a repository context for this folder.",
+            Some(detail),
+            remote_repo,
+        )),
+    }
+}
+
+pub async fn github_connect_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<GitHubRepoStatusView, String> {
+    let requested_path = project_path_from_input(&input)?;
+    let repo_root = match git_repo_root_for_path(&requested_path).await {
+        Ok(root) => root,
+        Err(message) => {
+            return Ok(github_status_view(
+                "not_git_repo",
+                "This folder is not a git repository.",
+                Some(message),
+                None,
+            ));
+        }
+    };
+
+    if !gh_cli_available().await {
+        return Ok(github_status_view(
+            "missing_gh_cli",
+            "GitHub CLI (`gh`) is not installed.",
+            Some("Install GitHub CLI to continue.".to_string()),
+            None,
+        ));
+    }
+
+    let remote_repo = match github_remote_spec_for_path(&repo_root).await? {
+        Some(repo) => repo,
+        None => {
+            return Ok(github_status_view(
+                "no_github_remote",
+                "This repository has no GitHub remote.",
+                Some("Add a GitHub remote before trying to connect GitHub.".to_string()),
+                None,
+            ));
+        }
+    };
+
+    if let Err(detail) = gh_auth_ready().await {
+        return Ok(github_status_view(
+            "not_authenticated",
+            "GitHub CLI is not authenticated.",
+            Some(detail),
+            Some(remote_repo),
+        ));
+    }
+
+    let output = TokioCommand::new("gh")
+        .args(["repo", "set-default", &remote_repo])
+        .current_dir(&repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Ok(github_status_view(
+            "no_default_repo",
+            "Could not set the default GitHub repository.",
+            Some(stderr),
+            Some(remote_repo),
+        ));
+    }
+
+    github_status_for_path(input).await
+}
+
+pub async fn list_branches_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<Vec<String>, String> {
+    let requested_path = project_path_from_input(&input)?;
+    let project_path = git_repo_root_for_path(&requested_path).await?;
+    let output = TokioCommand::new("git")
+        .args([
+            "branch",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err("git branch failed".to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|branch| !branch.is_empty())
+        .collect())
+}
+
+pub async fn list_github_issues_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<Vec<GitHubIssueView>, String> {
+    let requested_path = project_path_from_input(&input)?;
+    let project_path = git_repo_root_for_path(&requested_path).await?;
+    let output = TokioCommand::new("gh")
+        .args([
+            "issue",
+            "list",
+            "--json",
+            "number,title,state,labels,author",
+            "--limit",
+            "50",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh issue list failed: {stderr}"));
+    }
+
+    let items: Vec<GhIssueJson> =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| GitHubIssueView {
+            number: item.number,
+            title: item.title,
+            state: item.state,
+            labels: item.labels.into_iter().map(|label| label.name).collect(),
+            author: item.author.login,
+        })
+        .collect())
+}
+
+pub async fn list_github_pull_requests_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<Vec<GitHubPullRequestView>, String> {
+    let requested_path = project_path_from_input(&input)?;
+    let project_path = git_repo_root_for_path(&requested_path).await?;
+    let output = TokioCommand::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,headRefName,baseRefName,state",
+            "--limit",
+            "50",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr list failed: {stderr}"));
+    }
+
+    let items: Vec<GhPullRequestJson> =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| GitHubPullRequestView {
+            number: item.number,
+            title: item.title,
+            source_branch: item.head_ref_name,
+            target_branch: item.base_ref_name,
+            status: item.state,
+        })
+        .collect())
+}
 
 async fn fleet_machine_id() -> Result<String, String> {
     let global_db = pnevma_db::GlobalDb::open()
