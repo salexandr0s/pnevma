@@ -72,14 +72,31 @@ final class TabBarView: NSView {
     }
 
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let window else { return super.hitTest(point) }
-        let windowPoint = superview?.convert(point, to: nil) ?? point
+        guard bounds.contains(point) else { return nil }
+
+        if let addButton {
+            let addPoint = convert(point, to: addButton)
+            if let addHit = addButton.hitTest(addPoint) {
+                return addHit
+            }
+        }
+
+        for button in tabButtons.reversed() {
+            let buttonPoint = convert(point, to: button)
+            if let buttonHit = button.hitTest(buttonPoint) {
+                return buttonHit
+            }
+        }
+
+        guard let window else { return self }
+        let windowPoint = convert(point, to: nil)
         let threshold: CGFloat = 5
         if windowPoint.x >= window.frame.width - threshold { return nil }
         if windowPoint.y < threshold && windowPoint.x >= window.frame.width - 15 { return nil }
-        return super.hitTest(point)
+        return self
     }
 
     // MARK: - Rebuild (only on data change)
@@ -234,6 +251,7 @@ private final class TabButton: NSView {
     private let showsCloseButton: Bool
     private var isHovering = false
     private var isRenaming = false
+    private var hasActivatedRenameField = false
     private var trackingArea: NSTrackingArea?
 
     init(tabID: UUID, frame: NSRect, title: String, isActive: Bool, showClose: Bool, hasNotification: Bool, theme: GhosttyThemeProvider) {
@@ -290,6 +308,7 @@ private final class TabButton: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func layout() {
         super.layout()
@@ -343,6 +362,26 @@ private final class TabButton: NSView {
         }
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+
+        if isRenaming {
+            let renamePoint = convert(point, to: renameField)
+            if let renameHit = renameField.hitTest(renamePoint) {
+                return renameHit
+            }
+        }
+
+        if !closeButton.isHidden {
+            let closePoint = convert(point, to: closeButton)
+            if let closeHit = closeButton.hitTest(closePoint) {
+                return closeHit
+            }
+        }
+
+        return self
+    }
+
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
             onBeginRename?()
@@ -389,6 +428,7 @@ private final class TabButton: NSView {
     func beginRenaming() {
         guard !isRenaming else { return }
         isRenaming = true
+        hasActivatedRenameField = false
         renameField.stringValue = titleLabel.stringValue
         titleLabel.isHidden = true
         renameField.isHidden = false
@@ -397,13 +437,20 @@ private final class TabButton: NSView {
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.window?.makeFirstResponder(self.renameField)
             self.renameField.selectText(nil)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isRenaming else { return }
+                if self.renameField.currentEditor() == nil {
+                    self.renameField.selectText(nil)
+                }
+                self.hasActivatedRenameField = self.renameField.currentEditor() != nil
+            }
         }
     }
 
     private func finishRenaming() {
         isRenaming = false
+        hasActivatedRenameField = false
         titleLabel.isHidden = false
         renameField.isHidden = true
         closeButton.isHidden = !showsCloseButton
@@ -431,6 +478,12 @@ private final class TabButton: NSView {
 }
 
 extension TabButton: NSTextFieldDelegate {
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        if isRenaming {
+            hasActivatedRenameField = true
+        }
+    }
+
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         switch commandSelector {
         case #selector(NSResponder.insertNewline(_:)):
@@ -446,6 +499,7 @@ extension TabButton: NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ obj: Notification) {
         if isRenaming {
+            guard hasActivatedRenameField else { return }
             commitRename()
         }
     }
