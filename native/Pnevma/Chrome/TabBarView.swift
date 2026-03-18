@@ -467,15 +467,30 @@ private final class TabButton: NSView {
         needsLayout = true
 
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.renameField.selectText(nil)
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isRenaming else { return }
-                if self.renameField.currentEditor() == nil {
-                    self.renameField.selectText(nil)
+            self?.activateRenameFieldIfPossible()
+        }
+    }
+
+    private func activateRenameFieldIfPossible() {
+        guard isRenaming else { return }
+
+        layoutSubtreeIfNeeded()
+
+        if let window {
+            _ = window.makeFirstResponder(renameField)
+        }
+        renameField.selectText(nil)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isRenaming else { return }
+            self.layoutSubtreeIfNeeded()
+            if self.renameField.currentEditor() == nil {
+                if let window {
+                    _ = window.makeFirstResponder(self.renameField)
                 }
-                self.hasActivatedRenameField = self.renameField.currentEditor() != nil
+                self.renameField.selectText(nil)
             }
+            self.hasActivatedRenameField = self.renameField.currentEditor() != nil
         }
     }
 

@@ -175,6 +175,7 @@ final class TabBarViewTests: XCTestCase {
 
         let renameField = try visibleRenameField(in: tabView)
         XCTAssertEqual(renameField.stringValue, "Terminal")
+        XCTAssertNotNil(renameField.currentEditor())
     }
 
     func testRenameCommitCallsRenameHandler() throws {
