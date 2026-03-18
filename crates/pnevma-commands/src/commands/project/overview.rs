@@ -1558,10 +1558,6 @@ pub async fn automation_status(state: &AppState) -> Result<AutomationStatusView,
 
     Ok(automation_status_from_snapshot(snapshot, &db, &project_id).await)
 }
-
-/// Attempt to initialize a TrackerCoordinator from config settings.
-/// Returns None if the API key is not available or setup fails.
-
 pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView, String> {
     let project_path = state
         .with_project("resolve_pr_url", |ctx| ctx.project_path.clone())
