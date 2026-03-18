@@ -2,6 +2,13 @@ use super::tasks::{ensure_scope_rows_from_config, rule_row_to_view};
 use super::*;
 use pnevma_db::{AutomationRunRow, WorktreeRow};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+mod sessions;
+mod settings;
+
+pub use sessions::*;
+pub use settings::*;
 
 const MAX_SESSION_NAME_BYTES: usize = 128;
 const MAX_SESSION_COMMAND_BYTES: usize = 2048;
@@ -292,144 +299,14 @@ fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
 }
 
 async fn load_effective_global_config(state: &AppState) -> Result<GlobalConfig, String> {
-    let current = state.current.lock().await;
-    if let Some(ctx) = current.as_ref() {
-        Ok(ctx.global_config.clone())
-    } else {
-        load_global_config().map_err(|e| e.to_string())
-    }
-}
-
-pub async fn get_app_settings(state: &AppState) -> Result<AppSettingsView, String> {
-    let config = load_effective_global_config(state).await?;
-    Ok(app_settings_view_from_config(&config))
-}
-
-pub async fn set_app_settings(
-    input: SetAppSettingsInput,
-    state: &AppState,
-) -> Result<AppSettingsView, String> {
-    let mut config = load_effective_global_config(state).await?;
-
-    let default_shell = match input.default_shell.trim() {
-        "" => None,
-        value => Some(value.to_string()),
-    };
-    let terminal_font = input.terminal_font.trim();
-    if terminal_font.is_empty() {
-        return Err("terminal_font must not be empty".to_string());
-    }
-
-    let focus_border_color = match input.focus_border_color.trim() {
-        "" | "accent" => None,
-        value => Some(value.to_string()),
-    };
-
-    config.auto_save_workspace_on_quit = input.auto_save_workspace_on_quit;
-    config.restore_windows_on_launch = input.restore_windows_on_launch;
-    config.auto_update = input.auto_update;
-    config.default_shell = default_shell;
-    config.terminal_font = terminal_font.to_string();
-    config.terminal_font_size = input.terminal_font_size;
-    config.scrollback_lines = input.scrollback_lines;
-    config.sidebar_background_offset = input.sidebar_background_offset;
-    config.bottom_tool_bar_auto_hide = input.bottom_tool_bar_auto_hide;
-    config.focus_border_enabled = input.focus_border_enabled;
-    config.focus_border_opacity = input.focus_border_opacity;
-    config.focus_border_width = input.focus_border_width;
-    config.focus_border_color = focus_border_color;
-    config.telemetry_opt_in = input.telemetry_enabled;
-    config.crash_reports_opt_in = input.crash_reports;
-
-    // Persist keybinding overrides — only store entries that differ from defaults
-    if let Some(overrides) = input.keybindings {
-        let defaults = default_keybindings();
-        config.keybindings.clear();
-        for kb in overrides {
-            let action = kb.action.trim().to_string();
-            let shortcut = kb.shortcut.trim().to_string();
-            if action.is_empty() || shortcut.is_empty() {
-                continue;
-            }
-            if is_protected_action(&action) {
-                continue;
-            }
-            if defaults
-                .get(&action)
-                .is_none_or(|d| normalize_shortcut(d) != normalize_shortcut(&shortcut))
-            {
-                config.keybindings.insert(action, shortcut);
-            }
-        }
-    }
-
-    save_global_config(&config).map_err(|e| e.to_string())?;
-
-    let mut current = state.current.lock().await;
-    if let Some(ctx) = current.as_mut() {
-        ctx.global_config = config.clone();
-    }
-
-    Ok(app_settings_view_from_config(&config))
-}
-
-async fn install_project_runtime(
-    state: &AppState,
-    db: Db,
-    sessions: SessionSupervisor,
-    project_id: Uuid,
-    redaction_secrets: Arc<RwLock<Vec<String>>>,
-    workflow_store: Arc<crate::automation::workflow_store::WorkflowStore>,
-    shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) {
-    let session_bridge = spawn_session_bridge(
-        Arc::clone(&state.emitter),
-        db,
-        sessions.clone(),
-        project_id,
-        redaction_secrets,
-    );
-    let health_refresh = tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            ticker.tick().await;
-            sessions.refresh_health().await;
-        }
-    });
-
-    let coordinator_task = if let Some(state_arc) = state.arc() {
-        let coordinator = Arc::new(crate::automation::coordinator::AutomationCoordinator::new(
-            state_arc,
-            Arc::clone(&workflow_store),
-            shutdown_rx,
-        ));
-        // Store coordinator in ProjectContext
-        {
-            let mut current = state.current.lock().await;
-            if let Some(ctx) = current.as_mut() {
-                ctx.coordinator = Some(Arc::clone(&coordinator));
-            }
-        }
-        let coordinator_clone = Arc::clone(&coordinator);
-        Some(tokio::spawn(async move {
-            coordinator_clone.run().await;
-        }))
-    } else {
-        tracing::warn!("no Arc<AppState> registered; automation coordinator will not start");
-        None
-    };
-
-    *state.current_runtime.lock().await = Some(crate::state::ProjectRuntime::new(
-        session_bridge,
-        health_refresh,
-        coordinator_task,
-    ));
-}
-
-fn project_runtime_redaction_config(cfg: &ProjectConfig) -> pnevma_redaction::RedactionConfig {
-    pnevma_redaction::RedactionConfig {
-        extra_patterns: cfg.redaction.extra_patterns.clone(),
-        enable_entropy_guard: cfg.redaction.enable_entropy_guard,
+    match state
+        .with_project("load_effective_global_config", |ctx| {
+            ctx.global_config.clone()
+        })
+        .await
+    {
+        Ok(config) => Ok(config),
+        Err(_) => load_global_config().map_err(|e| e.to_string()),
     }
 }
 
@@ -636,19 +513,14 @@ pub async fn open_project(
     restart_control_plane(state, path_buf.as_path(), &cfg, &global_cfg).await?;
 
     abort_project_runtime(state).await;
-    let previous_project_id = {
-        let current = state.current.lock().await;
-        current.as_ref().map(|ctx| ctx.project_id)
-    };
-    if let Some(previous_project_id) = previous_project_id {
-        clear_project_redaction_secrets(previous_project_id);
+    if let Some(previous) = state
+        .replace_current_project("open_project.replace_current", ctx)
+        .await
+    {
+        clear_project_redaction_secrets(previous.project_id);
     }
     let current_redaction_secrets = redaction_secrets.read().await.clone();
     register_project_redaction_secrets(project_id, &current_redaction_secrets);
-    {
-        let mut current = state.current.lock().await;
-        *current = Some(ctx);
-    }
     pnevma_redaction::set_runtime_redaction_config(runtime_redaction_config)
         .map_err(|e| format!("invalid redaction config: {e}"))?;
     install_project_runtime(
@@ -715,24 +587,22 @@ pub async fn open_project(
 }
 
 pub async fn close_project(state: &AppState) -> Result<(), String> {
-    let (db, project_id, project_path, sessions, coordinator, shutdown_tx) = {
-        let current = state.current.lock().await;
-        let Some(ctx) = current.as_ref() else {
-            return {
-                drop(current);
-                stop_control_plane(state).await;
-                Ok(())
-            };
-        };
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.sessions.clone(),
-            ctx.coordinator.clone(),
-            ctx.shutdown_tx.clone(),
-        )
+    let Some(ctx) = state
+        .take_current_project("close_project.take_current")
+        .await
+    else {
+        stop_control_plane(state).await;
+        return Ok(());
     };
+    let ProjectContext {
+        project_id,
+        project_path,
+        db,
+        sessions,
+        coordinator,
+        shutdown_tx,
+        ..
+    } = ctx;
 
     append_event(
         &db,
@@ -754,10 +624,6 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
     abort_project_runtime(state).await;
     shutdown_project_sessions(&db, &sessions, project_id, &project_path).await;
 
-    {
-        let mut current = state.current.lock().await;
-        *current = None;
-    }
     clear_project_redaction_secrets(project_id);
     pnevma_redaction::reset_runtime_redaction_config();
     stop_control_plane(state).await;
@@ -1034,18 +900,16 @@ pub async fn cleanup_project_data(
     dry_run: bool,
     state: &AppState,
 ) -> Result<DataRetentionCleanupResponse, String> {
-    let (db, project_id, project_path, retention) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.config.retention.clone(),
-        )
-    };
+    let (db, project_id, project_path, retention) = state
+        .with_project("cleanup_project_data", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+                ctx.config.retention.clone(),
+            )
+        })
+        .await?;
 
     cleanup_project_data_retention_inner(
         &db,
@@ -1112,746 +976,25 @@ pub async fn list_trusted_workspaces(state: &AppState) -> Result<Vec<TrustRecord
         .map_err(|e| e.to_string())
 }
 
-fn resolve_session_command(input_command: &str, global_default_shell: Option<&str>) -> String {
-    if !input_command.trim().is_empty() {
-        return input_command.to_string();
-    }
-
-    global_default_shell
-        .map(str::trim)
-        .filter(|shell| !shell.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            std::env::var("SHELL").ok().and_then(|shell| {
-                std::path::Path::new(&shell)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| name.to_string())
-            })
-        })
-        .unwrap_or_else(|| "zsh".to_string())
-}
-
-pub async fn create_session(input: SessionInput, state: &AppState) -> Result<String, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-
-    ensure_bounded_text_field(&input.name, "session name", MAX_SESSION_NAME_BYTES)?;
-    ensure_safe_path_input(&input.cwd, "session cwd")?;
-
-    let command =
-        resolve_session_command(&input.command, ctx.global_config.default_shell.as_deref());
-    ensure_bounded_text_field(&command, "session command", MAX_SESSION_COMMAND_BYTES)?;
-
-    // H2: Validate command against the configured allowlist.
-    let base_cmd = command.split_whitespace().next().unwrap_or("");
-    let cmd_name = std::path::Path::new(base_cmd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(base_cmd);
-    if !ctx
-        .config
-        .automation
-        .allowed_commands
-        .iter()
-        .any(|c| c == cmd_name)
-    {
-        return Err(format!("command not allowed: {cmd_name}"));
-    }
-
-    let cwd = if Path::new(&input.cwd).is_relative() {
-        ctx.project_path
-            .join(&input.cwd)
-            .to_string_lossy()
-            .to_string()
-    } else {
-        input.cwd.clone()
-    };
-
-    // H2: Require cwd to resolve within the project directory.
-    let resolved = std::fs::canonicalize(&cwd).map_err(|e| e.to_string())?;
-    let project_canonical = std::fs::canonicalize(&ctx.project_path).map_err(|e| e.to_string())?;
-    if !resolved.starts_with(&project_canonical) {
-        return Err("session cwd must be within the project directory".to_string());
-    }
-
-    let session = ctx
-        .sessions
-        .spawn_shell(
-            ctx.project_id,
-            input.name.clone(),
-            cwd.clone(),
-            command.clone(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let row = session_row_from_meta(&session);
-    ctx.db
-        .upsert_session(&row)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    append_event(
-        &ctx.db,
-        ctx.project_id,
-        None,
-        Some(session.id),
-        "session",
-        "SessionSpawned",
-        json!({"name": input.name, "cwd": cwd}),
-    )
-    .await;
-
-    Ok(row.id)
-}
-
-fn recovery_options_for_meta(meta: &SessionMetadata) -> Vec<RecoveryOptionView> {
-    let can_interrupt = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
-    let can_restart = true;
-    let can_reattach = meta.status == SessionStatus::Waiting;
-    vec![
-        RecoveryOptionView {
-            id: "interrupt".to_string(),
-            label: "Interrupt".to_string(),
-            description: "Send Ctrl+C to the session process.".to_string(),
-            enabled: can_interrupt,
-        },
-        RecoveryOptionView {
-            id: "restart".to_string(),
-            label: "Restart Session".to_string(),
-            description: "Restart backend process and rebind panes.".to_string(),
-            enabled: can_restart,
-        },
-        RecoveryOptionView {
-            id: "reattach".to_string(),
-            label: "Reattach Backend".to_string(),
-            description: "Attach to an existing waiting backend.".to_string(),
-            enabled: can_reattach,
-        },
-    ]
-}
-
-pub async fn get_session_binding(
-    session_id: String,
-    state: &AppState,
-) -> Result<SessionBindingView, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let Some(meta) = ctx.sessions.get(session_uuid).await else {
-        return Err(format!("session not found: {session_id}"));
-    };
-
-    let is_live = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
-    let mut env = Vec::new();
-    if is_live {
-        env.push(SessionEnvVarView {
-            key: "PNEVMA_TMUX_TARGET".to_string(),
-            value: tmux_name_from_session_id(&session_id),
-        });
-        env.push(SessionEnvVarView {
-            key: "TMUX_TMPDIR".to_string(),
-            value: ctx.sessions.tmux_tmpdir().to_string_lossy().to_string(),
-        });
-        env.push(SessionEnvVarView {
-            key: "PNEVMA_SESSION_ID".to_string(),
-            value: session_id.clone(),
-        });
-    }
-
-    let recovery_options = recovery_options_for_meta(&meta);
-    let cwd = meta.cwd.clone();
-
-    Ok(SessionBindingView {
-        session_id,
-        mode: if is_live {
-            "live_attach".to_string()
-        } else {
-            "archived".to_string()
-        },
-        cwd,
-        env,
-        wait_after_command: false,
-        recovery_options,
-    })
-}
-
-pub async fn list_sessions(state: &AppState) -> Result<Vec<SessionRow>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    ctx.db
-        .list_sessions(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn restart_session(session_id: String, state: &AppState) -> Result<String, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-
-    let sessions = ctx
-        .db
-        .list_sessions(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut prior = sessions
-        .into_iter()
-        .find(|row| row.id == session_id)
-        .ok_or_else(|| format!("session not found: {session_id}"))?;
-    let prior_session_id = Uuid::parse_str(&prior.id).ok();
-
-    let cwd = if Path::new(&prior.cwd).is_relative() {
-        ctx.project_path
-            .join(&prior.cwd)
-            .to_string_lossy()
-            .to_string()
-    } else {
-        prior.cwd.clone()
-    };
-
-    let new_meta = ctx
-        .sessions
-        .spawn_shell(
-            ctx.project_id,
-            prior.name.clone(),
-            cwd.clone(),
-            prior.command.clone(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-    prior.status = "complete".to_string();
-    prior.pid = None;
-    prior.last_heartbeat = Utc::now();
-    ctx.db
-        .upsert_session(&prior)
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(old_id) = prior_session_id {
-        match ctx.sessions.kill_session_backend(old_id).await {
-            Ok(_) => {
-                let _ = ctx.sessions.mark_exit(old_id, None).await;
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "restart_session: failed to terminate prior session {old_id}: {err}"
-                );
-            }
-        }
-    }
-
-    let row = session_row_from_meta(&new_meta);
-    ctx.db
-        .upsert_session(&row)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let panes = ctx
-        .db
-        .list_panes(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    for mut pane in panes {
-        if pane.session_id.as_deref() != Some(prior.id.as_str()) {
-            continue;
-        }
-        pane.session_id = Some(row.id.clone());
-        ctx.db.upsert_pane(&pane).await.map_err(|e| e.to_string())?;
-    }
-
-    append_event(
-        &ctx.db,
-        ctx.project_id,
-        None,
-        Some(new_meta.id),
-        "session",
-        "SessionSpawned",
-        json!({"restart_of": prior.id, "cwd": cwd}),
-    )
-    .await;
-
-    Ok(row.id)
-}
-
-pub async fn send_session_input(
-    session_id: String,
-    input: String,
-    state: &AppState,
-) -> Result<(), String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    ensure_safe_session_input(&input)?;
-    let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    ctx.sessions
-        .send_input(session_id, &input)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn resize_session(
-    session_id: String,
-    cols: u16,
-    rows: u16,
-    state: &AppState,
-) -> Result<(), String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    ctx.sessions
-        .resize(session_id, cols, rows)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn get_scrollback(
-    input: ScrollbackInput,
-    state: &AppState,
-) -> Result<ScrollbackSlice, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let session_id = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
-
-    let limit = input.limit.unwrap_or(64 * 1024);
-    match input.offset {
-        Some(offset) => ctx
-            .sessions
-            .read_scrollback(session_id, offset, limit)
-            .await
-            .map_err(|e| e.to_string()),
-        None => ctx
-            .sessions
-            .read_scrollback_tail(session_id, limit)
-            .await
-            .map_err(|e| e.to_string()),
-    }
-}
-
-pub async fn restore_sessions(state: &AppState) -> Result<Vec<SessionRow>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let rows =
-        reconcile_persisted_sessions(&ctx.db, ctx.project_id, ctx.project_path.as_path()).await?;
-    for row in &rows {
-        if row.status != "waiting" {
-            continue;
-        }
-        if let Ok(id) = Uuid::parse_str(&row.id) {
-            let _ = ctx.sessions.attach_existing(id).await;
-        }
-    }
-    Ok(rows)
-}
-
-pub async fn reattach_session(session_id: String, state: &AppState) -> Result<(), String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    ctx.sessions
-        .attach_existing(session_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    append_event(
-        &ctx.db,
-        ctx.project_id,
-        None,
-        Some(session_id),
-        "session",
-        "SessionReattached",
-        json!({"manual": true}),
-    )
-    .await;
-
-    Ok(())
-}
-
-pub async fn list_panes(state: &AppState) -> Result<Vec<PaneRow>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    ctx.db
-        .list_panes(&ctx.project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn upsert_pane(input: PaneInput, state: &AppState) -> Result<PaneRow, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-
-    let row = PaneRow {
-        id: input.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        project_id: ctx.project_id.to_string(),
-        session_id: input.session_id,
-        r#type: input.r#type,
-        position: input.position,
-        label: input.label,
-        metadata_json: input.metadata_json,
-    };
-
-    ctx.db.upsert_pane(&row).await.map_err(|e| e.to_string())?;
-    Ok(row)
-}
-
-pub async fn remove_pane(pane_id: String, state: &AppState) -> Result<(), String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    ctx.db
-        .remove_pane(&pane_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn list_pane_layout_templates(
-    state: &AppState,
-) -> Result<Vec<PaneLayoutTemplateView>, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
-    ensure_system_layout_templates(&db, project_id).await?;
-    let rows = db
-        .list_pane_layout_templates(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    rows.into_iter()
-        .map(pane_layout_template_view_from_row)
-        .collect()
-}
-
-pub async fn save_pane_layout_template(
-    input: SavePaneLayoutTemplateInput,
-    emitter: &Arc<dyn EventEmitter>,
-    state: &AppState,
-) -> Result<PaneLayoutTemplateView, String> {
-    let name = normalize_layout_template_name(&input.name);
-    if name.is_empty() {
-        return Err("template name cannot be empty".to_string());
-    }
-    let system_names = system_layout_templates()
-        .into_iter()
-        .map(|(id, _, _)| id)
-        .collect::<HashSet<_>>();
-    if system_names.contains(&name) {
-        return Err(format!("template name is reserved: {name}"));
-    }
-
-    let display_name = input
-        .display_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| default_layout_template_display_name(&name));
-
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
-    ensure_system_layout_templates(&db, project_id).await?;
-
-    let panes = db
-        .list_panes(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    if panes.is_empty() {
-        return Err("cannot save an empty pane layout".to_string());
-    }
-    let template_panes = panes
-        .into_iter()
-        .map(|pane| PaneLayoutTemplatePane {
-            id: pane.id,
-            session_id: pane.session_id,
-            r#type: pane.r#type,
-            position: pane.position,
-            label: pane.label,
-            metadata_json: pane.metadata_json,
-        })
-        .collect::<Vec<_>>();
-
-    let existing = db
-        .get_pane_layout_template(&project_id.to_string(), &name)
-        .await
-        .map_err(|e| e.to_string())?;
-    if existing.as_ref().is_some_and(|row| row.is_system) {
-        return Err(format!("cannot overwrite system template: {name}"));
-    }
-    let now = Utc::now();
-    let (id, created_at) = existing
-        .map(|row| (row.id, row.created_at))
-        .unwrap_or_else(|| (Uuid::new_v4().to_string(), now));
-
-    let row = PaneLayoutTemplateRow {
-        id,
-        project_id: project_id.to_string(),
-        name: name.clone(),
-        display_name: display_name.clone(),
-        pane_graph_json: panes_to_template_json(&template_panes)?,
-        is_system: false,
-        created_at,
-        updated_at: now,
-    };
-    db.upsert_pane_layout_template(&row)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    append_event(
-        &db,
-        project_id,
-        None,
-        None,
-        "ui",
-        "PaneLayoutTemplateSaved",
-        json!({"name": name, "display_name": display_name, "pane_count": template_panes.len()}),
-    )
-    .await;
-    emitter.emit(
-        "project_refreshed",
-        json!({"reason": "layout_template_saved", "template_name": row.name}),
-    );
-
-    pane_layout_template_view_from_row(row)
-}
-
-pub async fn apply_pane_layout_template(
-    input: ApplyPaneLayoutTemplateInput,
-    emitter: &Arc<dyn EventEmitter>,
-    state: &AppState,
-) -> Result<ApplyPaneLayoutTemplateResult, String> {
-    let template_name = normalize_layout_template_name(&input.name);
-    if template_name.is_empty() {
-        return Err("template name cannot be empty".to_string());
-    }
-
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
-    ensure_system_layout_templates(&db, project_id).await?;
-
-    let template = db
-        .get_pane_layout_template(&project_id.to_string(), &template_name)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("template not found: {template_name}"))?;
-    let template_panes = parse_template_panes(&template.pane_graph_json)?;
-    if template_panes.is_empty() {
-        return Err("template contains no panes".to_string());
-    }
-    let mut template_ids = HashSet::new();
-    for pane in &template_panes {
-        if pane.id.trim().is_empty() {
-            return Err(format!(
-                "template {template_name} has a pane with an empty id"
-            ));
-        }
-        if !template_ids.insert(pane.id.clone()) {
-            return Err(format!(
-                "template {template_name} contains duplicate pane id: {}",
-                pane.id
-            ));
-        }
-    }
-
-    let current_panes = db
-        .list_panes(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let session_rows = db
-        .list_sessions(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let sessions_by_id = session_rows
-        .into_iter()
-        .map(|row| (row.id.clone(), row))
-        .collect::<HashMap<_, _>>();
-    let desired_by_id = template_panes
-        .iter()
-        .map(|pane| (pane.id.clone(), pane))
-        .collect::<HashMap<_, _>>();
-
-    let mut replaced_panes = Vec::new();
-    let mut unsaved_replacements = Vec::new();
-    for pane in &current_panes {
-        let changed = desired_by_id
-            .get(&pane.id)
-            .map(|target| {
-                pane.session_id != target.session_id
-                    || pane.r#type != target.r#type
-                    || pane.position != target.position
-                    || pane.label != target.label
-                    || pane.metadata_json != target.metadata_json
-            })
-            .unwrap_or(true);
-        if !changed {
-            continue;
-        }
-        replaced_panes.push(pane.id.clone());
-
-        if pane_contains_unsaved_metadata(pane.metadata_json.as_deref()) {
-            unsaved_replacements.push(UnsavedPaneReplacementView {
-                pane_id: pane.id.clone(),
-                pane_label: pane.label.clone(),
-                pane_type: pane.r#type.clone(),
-                reason: "pane metadata is marked unsaved/dirty".to_string(),
-            });
-            continue;
-        }
-        if pane.r#type != "terminal" {
-            continue;
-        }
-        let Some(session_id) = pane.session_id.as_deref() else {
-            continue;
-        };
-        let Some(session) = sessions_by_id.get(session_id) else {
-            continue;
-        };
-        if session_state_may_be_unsaved(&session.status) {
-            unsaved_replacements.push(UnsavedPaneReplacementView {
-                pane_id: pane.id.clone(),
-                pane_label: pane.label.clone(),
-                pane_type: pane.r#type.clone(),
-                reason: format!(
-                    "bound session \"{}\" is still {}",
-                    session.name, session.status
-                ),
-            });
-        }
-    }
-
-    if !input.force && !unsaved_replacements.is_empty() {
-        return Ok(ApplyPaneLayoutTemplateResult {
-            applied: false,
-            template_name,
-            replaced_panes,
-            unsaved_replacements,
-        });
-    }
-
-    let existing_sessions = sessions_by_id.keys().cloned().collect::<HashSet<_>>();
-    for pane in &current_panes {
-        db.remove_pane(&pane.id).await.map_err(|e| e.to_string())?;
-        emitter.emit(
-            "pane_updated",
-            json!({
-                "action": "removed",
-                "pane_id": pane.id,
-                "template_name": template.name,
-            }),
-        );
-    }
-    for pane in &template_panes {
-        let mut session_id = pane.session_id.clone();
-        if session_id
-            .as_ref()
-            .is_some_and(|id| !existing_sessions.contains(id))
-        {
-            session_id = None;
-        }
-        let row = PaneRow {
-            id: pane.id.clone(),
-            project_id: project_id.to_string(),
-            session_id,
-            r#type: pane.r#type.clone(),
-            position: pane.position.clone(),
-            label: pane.label.clone(),
-            metadata_json: pane.metadata_json.clone(),
-        };
-        db.upsert_pane(&row).await.map_err(|e| e.to_string())?;
-        emitter.emit(
-            "pane_updated",
-            json!({
-                "action": "upserted",
-                "pane_id": row.id,
-                "pane_type": row.r#type,
-                "template_name": template.name,
-            }),
-        );
-    }
-
-    append_event(
-        &db,
-        project_id,
-        None,
-        None,
-        "ui",
-        "PaneLayoutTemplateApplied",
-        json!({
-            "name": template.name,
-            "force": input.force,
-            "pane_count": template_panes.len(),
-            "replaced_panes": replaced_panes.clone(),
-            "unsaved_replacements": unsaved_replacements.clone(),
-        }),
-    )
-    .await;
-    emitter.emit(
-        "project_refreshed",
-        json!({"reason": "layout_template_applied", "template_name": template.name}),
-    );
-
-    Ok(ApplyPaneLayoutTemplateResult {
-        applied: true,
-        template_name,
-        replaced_panes,
-        unsaved_replacements,
-    })
-}
-
 pub async fn query_events(
     input: QueryEventsInput,
     state: &AppState,
 ) -> Result<Vec<EventRow>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
+    let (db, project_id) = state
+        .with_project("query_events", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
 
-    ctx.db
-        .query_events(EventQueryFilter {
-            project_id: ctx.project_id.to_string(),
-            task_id: input.task_id,
-            session_id: input.session_id,
-            event_type: input.event_type,
-            from: parse_dt(input.from),
-            to: parse_dt(input.to),
-            limit: input.limit,
-        })
-        .await
-        .map_err(|e| e.to_string())
+    db.query_events(EventQueryFilter {
+        project_id: project_id.to_string(),
+        task_id: input.task_id,
+        session_id: input.session_id,
+        event_type: input.event_type,
+        from: parse_dt(input.from),
+        to: parse_dt(input.to),
+        limit: input.limit,
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Testable core of search_project — searches tasks, events, and artifacts in the DB.
@@ -2038,18 +1181,16 @@ pub async fn search_project(
         return Ok(Vec::new());
     }
 
-    let (db, project_id, project_path, sessions) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.sessions.clone(),
-        )
-    };
+    let (db, project_id, project_path, sessions) = state
+        .with_project("search_project", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+                ctx.sessions.clone(),
+            )
+        })
+        .await?;
 
     let limit = input.limit.unwrap_or(120).clamp(1, 500);
 
@@ -2468,19 +1609,17 @@ pub async fn list_project_files(
     input: Option<ListProjectFilesInput>,
     state: &AppState,
 ) -> Result<Vec<ProjectFileView>, String> {
-    let (project_path, query) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.project_path.clone(),
-            input
-                .as_ref()
-                .and_then(|v| v.query.clone())
-                .unwrap_or_default(),
-        )
-    };
+    let (project_path, query) = state
+        .with_project("list_project_files", |ctx| {
+            (
+                ctx.project_path.clone(),
+                input
+                    .as_ref()
+                    .and_then(|v| v.query.clone())
+                    .unwrap_or_default(),
+            )
+        })
+        .await?;
 
     let limit = input.and_then(|v| v.limit).unwrap_or(1_000).clamp(1, 5_000);
     let mut all_paths = HashSet::new();
@@ -2530,13 +1669,9 @@ pub async fn list_project_files(
 }
 
 pub async fn list_workspace_changes(state: &AppState) -> Result<Vec<ProjectFileView>, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        ctx.project_path.clone()
-    };
+    let project_path = state
+        .with_project("list_workspace_changes", |ctx| ctx.project_path.clone())
+        .await?;
 
     let porcelain = git_output(&project_path, &["status", "--porcelain", "-z", "-uall"]).await?;
     let mut files = parse_porcelain_status_z(&porcelain)
@@ -2585,13 +1720,9 @@ pub async fn get_workspace_change_diff(
     input: ProjectFilePathInput,
     state: &AppState,
 ) -> Result<Option<DiffFileView>, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        ctx.project_path.clone()
-    };
+    let project_path = state
+        .with_project("get_workspace_change_diff", |ctx| ctx.project_path.clone())
+        .await?;
 
     let rel = input.path.trim().trim_start_matches('/');
     ensure_safe_path_input(rel, "file path")?;
@@ -2711,27 +1842,25 @@ pub async fn list_project_file_tree(
     input: Option<ListProjectFilesInput>,
     state: &AppState,
 ) -> Result<Vec<FileTreeNodeView>, String> {
-    let (project_path, query, limit, requested_path, recursive) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.project_path.clone(),
-            input
-                .as_ref()
-                .and_then(|value| value.query.clone())
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase(),
-            input.as_ref().and_then(|value| value.limit),
-            input.as_ref().and_then(|value| value.path.clone()),
-            input
-                .as_ref()
-                .and_then(|value| value.recursive)
-                .unwrap_or(false),
-        )
-    };
+    let (project_path, query, limit, requested_path, recursive) = state
+        .with_project("list_project_file_tree", |ctx| {
+            (
+                ctx.project_path.clone(),
+                input
+                    .as_ref()
+                    .and_then(|value| value.query.clone())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase(),
+                input.as_ref().and_then(|value| value.limit),
+                input.as_ref().and_then(|value| value.path.clone()),
+                input
+                    .as_ref()
+                    .and_then(|value| value.recursive)
+                    .unwrap_or(false),
+            )
+        })
+        .await?;
 
     tokio::task::spawn_blocking(move || {
         let (root_dir, current_dir) =
@@ -2771,13 +1900,9 @@ pub async fn open_file_target(
     input: OpenFileTargetInput,
     state: &AppState,
 ) -> Result<FileOpenResultView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        ctx.project_path.clone()
-    };
+    let project_path = state
+        .with_project("open_file_target", |ctx| ctx.project_path.clone())
+        .await?;
     let rel = input.path.trim().trim_start_matches('/');
     ensure_safe_path_input(rel, "file path")?;
     if rel.is_empty() {
@@ -2892,13 +2017,9 @@ pub async fn write_file_target(
     input: WriteFileInput,
     state: &AppState,
 ) -> Result<FileWriteResultView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        ctx.project_path.clone()
-    };
+    let project_path = state
+        .with_project("write_file_target", |ctx| ctx.project_path.clone())
+        .await?;
     let rel = input.path.trim().trim_start_matches('/');
     ensure_safe_path_input(rel, "file path")?;
     if rel.is_empty() {
@@ -2931,18 +2052,16 @@ pub async fn write_file_target(
 }
 
 pub async fn list_rules(state: &AppState) -> Result<Vec<RuleView>, String> {
-    let (db, project_id, project_path, config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.config.clone(),
-        )
-    };
+    let (db, project_id, project_path, config) = state
+        .with_project("list_rules", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+                ctx.config.clone(),
+            )
+        })
+        .await?;
     ensure_scope_rows_from_config(&db, project_id, &project_path, &config, "rule").await?;
     let rows = db
         .list_rules(&project_id.to_string(), Some("rule"))
@@ -2956,18 +2075,16 @@ pub async fn list_rules(state: &AppState) -> Result<Vec<RuleView>, String> {
 }
 
 pub async fn list_conventions(state: &AppState) -> Result<Vec<RuleView>, String> {
-    let (db, project_id, project_path, config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.config.clone(),
-        )
-    };
+    let (db, project_id, project_path, config) = state
+        .with_project("list_conventions", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+                ctx.config.clone(),
+            )
+        })
+        .await?;
     ensure_scope_rows_from_config(&db, project_id, &project_path, &config, "convention").await?;
     let rows = db
         .list_rules(&project_id.to_string(), Some("convention"))
@@ -2986,13 +2103,11 @@ async fn upsert_scope_item(
     emitter: &Arc<dyn EventEmitter>,
     state: &&AppState,
 ) -> Result<RuleView, String> {
-    let (db, project_id, project_path) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
-    };
+    let (db, project_id, project_path) = state
+        .with_project("upsert_scope_item", |ctx| {
+            (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
+        })
+        .await?;
     let scope = normalize_rule_scope(scope);
     let mut row = if let Some(id) = input.id.clone() {
         db.get_rule(&id)
@@ -3097,13 +2212,11 @@ async fn toggle_scope_item(
     emitter: &Arc<dyn EventEmitter>,
     state: &&AppState,
 ) -> Result<RuleView, String> {
-    let (db, project_id, project_path) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
-    };
+    let (db, project_id, project_path) = state
+        .with_project("toggle_scope_item", |ctx| {
+            (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
+        })
+        .await?;
     let mut row = db
         .get_rule(&input.id)
         .await
@@ -3151,13 +2264,11 @@ async fn delete_scope_item(
     emitter: &Arc<dyn EventEmitter>,
     state: &&AppState,
 ) -> Result<(), String> {
-    let (db, project_id, project_path) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
-    };
+    let (db, project_id, project_path) = state
+        .with_project("delete_scope_item", |ctx| {
+            (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
+        })
+        .await?;
     let row = db
         .get_rule(&id)
         .await
@@ -3212,13 +2323,9 @@ pub async fn list_rule_usage(
     input: RuleUsageInput,
     state: &AppState,
 ) -> Result<Vec<RuleUsageView>, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("list_rule_usage", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
     let rows = db
         .list_context_rule_usage(
             &project_id.to_string(),
@@ -3243,18 +2350,16 @@ pub async fn capture_knowledge(
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<ArtifactView, String> {
-    let (db, project_id, project_path, global_config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.global_config.clone(),
-        )
-    };
+    let (db, project_id, project_path, global_config) = state
+        .with_project("capture_knowledge", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+                ctx.global_config.clone(),
+            )
+        })
+        .await?;
     let kind = input.kind.trim().to_ascii_lowercase();
     if kind != "adr" && kind != "changelog" && kind != "convention-update" {
         return Err("kind must be one of: adr, changelog, convention-update".to_string());
@@ -3346,13 +2451,9 @@ pub async fn capture_knowledge(
 }
 
 pub async fn list_artifacts(state: &AppState) -> Result<Vec<ArtifactView>, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("list_artifacts", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
     let rows = db
         .list_artifacts(&project_id.to_string())
         .await
@@ -3370,973 +2471,21 @@ pub async fn list_artifacts(state: &AppState) -> Result<Vec<ArtifactView>, Strin
         .collect())
 }
 
-fn keybinding_views_from_config(config: &GlobalConfig) -> Vec<KeybindingView> {
-    let defaults = default_keybindings();
-    let mut merged = defaults.clone();
-    for (action, shortcut) in &config.keybindings {
-        let action = action.trim();
-        let shortcut = shortcut.trim();
-        if !action.is_empty() && !shortcut.is_empty() && is_supported_keybinding_action(action) {
-            merged.insert(action.to_string(), shortcut.to_string());
-        }
-    }
-
-    // Build normalized-shortcut -> actions index for conflict detection
-    let mut shortcut_to_actions: HashMap<String, Vec<String>> = HashMap::new();
-    for (action, shortcut) in &merged {
-        let normalized = normalize_shortcut(shortcut);
-        shortcut_to_actions
-            .entry(normalized)
-            .or_default()
-            .push(action.clone());
-    }
-
-    let mut out: Vec<KeybindingView> = merged
-        .into_iter()
-        .map(|(action, shortcut)| {
-            let is_default = defaults
-                .get(&action)
-                .is_some_and(|d| normalize_shortcut(d) == normalize_shortcut(&shortcut));
-            let normalized = normalize_shortcut(&shortcut);
-            let conflicts: Vec<String> = shortcut_to_actions
-                .get(&normalized)
-                .map(|actions| actions.iter().filter(|a| **a != action).cloned().collect())
-                .unwrap_or_default();
-            KeybindingView {
-                is_protected: is_protected_action(&action),
-                action,
-                shortcut,
-                is_default,
-                conflicts_with: conflicts,
-            }
-        })
-        .collect();
-    out.sort_by(|a, b| a.action.cmp(&b.action));
-    out
-}
-
-pub async fn get_environment_readiness(
-    input: Option<EnvironmentReadinessInput>,
-    state: &AppState,
-) -> Result<EnvironmentReadinessView, String> {
-    let current_project_path = {
-        let current = state.current.lock().await;
-        current.as_ref().map(|ctx| ctx.project_path.clone())
-    };
-    let requested_path = match input.and_then(|value| value.path) {
-        Some(path) => Some(normalize_scaffold_path(&path)?),
-        None => current_project_path,
-    };
-    let git_available = is_git_available();
-    let detected_adapters = pnevma_agents::AdapterRegistry::detect().await.available();
-    let global_path = global_config_path();
-    let global_config_exists = global_path.exists();
-    let project_initialized = requested_path
-        .as_deref()
-        .map(project_is_initialized)
-        .unwrap_or(false);
-
-    let mut missing_steps = Vec::new();
-    if !git_available {
-        missing_steps.push("install_git".to_string());
-    }
-    if detected_adapters.is_empty() {
-        missing_steps.push("install_agent_cli".to_string());
-    }
-    if !global_config_exists {
-        missing_steps.push("initialize_global_config".to_string());
-    }
-    if requested_path.is_none() {
-        missing_steps.push("select_project_path".to_string());
-    } else if !project_initialized {
-        missing_steps.push("initialize_project_scaffold".to_string());
-    }
-
-    Ok(EnvironmentReadinessView {
-        git_available,
-        detected_adapters,
-        global_config_path: global_path.to_string_lossy().to_string(),
-        global_config_exists,
-        project_path: requested_path.map(|path| path.to_string_lossy().to_string()),
-        project_initialized,
-        missing_steps,
-    })
-}
-
-pub async fn initialize_global_config(
-    input: Option<InitializeGlobalConfigInput>,
-    state: &AppState,
-) -> Result<InitGlobalConfigResultView, String> {
-    let path = global_config_path();
-    let mut created = false;
-    if !path.exists() {
-        let mut config = GlobalConfig::default();
-        if let Some(provider) = input
-            .as_ref()
-            .and_then(|value| value.default_provider.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.default_provider = Some(provider.to_string());
-        }
-        save_global_config(&config).map_err(|e| e.to_string())?;
-        created = true;
-    }
-
-    if let Ok(latest_config) = load_global_config() {
-        let mut current = state.current.lock().await;
-        if let Some(ctx) = current.as_mut() {
-            ctx.global_config = latest_config;
-        }
-    }
-
-    Ok(InitGlobalConfigResultView {
-        created,
-        path: path.to_string_lossy().to_string(),
-    })
-}
-
-pub async fn initialize_project_scaffold(
-    input: InitializeProjectScaffoldInput,
-    state: &AppState,
-) -> Result<InitProjectScaffoldResultView, String> {
-    let root = normalize_scaffold_path(&input.path)?;
-    let metadata = tokio::fs::metadata(&root)
-        .await
-        .map_err(|e| format!("project path is not accessible: {e}"))?;
-    if !metadata.is_dir() {
-        return Err("project path must be a directory".to_string());
-    }
-
-    let mut created_paths = Vec::new();
-    for rel in [
-        ".pnevma",
-        ".pnevma/data",
-        ".pnevma/rules",
-        ".pnevma/conventions",
-    ] {
-        let path = root.join(rel);
-        if !path.exists() {
-            tokio::fs::create_dir_all(&path)
-                .await
-                .map_err(|e| e.to_string())?;
-            created_paths.push(path.to_string_lossy().to_string());
-        }
-    }
-
-    let global = load_global_config().unwrap_or_default();
-    let default_provider = normalize_default_provider(
-        input
-            .default_provider
-            .as_deref()
-            .or(global.default_provider.as_deref()),
-    );
-
-    let config_path = root.join("pnevma.toml");
-    if !config_path.exists() {
-        let content = build_default_project_toml(
-            &root,
-            input.project_name.as_deref(),
-            input.project_brief.as_deref(),
-            &default_provider,
-        );
-        tokio::fs::write(&config_path, content.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        created_paths.push(config_path.to_string_lossy().to_string());
-    }
-
-    let rule_seed = root.join(".pnevma/rules/project-rules.md");
-    if !rule_seed.exists() {
-        let content = "\
-# Project Rules
-
-- Keep work scoped to the active task contract.
-- Prefer deterministic checks before requesting review.
-";
-        tokio::fs::write(&rule_seed, content.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        created_paths.push(rule_seed.to_string_lossy().to_string());
-    }
-
-    let convention_seed = root.join(".pnevma/conventions/conventions.md");
-    if !convention_seed.exists() {
-        let content = "\
-# Conventions
-
-- Write concise commit messages in imperative mood.
-- Capture reusable decisions in ADR knowledge artifacts.
-";
-        tokio::fs::write(&convention_seed, content.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        created_paths.push(convention_seed.to_string_lossy().to_string());
-    }
-
-    {
-        let mut current = state.current.lock().await;
-        if let Some(ctx) = current.as_mut() {
-            if ctx.project_path == root {
-                if let Ok(cfg) = load_project_config(&config_path) {
-                    ctx.config = cfg;
-                }
-            }
-        }
-    }
-
-    Ok(InitProjectScaffoldResultView {
-        root_path: root.to_string_lossy().to_string(),
-        already_initialized: created_paths.is_empty(),
-        created_paths,
-    })
-}
-
-pub async fn list_keybindings(state: &AppState) -> Result<Vec<KeybindingView>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    Ok(keybinding_views_from_config(&ctx.global_config))
-}
-
-pub async fn set_keybinding(
-    input: SetKeybindingInput,
-    state: &AppState,
-) -> Result<Vec<KeybindingView>, String> {
-    let mut current = state.current.lock().await;
-    let ctx = current
-        .as_mut()
-        .ok_or_else(|| "no open project".to_string())?;
-    if input.action.trim().is_empty() || input.shortcut.trim().is_empty() {
-        return Err("action and shortcut are required".to_string());
-    }
-    if !is_supported_keybinding_action(input.action.trim()) {
-        return Err(format!(
-            "unsupported keybinding action: {}",
-            input.action.trim()
-        ));
-    }
-    ctx.global_config.keybindings.insert(
-        input.action.trim().to_string(),
-        input.shortcut.trim().to_string(),
-    );
-    save_global_config(&ctx.global_config).map_err(|e| e.to_string())?;
-    Ok(keybinding_views_from_config(&ctx.global_config))
-}
-
-pub async fn reset_keybindings(state: &AppState) -> Result<Vec<KeybindingView>, String> {
-    let mut current = state.current.lock().await;
-    let ctx = current
-        .as_mut()
-        .ok_or_else(|| "no open project".to_string())?;
-    ctx.global_config.keybindings.clear();
-    save_global_config(&ctx.global_config).map_err(|e| e.to_string())?;
-    Ok(keybinding_views_from_config(&ctx.global_config))
-}
-
-pub async fn get_onboarding_state(state: &AppState) -> Result<OnboardingStateView, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
-    let row = db
-        .get_onboarding_state(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?
-        .unwrap_or(OnboardingStateRow {
-            project_id: project_id.to_string(),
-            step: "open_project".to_string(),
-            completed: false,
-            dismissed: false,
-            updated_at: Utc::now(),
-        });
-    Ok(OnboardingStateView {
-        step: row.step,
-        completed: row.completed,
-        dismissed: row.dismissed,
-        updated_at: row.updated_at,
-    })
-}
-
-pub async fn advance_onboarding_step(
-    input: AdvanceOnboardingInput,
-    state: &AppState,
-) -> Result<OnboardingStateView, String> {
-    let (db, project_id, global_config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.global_config.clone())
-    };
-    let row = OnboardingStateRow {
-        project_id: project_id.to_string(),
-        step: input.step,
-        completed: input.completed.unwrap_or(false),
-        dismissed: input.dismissed.unwrap_or(false),
-        updated_at: Utc::now(),
-    };
-    db.upsert_onboarding_state(&row)
-        .await
-        .map_err(|e| e.to_string())?;
-    append_event(
-        &db,
-        project_id,
-        None,
-        None,
-        "onboarding",
-        "OnboardingStepAdvanced",
-        json!({
-            "step": row.step,
-            "completed": row.completed,
-            "dismissed": row.dismissed
-        }),
-    )
-    .await;
-    append_telemetry_event(
-        &db,
-        project_id,
-        &global_config,
-        "onboarding.advance",
-        json!({
-            "step": row.step,
-            "completed": row.completed,
-            "dismissed": row.dismissed
-        }),
-    )
-    .await;
-    Ok(OnboardingStateView {
-        step: row.step,
-        completed: row.completed,
-        dismissed: row.dismissed,
-        updated_at: row.updated_at,
-    })
-}
-
-pub async fn reset_onboarding(state: &AppState) -> Result<OnboardingStateView, String> {
-    let (db, project_id, global_config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.global_config.clone())
-    };
-    let row = OnboardingStateRow {
-        project_id: project_id.to_string(),
-        step: "open_project".to_string(),
-        completed: false,
-        dismissed: false,
-        updated_at: Utc::now(),
-    };
-    db.upsert_onboarding_state(&row)
-        .await
-        .map_err(|e| e.to_string())?;
-    append_event(
-        &db,
-        project_id,
-        None,
-        None,
-        "onboarding",
-        "OnboardingReset",
-        json!({}),
-    )
-    .await;
-    append_telemetry_event(
-        &db,
-        project_id,
-        &global_config,
-        "onboarding.reset",
-        json!({}),
-    )
-    .await;
-    Ok(OnboardingStateView {
-        step: row.step,
-        completed: row.completed,
-        dismissed: row.dismissed,
-        updated_at: row.updated_at,
-    })
-}
-
-pub async fn get_telemetry_status(state: &AppState) -> Result<TelemetryStatusView, String> {
-    let (db, project_id, global_config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.global_config.clone())
-    };
-    let queued_events = db
-        .count_telemetry_events(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(TelemetryStatusView {
-        opted_in: global_config.telemetry_opt_in,
-        queued_events,
-    })
-}
-
-pub async fn set_telemetry_opt_in(
-    input: SetTelemetryInput,
-    state: &AppState,
-) -> Result<TelemetryStatusView, String> {
-    let (db, project_id, global_config) = {
-        let mut current = state.current.lock().await;
-        let ctx = current
-            .as_mut()
-            .ok_or_else(|| "no open project".to_string())?;
-        ctx.global_config.telemetry_opt_in = input.opted_in;
-        save_global_config(&ctx.global_config).map_err(|e| e.to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.global_config.clone())
-    };
-    let queued_events = db
-        .count_telemetry_events(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(TelemetryStatusView {
-        opted_in: global_config.telemetry_opt_in,
-        queued_events,
-    })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GhosttyAuditInput {
-    pub action: String,
-    #[serde(default)]
-    pub changed_keys: Vec<String>,
-    #[serde(default)]
-    pub diagnostics: Vec<String>,
-    pub applied: bool,
-    pub managed_path: String,
-}
-
-pub async fn audit_ghostty_settings(
-    input: GhosttyAuditInput,
-    state: &AppState,
-) -> Result<bool, String> {
-    ensure_bounded_text_field(&input.action, "action", 128)?;
-    ensure_safe_path_input(&input.managed_path, "managed_path")?;
-
-    let payload = json!({
-        "action": input.action,
-        "changed_keys": input.changed_keys,
-        "diagnostics": input.diagnostics,
-        "applied": input.applied,
-        "managed_path": input.managed_path,
-    });
-
-    let maybe_project = {
-        let current = state.current.lock().await;
-        current.as_ref().map(|ctx| (ctx.db.clone(), ctx.project_id))
-    };
-    let recorded = maybe_project.is_some();
-
-    if let Some((db, project_id)) = maybe_project {
-        append_event(
-            &db,
-            project_id,
-            None,
-            None,
-            "settings",
-            "GhosttySettingsAudit",
-            payload.clone(),
-        )
-        .await;
-    }
-
-    state.emitter.emit("ghostty_settings_audited", payload);
-
-    Ok(recorded)
-}
-
-pub async fn export_telemetry_bundle(
-    input: Option<ExportTelemetryInput>,
-    state: &AppState,
-) -> Result<String, String> {
-    let (db, project_id, project_path, opted_in) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.global_config.telemetry_opt_in,
-        )
-    };
-    if !opted_in {
-        return Err("telemetry is disabled; opt in first".to_string());
-    }
-    let limit = input
-        .as_ref()
-        .and_then(|v| v.limit)
-        .unwrap_or(10_000)
-        .max(1);
-    let rows = db
-        .list_telemetry_events(&project_id.to_string(), limit)
-        .await
-        .map_err(|e| e.to_string())?;
-    let payload = rows
-        .into_iter()
-        .map(|row| {
-            json!({
-                "id": row.id,
-                "event_type": row.event_type,
-                "payload": serde_json::from_str::<serde_json::Value>(&row.payload_json).unwrap_or_else(|_| json!({})),
-                "created_at": row.created_at,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let data_dir = project_path.join(".pnevma").join("data");
-    let target = if let Some(path) = input.and_then(|v| v.path) {
-        ensure_safe_path_input(&path, "export path")?;
-        let requested = PathBuf::from(&path);
-        let canonical_data = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
-        let canonical_target = if requested.exists() {
-            requested.canonicalize().map_err(|e| e.to_string())?
-        } else if let Some(parent) = requested.parent() {
-            let canon_parent = parent.canonicalize().map_err(|e| e.to_string())?;
-            canon_parent.join(requested.file_name().unwrap_or_default())
-        } else {
-            return Err("invalid export path".to_string());
-        };
-        if !canonical_target.starts_with(&canonical_data) {
-            return Err("export path must be within .pnevma/data/".to_string());
-        }
-        canonical_target
-    } else {
-        data_dir.join("telemetry").join(format!(
-            "telemetry-export-{}.json",
-            Utc::now().format("%Y%m%d-%H%M%S")
-        ))
-    };
-    if let Some(parent) = target.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    tokio::fs::write(
-        &target,
-        serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(target.to_string_lossy().to_string())
-}
-
-pub async fn clear_telemetry(state: &AppState) -> Result<(), String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
-    db.clear_telemetry_events(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn submit_feedback(
-    input: FeedbackInput,
-    state: &AppState,
-) -> Result<FeedbackView, String> {
-    let (db, project_id, project_path, global_config) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.project_path.clone(),
-            ctx.global_config.clone(),
-        )
-    };
-    if input.category.trim().is_empty() || input.body.trim().is_empty() {
-        return Err("category and body are required".to_string());
-    }
-    let now = Utc::now();
-    let id = Uuid::new_v4().to_string();
-    let dir = project_path.join(".pnevma").join("data").join("feedback");
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let artifact_path = dir.join(format!(
-        "{}-{}.md",
-        slugify_with_fallback(&input.category, "entry"),
-        now.format("%Y%m%d-%H%M%S")
-    ));
-    let artifact_content = format!(
-        "# Feedback\n\ncategory: {}\ncreated_at: {}\ncontact: {}\n\n{}\n",
-        input.category.trim(),
-        now.to_rfc3339(),
-        input.contact.clone().unwrap_or_default(),
-        input.body.trim()
-    );
-    tokio::fs::write(&artifact_path, artifact_content)
-        .await
-        .map_err(|e| e.to_string())?;
-    let rel = artifact_path
-        .strip_prefix(&project_path)
-        .unwrap_or(&artifact_path)
-        .to_string_lossy()
-        .to_string();
-    let row = FeedbackRow {
-        id: id.clone(),
-        project_id: project_id.to_string(),
-        category: input.category.trim().to_string(),
-        body: input.body.trim().to_string(),
-        contact: input.contact.clone(),
-        artifact_path: Some(rel.clone()),
-        created_at: now,
-    };
-    db.create_feedback(&row).await.map_err(|e| e.to_string())?;
-    append_event(
-        &db,
-        project_id,
-        None,
-        None,
-        "feedback",
-        "FeedbackSubmitted",
-        json!({"feedback_id": row.id, "category": row.category}),
-    )
-    .await;
-    append_telemetry_event(
-        &db,
-        project_id,
-        &global_config,
-        "feedback.submit",
-        json!({"category": row.category}),
-    )
-    .await;
-    Ok(FeedbackView {
-        id,
-        category: row.category,
-        body: row.body,
-        contact: row.contact,
-        artifact_path: row.artifact_path,
-        created_at: row.created_at,
-    })
-}
-
-pub async fn partner_metrics_report(
-    input: Option<PartnerMetricsInput>,
-    state: &AppState,
-) -> Result<PartnerMetricsReportView, String> {
-    let (db, project_id, onboarding_completed) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        let db = ctx.db.clone();
-        let onboarding_completed = db
-            .get_onboarding_state(&ctx.project_id.to_string())
-            .await
-            .ok()
-            .flatten()
-            .map(|row| row.completed)
-            .unwrap_or(false);
-        (db, ctx.project_id, onboarding_completed)
-    };
-    let window_days = input.and_then(|v| v.days).unwrap_or(14).max(1);
-    let from = Utc::now() - chrono::Duration::days(window_days);
-    let events = db
-        .query_events(EventQueryFilter {
-            project_id: project_id.to_string(),
-            from: Some(from),
-            ..EventQueryFilter::default()
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    let sessions_started = events
-        .iter()
-        .filter(|e| e.event_type == "SessionSpawned")
-        .count() as i64;
-    let merges_completed = events
-        .iter()
-        .filter(|e| e.event_type == "MergeCompleted")
-        .count() as i64;
-    let knowledge_captures = events
-        .iter()
-        .filter(|e| e.event_type == "KnowledgeCaptured")
-        .count() as i64;
-    let tasks = db
-        .list_tasks(&project_id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let tasks_created = tasks.iter().filter(|t| t.created_at >= from).count() as i64;
-    let tasks_done = tasks
-        .iter()
-        .filter(|t| t.status == "Done" && t.updated_at >= from)
-        .count() as i64;
-    let feedback_rows = db
-        .list_feedback(&project_id.to_string(), 10_000)
-        .await
-        .map_err(|e| e.to_string())?;
-    let feedback_count = feedback_rows
-        .iter()
-        .filter(|f| f.created_at >= from)
-        .count() as i64;
-    let feedback_with_contact = feedback_rows
-        .iter()
-        .filter(|f| f.created_at >= from)
-        .filter(|f| {
-            f.contact
-                .as_deref()
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false)
-        })
-        .count() as i64;
-    let cycle_hours = tasks
-        .iter()
-        .filter(|t| t.status == "Done" && t.updated_at >= from)
-        .map(|t| (t.updated_at - t.created_at).num_seconds() as f64 / 3600.0)
-        .collect::<Vec<_>>();
-    let avg_task_cycle_hours = if cycle_hours.is_empty() {
-        None
-    } else {
-        Some(cycle_hours.iter().sum::<f64>() / cycle_hours.len() as f64)
-    };
-    let telemetry_events = db
-        .count_telemetry_events(&project_id.to_string())
-        .await
-        .unwrap_or(0);
-    Ok(PartnerMetricsReportView {
-        generated_at: Utc::now(),
-        window_days,
-        sessions_started,
-        tasks_created,
-        tasks_done,
-        merges_completed,
-        knowledge_captures,
-        feedback_count,
-        feedback_with_contact,
-        telemetry_events,
-        onboarding_completed,
-        avg_task_cycle_hours,
-    })
-}
-
-fn timeline_view_from_event(row: EventRow) -> TimelineEventView {
-    let payload =
-        serde_json::from_str::<serde_json::Value>(&row.payload_json).unwrap_or_else(|_| {
-            json!({
-                "raw": row.payload_json
-            })
-        });
-    let summary = payload
-        .get("summary")
-        .and_then(|v| v.as_str())
-        .or_else(|| payload.get("message").and_then(|v| v.as_str()))
-        .or_else(|| payload.get("chunk").and_then(|v| v.as_str()))
-        .map(|v| v.chars().take(160).collect::<String>())
-        .unwrap_or_else(|| row.event_type.clone());
-    TimelineEventView {
-        timestamp: row.timestamp,
-        kind: row.event_type,
-        summary,
-        payload,
-    }
-}
-
-pub async fn get_session_timeline(
-    input: SessionTimelineInput,
-    state: &AppState,
-) -> Result<Vec<TimelineEventView>, String> {
-    let (db, project_id, sessions) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.sessions.clone())
-    };
-    let session_uuid = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
-    let events = db
-        .query_events(EventQueryFilter {
-            project_id: project_id.to_string(),
-            task_id: None,
-            session_id: Some(input.session_id.clone()),
-            event_type: None,
-            from: None,
-            to: None,
-            limit: input.limit.or(Some(500)),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut timeline = events
-        .into_iter()
-        .map(timeline_view_from_event)
-        .collect::<Vec<_>>();
-
-    if let Ok(slice) = sessions
-        .read_scrollback_tail(session_uuid, 128 * 1024)
-        .await
-    {
-        if !slice.data.trim().is_empty() {
-            timeline.push(TimelineEventView {
-                timestamp: Utc::now(),
-                kind: "ScrollbackSnapshot".to_string(),
-                summary: "latest scrollback snapshot".to_string(),
-                payload: json!({
-                    "session_id": input.session_id,
-                    "start_offset": slice.start_offset,
-                    "end_offset": slice.end_offset,
-                    "total_bytes": slice.total_bytes,
-                    "data": slice.data
-                }),
-            });
-        }
-    }
-
-    Ok(timeline)
-}
-
-pub async fn get_session_recovery_options(
-    session_id: String,
-    state: &AppState,
-) -> Result<Vec<RecoveryOptionView>, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let Some(meta) = ctx.sessions.get(session_uuid).await else {
-        return Err(format!("session not found: {session_id}"));
-    };
-    Ok(recovery_options_for_meta(&meta))
-}
-
-pub async fn recover_session(
-    input: SessionRecoveryInput,
-    emitter: &Arc<dyn EventEmitter>,
-    state: &AppState,
-) -> Result<serde_json::Value, String> {
-    let (project_id, db, sessions, project_path) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.project_id,
-            ctx.db.clone(),
-            ctx.sessions.clone(),
-            ctx.project_path.clone(),
-        )
-    };
-    let action = input.action.trim().to_ascii_lowercase();
-    let session_uuid = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
-    match action.as_str() {
-        "interrupt" => {
-            sessions
-                .send_input(session_uuid, "\u{3}")
-                .await
-                .map_err(|e| e.to_string())?;
-            append_event(
-                &db,
-                project_id,
-                None,
-                Some(session_uuid),
-                "session",
-                "SessionRecoveryAction",
-                json!({"action": "interrupt"}),
-            )
-            .await;
-            Ok(json!({"ok": true, "action": "interrupt"}))
-        }
-        "restart" => {
-            let new_id = restart_session(input.session_id.clone(), state).await?;
-            append_event(
-                &db,
-                project_id,
-                None,
-                Some(session_uuid),
-                "session",
-                "SessionRecoveryAction",
-                json!({"action": "restart", "new_session_id": new_id}),
-            )
-            .await;
-            Ok(json!({"ok": true, "action": "restart", "new_session_id": new_id}))
-        }
-        "reattach" => {
-            sessions
-                .attach_existing(session_uuid)
-                .await
-                .map_err(|e| e.to_string())?;
-            append_event(
-                &db,
-                project_id,
-                None,
-                Some(session_uuid),
-                "session",
-                "SessionRecoveryAction",
-                json!({"action": "reattach"}),
-            )
-            .await;
-            Ok(json!({"ok": true, "action": "reattach"}))
-        }
-        "checkpoint_restore" => {
-            // Guard: reject restore if any sessions are running
-            let all_sessions = db
-                .list_sessions(&project_id.to_string())
-                .await
-                .map_err(|e| e.to_string())?;
-            if all_sessions.iter().any(|s| s.status == "running") {
-                return Err("cannot restore checkpoint while sessions are running — stop all sessions first".to_string());
-            }
-
-            let checkpoints = db
-                .list_checkpoints(&project_id.to_string())
-                .await
-                .map_err(|e| e.to_string())?;
-            let Some(last) = checkpoints.last() else {
-                return Err("no checkpoints available".to_string());
-            };
-            let _ = git_output(&project_path, &["reset", "--hard", &last.git_ref]).await?;
-            append_event(
-                &db,
-                project_id,
-                None,
-                Some(session_uuid),
-                "session",
-                "SessionRecoveryAction",
-                json!({"action": "checkpoint_restore", "checkpoint_id": last.id, "git_ref": last.git_ref}),
-            )
-            .await;
-            emitter.emit("project_refreshed", json!({"reason": "checkpoint_restore"}));
-            Ok(
-                json!({"ok": true, "action": "checkpoint_restore", "checkpoint_id": last.id, "git_ref": last.git_ref}),
-            )
-        }
-        _ => Err(
-            "unsupported action; expected interrupt|restart|reattach|checkpoint_restore"
-                .to_string(),
-        ),
-    }
-}
-
 pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, String> {
     // Extract everything we need from the lock scope first, then release
     // the lock before calling coord.snapshot() — snapshot() also acquires
     // state.current, and Tokio mutexes are not reentrant.
-    let (db, project_id, project_name, project_path, coordinator) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.config.project.name.clone(),
-            ctx.project_path.to_string_lossy().to_string(),
-            ctx.coordinator.clone(),
-        )
-    };
+    let (db, project_id, project_name, project_path, coordinator) = state
+        .with_project("project_status", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.config.project.name.clone(),
+                ctx.project_path.to_string_lossy().to_string(),
+                ctx.coordinator.clone(),
+            )
+        })
+        .await?;
 
     let sessions = db
         .list_sessions(&project_id.to_string())
@@ -4367,13 +2516,11 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
 }
 
 pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, String> {
-    let (db, project_id, project_path) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
-    };
+    let (db, project_id, project_path) = state
+        .with_project("project_summary", |ctx| {
+            (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
+        })
+        .await?;
 
     let sessions = db
         .list_sessions(&project_id.to_string())
@@ -4623,21 +2770,19 @@ fn command_center_file_targets(
 pub async fn command_center_snapshot(
     state: &AppState,
 ) -> Result<CommandCenterSnapshotView, String> {
-    let (db, project_id, project_name, project_path, max_concurrent, sessions, coordinator) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (
-            ctx.db.clone(),
-            ctx.project_id,
-            ctx.config.project.name.clone(),
-            ctx.project_path.to_string_lossy().to_string(),
-            ctx.config.agents.max_concurrent,
-            ctx.sessions.clone(),
-            ctx.coordinator.clone(),
-        )
-    };
+    let (db, project_id, project_name, project_path, max_concurrent, sessions, coordinator) = state
+        .with_project("command_center_snapshot", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.config.project.name.clone(),
+                ctx.project_path.to_string_lossy().to_string(),
+                ctx.config.agents.max_concurrent,
+                ctx.sessions.clone(),
+                ctx.coordinator.clone(),
+            )
+        })
+        .await?;
 
     let tasks = db
         .list_tasks(&project_id.to_string())
@@ -5028,13 +3173,9 @@ pub async fn fleet_snapshot(state: &AppState) -> Result<FleetMachineSnapshotView
 }
 
 pub async fn get_daily_brief(state: &AppState) -> Result<DailyBriefView, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("get_daily_brief", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
     let tasks = db
         .list_tasks(&project_id.to_string())
         .await
@@ -5434,13 +3575,11 @@ pub async fn create_notification(
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<NotificationView, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("create_notification", |ctx| {
+            (ctx.db.clone(), ctx.project_id)
+        })
+        .await?;
     let secret_values = load_redaction_secrets(&db, project_id).await;
     create_notification_row(
         &db,
@@ -5467,13 +3606,9 @@ pub async fn list_notifications(
     input: Option<NotificationListInput>,
     state: &AppState,
 ) -> Result<Vec<NotificationView>, String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("list_notifications", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
     let unread_only = input.map(|v| v.unread_only).unwrap_or(false);
     let rows = db
         .list_notifications(&project_id.to_string(), unread_only)
@@ -5499,13 +3634,11 @@ pub async fn mark_notification_read(
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<(), String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("mark_notification_read", |ctx| {
+            (ctx.db.clone(), ctx.project_id)
+        })
+        .await?;
     db.mark_notification_read(&notification_id)
         .await
         .map_err(|e| e.to_string())?;
@@ -5530,13 +3663,11 @@ pub async fn clear_notifications(
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
 ) -> Result<(), String> {
-    let (db, project_id) = {
-        let current = state.current.lock().await;
-        let ctx = current
-            .as_ref()
-            .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_id)
-    };
+    let (db, project_id) = state
+        .with_project("clear_notifications", |ctx| {
+            (ctx.db.clone(), ctx.project_id)
+        })
+        .await?;
     db.clear_notifications(&project_id.to_string())
         .await
         .map_err(|e| e.to_string())?;
@@ -5739,12 +3870,16 @@ pub async fn execute_registered_command(
     };
 
     if result.is_ok() {
-        let current = state.current.lock().await;
-        if let Some(ctx) = current.as_ref() {
+        if let Ok((db, project_id, global_config)) = state
+            .with_project("execute_registered_command.telemetry", |ctx| {
+                (ctx.db.clone(), ctx.project_id, ctx.global_config.clone())
+            })
+            .await
+        {
             append_telemetry_event(
-                &ctx.db,
-                ctx.project_id,
-                &ctx.global_config,
+                &db,
+                project_id,
+                &global_config,
                 "command.execute",
                 json!({"id": command_id}),
             )
@@ -5755,11 +3890,10 @@ pub async fn execute_registered_command(
 }
 
 pub async fn pool_state(state: &AppState) -> Result<(usize, usize, usize, usize), String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    Ok(ctx.pool.state().await)
+    let pool = state
+        .with_project("pool_state", |ctx| Arc::clone(&ctx.pool))
+        .await?;
+    Ok(pool.state().await)
 }
 
 pub async fn check_action_risk(
@@ -5836,11 +3970,12 @@ fn default_automation_snapshot(
 }
 
 pub async fn automation_status(state: &AppState) -> Result<AutomationStatusView, String> {
-    let (db, project_id, coordinator) = {
-        let current = state.current.lock().await;
-        let ctx = current.as_ref().ok_or("no project open")?;
-        (ctx.db.clone(), ctx.project_id, ctx.coordinator.clone())
-    };
+    let (db, project_id, coordinator) = state
+        .with_project("automation_status", |ctx| {
+            (ctx.db.clone(), ctx.project_id, ctx.coordinator.clone())
+        })
+        .await
+        .map_err(|_| "no project open".to_string())?;
 
     let snapshot = if let Some(ref coord) = coordinator {
         coord.snapshot().await
@@ -5886,14 +4021,10 @@ async fn initialize_tracker(
 }
 
 pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("resolve_pr_url", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("gh")
         .args([
             "pr",
@@ -5937,14 +4068,10 @@ pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView
 }
 
 pub async fn resolve_issue_url(url: &str, state: &AppState) -> Result<IssueResolveView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("resolve_issue_url", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("gh")
         .args(["issue", "view", url, "--json", "number,title,url"])
         .current_dir(&project_path)
@@ -5972,14 +4099,10 @@ pub async fn resolve_issue_url(url: &str, state: &AppState) -> Result<IssueResol
 }
 
 pub async fn list_project_files_flat(state: &AppState) -> Result<Vec<String>, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("list_project_files_flat", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("git")
         .args(["ls-files"])
         .current_dir(&project_path)
@@ -5998,14 +4121,10 @@ pub async fn list_project_files_flat(state: &AppState) -> Result<Vec<String>, St
 }
 
 pub async fn list_branches(state: &AppState) -> Result<Vec<String>, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("list_branches", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("git")
         .args([
             "branch",
@@ -6028,14 +4147,10 @@ pub async fn list_branches(state: &AppState) -> Result<Vec<String>, String> {
 }
 
 pub async fn changes_summary(state: &AppState) -> Result<Vec<FileChangeView>, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("changes_summary", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("git")
         .args(["diff", "--numstat"])
         .current_dir(&project_path)
@@ -6064,14 +4179,10 @@ pub async fn changes_summary(state: &AppState) -> Result<Vec<FileChangeView>, St
 }
 
 pub async fn check_summary(state: &AppState) -> Result<CheckSummaryView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("check_summary", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = tokio::time::timeout(
         std::time::Duration::from_millis(5000),
         TokioCommand::new("gh")
@@ -6113,14 +4224,10 @@ pub async fn check_summary(state: &AppState) -> Result<CheckSummaryView, String>
 }
 
 pub async fn merge_queue_readiness(state: &AppState) -> Result<MergeReadinessView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("merge_queue_readiness", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = tokio::time::timeout(
         std::time::Duration::from_millis(5000),
         TokioCommand::new("gh")
@@ -6177,14 +4284,10 @@ pub async fn merge_queue_readiness(state: &AppState) -> Result<MergeReadinessVie
 }
 
 pub async fn commit_and_push(message: &str, state: &AppState) -> Result<CommitAndPushView, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("commit_and_push", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     // Stage all changes
     let add_out = TokioCommand::new("git")
         .args(["add", "-A"])
@@ -6319,14 +4422,10 @@ struct GhAuthorJson {
 }
 
 pub async fn list_github_issues(state: &AppState) -> Result<Vec<GitHubIssueView>, String> {
-    let project_path = {
-        let current = state.current.lock().await;
-        current
-            .as_ref()
-            .ok_or("no open project")?
-            .project_path
-            .clone()
-    };
+    let project_path = state
+        .with_project("list_github_issues", |ctx| ctx.project_path.clone())
+        .await
+        .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("gh")
         .args([
             "issue",
@@ -6570,24 +4669,29 @@ enable_entropy_guard = false
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
         let state = AppState::new(emitter);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-        *state.current.lock().await = Some(ProjectContext {
-            project_id,
-            project_path: project_root.to_path_buf(),
-            config: make_project_config(),
-            global_config: GlobalConfig::default(),
-            db,
-            sessions,
-            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
-            git: Arc::new(GitService::new(project_root)),
-            adapters: AdapterRegistry::default(),
-            pool: DispatchPool::new(1),
-            tracker: None,
-            workflow_store: Arc::new(crate::automation::workflow_store::WorkflowStore::new(
-                project_root,
-            )),
-            coordinator: None,
-            shutdown_tx,
-        });
+        state
+            .replace_current_project(
+                "tests.make_state_with_project",
+                ProjectContext {
+                    project_id,
+                    project_path: project_root.to_path_buf(),
+                    config: make_project_config(),
+                    global_config: GlobalConfig::default(),
+                    db,
+                    sessions,
+                    redaction_secrets: Arc::new(RwLock::new(Vec::new())),
+                    git: Arc::new(GitService::new(project_root)),
+                    adapters: AdapterRegistry::default(),
+                    pool: DispatchPool::new(1),
+                    tracker: None,
+                    workflow_store: Arc::new(
+                        crate::automation::workflow_store::WorkflowStore::new(project_root),
+                    ),
+                    coordinator: None,
+                    shutdown_tx,
+                },
+            )
+            .await;
         state
     }
 
@@ -6853,7 +4957,12 @@ enable_entropy_guard = false
                 .try_claim(queued_task_id, crate::automation::DispatchOrigin::Manual)
                 .await
         );
-        state.current.lock().await.as_mut().unwrap().coordinator = Some(coordinator);
+        state
+            .with_project_mut("tests.command_center_snapshot.coordinator", |ctx| {
+                ctx.coordinator = Some(coordinator);
+            })
+            .await
+            .expect("set coordinator");
 
         let snapshot = command_center_snapshot(state.as_ref())
             .await
@@ -7139,7 +5248,7 @@ enable_entropy_guard = false
             "close_project should clear the runtime redaction config after shutdown"
         );
         assert!(
-            state.current.lock().await.is_none(),
+            !state.has_open_project("tests.close_project.is_none").await,
             "close_project should clear the current project context"
         );
         assert!(
@@ -7680,24 +5789,29 @@ enable_entropy_guard = false
         let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
         let state = AppState::new(emitter);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-        *state.current.lock().await = Some(ProjectContext {
-            project_id,
-            project_path: project_root.clone(),
-            config: make_project_config(),
-            global_config: GlobalConfig::default(),
-            db,
-            sessions: sessions.clone(),
-            redaction_secrets: Arc::new(RwLock::new(Vec::new())),
-            git: Arc::new(GitService::new(&project_root)),
-            adapters: AdapterRegistry::default(),
-            pool: DispatchPool::new(1),
-            tracker: None,
-            workflow_store: Arc::new(crate::automation::workflow_store::WorkflowStore::new(
-                &project_root,
-            )),
-            coordinator: None,
-            shutdown_tx,
-        });
+        state
+            .replace_current_project(
+                "tests.get_session_binding.state",
+                ProjectContext {
+                    project_id,
+                    project_path: project_root.clone(),
+                    config: make_project_config(),
+                    global_config: GlobalConfig::default(),
+                    db,
+                    sessions: sessions.clone(),
+                    redaction_secrets: Arc::new(RwLock::new(Vec::new())),
+                    git: Arc::new(GitService::new(&project_root)),
+                    adapters: AdapterRegistry::default(),
+                    pool: DispatchPool::new(1),
+                    tracker: None,
+                    workflow_store: Arc::new(
+                        crate::automation::workflow_store::WorkflowStore::new(&project_root),
+                    ),
+                    coordinator: None,
+                    shutdown_tx,
+                },
+            )
+            .await;
 
         let live = get_session_binding(live_session_id.to_string(), &state)
             .await

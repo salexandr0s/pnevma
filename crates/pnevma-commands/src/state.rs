@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -89,6 +90,8 @@ pub struct AppState {
     pub browser_tool_pending: crate::commands::browser_tools::BrowserToolPending,
 }
 
+const ACTIVE_PROJECT_LOCK_WARN_THRESHOLD: Duration = Duration::from_millis(50);
+
 impl Default for AppState {
     fn default() -> Self {
         let (remote_events, _rx) = tokio::sync::broadcast::channel(2048);
@@ -141,5 +144,71 @@ impl AppState {
     /// Get a clone of the Arc<AppState> if it has been registered via set_self_arc.
     pub fn arc(&self) -> Option<Arc<AppState>> {
         self.self_arc.get().cloned()
+    }
+
+    async fn lock_current_project(
+        &self,
+        access: &'static str,
+    ) -> tokio::sync::MutexGuard<'_, Option<ProjectContext>> {
+        let started = Instant::now();
+        let guard = self.current.lock().await;
+        let waited = started.elapsed();
+        if waited >= ACTIVE_PROJECT_LOCK_WARN_THRESHOLD {
+            tracing::warn!(
+                access,
+                wait_ms = waited.as_millis() as u64,
+                "slow active-project lock acquisition"
+            );
+        } else {
+            tracing::trace!(
+                access,
+                wait_ms = waited.as_millis() as u64,
+                "active-project lock acquired"
+            );
+        }
+        guard
+    }
+
+    pub async fn with_project<T>(
+        &self,
+        access: &'static str,
+        f: impl FnOnce(&ProjectContext) -> T,
+    ) -> Result<T, String> {
+        let guard = self.lock_current_project(access).await;
+        let ctx = guard
+            .as_ref()
+            .ok_or_else(|| "no open project".to_string())?;
+        Ok(f(ctx))
+    }
+
+    pub async fn with_project_mut<T>(
+        &self,
+        access: &'static str,
+        f: impl FnOnce(&mut ProjectContext) -> T,
+    ) -> Result<T, String> {
+        let mut guard = self.lock_current_project(access).await;
+        let ctx = guard
+            .as_mut()
+            .ok_or_else(|| "no open project".to_string())?;
+        Ok(f(ctx))
+    }
+
+    pub async fn replace_current_project(
+        &self,
+        access: &'static str,
+        next: ProjectContext,
+    ) -> Option<ProjectContext> {
+        let mut guard = self.lock_current_project(access).await;
+        guard.replace(next)
+    }
+
+    pub async fn take_current_project(&self, access: &'static str) -> Option<ProjectContext> {
+        let mut guard = self.lock_current_project(access).await;
+        guard.take()
+    }
+
+    pub async fn has_open_project(&self, access: &'static str) -> bool {
+        let guard = self.lock_current_project(access).await;
+        guard.is_some()
     }
 }
