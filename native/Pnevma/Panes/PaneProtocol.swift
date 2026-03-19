@@ -913,12 +913,12 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private var managedSessionCommand: String? {
-        launchMetadata.remoteTarget?.remoteShellCommand
+        nil
     }
 
     private var shellWorkingDirectory: String? {
-        if launchMetadata.remoteTarget != nil {
-            return NSHomeDirectory()
+        if let remoteTarget = launchMetadata.remoteTarget {
+            return remoteTarget.remotePath
         }
         return currentWorkingDirectory ?? NSHomeDirectory()
     }
@@ -1113,7 +1113,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                     let binding = try await sessionBridge.createSession(
                         name: self.launchMetadata.remoteTarget == nil ? "Terminal" : "Remote Terminal",
                         workingDirectory: self.shellWorkingDirectory,
-                        command: self.managedSessionCommand
+                        command: self.managedSessionCommand,
+                        remoteTarget: self.launchMetadata.remoteTarget
                     )
                     await self.apply(binding: binding, isNewSession: true)
                 } catch {

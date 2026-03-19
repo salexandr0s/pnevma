@@ -4,12 +4,19 @@ pub mod config_parser;
 pub mod error;
 pub mod key_manager;
 pub mod profile;
+pub mod remote_helper;
 pub mod tailscale;
 
 pub use config_parser::parse_ssh_config;
 pub use error::SshError;
 pub use key_manager::{generate_key, list_ssh_keys, SshKeyInfo};
 pub use profile::{build_ssh_command, validate_profile, validate_profile_fields, SshProfile};
+pub use remote_helper::{
+    build_remote_attach_command, create_remote_session, ensure_remote_helper,
+    read_remote_scrollback_tail, remote_helper_health, remote_session_status,
+    signal_remote_session, terminate_remote_session, RemoteHelperEnsureResult, RemoteHelperHealth,
+    RemoteHelperInstallKind, RemoteSessionCreateResult, RemoteSessionStatus,
+};
 pub use tailscale::{discover_tailscale_devices, TailscaleDevice};
 
 /// Shell-escapes a single argument for safe inclusion in a shell command string.

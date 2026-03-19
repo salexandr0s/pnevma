@@ -1624,13 +1624,24 @@ pub async fn route_method(
             let name = parse_optional_string_param(params, "name")
                 .unwrap_or_else(|| "session".to_string());
             let cwd = parse_optional_string_param(params, "cwd").unwrap_or_else(|| ".".to_string());
-            let command = parse_optional_string_param(params, "command")
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "zsh".to_string());
-            let session_id =
-                commands::create_session(commands::SessionInput { name, cwd, command }, state)
-                    .await
-                    .map_err(|e| ("internal_error".to_string(), e))?;
+            let command = parse_optional_string_param(params, "command").unwrap_or_default();
+            let remote_target = params
+                .get("remote_target")
+                .cloned()
+                .map(serde_json::from_value::<commands::SessionRemoteTargetInput>)
+                .transpose()
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            let session_id = commands::create_session(
+                commands::SessionInput {
+                    name,
+                    cwd,
+                    command,
+                    remote_target,
+                },
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
             let binding = commands::get_session_binding(session_id.clone(), state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
@@ -1646,57 +1657,12 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
-        "session.list_live" => {
-            let supervisor = {
-                let current = state.current.lock().await;
-                current
-                    .as_ref()
-                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?
-                    .sessions
-                    .clone()
-            };
-            let mut sessions = supervisor
-                .list()
+        "session.list_live" => serde_json::to_value(
+            commands::list_live_session_views(state)
                 .await
-                .into_iter()
-                .map(|meta| commands::LiveSessionView {
-                    id: meta.id.to_string(),
-                    name: meta.name,
-                    backend: "tmux_compat".to_string(),
-                    durability: "durable".to_string(),
-                    lifecycle_state: match meta.status {
-                        SessionStatus::Running => "attached".to_string(),
-                        SessionStatus::Waiting => "detached".to_string(),
-                        SessionStatus::Error => "error".to_string(),
-                        SessionStatus::Complete => "exited".to_string(),
-                    },
-                    status: match meta.status {
-                        SessionStatus::Running => "running".to_string(),
-                        SessionStatus::Waiting => "waiting".to_string(),
-                        SessionStatus::Error => "error".to_string(),
-                        SessionStatus::Complete => "complete".to_string(),
-                    },
-                    health: match meta.health {
-                        pnevma_session::SessionHealth::Active => "active".to_string(),
-                        pnevma_session::SessionHealth::Idle => "idle".to_string(),
-                        pnevma_session::SessionHealth::Stuck => "stuck".to_string(),
-                        pnevma_session::SessionHealth::Waiting => "waiting".to_string(),
-                        pnevma_session::SessionHealth::Error => "error".to_string(),
-                        pnevma_session::SessionHealth::Complete => "complete".to_string(),
-                    },
-                    pid: meta.pid.map(i64::from),
-                    cwd: meta.cwd,
-                    command: meta.command,
-                    started_at: meta.started_at,
-                    last_heartbeat: meta.last_heartbeat,
-                    exit_code: meta.exit_code,
-                    ended_at: meta.ended_at,
-                })
-                .collect::<Vec<_>>();
-            sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-            serde_json::to_value(sessions)
-                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
-        }
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "session.kill" => {
             let session_id =
                 parse_string_param_aliases(params, &["session_id", "id"], "session_id")
@@ -2660,6 +2626,26 @@ pub async fn route_method(
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
             json!({ "ok": true })
+        }
+        "ssh.runtime.ensure_helper" => {
+            let profile_id = parse_string_param(params, "profile_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::ensure_ssh_runtime_helper(profile_id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "ssh.runtime.health" => {
+            let profile_id = parse_string_param(params, "profile_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::ssh_runtime_health(profile_id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "ssh.import_config" => serde_json::to_value(
             commands::import_ssh_config(state)

@@ -16,11 +16,18 @@ private struct TerminalPaneAnyEncodable: Encodable {
 
 private actor TerminalPaneCommandBus: CommandCalling {
     private var createSessionCallCountValue = 0
+    private var lastCreateParamsValue: [String: Any]?
 
     func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.new":
             createSessionCallCountValue += 1
+            if let params {
+                let encoder = JSONEncoder()
+                encoder.keyEncodingStrategy = .convertToSnakeCase
+                let data = try encoder.encode(TerminalPaneAnyEncodable(params))
+                lastCreateParamsValue = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
             return try decode(
                 #"""
                 {
@@ -43,6 +50,22 @@ private actor TerminalPaneCommandBus: CommandCalling {
 
     func createSessionCallCount() -> Int {
         createSessionCallCountValue
+    }
+
+    func lastCreateCwd() -> String? {
+        lastCreateParamsValue?["cwd"] as? String
+    }
+
+    func lastCreateCommand() -> String? {
+        lastCreateParamsValue?["command"] as? String
+    }
+
+    func lastCreateRemoteProfileID() -> String? {
+        (lastCreateParamsValue?["remote_target"] as? [String: Any])?["ssh_profile_id"] as? String
+    }
+
+    func lastCreateRemotePath() -> String? {
+        (lastCreateParamsValue?["remote_target"] as? [String: Any])?["remote_path"] as? String
     }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
@@ -102,7 +125,9 @@ private actor ExistingSessionTerminalPaneCommandBus: CommandCalling {
         case "session.binding":
             bindingCallCountValue += 1
             if let params {
-                let data = try JSONEncoder().encode(TerminalPaneAnyEncodable(params))
+                let encoder = JSONEncoder()
+                encoder.keyEncodingStrategy = .convertToSnakeCase
+                let data = try encoder.encode(TerminalPaneAnyEncodable(params))
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 lastBoundSessionIDValue = json?["session_id"] as? String ?? json?["sessionID"] as? String
             }
@@ -293,6 +318,53 @@ final class TerminalPaneViewTests: XCTestCase {
         try await waitUntil(timeoutNanos: 2_000_000_000) {
             await bus.createSessionCallCount() == 2 && pane.sessionID == "session-1"
         }
+    }
+
+    func testRemoteManagedTerminalCreatesStructuredRemoteBackendSession() async throws {
+        let bus = TerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let remoteTarget = WorkspaceRemoteTarget(
+            sshProfileID: "ssh-profile-1",
+            sshProfileName: "Builder",
+            host: "example.internal",
+            port: 22,
+            user: "builder",
+            identityFile: "/tmp/id_ed25519",
+            proxyJump: "jump.internal",
+            remotePath: "/srv/project"
+        )
+
+        let pane = TerminalPaneView(
+            workingDirectory: remoteTarget.remotePath,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .managedSession,
+                startBehavior: .immediate,
+                remoteTarget: remoteTarget
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        try await waitUntil {
+            await bus.createSessionCallCount() == 1 && pane.sessionID == "session-1"
+        }
+
+        let lastCreateCwd = await bus.lastCreateCwd()
+        let lastCreateCommand = await bus.lastCreateCommand()
+        let lastCreateRemoteProfileID = await bus.lastCreateRemoteProfileID()
+        let lastCreateRemotePath = await bus.lastCreateRemotePath()
+
+        XCTAssertEqual(lastCreateCwd, remoteTarget.remotePath)
+        XCTAssertEqual(lastCreateCommand, "")
+        XCTAssertEqual(lastCreateRemoteProfileID, remoteTarget.sshProfileID)
+        XCTAssertEqual(lastCreateRemotePath, remoteTarget.remotePath)
     }
 
     func testTerminalPaneLoadsExistingSessionIntoDeferredPane() async throws {

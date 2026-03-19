@@ -1,4 +1,7 @@
 use super::*;
+use pnevma_db::SshProfileRow;
+use std::ffi::OsString;
+use std::path::Path;
 
 #[test]
 fn resolve_session_command_prefers_global_default_shell_for_empty_commands() {
@@ -288,4 +291,176 @@ async fn get_session_timeline_uses_scrollback_tail_snapshot() {
 
     assert!(data.contains("TAIL-MARKER"));
     assert!(!data.contains("HEAD-MARKER"));
+}
+
+struct RemoteSshTestEnv {
+    previous_home: Option<OsString>,
+    previous_ssh_bin: Option<OsString>,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl RemoteSshTestEnv {
+    async fn new(root: &Path) -> Self {
+        let guard = home_env_lock().lock().await;
+        let previous_home = std::env::var_os("HOME");
+        let previous_ssh_bin = std::env::var_os("PNEVMA_SSH_BIN");
+        let fake_home = root.join("home");
+        std::fs::create_dir_all(&fake_home).expect("create fake home");
+        let fake_ssh = root.join("fake-ssh.sh");
+        write_fake_executable(
+            &fake_ssh,
+            &format!(
+                "#!/bin/sh\nset -eu\nexport HOME={}\nremote_cmd=\"\"\nfor arg in \"$@\"; do remote_cmd=\"$arg\"; done\nexec sh -lc \"$remote_cmd\"\n",
+                pnevma_ssh::shell_escape_arg(fake_home.to_string_lossy().as_ref())
+            ),
+        );
+        std::env::set_var("HOME", &fake_home);
+        std::env::set_var("PNEVMA_SSH_BIN", &fake_ssh);
+        Self {
+            previous_home,
+            previous_ssh_bin,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for RemoteSshTestEnv {
+    fn drop(&mut self) {
+        if let Some(previous_home) = self.previous_home.as_ref() {
+            std::env::set_var("HOME", previous_home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(previous_ssh_bin) = self.previous_ssh_bin.as_ref() {
+            std::env::set_var("PNEVMA_SSH_BIN", previous_ssh_bin);
+        } else {
+            std::env::remove_var("PNEVMA_SSH_BIN");
+        }
+    }
+}
+
+async fn upsert_test_project_ssh_profile(db: &Db, project_id: Uuid, profile_id: &str, name: &str) {
+    let now = Utc::now();
+    db.upsert_ssh_profile(&SshProfileRow {
+        id: profile_id.to_string(),
+        project_id: project_id.to_string(),
+        name: name.to_string(),
+        host: "example.internal".to_string(),
+        port: 22,
+        user: Some("builder".to_string()),
+        identity_file: Some("/tmp/id_ed25519".to_string()),
+        proxy_jump: Some("jump.internal".to_string()),
+        tags_json: "[]".to_string(),
+        source: "manual".to_string(),
+        created_at: now,
+        updated_at: now,
+    })
+    .await
+    .expect("upsert ssh profile");
+}
+
+fn test_remote_profile(profile_id: &str, name: &str) -> pnevma_ssh::SshProfile {
+    let now = Utc::now();
+    pnevma_ssh::SshProfile {
+        id: profile_id.to_string(),
+        name: name.to_string(),
+        host: "example.internal".to_string(),
+        port: 22,
+        user: Some("builder".to_string()),
+        identity_file: Some("/tmp/id_ed25519".to_string()),
+        proxy_jump: Some("jump.internal".to_string()),
+        tags: Vec::new(),
+        source: "manual".to_string(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[tokio::test]
+async fn get_session_binding_returns_live_attach_for_remote_durable_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = RemoteSshTestEnv::new(temp.path()).await;
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback")).unwrap();
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "remote-binding-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    upsert_test_project_ssh_profile(&db, project_id, "ssh-profile-1", "Builder").await;
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db.clone(), sessions).await;
+    let row = create_remote_managed_session(CreateRemoteManagedSessionInput {
+        db: &db,
+        project_id,
+        name: "Remote Terminal".to_string(),
+        session_type: Some("terminal".to_string()),
+        profile: &test_remote_profile("ssh-profile-1", "Builder"),
+        connection_id: "ssh-profile-1".to_string(),
+        cwd: "/srv/project".to_string(),
+        command: Some("sleep 30".to_string()),
+    })
+    .await
+    .expect("create remote managed session");
+
+    let binding = get_session_binding(row.id.clone(), &state)
+        .await
+        .expect("remote binding");
+    assert_eq!(binding.backend, "remote_ssh_durable");
+    assert_eq!(binding.mode, "live_attach");
+    assert_eq!(binding.lifecycle_state, "detached");
+    assert!(binding.env.is_empty());
+    assert!(binding
+        .launch_command
+        .as_deref()
+        .unwrap_or_default()
+        .contains("pnevma-remote-helper session attach"));
+}
+
+#[tokio::test]
+async fn connect_ssh_creates_remote_durable_backend_session() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = RemoteSshTestEnv::new(temp.path()).await;
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback")).unwrap();
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "connect-ssh-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    upsert_test_project_ssh_profile(&db, project_id, "ssh-profile-1", "Builder").await;
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state =
+        make_state_with_project(project_id, &project_root, db.clone(), sessions.clone()).await;
+
+    let session_id = connect_ssh("ssh-profile-1".to_string(), &state)
+        .await
+        .expect("connect ssh");
+
+    let row = db
+        .get_session(&project_id.to_string(), &session_id)
+        .await
+        .expect("load session row")
+        .expect("session row should exist");
+    assert_eq!(row.backend, "remote_ssh_durable");
+    assert_eq!(row.r#type.as_deref(), Some("ssh"));
+    assert_eq!(row.connection_id.as_deref(), Some("ssh-profile-1"));
+    assert!(row.remote_session_id.is_some());
+    assert!(sessions.list().await.is_empty());
 }

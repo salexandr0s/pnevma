@@ -32,7 +32,9 @@ private actor SessionBridgeCommandBusStub: CommandCalling {
             guard let params else {
                 throw StubError.invalidParams
             }
-            let data = try JSONEncoder().encode(AnyEncodable(params))
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let data = try encoder.encode(AnyEncodable(params))
             lastCreateParams = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let bindingJSON = customBindingJSON ?? #"""
                 {
@@ -59,6 +61,14 @@ private actor SessionBridgeCommandBusStub: CommandCalling {
 
     func lastCreateCwd() -> String? {
         lastCreateParams?["cwd"] as? String
+    }
+
+    func lastCreateRemoteProfileID() -> String? {
+        (lastCreateParams?["remote_target"] as? [String: Any])?["ssh_profile_id"] as? String
+    }
+
+    func lastCreateRemotePath() -> String? {
+        (lastCreateParams?["remote_target"] as? [String: Any])?["remote_path"] as? String
     }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
@@ -109,5 +119,35 @@ final class SessionBridgeTests: XCTestCase {
 
         XCTAssertEqual(launch.workingDirectory, "/tmp/project")
         XCTAssertEqual(launch.command, "/bin/sh -lc 'echo backend-launch'")
+    }
+
+    func testCreateSessionEncodesStructuredRemoteTargetAndSkipsLocalDefaultShell() async throws {
+        let bus = SessionBridgeCommandBusStub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        bridge.defaultShell = "/bin/bash"
+        let remoteTarget = WorkspaceRemoteTarget(
+            sshProfileID: "ssh-profile-1",
+            sshProfileName: "Builder",
+            host: "example.internal",
+            port: 22,
+            user: "builder",
+            identityFile: "/tmp/id_ed25519",
+            proxyJump: "jump.internal",
+            remotePath: "/srv/project"
+        )
+
+        _ = try await bridge.createSession(
+            workingDirectory: remoteTarget.remotePath,
+            command: nil,
+            remoteTarget: remoteTarget
+        )
+
+        let recordedCommand = await bus.lastCreateCommand()
+        let recordedProfileID = await bus.lastCreateRemoteProfileID()
+        let recordedRemotePath = await bus.lastCreateRemotePath()
+
+        XCTAssertEqual(recordedCommand, "")
+        XCTAssertEqual(recordedProfileID, remoteTarget.sshProfileID)
+        XCTAssertEqual(recordedRemotePath, remoteTarget.remotePath)
     }
 }

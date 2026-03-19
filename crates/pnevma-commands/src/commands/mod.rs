@@ -84,6 +84,23 @@ pub struct SessionInput {
     pub name: String,
     pub cwd: String,
     pub command: String,
+    #[serde(default)]
+    pub remote_target: Option<SessionRemoteTargetInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRemoteTargetInput {
+    pub ssh_profile_id: String,
+    pub ssh_profile_name: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    #[serde(default)]
+    pub proxy_jump: Option<String>,
+    pub remote_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1816,24 +1833,115 @@ fn tmux_name_from_session_id(session_id: &str) -> String {
     format!("pnevma_{}", session_id.replace('-', ""))
 }
 
+const SESSION_BACKEND_TMUX_COMPAT: &str = "tmux_compat";
+const SESSION_BACKEND_REMOTE_SSH_DURABLE: &str = "remote_ssh_durable";
+const SESSION_DURABILITY_DURABLE: &str = "durable";
+const SESSION_LIFECYCLE_ATTACHED: &str = "attached";
+const SESSION_LIFECYCLE_DETACHED: &str = "detached";
+const SESSION_LIFECYCLE_REATTACHING: &str = "reattaching";
+const SESSION_LIFECYCLE_EXITED: &str = "exited";
+const SESSION_LIFECYCLE_LOST: &str = "lost";
+const SESSION_LIFECYCLE_ERROR: &str = "error";
+
+#[derive(Debug, Clone, Deserialize)]
+struct StoredTerminalLaunchMetadata {
+    #[serde(default)]
+    remote_target: Option<SessionRemoteTargetInput>,
+}
+
 fn default_session_backend() -> String {
-    "tmux_compat".to_string()
+    SESSION_BACKEND_TMUX_COMPAT.to_string()
 }
 
 fn default_session_durability() -> String {
-    "durable".to_string()
+    SESSION_DURABILITY_DURABLE.to_string()
 }
 
 fn default_session_lifecycle_state() -> String {
-    "attached".to_string()
+    SESSION_LIFECYCLE_ATTACHED.to_string()
+}
+
+fn is_remote_ssh_durable_backend(backend: &str) -> bool {
+    backend.eq_ignore_ascii_case(SESSION_BACKEND_REMOTE_SSH_DURABLE)
+}
+
+fn remote_session_state_mapping(state: &str) -> (String, String) {
+    match state {
+        "attached" => (
+            "running".to_string(),
+            SESSION_LIFECYCLE_ATTACHED.to_string(),
+        ),
+        "detached" => (
+            "waiting".to_string(),
+            SESSION_LIFECYCLE_DETACHED.to_string(),
+        ),
+        "reattaching" => (
+            "waiting".to_string(),
+            SESSION_LIFECYCLE_REATTACHING.to_string(),
+        ),
+        "lost" => ("complete".to_string(), SESSION_LIFECYCLE_LOST.to_string()),
+        "error" => ("error".to_string(), SESSION_LIFECYCLE_ERROR.to_string()),
+        _ => ("complete".to_string(), SESSION_LIFECYCLE_EXITED.to_string()),
+    }
+}
+
+fn ssh_profile_from_remote_target(
+    target: &SessionRemoteTargetInput,
+) -> Result<pnevma_ssh::SshProfile, String> {
+    pnevma_ssh::validate_profile_fields(
+        &target.host,
+        target.user.as_deref(),
+        target.identity_file.as_deref(),
+        target.proxy_jump.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    Ok(pnevma_ssh::SshProfile {
+        id: target.ssh_profile_id.clone(),
+        name: target.ssh_profile_name.clone(),
+        host: target.host.clone(),
+        port: target.port,
+        user: target.user.clone(),
+        identity_file: target.identity_file.clone(),
+        proxy_jump: target.proxy_jump.clone(),
+        tags: Vec::new(),
+        source: "session_remote_target".to_string(),
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+fn remote_target_from_ssh_profile(
+    profile: &pnevma_ssh::SshProfile,
+    remote_path: &str,
+) -> SessionRemoteTargetInput {
+    SessionRemoteTargetInput {
+        ssh_profile_id: profile.id.clone(),
+        ssh_profile_name: profile.name.clone(),
+        host: profile.host.clone(),
+        port: profile.port,
+        user: profile.user.clone().or_else(|| std::env::var("USER").ok()),
+        identity_file: profile.identity_file.clone(),
+        proxy_jump: profile.proxy_jump.clone(),
+        remote_path: remote_path.to_string(),
+    }
+}
+
+fn remote_launch_metadata_json(target: &SessionRemoteTargetInput) -> Result<String, String> {
+    serde_json::to_string(&json!({
+        "launch_mode": "managed_session",
+        "start_behavior": "immediate",
+        "remote_target": target,
+    }))
+    .map_err(|e| e.to_string())
 }
 
 fn session_lifecycle_state_for_status(status: &str) -> String {
     match status {
-        "running" => "attached".to_string(),
-        "waiting" => "detached".to_string(),
-        "error" => "error".to_string(),
-        _ => "exited".to_string(),
+        "running" => SESSION_LIFECYCLE_ATTACHED.to_string(),
+        "waiting" => SESSION_LIFECYCLE_DETACHED.to_string(),
+        "error" => SESSION_LIFECYCLE_ERROR.to_string(),
+        _ => SESSION_LIFECYCLE_EXITED.to_string(),
     }
 }
 
@@ -1847,6 +1955,100 @@ fn parse_optional_datetime(value: &Option<String>) -> Option<DateTime<Utc>> {
         .as_deref()
         .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
         .map(|parsed| parsed.with_timezone(&Utc))
+}
+
+async fn resolve_ssh_profile_by_id(
+    state: &AppState,
+    project_db: Option<&Db>,
+    profile_id: &str,
+) -> Result<Option<pnevma_ssh::SshProfile>, String> {
+    if let Ok(global_db) = state.global_db() {
+        if let Some(row) = global_db
+            .get_global_ssh_profile(profile_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
+            return Ok(Some(pnevma_ssh::SshProfile {
+                id: row.id,
+                name: row.name,
+                host: row.host,
+                port: row.port as u16,
+                user: row.user,
+                identity_file: row.identity_file,
+                proxy_jump: row.proxy_jump,
+                tags,
+                source: row.source,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            }));
+        }
+    }
+
+    let Some(project_db) = project_db else {
+        return Ok(None);
+    };
+    let row = match project_db.get_ssh_profile(profile_id).await {
+        Ok(row) => row,
+        Err(_) => return Ok(None),
+    };
+    let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
+    Ok(Some(pnevma_ssh::SshProfile {
+        id: row.id,
+        name: row.name,
+        host: row.host,
+        port: row.port as u16,
+        user: row.user,
+        identity_file: row.identity_file,
+        proxy_jump: row.proxy_jump,
+        tags,
+        source: row.source,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }))
+}
+
+async fn resolve_remote_target_for_session(
+    db: &Db,
+    row: &SessionRow,
+) -> Result<Option<SessionRemoteTargetInput>, String> {
+    let panes = db
+        .list_panes(&row.project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    for pane in panes {
+        if pane.session_id.as_deref() != Some(row.id.as_str()) {
+            continue;
+        }
+        let Some(metadata_json) = pane.metadata_json else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_str::<StoredTerminalLaunchMetadata>(&metadata_json)
+        else {
+            continue;
+        };
+        if metadata.remote_target.is_some() {
+            return Ok(metadata.remote_target);
+        }
+    }
+    Ok(None)
+}
+
+async fn resolve_ssh_profile_for_session_row(
+    state: &AppState,
+    db: &Db,
+    row: &SessionRow,
+) -> Result<pnevma_ssh::SshProfile, String> {
+    if let Some(connection_id) = row.connection_id.as_deref() {
+        if let Some(profile) = resolve_ssh_profile_by_id(state, Some(db), connection_id).await? {
+            return Ok(profile);
+        }
+    }
+
+    let target = resolve_remote_target_for_session(db, row)
+        .await?
+        .ok_or_else(|| format!("missing SSH target metadata for session {}", row.id))?;
+    ssh_profile_from_remote_target(&target)
 }
 
 fn tmux_tmpdir_for_project(project_path: &Path) -> PathBuf {
@@ -1866,10 +2068,104 @@ async fn session_backend_alive(project_path: &Path, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+async fn refresh_remote_session_row(
+    state: &AppState,
+    db: &Db,
+    row: &SessionRow,
+) -> Result<SessionRow, String> {
+    let profile = resolve_ssh_profile_for_session_row(state, db, row).await?;
+    let remote_session_id = row
+        .remote_session_id
+        .as_deref()
+        .unwrap_or(row.id.as_str())
+        .to_string();
+    let status = pnevma_ssh::remote_session_status(&profile, &remote_session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(project_uuid) = Uuid::parse_str(&row.project_id).ok() else {
+        return Err(format!("invalid project id for session {}", row.id));
+    };
+    let session_uuid =
+        Uuid::parse_str(&row.id).map_err(|_| format!("invalid session id {}", row.id))?;
+    let next = remote_session_row_from_status(
+        RemoteSessionRowSeed {
+            project_id: project_uuid,
+            session_id: session_uuid,
+            name: row.name.clone(),
+            session_type: row.r#type.clone(),
+            connection_id: row.connection_id.clone().unwrap_or_default(),
+            cwd: row.cwd.clone(),
+            command: row.command.clone(),
+            started_at: row.started_at,
+        },
+        &status,
+    );
+    if next.status != row.status || next.lifecycle_state != row.lifecycle_state {
+        append_event(
+            db,
+            project_uuid,
+            None,
+            Some(session_uuid),
+            "session",
+            "SessionStateChanged",
+            json!({
+                "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+                "from_status": row.status,
+                "to_status": next.status,
+                "from_lifecycle_state": row.lifecycle_state,
+                "to_lifecycle_state": next.lifecycle_state,
+            }),
+        )
+        .await;
+        match next.lifecycle_state.as_str() {
+            SESSION_LIFECYCLE_DETACHED => {
+                append_event(
+                    db,
+                    project_uuid,
+                    None,
+                    Some(session_uuid),
+                    "session",
+                    "SessionDetached",
+                    json!({"backend": SESSION_BACKEND_REMOTE_SSH_DURABLE}),
+                )
+                .await;
+            }
+            SESSION_LIFECYCLE_ATTACHED => {
+                append_event(
+                    db,
+                    project_uuid,
+                    None,
+                    Some(session_uuid),
+                    "session",
+                    "SessionReattached",
+                    json!({"backend": SESSION_BACKEND_REMOTE_SSH_DURABLE}),
+                )
+                .await;
+            }
+            SESSION_LIFECYCLE_LOST => {
+                append_event(
+                    db,
+                    project_uuid,
+                    None,
+                    Some(session_uuid),
+                    "session",
+                    "SessionLost",
+                    json!({"backend": SESSION_BACKEND_REMOTE_SSH_DURABLE}),
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
+    db.upsert_session(&next).await.map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
 async fn reconcile_persisted_sessions(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,
+    state: &AppState,
 ) -> Result<Vec<SessionRow>, String> {
     let rows = db
         .list_sessions(&project_id.to_string())
@@ -1878,6 +2174,40 @@ async fn reconcile_persisted_sessions(
 
     let mut out = Vec::with_capacity(rows.len());
     for mut row in rows {
+        if is_remote_ssh_durable_backend(&row.backend) {
+            if matches!(row.status.as_str(), "running" | "waiting") {
+                row = match refresh_remote_session_row(state, db, &row).await {
+                    Ok(refreshed) => refreshed,
+                    Err(error) => {
+                        let mut lost = row.clone();
+                        lost.status = "complete".to_string();
+                        lost.lifecycle_state = SESSION_LIFECYCLE_LOST.to_string();
+                        lost.last_error = Some(error.clone());
+                        lost.pid = None;
+                        lost.last_heartbeat = Utc::now();
+                        if let Ok(session_uuid) = Uuid::parse_str(&lost.id) {
+                            append_event(
+                                db,
+                                project_id,
+                                None,
+                                Some(session_uuid),
+                                "session",
+                                "SessionLost",
+                                json!({
+                                    "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+                                    "error": error,
+                                }),
+                            )
+                            .await;
+                        }
+                        lost
+                    }
+                };
+                db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+            }
+            out.push(row);
+            continue;
+        }
         if row.status == "running" || row.status == "waiting" {
             let alive = session_backend_alive(project_path, &row.id).await;
             row.status = if alive {
@@ -1972,6 +2302,196 @@ fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
         exit_code: meta.exit_code.map(i64::from),
         ended_at: meta.ended_at.map(|value| value.to_rfc3339()),
     }
+}
+
+struct RemoteSessionRowSeed {
+    project_id: Uuid,
+    session_id: Uuid,
+    name: String,
+    session_type: Option<String>,
+    connection_id: String,
+    cwd: String,
+    command: String,
+    started_at: DateTime<Utc>,
+}
+
+fn remote_session_row_from_status(
+    seed: RemoteSessionRowSeed,
+    status: &pnevma_ssh::RemoteSessionStatus,
+) -> SessionRow {
+    let (row_status, lifecycle_state) = remote_session_state_mapping(&status.state);
+    let last_output_at = status
+        .last_output_at_epoch
+        .and_then(|epoch| DateTime::<Utc>::from_timestamp(epoch, 0));
+    let detached_at = matches!(
+        lifecycle_state.as_str(),
+        SESSION_LIFECYCLE_DETACHED | SESSION_LIFECYCLE_REATTACHING
+    )
+    .then(Utc::now);
+    SessionRow {
+        id: seed.session_id.to_string(),
+        project_id: seed.project_id.to_string(),
+        name: seed.name,
+        r#type: seed.session_type,
+        backend: SESSION_BACKEND_REMOTE_SSH_DURABLE.to_string(),
+        durability: SESSION_DURABILITY_DURABLE.to_string(),
+        lifecycle_state,
+        status: row_status,
+        pid: status.pid.map(i64::from),
+        cwd: seed.cwd,
+        command: seed.command,
+        branch: None,
+        worktree_id: None,
+        connection_id: Some(seed.connection_id),
+        remote_session_id: Some(status.session_id.clone()),
+        controller_id: Some(status.controller_id.clone()),
+        started_at: seed.started_at,
+        last_heartbeat: Utc::now(),
+        last_output_at,
+        detached_at,
+        last_error: None,
+        restore_status: Some(status.state.clone()),
+        exit_code: status.exit_code.map(i64::from),
+        ended_at: matches!(status.state.as_str(), "exited").then(|| Utc::now().to_rfc3339()),
+    }
+}
+
+pub(crate) struct CreateRemoteManagedSessionInput<'a> {
+    pub db: &'a Db,
+    pub project_id: Uuid,
+    pub name: String,
+    pub session_type: Option<String>,
+    pub profile: &'a pnevma_ssh::SshProfile,
+    pub connection_id: String,
+    pub cwd: String,
+    pub command: Option<String>,
+}
+
+pub(crate) async fn create_remote_managed_session(
+    input: CreateRemoteManagedSessionInput<'_>,
+) -> Result<SessionRow, String> {
+    let CreateRemoteManagedSessionInput {
+        db,
+        project_id,
+        name,
+        session_type,
+        profile,
+        connection_id,
+        cwd,
+        command,
+    } = input;
+    let session_id = Uuid::new_v4();
+    let command_string = command.clone().unwrap_or_default();
+    let helper = pnevma_ssh::ensure_remote_helper(profile)
+        .await
+        .map_err(|e| e.to_string())?;
+    if helper.installed {
+        append_event(
+            db,
+            project_id,
+            None,
+            Some(session_id),
+            "session",
+            "SessionHelperInstalled",
+            json!({
+                "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+                "connection_id": connection_id,
+                "controller_id": helper.health.controller_id,
+                "helper_path": helper.health.helper_path,
+                "helper_kind": helper.health.helper_kind,
+                "protocol_version": helper.health.protocol_version,
+                "install_kind": helper.install_kind.as_str(),
+                "version": helper.health.version,
+            }),
+        )
+        .await;
+    }
+    append_event(
+        db,
+        project_id,
+        None,
+        Some(session_id),
+        "session",
+        "SessionHelperHealthChecked",
+        json!({
+            "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+            "connection_id": connection_id,
+            "controller_id": helper.health.controller_id,
+            "helper_path": helper.health.helper_path,
+            "helper_kind": helper.health.helper_kind,
+            "healthy": helper.health.healthy,
+            "protocol_version": helper.health.protocol_version,
+            "version": helper.health.version,
+        }),
+    )
+    .await;
+
+    let created = pnevma_ssh::create_remote_session(
+        profile,
+        &session_id.to_string(),
+        &cwd,
+        command.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let started_at = Utc::now();
+    let initial_status = pnevma_ssh::RemoteSessionStatus {
+        session_id: created.session_id.clone(),
+        controller_id: created.controller_id.clone(),
+        state: created.state.clone(),
+        pid: created.pid,
+        exit_code: None,
+        total_bytes: 0,
+        last_output_at_epoch: None,
+    };
+    let row = remote_session_row_from_status(
+        RemoteSessionRowSeed {
+            project_id,
+            session_id,
+            name: name.clone(),
+            session_type,
+            connection_id: connection_id.clone(),
+            cwd: cwd.clone(),
+            command: command_string.clone(),
+            started_at,
+        },
+        &initial_status,
+    );
+    db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+
+    append_event(
+        db,
+        project_id,
+        None,
+        Some(session_id),
+        "session",
+        "SessionControllerStarted",
+        json!({
+            "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+            "connection_id": connection_id,
+            "controller_id": created.controller_id,
+        }),
+    )
+    .await;
+    append_event(
+        db,
+        project_id,
+        None,
+        Some(session_id),
+        "session",
+        "SessionCreated",
+        json!({
+            "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+            "connection_id": connection_id,
+            "cwd": cwd,
+            "command": command_string,
+            "remote_session_id": created.session_id,
+            "state": created.state,
+        }),
+    )
+    .await;
+
+    Ok(row)
 }
 
 fn live_session_view_from_meta(meta: &SessionMetadata) -> LiveSessionView {

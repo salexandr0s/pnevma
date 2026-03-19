@@ -82,6 +82,29 @@ private struct SessionCreateParams: Encodable {
     let name: String
     let cwd: String
     let command: String
+    let remoteTarget: SessionCreateRemoteTargetParams?
+}
+
+private struct SessionCreateRemoteTargetParams: Encodable, Equatable {
+    let sshProfileID: String
+    let sshProfileName: String
+    let host: String
+    let port: Int
+    let user: String
+    let identityFile: String?
+    let proxyJump: String?
+    let remotePath: String
+
+    init(_ target: WorkspaceRemoteTarget) {
+        sshProfileID = target.sshProfileID
+        sshProfileName = target.sshProfileName
+        host = target.host
+        port = target.port
+        user = target.user
+        identityFile = target.identityFile
+        proxyJump = target.proxyJump
+        remotePath = target.remotePath
+    }
 }
 
 private struct SessionCreateResponse: Decodable {
@@ -128,7 +151,8 @@ protocol SessionBridging: Sendable {
     func createSession(
         name: String,
         workingDirectory requestedWorkingDirectory: String?,
-        command requestedCommand: String?
+        command requestedCommand: String?,
+        remoteTarget: WorkspaceRemoteTarget?
     ) async throws -> SessionBindingDescriptor
     func binding(for sessionID: String) async throws -> SessionBindingDescriptor
     func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice
@@ -161,7 +185,8 @@ final class SessionBridge: SessionBridging {
     func createSession(
         name: String = "Terminal",
         workingDirectory requestedWorkingDirectory: String?,
-        command requestedCommand: String? = nil
+        command requestedCommand: String? = nil,
+        remoteTarget: WorkspaceRemoteTarget? = nil
     ) async throws -> SessionBindingDescriptor {
         let cwd = requestedWorkingDirectory ?? activeWorkspacePath()
         guard let cwd else {
@@ -173,7 +198,8 @@ final class SessionBridge: SessionBridging {
             params: SessionCreateParams(
                 name: name,
                 cwd: cwd,
-                command: requestedCommand ?? defaultShell ?? ""
+                command: requestedCommand ?? (remoteTarget == nil ? defaultShell ?? "" : ""),
+                remoteTarget: remoteTarget.map(SessionCreateRemoteTargetParams.init)
             )
         )
         return response.binding
@@ -229,7 +255,8 @@ actor ActiveSessionBridge: SessionBridging {
     func createSession(
         name: String,
         workingDirectory requestedWorkingDirectory: String?,
-        command requestedCommand: String?
+        command requestedCommand: String?,
+        remoteTarget: WorkspaceRemoteTarget?
     ) async throws -> SessionBindingDescriptor {
         guard let current else {
             throw SessionBridgeError.missingProjectPath
@@ -237,7 +264,8 @@ actor ActiveSessionBridge: SessionBridging {
         return try await current.createSession(
             name: name,
             workingDirectory: requestedWorkingDirectory,
-            command: requestedCommand
+            command: requestedCommand,
+            remoteTarget: remoteTarget
         )
     }
 

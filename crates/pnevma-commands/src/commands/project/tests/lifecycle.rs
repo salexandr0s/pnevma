@@ -296,6 +296,71 @@ async fn close_project_terminates_running_session_helpers_and_persists_complete_
 }
 
 #[tokio::test]
+async fn close_project_detaches_remote_durable_rows_without_completing_them() {
+    let project_root = tempdir().expect("temp project");
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "remote-shutdown-test",
+        &project_root.path().to_string_lossy(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let now = Utc::now();
+    let session_id = Uuid::new_v4().to_string();
+    db.upsert_session(&SessionRow {
+        id: session_id.clone(),
+        project_id: project_id.to_string(),
+        name: "remote-shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "remote_ssh_durable".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "attached".to_string(),
+        status: "running".to_string(),
+        pid: Some(4242),
+        cwd: "/srv/project".to_string(),
+        command: "".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: Some("ssh-profile-1".to_string()),
+        remote_session_id: Some(session_id.clone()),
+        controller_id: Some("remote-helper-v1".to_string()),
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: None,
+        last_error: None,
+        restore_status: Some("attached".to_string()),
+        exit_code: None,
+        ended_at: None,
+    })
+    .await
+    .expect("persist remote session");
+
+    let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+    let state =
+        make_state_with_project(project_id, project_root.path(), db.clone(), sessions).await;
+
+    close_project(&state).await.expect("close project");
+
+    let row = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .expect("list sessions")
+        .into_iter()
+        .find(|row| row.id == session_id)
+        .expect("remote row");
+    assert_eq!(row.backend, "remote_ssh_durable");
+    assert_eq!(row.status, "waiting");
+    assert_eq!(row.lifecycle_state, "detached");
+    assert!(row.detached_at.is_some());
+}
+
+#[tokio::test]
 async fn cleanup_project_data_prunes_old_files_and_updates_rows() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project_root = temp.path();

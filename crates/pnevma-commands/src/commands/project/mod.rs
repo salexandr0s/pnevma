@@ -190,6 +190,29 @@ async fn shutdown_project_sessions(
             continue;
         }
 
+        if is_remote_ssh_durable_backend(&row.backend) {
+            row.status = "waiting".to_string();
+            row.lifecycle_state = SESSION_LIFECYCLE_DETACHED.to_string();
+            row.detached_at = Some(Utc::now());
+            row.last_heartbeat = Utc::now();
+            row.last_error = None;
+            if let Err(error) = db.upsert_session(&row).await {
+                tracing::warn!(session_id = %row.id, %error, "failed to persist remote durable session row during project shutdown");
+            } else if let Ok(session_id) = Uuid::parse_str(&row.id) {
+                append_event(
+                    db,
+                    project_id,
+                    None,
+                    Some(session_id),
+                    "session",
+                    "SessionDetached",
+                    json!({"backend": row.backend, "reason": "project_close"}),
+                )
+                .await;
+            }
+            continue;
+        }
+
         if let Some(pid) = row.pid {
             terminate_helper_pid(pid).await;
         }
@@ -224,6 +247,9 @@ async fn shutdown_project_sessions(
     if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
         for mut row in rows {
             if !matches!(row.status.as_str(), "running" | "waiting") {
+                continue;
+            }
+            if is_remote_ssh_durable_backend(&row.backend) {
                 continue;
             }
             row.status = "complete".to_string();
@@ -360,10 +386,14 @@ pub async fn open_project(
         );
     }
 
-    let session_rows = reconcile_persisted_sessions(&db, project_id, path_buf.as_path()).await?;
+    let session_rows =
+        reconcile_persisted_sessions(&db, project_id, path_buf.as_path(), state).await?;
     let restore_root = path_buf.join(".pnevma/data");
     for row in session_rows {
         if row.status == "complete" || row.status == "error" {
+            continue;
+        }
+        if is_remote_ssh_durable_backend(&row.backend) {
             continue;
         }
         if let Some(meta) = session_meta_from_row(&row, &restore_root) {

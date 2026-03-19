@@ -1956,6 +1956,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pnevma-remote-helper"
+version = "0.2.0"
+dependencies = [
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "pnevma-session"
 version = "0.2.0"
 dependencies = [
