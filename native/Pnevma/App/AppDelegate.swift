@@ -141,7 +141,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isToolDockContentHovered = false
     private var isToolDockEdgeHovered = false
     private var isToolDockHovered: Bool { isToolDockContentHovered || isToolDockEdgeHovered }
+    private var shouldKeepToolDockExpanded: Bool { toolDrawerChromeState.isPresented }
     private var toolDockCollapseWorkItem: DispatchWorkItem?
+    private var toolDrawerCleanupWorkItem: DispatchWorkItem?
     private var toolDockTriggerView: NSView?
     var updateCoordinator: AppUpdateCoordinator?
 
@@ -656,7 +658,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onOpenToolAsPane: { [weak self] (toolID: String) in self?.openToolAsPane(toolID) },
             onHoverChanged: { [weak self] isHovering in self?.setToolDockContentHovering(isHovering) }
         )
-        let toolDockHost = NSHostingView(rootView: toolDockView.environment(GhosttyThemeProvider.shared))
+        let toolDockHost = FirstMouseHostingView(
+            rootView: toolDockView.environment(GhosttyThemeProvider.shared)
+        )
         toolDockHost.sizingOptions = []
         toolDockHost.setAccessibilityIdentifier("tool-dock.view")
         toolDockHost.wantsLayer = true
@@ -3537,6 +3541,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openToolInDrawer(_ toolID: String) {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace) else { return }
+        cancelPendingToolDrawerCleanup()
 
         // Same tool — toggle the drawer
         if toolDrawerContentModel.activeToolID == toolID {
@@ -3546,6 +3551,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
                 toolDrawerChromeState.isPresented = true
                 toolDockState.activeToolID = toolID
+                refreshToolDockAutoHide(animated: true)
                 if toolID == "browser" {
                     activeBrowserSession()?.requestOmnibarFocus()
                 }
@@ -3591,6 +3597,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 toolDrawerContentModel.activePaneID = nil
                 toolDrawerContentModel.activeBrowserSession = session
                 toolDrawerChromeState.isPresented = true
+                refreshToolDockAutoHide(animated: true)
             }
             toolDockState.activeToolID = toolID
             session.restoreIfNeeded()
@@ -3621,11 +3628,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             toolDrawerContentModel.activeBrowserSession = nil
             toolDrawerContentModel.drawerHeight = DrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
+            refreshToolDockAutoHide(animated: true)
         }
         toolDockState.activeToolID = toolID
     }
 
     private func closeToolDrawer() {
+        cancelPendingToolDrawerCleanup()
         toolDockState.activeToolID = nil
         if let previous = toolDrawerPreviousFirstResponder {
             window?.makeFirstResponder(previous)
@@ -3637,14 +3646,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             withAnimation(animation) {
                 toolDrawerChromeState.isPresented = false
                 toolDrawerChromeState.drawerHitRect = .zero
-            } completion: {
-                self.clearClosedToolDrawerContentIfNeeded()
             }
         } else {
             toolDrawerChromeState.isPresented = false
             toolDrawerChromeState.drawerHitRect = .zero
-            clearClosedToolDrawerContentIfNeeded()
         }
+        refreshToolDockAutoHide(animated: true)
+        scheduleToolDrawerCleanupAfterClose()
     }
 
     private func clearClosedToolDrawerContentIfNeeded() {
@@ -3655,10 +3663,36 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDrawerContentModel.activeToolID = nil
         toolDrawerContentModel.activeToolTitle = nil
         toolDrawerContentModel.activeBrowserSession = nil
+        toolDrawerCleanupWorkItem = nil
+    }
+
+    private func cancelPendingToolDrawerCleanup() {
+        toolDrawerCleanupWorkItem?.cancel()
+        toolDrawerCleanupWorkItem = nil
+    }
+
+    private func scheduleToolDrawerCleanupAfterClose() {
+        // SwiftUI animation completions were not reliable enough here; keep the
+        // drawer content mounted for the close animation, then clear it on a
+        // bounded delay unless the drawer has already reopened.
+        let cleanup = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.clearClosedToolDrawerContentIfNeeded()
+        }
+        toolDrawerCleanupWorkItem = cleanup
+
+        let delay = ChromeMotion.duration(for: .bottomDrawerClose)
+        if delay <= 0 {
+            cleanup.perform()
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: cleanup)
     }
 
     private func pinToolDrawerToPane() {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
+        cancelPendingToolDrawerCleanup()
         toolDrawerContentModel.activePaneView?.removeFromSuperview()
         toolDrawerChromeState.isPresented = false
         toolDockState.activeToolID = nil
@@ -3667,6 +3701,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDrawerContentModel.activeToolID = nil
         toolDrawerContentModel.activeToolTitle = nil
         toolDrawerContentModel.activeBrowserSession = nil
+        refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsPane(toolID)
         }
@@ -3674,6 +3709,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openToolDrawerAsTab() {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
+        cancelPendingToolDrawerCleanup()
         toolDrawerContentModel.activePaneView?.removeFromSuperview()
         toolDrawerChromeState.isPresented = false
         toolDockState.activeToolID = nil
@@ -3682,6 +3718,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDrawerContentModel.activeToolID = nil
         toolDrawerContentModel.activeToolTitle = nil
         toolDrawerContentModel.activeBrowserSession = nil
+        refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsTab(toolID)
         }
@@ -3870,14 +3907,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if isToolDockHovered {
+        if shouldKeepToolDockExpanded || isToolDockHovered {
             setToolDockExpanded(true, animated: true)
             return
         }
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard !self.isToolDockHovered, AppRuntimeSettings.shared.bottomToolBarAutoHide else { return }
+            guard !self.shouldKeepToolDockExpanded,
+                  !self.isToolDockHovered,
+                  AppRuntimeSettings.shared.bottomToolBarAutoHide else { return }
             self.setToolDockExpanded(false, animated: true)
         }
         toolDockCollapseWorkItem = workItem
@@ -3886,7 +3925,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshToolDockAutoHide(animated: Bool) {
         toolDockCollapseWorkItem?.cancel()
-        let shouldExpand = !AppRuntimeSettings.shared.bottomToolBarAutoHide || isToolDockHovered
+        let shouldExpand = !AppRuntimeSettings.shared.bottomToolBarAutoHide
+            || shouldKeepToolDockExpanded
+            || isToolDockHovered
         setToolDockExpanded(shouldExpand, animated: animated)
     }
 

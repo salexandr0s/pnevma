@@ -5,6 +5,9 @@ import Cocoa
 /// events near the bottom and bottom-right window edges so the resize
 /// handles remain accessible.
 final class ToolDockContainerView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let window else { return super.hitTest(point) }
         let windowPoint = superview?.convert(point, to: nil) ?? point

@@ -223,14 +223,36 @@ class PnevmaUITestCase: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) -> XCUIElement {
-        let identifiedButton = app.buttons["tool-dock.item.\(toolID)"]
-        if identifiedButton.waitForExistence(timeout: defaultTimeout) {
+        let identifier = "tool-dock.item.\(toolID)"
+
+        let identifiedButton = app.buttons[identifier]
+        if identifiedButton.waitForExistence(timeout: 1) {
             return identifiedButton
         }
-        let identified = app.descendants(matching: .any)["tool-dock.item.\(toolID)"]
-        if identified.waitForExistence(timeout: defaultTimeout) {
+
+        let dockScrollView = app.scrollViews["tool-dock.view"]
+        if dockScrollView.waitForExistence(timeout: defaultTimeout) {
+            let dockOther = dockScrollView.otherElements[identifier]
+            if dockOther.waitForExistence(timeout: 1) {
+                return dockOther
+            }
+
+            let dockAny = dockScrollView.descendants(matching: .any)[identifier]
+            if dockAny.waitForExistence(timeout: 1) {
+                return dockAny
+            }
+        }
+
+        let identifiedOther = app.otherElements[identifier]
+        if identifiedOther.waitForExistence(timeout: 1) {
+            return identifiedOther
+        }
+
+        let identified = app.descendants(matching: .any)[identifier]
+        if identified.waitForExistence(timeout: 1) {
             return identified
         }
+
         return button(sidebarToolLabel(for: toolID), file: file, line: line)
     }
 

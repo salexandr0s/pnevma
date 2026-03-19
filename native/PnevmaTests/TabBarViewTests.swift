@@ -90,6 +90,23 @@ final class TabBarViewTests: XCTestCase {
         try dispatchClick(in: tabBar, window: window, point: point, clickCount: 2)
     }
 
+    private func waitUntil(
+        timeout: TimeInterval = 1,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: () -> Bool
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(condition(), file: file, line: line)
+    }
+
+    private func currentEditor(for field: TabRenameField) -> NSTextView? {
+        field.currentEditor() as? NSTextView
+    }
+
     private func tabViews(in tabBar: TabBarView) -> [NSView] {
         tabBar.subviews.filter { !($0 is NSButton) }
     }
@@ -210,7 +227,12 @@ final class TabBarViewTests: XCTestCase {
 
         let firstTab = try firstTabView(in: tabBar)
         let field = try XCTUnwrap(renameField(in: firstTab))
+        waitUntil { self.currentEditor(for: field) != nil }
+        let editor = try XCTUnwrap(currentEditor(for: field))
+        XCTAssertTrue(window.firstResponder === editor)
         field.stringValue = "Build"
+        editor.string = "Build"
+        field.validateEditing()
         field.commitEditing()
 
         XCTAssertEqual(renamed?.0, expectedID)

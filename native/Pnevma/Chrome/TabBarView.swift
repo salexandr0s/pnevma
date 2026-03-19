@@ -238,13 +238,13 @@ final class TabRenameField: NSTextField, NSTextFieldDelegate {
         delegate = self
         target = self
         action = #selector(commitFromAction)
-        sendsActionOnEndEditing = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     func activate(in window: NSWindow?) {
         guard let window, self.window === window else { return }
+        didFinishEditing = false
         window.makeFirstResponder(self)
         DispatchQueue.main.async { [weak self, weak window] in
             guard let self, let window, self.window === window else { return }
@@ -257,15 +257,11 @@ final class TabRenameField: NSTextField, NSTextFieldDelegate {
     }
 
     func commitEditing() {
-        guard didFinishEditing == false else { return }
-        didFinishEditing = true
-        onCommit?(stringValue)
+        finishEditing(commitTitle: currentEditingTitle())
     }
 
     func cancelEditing() {
-        guard didFinishEditing == false else { return }
-        didFinishEditing = true
-        onCancel?()
+        finishEditing(cancel: true)
     }
 
     func control(
@@ -279,7 +275,7 @@ final class TabRenameField: NSTextField, NSTextFieldDelegate {
              #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)),
              #selector(NSResponder.insertTab(_:)),
              #selector(NSResponder.insertBacktab(_:)):
-            commitEditing()
+            finishEditing(commitTitle: textView.string)
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             cancelEditing()
@@ -293,21 +289,29 @@ final class TabRenameField: NSTextField, NSTextFieldDelegate {
         commitEditing()
     }
 
-    override func textDidEndEditing(_ notification: Notification) {
-        super.textDidEndEditing(notification)
-        commitEditing()
-    }
-
-    override func resignFirstResponder() -> Bool {
-        let result = super.resignFirstResponder()
-        if result {
-            commitEditing()
-        }
-        return result
-    }
-
     @objc private func commitFromAction() {
         commitEditing()
+    }
+
+    private func currentEditingTitle() -> String {
+        if let editorText = currentEditor()?.string {
+            return editorText
+        }
+        validateEditing()
+        return stringValue
+    }
+
+    private func finishEditing(commitTitle: String? = nil, cancel: Bool = false) {
+        guard didFinishEditing == false else { return }
+        let resolvedTitle = commitTitle ?? currentEditingTitle()
+        didFinishEditing = true
+        window?.endEditing(for: self)
+
+        if cancel {
+            onCancel?()
+        } else {
+            onCommit?(resolvedTitle)
+        }
     }
 }
 

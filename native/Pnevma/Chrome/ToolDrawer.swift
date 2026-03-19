@@ -125,7 +125,6 @@ struct BottomDrawerOverlayView: View {
             onVisibilityChanged(chromeState.isPresented)
             onHitRectChanged(chromeState.isPresented ? chromeState.drawerHitRect : .zero)
         }
-        .accessibilityIdentifier("bottom.drawer.overlay")
     }
 
     private var hasActiveContent: Bool {
@@ -202,10 +201,12 @@ struct BottomDrawerOverlayView: View {
                 Button("Open as Tab", action: onOpenAsTab)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .accessibilityIdentifier("bottom.drawer.openAsTab")
 
                 Button("Pin as Pane", action: onPinToPane)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .accessibilityIdentifier("bottom.drawer.pinAsPane")
 
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -214,6 +215,7 @@ struct BottomDrawerOverlayView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close drawer")
+                .accessibilityIdentifier("bottom.drawer.close")
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
@@ -291,7 +293,7 @@ final class BottomDrawerOverlayBlockerView: NSView {
     }
 }
 
-final class BottomDrawerOverlayHostingView<Content: View>: NSHostingView<Content> {
+final class BottomDrawerOverlayHostingView<Content: View>: FirstMouseHostingView<Content> {
     var capturesPointerEvents = false
     var overlayHitRect: CGRect = .zero
 

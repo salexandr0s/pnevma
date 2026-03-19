@@ -43,6 +43,10 @@ struct ToolDockBarView: View {
 
     private let dividerHeight = DesignTokens.Layout.dividerWidth
     private let dockHeight = DesignTokens.Layout.toolDockHeight
+    private let dockButtonWidth: CGFloat = 50
+    private let dockButtonSpacing: CGFloat = 8
+    private let innerHorizontalPadding: CGFloat = 8
+    private let outerHorizontalPadding: CGFloat = 18
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,29 +55,14 @@ struct ToolDockBarView: View {
                 .frame(height: dividerHeight)
 
             GeometryReader { geometry in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 8) {
-                            ForEach(tools) { tool in
-                                ToolDockItemButton(
-                                    tool: tool,
-                                    isActive: dockState.activeToolID == tool.id,
-                                    badgeCount: badgeCount(for: tool),
-                                    onOpenAsTab: { onOpenToolAsTab?(tool.id) },
-                                    onOpenAsPane: { onOpenToolAsPane?(tool.id) }
-                                ) {
-                                    onOpenTool?(tool.id)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        Spacer(minLength: 0)
+                if geometry.size.width >= minimumDockContentWidth {
+                    centeredDockContent(minWidth: geometry.size.width)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        centeredDockContent(minWidth: geometry.size.width)
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minWidth: geometry.size.width, maxHeight: .infinity, alignment: .center)
+                    .scrollIndicators(.hidden)
                 }
-                .scrollIndicators(.hidden)
             }
             .frame(height: dockHeight - dividerHeight)
         }
@@ -88,12 +77,45 @@ struct ToolDockBarView: View {
         .onHover { isHovering in
             onHoverChanged?(isHovering)
         }
-        .accessibilityIdentifier("tool-dock.view")
     }
 
     private func badgeCount(for tool: SidebarToolItem) -> Int {
         guard tool.id == "notifications" else { return 0 }
         return dockState.notificationBadgeCount
+    }
+
+    private var minimumDockContentWidth: CGFloat {
+        let buttonCount = CGFloat(tools.count)
+        let totalButtonWidth = buttonCount * dockButtonWidth
+        let totalSpacing = CGFloat(max(tools.count - 1, 0)) * dockButtonSpacing
+        return outerHorizontalPadding * 2
+            + innerHorizontalPadding * 2
+            + totalButtonWidth
+            + totalSpacing
+    }
+
+    @ViewBuilder
+    private func centeredDockContent(minWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: dockButtonSpacing) {
+                ForEach(tools) { tool in
+                    ToolDockItemButton(
+                        tool: tool,
+                        isActive: dockState.activeToolID == tool.id,
+                        badgeCount: badgeCount(for: tool),
+                        onOpenAsTab: { onOpenToolAsTab?(tool.id) },
+                        onOpenAsPane: { onOpenToolAsPane?(tool.id) }
+                    ) {
+                        onOpenTool?(tool.id)
+                    }
+                }
+            }
+            .padding(.horizontal, innerHorizontalPadding)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, outerHorizontalPadding)
+        .frame(minWidth: minWidth, maxHeight: .infinity, alignment: .center)
     }
 }
 
@@ -230,7 +252,6 @@ private struct ToolDockItemButton: View {
                 }
             }
         }
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(isActive ? "Selected" : "")
         .accessibilityIdentifier("tool-dock.item.\(tool.id)")

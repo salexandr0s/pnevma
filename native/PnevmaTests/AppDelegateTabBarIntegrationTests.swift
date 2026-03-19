@@ -83,7 +83,12 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
 
         waitUntil { self.visibleRenameField(in: tabBar) != nil }
         let renameField = try XCTUnwrap(visibleRenameField(in: tabBar))
+        waitUntil { self.currentEditor(for: renameField) != nil }
+        let editor = try XCTUnwrap(currentEditor(for: renameField))
+        XCTAssertTrue(window.firstResponder === editor)
         renameField.stringValue = "Build"
+        editor.string = "Build"
+        renameField.validateEditing()
         renameField.commitEditing()
 
         waitUntil {
@@ -191,6 +196,10 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             }
         }
         return nil
+    }
+
+    private func currentEditor(for field: TabRenameField) -> NSTextView? {
+        field.currentEditor() as? NSTextView
     }
 
     private func workspaceManager(from appDelegate: AppDelegate) -> WorkspaceManager? {
