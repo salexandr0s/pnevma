@@ -186,7 +186,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         createMainWindow(showWindow: true)
 
         // Request notification permission and register delegate
-        NativeNotificationManager.shared.setup()
+        if !AppLaunchContext.isTesting {
+            NativeNotificationManager.shared.setup()
+        }
 
         // Reload ghostty config now that window exists so appearance-conditional
         // themes (e.g. light:X,dark:Y) resolve correctly.
@@ -3614,6 +3616,44 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Generic tool drawer
 
+    private func replaceToolDrawerContent(
+        toolID: String,
+        title: String,
+        paneID: PaneID? = nil,
+        paneView: (NSView & PaneContent)? = nil,
+        browserSession: BrowserWorkspaceSession? = nil
+    ) {
+        toolDrawerContentModel.activeToolID = toolID
+        toolDrawerContentModel.activeToolTitle = title
+        toolDrawerContentModel.activePaneView = paneView
+        toolDrawerContentModel.activePaneID = paneID
+        toolDrawerContentModel.activeBrowserSession = browserSession
+        toolDrawerContentModel.markContentChanged()
+    }
+
+    private func preserveToolDrawerHeightForCurrentContentIfNeeded() {
+        if toolDrawerContentModel.activeToolID == "browser",
+           let previousBrowserHeight = toolDrawerContentModel.activeBrowserSession?.preferredDrawerHeight {
+            toolDrawerContentModel.drawerHeight = previousBrowserHeight
+        }
+    }
+
+    private func discardCurrentToolDrawerPaneView() {
+        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+    }
+
+    private func clearToolDrawerContent(markChanged: Bool = true) {
+        discardCurrentToolDrawerPaneView()
+        toolDrawerContentModel.activePaneView = nil
+        toolDrawerContentModel.activePaneID = nil
+        toolDrawerContentModel.activeToolID = nil
+        toolDrawerContentModel.activeToolTitle = nil
+        toolDrawerContentModel.activeBrowserSession = nil
+        if markChanged {
+            toolDrawerContentModel.markContentChanged()
+        }
+    }
+
     private func openToolInDrawer(_ toolID: String) {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace) else { return }
@@ -3638,14 +3678,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Different tool while drawer is already open — swap content instantly
         let alreadyPresented = toolDrawerChromeState.isPresented
 
-        // Discard previous pane
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
-        if toolDrawerContentModel.activeToolID == "browser",
-           let previousBrowserHeight = toolDrawerContentModel.activeBrowserSession?.preferredDrawerHeight {
-            toolDrawerContentModel.drawerHeight = previousBrowserHeight
-        }
-        toolDrawerContentModel.activeBrowserSession = nil
-
         if !alreadyPresented {
             toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
         }
@@ -3655,23 +3687,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if alreadyPresented, let preservedHeight = toolDrawerContentModel.drawerHeight {
                 session.setDrawerHeight(preservedHeight)
             }
+            preserveToolDrawerHeightForCurrentContentIfNeeded()
+            discardCurrentToolDrawerPaneView()
 
             if alreadyPresented {
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
-                    toolDrawerContentModel.activeToolID = toolID
-                    toolDrawerContentModel.activeToolTitle = tool.title
-                    toolDrawerContentModel.activePaneView = nil
-                    toolDrawerContentModel.activePaneID = nil
-                    toolDrawerContentModel.activeBrowserSession = session
+                    replaceToolDrawerContent(
+                        toolID: toolID,
+                        title: tool.title,
+                        browserSession: session
+                    )
                 }
             } else {
-                toolDrawerContentModel.activeToolID = toolID
-                toolDrawerContentModel.activeToolTitle = tool.title
-                toolDrawerContentModel.activePaneView = nil
-                toolDrawerContentModel.activePaneID = nil
-                toolDrawerContentModel.activeBrowserSession = session
+                replaceToolDrawerContent(
+                    toolID: toolID,
+                    title: tool.title,
+                    browserSession: session
+                )
                 toolDrawerChromeState.isPresented = true
                 refreshToolDockAutoHide(animated: true)
             }
@@ -3683,25 +3717,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Create a fresh pane for the new tool
         guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
               let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
+        preserveToolDrawerHeightForCurrentContentIfNeeded()
+        discardCurrentToolDrawerPaneView()
 
         // Swap content without animation when replacing
         if alreadyPresented {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                toolDrawerContentModel.activeToolID = toolID
-                toolDrawerContentModel.activeToolTitle = tool.title
-                toolDrawerContentModel.activePaneView = paneView
-                toolDrawerContentModel.activePaneID = paneID
-                toolDrawerContentModel.activeBrowserSession = nil
+                replaceToolDrawerContent(
+                    toolID: toolID,
+                    title: tool.title,
+                    paneID: paneID,
+                    paneView: paneView
+                )
                 // Keep current drawer height — don't reset on tool switch
             }
         } else {
-            toolDrawerContentModel.activeToolID = toolID
-            toolDrawerContentModel.activeToolTitle = tool.title
-            toolDrawerContentModel.activePaneView = paneView
-            toolDrawerContentModel.activePaneID = paneID
-            toolDrawerContentModel.activeBrowserSession = nil
+            replaceToolDrawerContent(
+                toolID: toolID,
+                title: tool.title,
+                paneID: paneID,
+                paneView: paneView
+            )
             toolDrawerContentModel.drawerHeight = DrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
             refreshToolDockAutoHide(animated: true)
@@ -3733,12 +3771,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func clearClosedToolDrawerContentIfNeeded() {
         guard !toolDrawerChromeState.isPresented else { return }
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
-        toolDrawerContentModel.activePaneView = nil
-        toolDrawerContentModel.activePaneID = nil
-        toolDrawerContentModel.activeToolID = nil
-        toolDrawerContentModel.activeToolTitle = nil
-        toolDrawerContentModel.activeBrowserSession = nil
+        clearToolDrawerContent()
         toolDrawerCleanupWorkItem = nil
     }
 
@@ -3769,14 +3802,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pinToolDrawerToPane() {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
         cancelPendingToolDrawerCleanup()
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
         toolDrawerChromeState.isPresented = false
         toolDockState.activeToolID = nil
-        toolDrawerContentModel.activePaneView = nil
-        toolDrawerContentModel.activePaneID = nil
-        toolDrawerContentModel.activeToolID = nil
-        toolDrawerContentModel.activeToolTitle = nil
-        toolDrawerContentModel.activeBrowserSession = nil
+        clearToolDrawerContent()
         refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsPane(toolID)
@@ -3786,14 +3814,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openToolDrawerAsTab() {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
         cancelPendingToolDrawerCleanup()
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
         toolDrawerChromeState.isPresented = false
         toolDockState.activeToolID = nil
-        toolDrawerContentModel.activePaneView = nil
-        toolDrawerContentModel.activePaneID = nil
-        toolDrawerContentModel.activeToolID = nil
-        toolDrawerContentModel.activeToolTitle = nil
-        toolDrawerContentModel.activeBrowserSession = nil
+        clearToolDrawerContent()
         refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsTab(toolID)
@@ -4831,6 +4854,22 @@ extension AppDelegate {
         }
     }
 }
+
+#if DEBUG
+extension AppDelegate {
+    func openToolInDrawerForTesting(_ toolID: String) {
+        openToolInDrawer(toolID)
+    }
+
+    var toolDrawerContentModelForTesting: ToolDrawerContentModel {
+        toolDrawerContentModel
+    }
+
+    var toolDrawerChromeStateForTesting: ToolDrawerChromeState {
+        toolDrawerChromeState
+    }
+}
+#endif
 
 private final class MainWindowContentView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {

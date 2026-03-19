@@ -17,6 +17,11 @@ final class BottomDrawerContentModel {
     var activePaneID: PaneID?
     var activeBrowserSession: BrowserWorkspaceSession?
     var drawerHeight: CGFloat?
+    private(set) var contentRevision: UInt64 = 0
+
+    func markContentChanged() {
+        contentRevision &+= 1
+    }
 }
 
 typealias ToolDrawerChromeState = BottomDrawerChromeState
@@ -169,6 +174,7 @@ struct BottomDrawerOverlayView: View {
                     Text(drawerTitle)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
+                        .accessibilityIdentifier("bottom.drawer.title")
 
                     if let drawerSubtitle {
                         Text(drawerSubtitle)
@@ -222,15 +228,22 @@ struct BottomDrawerOverlayView: View {
 
             Divider()
 
-            if chromeState.isPresented, let session = contentModel.activeBrowserSession {
-                BrowserView(session: session)
-                    .id(session.workspaceID)
-            } else if chromeState.isPresented, let paneView = contentModel.activePaneView {
-                PaneContentBridge(paneView: paneView)
-                    .id(contentModel.activePaneID)
-            } else {
-                Color.clear
+            Group {
+                if chromeState.isPresented, let session = contentModel.activeBrowserSession {
+                    BrowserView(session: session)
+                        .id(session.workspaceID)
+                } else if chromeState.isPresented, let paneView = contentModel.activePaneView {
+                    PaneContentBridge(paneView: paneView)
+                        .id(contentModel.activePaneID)
+                } else {
+                    Color.clear
+                }
             }
+            .id(contentModel.contentRevision)
+            .accessibilityIdentifier(
+                contentModel.activeToolID.map { "bottom.drawer.content.\($0)" }
+                    ?? "bottom.drawer.content.empty"
+            )
         }
         .frame(maxWidth: .infinity)
         .frame(height: effectiveHeight)

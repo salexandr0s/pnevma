@@ -97,6 +97,102 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
         XCTAssertEqual(workspaceManager(from: appDelegate)?.activeWorkspace?.tabs.first?.title, "Build")
     }
 
+    func testToolDrawerSwapReplacesActiveToolContentWithoutClosingDrawer() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = AppDelegate()
+            NSApp.delegate = appDelegate
+            appDelegate.applicationDidFinishLaunching(
+                Notification(name: NSApplication.didFinishLaunchingNotification)
+            )
+
+            waitUntil { appDelegate.window != nil }
+
+            appDelegate.openToolInDrawerForTesting("analytics")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "analytics"
+            }
+
+            XCTAssertEqual(appDelegate.toolDrawerContentModelForTesting.activeToolTitle, "Usage")
+            XCTAssertEqual(appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType, "analytics")
+            let initialPaneView = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.activePaneView)
+            let initialRevision = appDelegate.toolDrawerContentModelForTesting.contentRevision
+
+            appDelegate.openToolInDrawerForTesting("notifications")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "notifications"
+                    && appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType == "notifications"
+                    && appDelegate.toolDrawerContentModelForTesting.activeBrowserSession == nil
+            }
+
+            XCTAssertTrue(appDelegate.toolDrawerChromeStateForTesting.isPresented)
+            XCTAssertEqual(appDelegate.toolDrawerContentModelForTesting.activeToolTitle, "Notifications")
+            XCTAssertFalse(initialPaneView === appDelegate.toolDrawerContentModelForTesting.activePaneView)
+            XCTAssertGreaterThan(appDelegate.toolDrawerContentModelForTesting.contentRevision, initialRevision)
+        }
+    }
+
+    func testToolDrawerSameToolStillTogglesClosed() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = AppDelegate()
+            NSApp.delegate = appDelegate
+            appDelegate.applicationDidFinishLaunching(
+                Notification(name: NSApplication.didFinishLaunchingNotification)
+            )
+
+            waitUntil { appDelegate.window != nil }
+
+            appDelegate.openToolInDrawerForTesting("analytics")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "analytics"
+            }
+
+            appDelegate.openToolInDrawerForTesting("analytics")
+            waitUntil { appDelegate.toolDrawerChromeStateForTesting.isPresented == false }
+
+            XCTAssertFalse(appDelegate.toolDrawerChromeStateForTesting.isPresented)
+        }
+    }
+
+    func testToolDrawerBrowserSwapPreservesDrawerAndHeight() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = AppDelegate()
+            NSApp.delegate = appDelegate
+            appDelegate.applicationDidFinishLaunching(
+                Notification(name: NSApplication.didFinishLaunchingNotification)
+            )
+
+            waitUntil { appDelegate.window != nil }
+
+            appDelegate.openToolInDrawerForTesting("browser")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "browser"
+                    && appDelegate.toolDrawerContentModelForTesting.activeBrowserSession != nil
+            }
+
+            let browserSession = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.activeBrowserSession)
+            browserSession.setDrawerHeight(480)
+            let initialRevision = appDelegate.toolDrawerContentModelForTesting.contentRevision
+
+            appDelegate.openToolInDrawerForTesting("analytics")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "analytics"
+                    && appDelegate.toolDrawerContentModelForTesting.activeBrowserSession == nil
+                    && appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType == "analytics"
+            }
+
+            XCTAssertTrue(appDelegate.toolDrawerChromeStateForTesting.isPresented)
+            XCTAssertEqual(appDelegate.toolDrawerContentModelForTesting.activeToolTitle, "Usage")
+            let preservedHeight = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.drawerHeight)
+            XCTAssertEqual(preservedHeight, 480, accuracy: 0.5)
+            XCTAssertGreaterThan(appDelegate.toolDrawerContentModelForTesting.contentRevision, initialRevision)
+        }
+    }
+
     private func tabViews(in tabBar: TabBarView) -> [NSView] {
         tabBar.subviews.filter { !($0 is NSButton) }
     }
@@ -172,6 +268,28 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
         XCTAssertTrue(condition(), file: file, line: line)
+    }
+
+    private func withUITestLightweightEnvironment(
+        _ body: () throws -> Void
+    ) throws {
+        let savedUITesting = ProcessInfo.processInfo.environment["PNEVMA_UI_TESTING"]
+        let savedLightweight = ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_LIGHTWEIGHT_MODE"]
+        setenv("PNEVMA_UI_TESTING", "1", 1)
+        setenv("PNEVMA_UI_TEST_LIGHTWEIGHT_MODE", "1", 1)
+        defer {
+            restoreEnvironmentVariable("PNEVMA_UI_TESTING", to: savedUITesting)
+            restoreEnvironmentVariable("PNEVMA_UI_TEST_LIGHTWEIGHT_MODE", to: savedLightweight)
+        }
+        try body()
+    }
+
+    private func restoreEnvironmentVariable(_ name: String, to value: String?) {
+        if let value {
+            setenv(name, value, 1)
+        } else {
+            unsetenv(name)
+        }
     }
 
     private func findSubview<T: NSView>(ofType type: T.Type, in root: NSView) -> T? {

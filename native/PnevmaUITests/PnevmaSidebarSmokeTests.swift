@@ -68,4 +68,21 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
 
         XCTAssertTrue(tabBar.exists)
     }
+
+    func testToolDockSwapReplacesDrawerContent() {
+        toolDockItem("browser").click()
+
+        let drawerTitle = identifiedElement("bottom.drawer.title")
+        waitForLabel(drawerTitle, toContain: "Browser")
+        requireExists(identifiedElement("bottom.drawer.close"))
+        requireExists(identifiedElement("bottom.drawer.openAsTab"))
+
+        toolDockItem("analytics").click()
+        waitForLabel(drawerTitle, toContain: "Usage")
+
+        toolDockItem("notifications").click()
+        waitForLabel(drawerTitle, toContain: "Notifications")
+        requireExists(identifiedElement("bottom.drawer.close"))
+        requireExists(identifiedElement("bottom.drawer.openAsTab"))
+    }
 }
