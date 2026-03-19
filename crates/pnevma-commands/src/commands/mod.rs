@@ -602,6 +602,12 @@ pub struct OkResponse {
 pub struct LiveSessionView {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_session_backend")]
+    pub backend: String,
+    #[serde(default = "default_session_durability")]
+    pub durability: String,
+    #[serde(default = "default_session_lifecycle_state")]
+    pub lifecycle_state: String,
     pub status: String,
     pub health: String,
     pub pid: Option<i64>,
@@ -672,8 +678,16 @@ pub struct SessionEnvVarView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionBindingView {
     pub session_id: String,
+    #[serde(default = "default_session_backend")]
+    pub backend: String,
+    #[serde(default = "default_session_durability")]
+    pub durability: String,
+    #[serde(default = "default_session_lifecycle_state")]
+    pub lifecycle_state: String,
     pub mode: String,
     pub cwd: String,
+    #[serde(default)]
+    pub launch_command: Option<String>,
     pub env: Vec<SessionEnvVarView>,
     pub wait_after_command: bool,
     pub recovery_options: Vec<RecoveryOptionView>,
@@ -1802,6 +1816,39 @@ fn tmux_name_from_session_id(session_id: &str) -> String {
     format!("pnevma_{}", session_id.replace('-', ""))
 }
 
+fn default_session_backend() -> String {
+    "tmux_compat".to_string()
+}
+
+fn default_session_durability() -> String {
+    "durable".to_string()
+}
+
+fn default_session_lifecycle_state() -> String {
+    "attached".to_string()
+}
+
+fn session_lifecycle_state_for_status(status: &str) -> String {
+    match status {
+        "running" => "attached".to_string(),
+        "waiting" => "detached".to_string(),
+        "error" => "error".to_string(),
+        _ => "exited".to_string(),
+    }
+}
+
+fn tmux_attach_launch_command() -> String {
+    r#"tmux set -t "$PNEVMA_TMUX_TARGET" status off 2>/dev/null; tmux set -t "$PNEVMA_TMUX_TARGET" allow-passthrough all 2>/dev/null; exec tmux -u attach-session -t "$PNEVMA_TMUX_TARGET""#
+        .to_string()
+}
+
+fn parse_optional_datetime(value: &Option<String>) -> Option<DateTime<Utc>> {
+    value
+        .as_deref()
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|parsed| parsed.with_timezone(&Utc))
+}
+
 fn tmux_tmpdir_for_project(project_path: &Path) -> PathBuf {
     project_path.join(".pnevma").join("data").join("tmux")
 }
@@ -1838,8 +1885,16 @@ async fn reconcile_persisted_sessions(
             } else {
                 "complete".to_string()
             };
+            row.lifecycle_state = if alive {
+                "detached".to_string()
+            } else {
+                "exited".to_string()
+            };
             row.pid = None;
             row.last_heartbeat = Utc::now();
+            row.detached_at = alive.then(Utc::now);
+            row.last_error =
+                (!alive).then(|| "session backend not available during restore".to_string());
             db.upsert_session(&row).await.map_err(|e| e.to_string())?;
         }
         out.push(row);
@@ -1886,22 +1941,36 @@ fn parse_session_health(status: &str) -> SessionHealth {
 }
 
 fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
+    let status = session_status_to_string(&meta.status);
     SessionRow {
         id: meta.id.to_string(),
         project_id: meta.project_id.to_string(),
         name: meta.name.clone(),
         r#type: Some("terminal".to_string()),
-        status: session_status_to_string(&meta.status),
+        backend: default_session_backend(),
+        durability: default_session_durability(),
+        lifecycle_state: session_lifecycle_state_for_status(&status),
+        status,
         pid: meta.pid.map(i64::from),
         cwd: meta.cwd.clone(),
         command: meta.command.clone(),
         branch: meta.branch.clone(),
         worktree_id: meta.worktree_id.map(|v| v.to_string()),
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
         started_at: meta.started_at,
         last_heartbeat: meta.last_heartbeat,
+        last_output_at: Some(meta.last_heartbeat),
+        detached_at: if matches!(meta.status, SessionStatus::Waiting) {
+            Some(meta.last_heartbeat)
+        } else {
+            None
+        },
+        last_error: None,
         restore_status: None,
-        exit_code: None,
-        ended_at: None,
+        exit_code: meta.exit_code.map(i64::from),
+        ended_at: meta.ended_at.map(|value| value.to_rfc3339()),
     }
 }
 
@@ -1909,6 +1978,11 @@ fn live_session_view_from_meta(meta: &SessionMetadata) -> LiveSessionView {
     LiveSessionView {
         id: meta.id.to_string(),
         name: meta.name.clone(),
+        backend: default_session_backend(),
+        durability: default_session_durability(),
+        lifecycle_state: session_lifecycle_state_for_status(&session_status_to_string(
+            &meta.status,
+        )),
         status: session_status_to_string(&meta.status),
         health: session_health_to_string(&meta.health),
         pid: meta.pid.map(i64::from),
@@ -1925,6 +1999,9 @@ fn live_session_view_from_row(row: &SessionRow) -> LiveSessionView {
     LiveSessionView {
         id: row.id.clone(),
         name: row.name.clone(),
+        backend: row.backend.clone(),
+        durability: row.durability.clone(),
+        lifecycle_state: row.lifecycle_state.clone(),
         status: row.status.clone(),
         health: match row.status.as_str() {
             "running" => "active".to_string(),
@@ -1937,8 +2014,8 @@ fn live_session_view_from_row(row: &SessionRow) -> LiveSessionView {
         command: row.command.clone(),
         started_at: row.started_at,
         last_heartbeat: row.last_heartbeat,
-        exit_code: None,
-        ended_at: None,
+        exit_code: row.exit_code.map(|value| value as i32),
+        ended_at: parse_optional_datetime(&row.ended_at),
     }
 }
 
@@ -1974,8 +2051,8 @@ fn session_meta_from_row(row: &SessionRow, data_root: &Path) -> Option<SessionMe
             .join(format!("{}.log", row.id))
             .to_string_lossy()
             .to_string(),
-        exit_code: None,
-        ended_at: None,
+        exit_code: row.exit_code.map(|value| value as i32),
+        ended_at: parse_optional_datetime(&row.ended_at),
     })
 }
 
@@ -5381,14 +5458,23 @@ mod redaction_tests {
             project_id: Uuid::new_v4().to_string(),
             name: "Terminal".to_string(),
             r#type: Some("terminal".to_string()),
+            backend: "tmux_compat".to_string(),
+            durability: "durable".to_string(),
+            lifecycle_state: "attached".to_string(),
             status: "running".to_string(),
             pid: Some(42),
             cwd: "/tmp/project".to_string(),
             command: "zsh".to_string(),
             branch: Some("main".to_string()),
             worktree_id: Some(Uuid::new_v4().to_string()),
+            connection_id: None,
+            remote_session_id: None,
+            controller_id: None,
             started_at: Utc::now(),
             last_heartbeat: Utc::now(),
+            last_output_at: None,
+            detached_at: None,
+            last_error: None,
             restore_status: None,
             exit_code: None,
             ended_at: None,

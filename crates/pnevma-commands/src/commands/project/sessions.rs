@@ -124,16 +124,62 @@ fn recovery_options_for_meta(meta: &SessionMetadata) -> Vec<RecoveryOptionView> 
     ]
 }
 
+fn recovery_options_for_row(row: &SessionRow) -> Vec<RecoveryOptionView> {
+    let can_interrupt = matches!(row.status.as_str(), "running" | "waiting");
+    let can_restart = true;
+    let can_reattach = row.status == "waiting";
+    vec![
+        RecoveryOptionView {
+            id: "interrupt".to_string(),
+            label: "Interrupt".to_string(),
+            description: "Send Ctrl+C to the session process.".to_string(),
+            enabled: can_interrupt,
+        },
+        RecoveryOptionView {
+            id: "restart".to_string(),
+            label: "Restart Session".to_string(),
+            description: "Restart backend process and rebind panes.".to_string(),
+            enabled: can_restart,
+        },
+        RecoveryOptionView {
+            id: "reattach".to_string(),
+            label: "Reattach Backend".to_string(),
+            description: "Attach to an existing waiting backend.".to_string(),
+            enabled: can_reattach,
+        },
+    ]
+}
+
 pub async fn get_session_binding(
     session_id: String,
     state: &AppState,
 ) -> Result<SessionBindingView, String> {
-    let sessions = state
-        .with_project("get_session_binding", |ctx| ctx.sessions.clone())
+    let (sessions, db, project_id) = state
+        .with_project("get_session_binding", |ctx| {
+            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+        })
         .await?;
     let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     let Some(meta) = sessions.get(session_uuid).await else {
-        return Err(format!("session not found: {session_id}"));
+        let row = db
+            .get_session(&project_id.to_string(), &session_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("session not found: {session_id}"))?;
+        let recovery_options = recovery_options_for_row(&row);
+
+        return Ok(SessionBindingView {
+            session_id,
+            backend: row.backend,
+            durability: row.durability,
+            lifecycle_state: row.lifecycle_state,
+            mode: "archived".to_string(),
+            cwd: row.cwd,
+            launch_command: None,
+            env: Vec::new(),
+            wait_after_command: false,
+            recovery_options,
+        });
     };
 
     let is_live = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
@@ -158,12 +204,18 @@ pub async fn get_session_binding(
 
     Ok(SessionBindingView {
         session_id,
+        backend: default_session_backend(),
+        durability: default_session_durability(),
+        lifecycle_state: session_lifecycle_state_for_status(&session_status_to_string(
+            &meta.status,
+        )),
         mode: if is_live {
             "live_attach".to_string()
         } else {
             "archived".to_string()
         },
         cwd,
+        launch_command: is_live.then(tmux_attach_launch_command),
         env,
         wait_after_command: false,
         recovery_options,
@@ -219,8 +271,11 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
         .map_err(|e| e.to_string())?;
 
     prior.status = "complete".to_string();
+    prior.lifecycle_state = "exited".to_string();
     prior.pid = None;
     prior.last_heartbeat = Utc::now();
+    prior.ended_at = Some(Utc::now().to_rfc3339());
+    prior.last_error = None;
     db.upsert_session(&prior).await.map_err(|e| e.to_string())?;
     if let Some(old_id) = prior_session_id {
         match sessions.kill_session_backend(old_id).await {
@@ -799,14 +854,21 @@ pub async fn get_session_recovery_options(
     session_id: String,
     state: &AppState,
 ) -> Result<Vec<RecoveryOptionView>, String> {
-    let sessions = state
-        .with_project("get_session_recovery_options", |ctx| ctx.sessions.clone())
+    let (sessions, db, project_id) = state
+        .with_project("get_session_recovery_options", |ctx| {
+            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+        })
         .await?;
     let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let Some(meta) = sessions.get(session_uuid).await else {
-        return Err(format!("session not found: {session_id}"));
-    };
-    Ok(recovery_options_for_meta(&meta))
+    if let Some(meta) = sessions.get(session_uuid).await {
+        return Ok(recovery_options_for_meta(&meta));
+    }
+    let row = db
+        .get_session(&project_id.to_string(), &session_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    Ok(recovery_options_for_row(&row))
 }
 
 pub async fn recover_session(

@@ -2,6 +2,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+fn default_session_backend() -> String {
+    "tmux_compat".to_string()
+}
+
+fn default_session_durability() -> String {
+    "durable".to_string()
+}
+
+fn default_session_lifecycle_state() -> String {
+    "attached".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ProjectRow {
     pub id: String,
@@ -18,14 +30,32 @@ pub struct SessionRow {
     pub project_id: String,
     pub name: String,
     pub r#type: Option<String>,
+    #[serde(default = "default_session_backend")]
+    pub backend: String,
+    #[serde(default = "default_session_durability")]
+    pub durability: String,
+    #[serde(default = "default_session_lifecycle_state")]
+    pub lifecycle_state: String,
     pub status: String,
     pub pid: Option<i64>,
     pub cwd: String,
     pub command: String,
     pub branch: Option<String>,
     pub worktree_id: Option<String>,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_session_id: Option<String>,
+    #[serde(default)]
+    pub controller_id: Option<String>,
     pub started_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
+    #[serde(default)]
+    pub last_output_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub detached_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_error: Option<String>,
     #[serde(default)]
     pub restore_status: Option<String>,
     #[serde(default)]

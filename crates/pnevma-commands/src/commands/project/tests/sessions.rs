@@ -92,6 +92,10 @@ async fn get_session_binding_reports_live_and_archived_modes() {
         .expect("live binding");
     assert_eq!(live.mode, "live_attach");
     assert_eq!(live.cwd, project_root.to_string_lossy());
+    assert_eq!(
+        live.launch_command.as_deref(),
+        Some(tmux_attach_launch_command().as_str())
+    );
     assert!(live
         .env
         .iter()
@@ -101,6 +105,72 @@ async fn get_session_binding_reports_live_and_archived_modes() {
         .await
         .expect("archived binding");
     assert_eq!(archived.mode, "archived");
+    assert_eq!(archived.launch_command, None);
+    assert!(archived.env.is_empty());
+    assert!(archived
+        .recovery_options
+        .iter()
+        .any(|option| option.id == "restart" && option.enabled));
+}
+
+#[tokio::test]
+async fn get_session_binding_falls_back_to_archived_persisted_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback")).unwrap();
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "binding-fallback-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let session_id = Uuid::new_v4();
+    let now = Utc::now();
+    db.upsert_session(&SessionRow {
+        id: session_id.to_string(),
+        project_id: project_id.to_string(),
+        name: "shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "tmux_compat".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "exited".to_string(),
+        status: "complete".to_string(),
+        pid: None,
+        cwd: project_root.to_string_lossy().to_string(),
+        command: "/bin/zsh".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: Some(now),
+        last_error: None,
+        restore_status: None,
+        exit_code: Some(0),
+        ended_at: Some(now.to_rfc3339()),
+    })
+    .await
+    .expect("persist archived session row");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let archived = get_session_binding(session_id.to_string(), &state)
+        .await
+        .expect("archived fallback binding");
+    assert_eq!(archived.mode, "archived");
+    assert_eq!(archived.lifecycle_state, "exited");
+    assert_eq!(archived.launch_command, None);
     assert!(archived.env.is_empty());
     assert!(archived
         .recovery_options

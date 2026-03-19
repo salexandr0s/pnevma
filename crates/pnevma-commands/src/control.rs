@@ -1662,6 +1662,14 @@ pub async fn route_method(
                 .map(|meta| commands::LiveSessionView {
                     id: meta.id.to_string(),
                     name: meta.name,
+                    backend: "tmux_compat".to_string(),
+                    durability: "durable".to_string(),
+                    lifecycle_state: match meta.status {
+                        SessionStatus::Running => "attached".to_string(),
+                        SessionStatus::Waiting => "detached".to_string(),
+                        SessionStatus::Error => "error".to_string(),
+                        SessionStatus::Complete => "exited".to_string(),
+                    },
                     status: match meta.status {
                         SessionStatus::Running => "running".to_string(),
                         SessionStatus::Waiting => "waiting".to_string(),

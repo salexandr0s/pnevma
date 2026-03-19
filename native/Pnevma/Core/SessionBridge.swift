@@ -15,13 +15,20 @@ struct SessionRecoveryOption: Decodable, Equatable, Identifiable {
 
 struct SessionBindingDescriptor: Decodable, Equatable {
     let sessionID: String
+    let backend: String?
+    let durability: String?
+    let lifecycleState: String?
     let mode: String
     let cwd: String
+    let launchCommand: String?
     let env: [SessionBindingEnvVar]
     let waitAfterCommand: Bool
     let recoveryOptions: [SessionRecoveryOption]
 
     var isLiveAttach: Bool { mode == "live_attach" }
+    var isDetachedRecovery: Bool {
+        matchesLifecycle("detached") || matchesLifecycle("reattaching")
+    }
 
     private static let tmuxPath: String = {
         for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
@@ -33,11 +40,23 @@ struct SessionBindingDescriptor: Decodable, Equatable {
         return "tmux"
     }()
 
+    private func matchesLifecycle(_ value: String) -> Bool {
+        lifecycleState?.caseInsensitiveCompare(value) == .orderedSame
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     func makeLaunchConfiguration() -> TerminalSurfaceLaunchConfiguration {
         let tmux = Self.tmuxPath
+        let command = launchCommand.flatMap { command in
+            let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } ?? "\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; \(tmux) set -t \"$PNEVMA_TMUX_TARGET\" allow-passthrough all 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\""
         return TerminalSurfaceLaunchConfiguration(
             workingDirectory: cwd,
-            command: "/bin/sh -lc '\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; \(tmux) set -t \"$PNEVMA_TMUX_TARGET\" allow-passthrough all 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
+            command: "/bin/sh -lc \(shellQuote(command))",
             env: env.map { TerminalSurfaceEnvironmentVariable(key: $0.key, value: $0.value) },
             waitAfterCommand: waitAfterCommand,
             initialInput: nil

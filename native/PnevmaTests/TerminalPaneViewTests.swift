@@ -159,6 +159,62 @@ private actor MissingSessionTerminalPaneCommandBus: CommandCalling {
     }
 }
 
+private actor ArchivedSessionTerminalPaneCommandBus: CommandCalling {
+    private var bindingCallCountValue = 0
+
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
+        switch method {
+        case "session.binding":
+            bindingCallCountValue += 1
+            return try decode(
+                #"""
+                {
+                  "session_id": "session-archived",
+                  "backend": "tmux_compat",
+                  "durability": "durable",
+                  "lifecycle_state": "exited",
+                  "mode": "archived",
+                  "cwd": "/tmp/project",
+                  "launch_command": null,
+                  "env": [],
+                  "wait_after_command": false,
+                  "recovery_options": [
+                    {
+                      "id": "restart",
+                      "label": "Restart Session",
+                      "description": "Restart backend process and rebind panes.",
+                      "enabled": true
+                    }
+                  ]
+                }
+                """#
+            )
+        case "session.scrollback":
+            return try decode(
+                #"""
+                {
+                  "session_id": "session-archived",
+                  "start_offset": 0,
+                  "end_offset": 12,
+                  "total_bytes": 12,
+                  "data": "restored log"
+                }
+                """#
+            )
+        default:
+            throw NSError(domain: "ArchivedSessionTerminalPaneCommandBus", code: 1)
+        }
+    }
+
+    func bindingCallCount() -> Int {
+        bindingCallCountValue
+    }
+
+    private func decode<T: Decodable>(_ json: String) throws -> T {
+        try PnevmaJSON.decoder().decode(T.self, from: Data(json.utf8))
+    }
+}
+
 @MainActor
 final class TerminalPaneViewTests: XCTestCase {
     override func setUp() {
@@ -318,6 +374,47 @@ final class TerminalPaneViewTests: XCTestCase {
 
         try await waitUntil {
             await bus.bindingCallCount() == 1 && pane.sessionID == nil
+        }
+
+        XCTAssertEqual(
+            TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
+            .managedSession
+        )
+    }
+
+    func testTerminalPaneKeepsArchivedRestoredSessionAvailableForRecovery() async throws {
+        let bus = ArchivedSessionTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        let priorWorkspaceProvider = PaneFactory.activeWorkspaceProvider
+        PaneFactory.sessionBridge = bridge
+        PaneFactory.activeWorkspaceProvider = {
+            Workspace(name: "Project", projectPath: "/tmp/project")
+        }
+        defer {
+            PaneFactory.sessionBridge = priorBridge
+            PaneFactory.activeWorkspaceProvider = priorWorkspaceProvider
+        }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        pane.loadSession(sessionID: "session-archived", workingDirectory: "/tmp/project")
+
+        try await waitUntil {
+            await bus.bindingCallCount() == 1 && pane.sessionID == "session-archived"
         }
 
         XCTAssertEqual(

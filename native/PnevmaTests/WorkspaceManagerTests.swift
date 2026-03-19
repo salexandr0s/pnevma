@@ -611,6 +611,35 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
+    func testPrepareForShutdownDoesNotCloseOpenProjects() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+        defer { manager.shutdown() }
+
+        let projectWorkspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        try await waitUntil {
+            manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
+        }
+
+        await manager.prepareForShutdown()
+
+        let closeCount = await bus.closeCount()
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(manager.runtime(for: projectWorkspace.id)?.projectID, "project-a")
+    }
+
     func testCreateLocalProjectWorkspaceAppliesLaunchSourceAndInitialTerminalSeed() throws {
         let manager = WorkspaceManager()
         defer { manager.shutdown() }

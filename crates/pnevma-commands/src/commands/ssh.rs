@@ -381,6 +381,7 @@ pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String,
 
     let mut session_row = session_row_from_meta(&session);
     session_row.r#type = Some("ssh".to_string());
+    session_row.connection_id = Some(profile_id.clone());
     ctx.db
         .upsert_session(&session_row)
         .await

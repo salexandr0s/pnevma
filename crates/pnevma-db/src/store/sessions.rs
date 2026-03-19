@@ -5,16 +5,25 @@ impl Db {
         sqlx::query(
             r#"
             INSERT INTO sessions
-            (id, project_id, name, type, status, pid, cwd, command, branch, worktree_id, started_at, last_heartbeat, restore_status, exit_code, ended_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            (id, project_id, name, type, backend, durability, lifecycle_state, status, pid, cwd, command, branch, worktree_id, connection_id, remote_session_id, controller_id, started_at, last_heartbeat, last_output_at, detached_at, last_error, restore_status, exit_code, ended_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
             ON CONFLICT(id) DO UPDATE SET
+              backend=excluded.backend,
+              durability=excluded.durability,
+              lifecycle_state=excluded.lifecycle_state,
               status=excluded.status,
               pid=excluded.pid,
               cwd=excluded.cwd,
               command=excluded.command,
               branch=excluded.branch,
               worktree_id=excluded.worktree_id,
+              connection_id=excluded.connection_id,
+              remote_session_id=excluded.remote_session_id,
+              controller_id=excluded.controller_id,
               last_heartbeat=excluded.last_heartbeat,
+              last_output_at=excluded.last_output_at,
+              detached_at=excluded.detached_at,
+              last_error=excluded.last_error,
               restore_status=excluded.restore_status,
               exit_code=excluded.exit_code,
               ended_at=excluded.ended_at
@@ -24,14 +33,23 @@ impl Db {
         .bind(&session.project_id)
         .bind(&session.name)
         .bind(&session.r#type)
+        .bind(&session.backend)
+        .bind(&session.durability)
+        .bind(&session.lifecycle_state)
         .bind(&session.status)
         .bind(session.pid)
         .bind(&session.cwd)
         .bind(&session.command)
         .bind(&session.branch)
         .bind(&session.worktree_id)
+        .bind(&session.connection_id)
+        .bind(&session.remote_session_id)
+        .bind(&session.controller_id)
         .bind(session.started_at)
         .bind(session.last_heartbeat)
+        .bind(session.last_output_at)
+        .bind(session.detached_at)
+        .bind(&session.last_error)
         .bind(&session.restore_status)
         .bind(session.exit_code)
         .bind(&session.ended_at)
@@ -43,7 +61,7 @@ impl Db {
     pub async fn list_sessions(&self, project_id: &str) -> Result<Vec<SessionRow>, DbError> {
         let rows = sqlx::query_as::<_, SessionRow>(
             r#"
-            SELECT id, project_id, name, type, status, pid, cwd, command, branch, worktree_id, started_at, last_heartbeat, restore_status, exit_code, ended_at
+            SELECT id, project_id, name, type, backend, durability, lifecycle_state, status, pid, cwd, command, branch, worktree_id, connection_id, remote_session_id, controller_id, started_at, last_heartbeat, last_output_at, detached_at, last_error, restore_status, exit_code, ended_at
             FROM sessions
             WHERE project_id = ?1
             ORDER BY started_at DESC
@@ -53,6 +71,26 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    pub async fn get_session(
+        &self,
+        project_id: &str,
+        session_id: &str,
+    ) -> Result<Option<SessionRow>, DbError> {
+        let row = sqlx::query_as::<_, SessionRow>(
+            r#"
+            SELECT id, project_id, name, type, backend, durability, lifecycle_state, status, pid, cwd, command, branch, worktree_id, connection_id, remote_session_id, controller_id, started_at, last_heartbeat, last_output_at, detached_at, last_error, restore_status, exit_code, ended_at
+            FROM sessions
+            WHERE project_id = ?1 AND id = ?2
+            LIMIT 1
+            "#,
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 
     pub async fn upsert_pane(&self, pane: &PaneRow) -> Result<(), DbError> {

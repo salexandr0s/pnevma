@@ -486,7 +486,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if requiresConfirmation {
                 self.confirmClose(
                     title: "Quit Pnevma?",
-                    message: "The terminal still has a running process. If you quit the process will be killed.",
+                    message: "The terminal still has a running process. Managed sessions will be restored on next launch; unmanaged shells will exit when the app quits.",
                     onCancel: {
                         sender.reply(toApplicationShouldTerminate: false)
                     }

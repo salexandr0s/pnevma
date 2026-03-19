@@ -20,6 +20,11 @@ private actor SessionBridgeCommandBusStub: CommandCalling {
     }
 
     private var lastCreateParams: [String: Any]?
+    private var customBindingJSON: String?
+
+    init(customBindingJSON: String? = nil) {
+        self.customBindingJSON = customBindingJSON
+    }
 
     func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
@@ -29,8 +34,7 @@ private actor SessionBridgeCommandBusStub: CommandCalling {
             }
             let data = try JSONEncoder().encode(AnyEncodable(params))
             lastCreateParams = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return try decode(
-                #"""
+            let bindingJSON = customBindingJSON ?? #"""
                 {
                   "session_id": "session-1",
                   "binding": {
@@ -43,7 +47,7 @@ private actor SessionBridgeCommandBusStub: CommandCalling {
                   }
                 }
                 """#
-            )
+            return try decode(bindingJSON)
         default:
             throw StubError.unsupportedMethod
         }
@@ -76,5 +80,34 @@ final class SessionBridgeTests: XCTestCase {
 
         XCTAssertEqual(recordedCwd, "/tmp/project")
         XCTAssertEqual(recordedCommand, "/bin/bash")
+    }
+
+    func testBindingLaunchConfigurationPrefersBackendProvidedLaunchCommand() async throws {
+        let bus = SessionBridgeCommandBusStub(customBindingJSON:
+            #"""
+            {
+              "session_id": "session-1",
+              "binding": {
+                "session_id": "session-1",
+                "backend": "tmux_compat",
+                "durability": "durable",
+                "lifecycle_state": "attached",
+                "mode": "live_attach",
+                "cwd": "/tmp/project",
+                "launch_command": "echo backend-launch",
+                "env": [],
+                "wait_after_command": false,
+                "recovery_options": []
+              }
+            }
+            """#
+        )
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+
+        let binding = try await bridge.createSession(workingDirectory: nil)
+        let launch = binding.makeLaunchConfiguration()
+
+        XCTAssertEqual(launch.workingDirectory, "/tmp/project")
+        XCTAssertEqual(launch.command, "/bin/sh -lc 'echo backend-launch'")
     }
 }

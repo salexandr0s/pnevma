@@ -209,8 +209,11 @@ async fn shutdown_project_sessions(
         }
 
         row.status = "complete".to_string();
+        row.lifecycle_state = "exited".to_string();
         row.pid = None;
         row.last_heartbeat = Utc::now();
+        row.ended_at = Some(Utc::now().to_rfc3339());
+        row.last_error = None;
         if let Err(error) = db.upsert_session(&row).await {
             tracing::warn!(session_id = %row.id, %error, "failed to persist terminal session row during project shutdown");
         }
@@ -224,8 +227,11 @@ async fn shutdown_project_sessions(
                 continue;
             }
             row.status = "complete".to_string();
+            row.lifecycle_state = "exited".to_string();
             row.pid = None;
             row.last_heartbeat = Utc::now();
+            row.ended_at = Some(Utc::now().to_rfc3339());
+            row.last_error = None;
             if let Err(error) = db.upsert_session(&row).await {
                 tracing::warn!(session_id = %row.id, %error, "failed to finalize lingering session row after helper sweep");
             }

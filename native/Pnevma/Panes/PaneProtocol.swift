@@ -1288,15 +1288,20 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private func showArchivedTerminal(_ binding: SessionBindingDescriptor) async {
-        let title = "Session Ended"
-        let message = "This terminal session is no longer live."
-        let detail = "A cleaned transcript snapshot is shown below. Use a recovery action to restart or replace the dead session."
+        let title = binding.isDetachedRecovery ? "Session Detached" : "Session Ended"
+        let message = binding.isDetachedRecovery
+            ? "This terminal can be restored."
+            : "This terminal session is no longer live."
+        let detail = binding.isDetachedRecovery
+            ? "Use Restore Previous Session to reattach or restart the backend, or start a replacement session."
+            : "A cleaned transcript snapshot is shown below. Use Restore Previous Session to reconnect, or start a replacement session."
+        let actions = recoveryActionButtons(preferRestorePrimary: true)
         showState(
             title: title,
             message: message,
             detail: detail,
             scrollback: nil,
-            actions: recoveryActionButtons(),
+            actions: actions,
             isLoading: false
         )
 
@@ -1308,7 +1313,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 message: message,
                 detail: detail,
                 scrollback: scrollback.data,
-                actions: recoveryActionButtons(),
+                actions: actions,
                 isLoading: false
             )
         } catch {
@@ -1317,14 +1322,17 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 message: "Unable to load archived scrollback.",
                 detail: error.localizedDescription,
                 scrollback: nil,
-                actions: recoveryActionButtons(),
+                actions: actions,
                 isLoading: false
             )
         }
     }
 
-    private func recoveryActionButtons() -> [TerminalStateAction] {
+    private func recoveryActionButtons(preferRestorePrimary: Bool = false) -> [TerminalStateAction] {
         guard usesManagedSessions else { return [] }
+        if preferRestorePrimary, let restoreAction = restorePreviousActionButton() {
+            return [restoreAction] + makeFallbackActions()
+        }
         return recoveryOptions.map { option in
             TerminalStateAction(
                 id: option.id,
@@ -1341,7 +1349,12 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private func makeFallbackActions() -> [TerminalStateAction] {
         guard autoStartIfNeeded, usesManagedSessions else { return [] }
         return [
-            TerminalStateAction(id: "new-session", label: "Start New Session", enabled: true) { [weak self] in
+            TerminalStateAction(
+                id: "new-session",
+                label: "Start New Session",
+                enabled: true,
+                isPrimary: false
+            ) { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.currentSessionID = nil
                     self?.notifyPersistedStateChanged()
@@ -1349,6 +1362,29 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 }
             }
         ]
+    }
+
+    private func restorePreviousActionButton() -> TerminalStateAction? {
+        guard let actionID = preferredRestoreActionID() else { return nil }
+        return TerminalStateAction(
+            id: "restore-previous",
+            label: "Restore Previous Session",
+            enabled: true
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.performRecoveryAction(actionID)
+            }
+        }
+    }
+
+    private func preferredRestoreActionID() -> String? {
+        if recoveryOptions.contains(where: { $0.id == "reattach" && $0.enabled }) {
+            return "reattach"
+        }
+        if recoveryOptions.contains(where: { $0.id == "restart" && $0.enabled }) {
+            return "restart"
+        }
+        return nil
     }
 
     private func performRecoveryAction(_ action: String) async {
@@ -1518,6 +1554,7 @@ private struct TerminalStateAction: Identifiable {
     let id: String
     let label: String
     let enabled: Bool
+    var isPrimary: Bool = true
     let perform: () -> Void
 }
 
@@ -1856,10 +1893,17 @@ private struct TerminalStateView: View {
 
     private var stateActionButtons: some View {
         ForEach(actions) { action in
-            Button(action.label, action: action.perform)
-                .buttonStyle(.borderedProminent)
-                .disabled(!action.enabled)
-                .fixedSize()
+            if action.isPrimary {
+                Button(action.label, action: action.perform)
+                    .buttonStyle(BorderedProminentButtonStyle())
+                    .disabled(!action.enabled)
+                    .fixedSize()
+            } else {
+                Button(action.label, action: action.perform)
+                    .buttonStyle(BorderedButtonStyle())
+                    .disabled(!action.enabled)
+                    .fixedSize()
+            }
         }
     }
 
