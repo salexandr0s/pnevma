@@ -1824,6 +1824,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return railAlpha > contentAlpha ? .collapsed : .expanded
     }
 
+    private final class SidebarAnimationCallbackBox: @unchecked Sendable {
+        let run: () -> Void
+
+        init(_ run: @escaping () -> Void) {
+            self.run = run
+        }
+    }
+
     private func animateSidebarWidth(
         to width: CGFloat,
         hostAlpha: CGFloat,
@@ -1837,13 +1845,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let completionBox = SidebarAnimationCallbackBox(completion)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = ChromeMotion.duration(for: .sidebar)
             context.timingFunction = ChromeMotion.timingFunction(for: .sidebar)
             context.allowsImplicitAnimation = true
             sidebarWidthConstraint?.animator().constant = width
             sidebarHostView?.animator().alphaValue = hostAlpha
-        }, completionHandler: completion)
+        }, completionHandler: {
+            completionBox.run()
+        })
     }
 
     private func animateSidebarContentSwapIfNeeded(
@@ -1886,6 +1897,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             collapsedRailHostView.alphaValue = showExpandedContent ? 1 : 0
         }
 
+        let finalizeBox = SidebarAnimationCallbackBox { [weak self] in
+            self?.setSidebarContentVisibility(for: mode)
+            completion?()
+        }
+
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = ChromeMotion.duration(for: .disclosure)
             context.timingFunction = ChromeMotion.timingFunction(for: .disclosure)
@@ -1893,18 +1909,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarContentView.animator().alphaValue = targetContentAlpha
             collapsedRailHostView.animator().alphaValue = targetRailAlpha
         }, completionHandler: {
-            if showExpandedContent {
-                sidebarContentView.isHidden = false
-                sidebarContentView.alphaValue = 1
-                collapsedRailHostView.alphaValue = 0
-                collapsedRailHostView.isHidden = true
-            } else {
-                collapsedRailHostView.isHidden = false
-                collapsedRailHostView.alphaValue = 1
-                sidebarContentView.alphaValue = 0
-                sidebarContentView.isHidden = true
-            }
-            completion?()
+            finalizeBox.run()
         })
     }
 
