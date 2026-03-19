@@ -2,6 +2,7 @@ import Cocoa
 #if canImport(GhosttyKit)
 import GhosttyKit
 #endif
+import QuartzCore
 import SwiftUI
 import os
 
@@ -49,6 +50,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarTopToToolbarSep: NSLayoutConstraint?
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var rightInspectorHostView: NSView?
+    private var rightInspectorFooterView: NSView?
     private var rightInspectorWidthConstraint: NSLayoutConstraint?
     private var rightInspectorResizerView: NSView?
     private var rightInspectorOverlayBlockerView: RightInspectorOverlayBlockerView?
@@ -527,7 +529,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.minSize = NSSize(width: 800, height: 500)
         win.isRestorable = false
 
-        guard let windowContent = win.contentView else { return }
+        let windowContent = MainWindowContentView(frame: NSRect(origin: .zero, size: contentRect.size))
+        windowContent.autoresizingMask = [.width, .height]
+        win.contentView = windowContent
+
         installUITestReadinessView(in: windowContent)
 
         // Root placeholder pane
@@ -588,7 +593,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let sidebarView = SidebarView(
             workspaceManager: workspaceManager,
-            onAddWorkspace: { [weak self] in self?.openWorkspace() }
+            onAddWorkspace: { [weak self] context in
+                self?.openWorkspace(context: context)
+            },
+            onOpenSettings: { [weak self] in
+                self?.openSettingsPane()
+            }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
         sidebarHost.sizingOptions = []
@@ -682,6 +692,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorHost.bottomAnchor.constraint(equalTo: rightInspectorBacking.bottomAnchor),
         ])
         self.rightInspectorHostView = rightInspectorBacking
+
+        let rightInspectorFooter = ThemedRightInspectorBackingView(showsTopSeparator: true)
+        self.rightInspectorFooterView = rightInspectorFooter
 
         let rightInspectorResizer = RightInspectorResizeHandleView()
         rightInspectorResizer.onResize = { [weak self] delta in
@@ -816,16 +829,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         addWorkspaceBtn.setAccessibilityIdentifier("titlebar.openWorkspace")
 
-        let settingsBtn = makeTitlebarButton(
-            symbolName: "gearshape",
-            accessibilityDescription: "Settings",
-            toolTip: "Settings",
-            action: #selector(openSettingsAction),
-            size: titlebarButtonSize,
-            symbolConfig: titlebarSymbolConfig
-        )
-        settingsBtn.setAccessibilityIdentifier("titlebar.settings")
-
         // Layout template button — positioned at the content area leading edge
         let templateBtn = makeTitlebarButton(
             symbolName: "rectangle.split.2x1",
@@ -867,8 +870,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.agentStripHostView = agentStrip
 
         for view in [sidebarBacking, tabBar, agentStrip, contentArea, toolDock, toolbarSep,
-                      rightInspectorBacking, rightInspectorResizer,
-                      sidebarToggleBtn, notificationsBtn, usageBtn, resourceMonitorBtn, settingsBtn, addWorkspaceBtn,
+                      rightInspectorBacking, rightInspectorFooter, rightInspectorResizer,
+                      sidebarToggleBtn, notificationsBtn, usageBtn, resourceMonitorBtn, addWorkspaceBtn,
                       templateBtn, titlebarStatus,
                       openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -887,6 +890,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowContent.addSubview(toolDrawerBlocker)
         toolDrawerHost.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(toolDrawerHost)
+
+        // Keep the chrome bands above content/overlay hosts so transparent or
+        // zero-height content views cannot steal interaction from the tab bar.
+        windowContent.addSubview(tabBar, positioned: .above, relativeTo: toolDrawerHost)
+        windowContent.addSubview(agentStrip, positioned: .above, relativeTo: toolDrawerHost)
+        windowContent.addSubview(toolbarSep, positioned: .above, relativeTo: tabBar)
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let toolDockHeight = DesignTokens.Layout.toolDockHeight
@@ -984,6 +993,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             rightInspectorBacking.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
+            rightInspectorFooter.leadingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
+            rightInspectorFooter.trailingAnchor.constraint(equalTo: rightInspectorBacking.trailingAnchor),
+            rightInspectorFooter.topAnchor.constraint(equalTo: toolDock.topAnchor),
+            rightInspectorFooter.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
 
             toolDock.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
             toolDock.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
@@ -1007,7 +1020,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarToggleHeight,
 
             notificationsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            notificationsBtn.trailingAnchor.constraint(equalTo: settingsBtn.leadingAnchor, constant: -4),
+            notificationsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
             notificationsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             notificationsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
@@ -1020,11 +1033,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             resourceMonitorBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -4),
             resourceMonitorBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             resourceMonitorBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
-
-            settingsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            settingsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
-            settingsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
-            settingsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
             addWorkspaceBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             addWorkspaceBtn.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor, constant: -12),
@@ -1526,7 +1534,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func renameTab(id: UUID, to title: String) {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
-        guard workspace.renameTab(id: id, to: title) else { return }
+        guard let index = workspace.tabs.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard workspace.tabs[index].title != trimmed else { return }
+        guard workspace.renameTab(at: index, to: trimmed) else { return }
         updateTabBar()
         persistence?.markDirty()
     }
@@ -2110,13 +2122,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let shouldAnimate = animated && ChromeMotion.duration(for: .rightInspector) > 0
         let targetWidth = shouldPresent ? rightInspectorStoredWidth : 0
         let hostView = rightInspectorHostView
+        let footerView = rightInspectorFooterView
         let resizerView = rightInspectorResizerView
         if shouldPresent {
+            let hostWasHidden = hostView?.isHidden == true
+            let footerWasHidden = footerView?.isHidden == true
+            let resizerWasHidden = resizerView?.isHidden == true
             hostView?.isHidden = false
+            footerView?.isHidden = false
             resizerView?.isHidden = false
+            if hostWasHidden { hostView?.alphaValue = 0 }
+            if footerWasHidden { footerView?.alphaValue = 0 }
+            if resizerWasHidden { resizerView?.alphaValue = 0 }
         }
         let updates = { [weak self] in
             self?.rightInspectorWidthConstraint?.animator().constant = targetWidth
+            hostView?.animator().alphaValue = shouldPresent ? 1 : 0
+            footerView?.animator().alphaValue = shouldPresent ? 1 : 0
+            resizerView?.animator().alphaValue = shouldPresent ? 1 : 0
         }
         if shouldAnimate {
             let signpost = PerformanceDiagnostics.shared.beginInterval("right_inspector.toggle")
@@ -2134,7 +2157,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard self.rightInspectorTransitionGeneration == transitionGeneration else { return }
                     if !self.isRightInspectorPresented {
                         hostView?.isHidden = true
+                        footerView?.isHidden = true
                         resizerView?.isHidden = true
+                    } else {
+                        hostView?.alphaValue = 1
+                        footerView?.alphaValue = 1
+                        resizerView?.alphaValue = 1
                     }
                 }
             })
@@ -2142,7 +2170,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorWidthConstraint?.constant = targetWidth
             if !shouldPresent {
                 hostView?.isHidden = true
+                footerView?.isHidden = true
                 resizerView?.isHidden = true
+                hostView?.alphaValue = 0
+                footerView?.alphaValue = 0
+                resizerView?.alphaValue = 0
+            } else {
+                hostView?.isHidden = false
+                footerView?.isHidden = false
+                resizerView?.isHidden = false
+                hostView?.alphaValue = 1
+                footerView?.alphaValue = 1
+                resizerView?.alphaValue = 1
             }
         }
         updateWindowMinWidth()
@@ -2425,37 +2464,44 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Helpers
 
-    private func openWorkspace() {
-        presentOpenWorkspacePanel()
+    private func openWorkspace(context: WorkspaceOpenerLaunchContext = .generic) {
+        presentOpenWorkspacePanel(context: context)
     }
 
-    private func presentOpenWorkspacePanel() {
+    private func presentOpenWorkspacePanel(context: WorkspaceOpenerLaunchContext = .generic) {
         let vm = WorkspaceOpenerViewModel()
         if let wm = workspaceManager {
-            vm.loadProjects(from: wm)
+            vm.loadProjects(from: wm, preferredProjectPath: context.preferredProjectPath)
         }
         openerViewModel = vm
+        let initialPanelSize = vm.preferredPanelSize
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 500),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            contentRect: NSRect(origin: .zero, size: initialPanelSize),
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
+        panel.title = "New Workspace"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = false
         panel.appearance = NSAppearance(named: .darkAqua)
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.level = .modalPanel
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.contentMinSize = WorkspaceOpenerPanelLayout.minimumSize
         openerPanel = panel
 
         guard let bus = commandBus ?? CommandBus.shared else { return }
         let openerView = WorkspaceOpenerView(
             viewModel: vm,
             commandBus: bus,
+            onPreferredSizeChange: { [weak self, weak panel] size in
+                guard let self, let panel else { return }
+                self.resizeOpenerPanel(panel, to: size)
+            },
             onSubmit: { [weak self] viewModel in
                 panel.close()
                 self?.handleOpenerSubmit(viewModel)
@@ -2480,14 +2526,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let hostingView = NSHostingView(rootView: openerView)
+        hostingView.sizingOptions = []
         panel.contentView = hostingView
-        panel.setContentSize(NSSize(width: 680, height: 500))
+        panel.setContentSize(initialPanelSize)
         panel.center()
         panel.makeKeyAndOrderFront(nil)
 
         // Trigger initial data load if a project is already selected
         if vm.selectedProjectPath != nil {
             vm.onProjectChanged(using: bus)
+        }
+    }
+
+    private func resizeOpenerPanel(_ panel: NSPanel, to contentSize: CGSize) {
+        let targetSize = CGSize(
+            width: max(contentSize.width, WorkspaceOpenerPanelLayout.minimumSize.width),
+            height: max(contentSize.height, WorkspaceOpenerPanelLayout.minimumSize.height)
+        )
+        guard panel.contentRect(forFrameRect: panel.frame).size != targetSize else { return }
+
+        let currentFrame = panel.frame
+        var nextFrame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: targetSize))
+        nextFrame.origin.x = currentFrame.midX - (nextFrame.width / 2)
+        nextFrame.origin.y = currentFrame.maxY - nextFrame.height
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(nextFrame, display: true)
         }
     }
 
@@ -2909,16 +2975,39 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
-            styleMask: [.titled, .closable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         win.isReleasedWhenClosed = false
-        win.title = "Settings"
+        win.title = ""
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
-        win.minSize = NSSize(width: 600, height: 400)
-        win.contentView = NSHostingView(rootView: SettingsView().environment(GhosttyThemeProvider.shared))
+        win.toolbarStyle = .unifiedCompact
+        win.isMovableByWindowBackground = true
+        win.minSize = NSSize(width: 840, height: 560)
+        let contentContainer = NSView(frame: NSRect(origin: .zero, size: NSSize(width: 960, height: 680)))
+        contentContainer.wantsLayer = true
+        contentContainer.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        contentContainer.setAccessibilityIdentifier("settings.window.content")
+        let hostingView = NSHostingView(
+            rootView: SettingsView()
+                .environment(GhosttyThemeProvider.shared)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        )
+        hostingView.sizingOptions = []
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+        ])
+        win.contentView = contentContainer
+        win.setContentSize(NSSize(width: 960, height: 680))
         win.center()
         win.makeKeyAndOrderFront(nil)
         settingsWindow = win
@@ -3328,6 +3417,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: "exclamationmark.triangle",
             style: .error
         )
+    }
+
+    private func openSettingsFromSidebar() {
+        guard let settingsTool = sidebarToolDefinition(id: "settings") else {
+            openSettingsPane()
+            return
+        }
+
+        if focusExistingTool(settingsTool, scope: .anyTab) {
+            return
+        }
+
+        guard let pane = PaneFactory.make(type: settingsTool.paneType)?.1 else {
+            openSettingsPane()
+            return
+        }
+
+        if contentAreaView?.replaceActivePane(with: pane) == nil {
+            contentAreaView?.setRootPane(pane)
+        }
+        persistence?.markDirty()
     }
 
     private func makeToolPane(_ toolID: String) -> (NSView & PaneContent)? {
@@ -3812,6 +3922,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         rightInspectorWidthConstraint?.constant = isRightInspectorPresented ? rightInspectorStoredWidth : 0
         rightInspectorHostView?.isHidden = !isRightInspectorPresented
+        rightInspectorFooterView?.isHidden = !isRightInspectorPresented
         rightInspectorResizerView?.isHidden = !isRightInspectorPresented
         updateWindowMinWidth()
 
@@ -4263,6 +4374,21 @@ extension AppDelegate {
                 onCancel?()
             }
         }
+    }
+}
+
+private final class MainWindowContentView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point), !isHidden, alphaValue > 0 else { return nil }
+
+        for subview in subviews.reversed() {
+            let localPoint = convert(point, to: subview)
+            if let hit = subview.hitTest(localPoint) {
+                return hit
+            }
+        }
+
+        return super.hitTest(point)
     }
 }
 

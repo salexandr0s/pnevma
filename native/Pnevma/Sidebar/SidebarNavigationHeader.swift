@@ -19,7 +19,7 @@ enum SidebarNavigationMode: String, CaseIterable {
 
 struct SidebarNavigationHeader: View {
     @Binding var mode: SidebarNavigationMode
-    var onAddWorkspace: (() -> Void)?
+    var onAddWorkspace: ((WorkspaceOpenerLaunchContext) -> Void)?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -47,7 +47,7 @@ struct SidebarNavigationHeader: View {
     // MARK: - New Workspace Button
 
     private var newWorkspaceButton: some View {
-        NewWorkspaceButton(action: { onAddWorkspace?() })
+        NewWorkspaceButton(action: { onAddWorkspace?(.generic) })
     }
 }
 

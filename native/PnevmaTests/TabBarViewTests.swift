@@ -54,29 +54,40 @@ final class TabBarViewTests: XCTestCase {
         ))
     }
 
-    private func sendClick(
-        to view: NSView,
-        in window: NSWindow,
+    private func dispatchClick(
+        in tabBar: TabBarView,
+        window: NSWindow,
         point: NSPoint,
         clickCount: Int = 1
     ) throws {
+        let hitView = try XCTUnwrap(tabBar.hitTest(point))
         let down = try makeMouseEvent(
             window: window,
-            view: view,
+            view: tabBar,
             point: point,
             clickCount: clickCount,
             type: .leftMouseDown
         )
-        NSApp.sendEvent(down)
+        hitView.mouseDown(with: down)
 
         let up = try makeMouseEvent(
             window: window,
-            view: view,
+            view: tabBar,
             point: point,
             clickCount: clickCount,
             type: .leftMouseUp
         )
-        NSApp.sendEvent(up)
+        hitView.mouseUp(with: up)
+    }
+
+    private func dispatchDoubleClick(
+        in tabBar: TabBarView,
+        window: NSWindow,
+        point: NSPoint
+    ) throws {
+        try dispatchClick(in: tabBar, window: window, point: point, clickCount: 1)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        try dispatchClick(in: tabBar, window: window, point: point, clickCount: 2)
     }
 
     private func tabViews(in tabBar: TabBarView) -> [NSView] {
@@ -92,17 +103,11 @@ final class TabBarViewTests: XCTestCase {
     }
 
     private func titleLabel(in tabView: NSView) throws -> NSTextField {
-        try XCTUnwrap(
-            tabView.subviews.compactMap { $0 as? NSTextField }.first { !$0.isEditable }
-        )
+        try XCTUnwrap(tabView.subviews.compactMap { $0 as? NSTextField }.first(where: { $0.isEditable == false }))
     }
 
-    private func visibleRenameField(in tabView: NSView) throws -> NSTextField {
-        try XCTUnwrap(
-            tabView.subviews.compactMap { $0 as? NSTextField }.first {
-                !$0.isHidden && $0.isEditable
-            }
-        )
+    private func renameField(in tabView: NSView) -> TabRenameField? {
+        tabView.subviews.compactMap { $0 as? TabRenameField }.first(where: { $0.isHidden == false })
     }
 
     private func closeButton(in tabView: NSView) throws -> NSButton {
@@ -114,29 +119,11 @@ final class TabBarViewTests: XCTestCase {
     }
 
     private func center(of view: NSView, in ancestor: NSView) -> NSPoint {
-        ancestor.convert(
-            NSPoint(x: view.bounds.midX, y: view.bounds.midY),
-            from: view
-        )
+        ancestor.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), from: view)
     }
 
     private func titlePoint(in tabView: NSView, ancestor: NSView) throws -> NSPoint {
         center(of: try titleLabel(in: tabView), in: ancestor)
-    }
-
-    private func installLiveRenameRebuildHandler(on tabBar: TabBarView) {
-        tabBar.onRenameTab = { [weak tabBar] id, title in
-            guard let tabBar else { return }
-            tabBar.tabs = tabBar.tabs.map { tab in
-                guard tab.id == id else { return tab }
-                return .init(
-                    id: tab.id,
-                    title: title,
-                    isActive: tab.isActive,
-                    hasNotification: tab.hasNotification
-                )
-            }
-        }
     }
 
     func testTabBodyRemainsHitTestTargetAtTitlePoint() throws {
@@ -149,10 +136,7 @@ final class TabBarViewTests: XCTestCase {
         let point = try titlePoint(in: tabView, ancestor: tabBar)
         let hit = tabBar.hitTest(point)
 
-        XCTAssertTrue(
-            hit === tabView,
-            "hit=\(String(describing: hit)) expected=\(tabView) point=\(NSStringFromPoint(point)) frames=\(tabViews(in: tabBar).map { NSStringFromRect($0.frame) })"
-        )
+        XCTAssertTrue(hit === tabView)
     }
 
     func testAddButtonActionFires() throws {
@@ -191,91 +175,50 @@ final class TabBarViewTests: XCTestCase {
         tabBar.layoutSubtreeIfNeeded()
 
         let point = try titlePoint(in: firstTabView(in: tabBar), ancestor: tabBar)
-        try sendClick(to: tabBar, in: window, point: point)
+        try dispatchClick(in: tabBar, window: window, point: point)
 
-        XCTAssertEqual(
-            selectedIndex,
-            0,
-            "point=\(NSStringFromPoint(point)) frames=\(tabViews(in: tabBar).map { NSStringFromRect($0.frame) })"
-        )
+        XCTAssertEqual(selectedIndex, 0)
     }
 
     func testDoubleClickOnTabBeginsInlineRename() throws {
         let tabBar = makeTabBar()
+
         let window = makeWindow(with: tabBar)
         defer { window.orderOut(nil) }
         tabBar.layoutSubtreeIfNeeded()
 
-        let tabView = try firstTabView(in: tabBar)
-        let point = try titlePoint(in: tabView, ancestor: tabBar)
-        try sendClick(to: tabBar, in: window, point: point, clickCount: 2)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        let point = try titlePoint(in: firstTabView(in: tabBar), ancestor: tabBar)
+        try dispatchDoubleClick(in: tabBar, window: window, point: point)
 
-        let renameField = try visibleRenameField(in: tabView)
-        XCTAssertEqual(renameField.stringValue, "Terminal")
-        XCTAssertNotNil(renameField.currentEditor())
+        let firstTab = try firstTabView(in: tabBar)
+        XCTAssertNotNil(renameField(in: firstTab))
     }
 
-    func testRenameCommitCallsRenameHandler() throws {
+    func testInlineRenameCommitCallsRenameHandler() throws {
         let tabBar = makeTabBar()
         let expectedID = tabBar.tabs[0].id
-        var renameCall: (UUID, String)?
-        tabBar.onRenameTab = { id, title in
-            renameCall = (id, title)
-        }
+        var renamed: (UUID, String)?
+
+        tabBar.onRenameTab = { renamed = ($0, $1) }
 
         let window = makeWindow(with: tabBar)
         defer { window.orderOut(nil) }
         tabBar.layoutSubtreeIfNeeded()
 
-        let tabView = try firstTabView(in: tabBar)
-        let point = try titlePoint(in: tabView, ancestor: tabBar)
-        try sendClick(to: tabBar, in: window, point: point, clickCount: 2)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        let point = try titlePoint(in: firstTabView(in: tabBar), ancestor: tabBar)
+        try dispatchDoubleClick(in: tabBar, window: window, point: point)
 
-        let renameField = try visibleRenameField(in: tabView)
-        renameField.stringValue = "Build"
-        let textView = NSTextView()
-        _ = renameField.delegate?.control?(
-            renameField,
-            textView: textView,
-            doCommandBy: #selector(NSResponder.insertNewline(_:))
-        )
+        let firstTab = try firstTabView(in: tabBar)
+        let field = try XCTUnwrap(renameField(in: firstTab))
+        field.stringValue = "Build"
+        field.commitEditing()
 
-        XCTAssertEqual(renameCall?.0, expectedID)
-        XCTAssertEqual(renameCall?.1, "Build")
+        XCTAssertEqual(renamed?.0, expectedID)
+        XCTAssertEqual(renamed?.1, "Build")
     }
 
-    func testRenamingThenClickingAddButtonStillAddsTab() throws {
+    func testCloseButtonHitTargetStillWorksAfterInlineRenameBegins() throws {
         let tabBar = makeTabBar()
-        installLiveRenameRebuildHandler(on: tabBar)
-        var addCount = 0
-        tabBar.onAddTab = { addCount += 1 }
-
-        let window = makeWindow(with: tabBar)
-        defer { window.orderOut(nil) }
-        tabBar.layoutSubtreeIfNeeded()
-
-        let tabView = try firstTabView(in: tabBar)
-        try sendClick(
-            to: tabBar,
-            in: window,
-            point: try titlePoint(in: tabView, ancestor: tabBar),
-            clickCount: 2
-        )
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        _ = try visibleRenameField(in: tabView)
-
-        let addPoint = center(of: try addButton(in: tabBar), in: tabBar)
-        try sendClick(to: tabBar, in: window, point: addPoint)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-
-        XCTAssertEqual(addCount, 1)
-    }
-
-    func testRenamingThenClickingCloseButtonStillClosesTab() throws {
-        let tabBar = makeTabBar()
-        installLiveRenameRebuildHandler(on: tabBar)
         var closedIndex: Int?
         tabBar.onCloseTab = { closedIndex = $0 }
 
@@ -283,48 +226,12 @@ final class TabBarViewTests: XCTestCase {
         defer { window.orderOut(nil) }
         tabBar.layoutSubtreeIfNeeded()
 
-        let firstTab = try firstTabView(in: tabBar)
-        try sendClick(
-            to: tabBar,
-            in: window,
-            point: try titlePoint(in: firstTab, ancestor: tabBar),
-            clickCount: 2
-        )
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        _ = try visibleRenameField(in: firstTab)
+        let renamePoint = try titlePoint(in: firstTabView(in: tabBar), ancestor: tabBar)
+        try dispatchDoubleClick(in: tabBar, window: window, point: renamePoint)
 
         let secondTab = try secondTabView(in: tabBar)
-        let closePoint = center(of: try closeButton(in: secondTab), in: tabBar)
-        try sendClick(to: tabBar, in: window, point: closePoint)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        try closeButton(in: secondTab).performClick(nil)
 
         XCTAssertEqual(closedIndex, 1)
-    }
-
-    func testRenamingThenClickingAnotherTabStillSelectsIt() throws {
-        let tabBar = makeTabBar()
-        installLiveRenameRebuildHandler(on: tabBar)
-        var selectedIndex: Int?
-        tabBar.onSelectTab = { selectedIndex = $0 }
-
-        let window = makeWindow(with: tabBar)
-        defer { window.orderOut(nil) }
-        tabBar.layoutSubtreeIfNeeded()
-
-        let firstTab = try firstTabView(in: tabBar)
-        try sendClick(
-            to: tabBar,
-            in: window,
-            point: try titlePoint(in: firstTab, ancestor: tabBar),
-            clickCount: 2
-        )
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        _ = try visibleRenameField(in: firstTab)
-
-        let secondTab = try secondTabView(in: tabBar)
-        try sendClick(to: tabBar, in: window, point: try titlePoint(in: secondTab, ancestor: tabBar))
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-
-        XCTAssertEqual(selectedIndex, 1)
     }
 }

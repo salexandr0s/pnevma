@@ -3,73 +3,74 @@ import SwiftUI
 struct PromptTabView: View {
     @Bindable var viewModel: WorkspaceOpenerViewModel
 
-    private var promptHeightRange: ClosedRange<CGFloat> {
-        if viewModel.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return 68...68
-        }
-        return 120...220
+    private var promptEditorHeight: CGFloat {
+        viewModel.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 60 : 96
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Agent picker
-            HStack {
-                Text("Agent")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Menu {
-                    Button("No agent") { viewModel.selectedAgentID = nil }
-                    Divider()
-                    Button(AgentKind.claude.label) {
-                        viewModel.selectedAgentID = AgentKind.claude.rawValue
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Agent")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Menu {
+                        Button("No agent") { viewModel.selectedAgentID = nil }
+                        Divider()
+                        Button(AgentKind.claude.label) {
+                            viewModel.selectedAgentID = AgentKind.claude.rawValue
+                        }
+                        Button(AgentKind.codex.label) {
+                            viewModel.selectedAgentID = AgentKind.codex.rawValue
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(
+                                viewModel.selectedAgentID
+                                    .flatMap { AgentKind(rawValue: $0)?.label } ?? "No agent"
+                            )
+                            .font(.system(size: 12))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    Button(AgentKind.codex.label) {
-                        viewModel.selectedAgentID = AgentKind.codex.rawValue
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(
-                            viewModel.selectedAgentID
-                                .flatMap { AgentKind(rawValue: $0)?.label } ?? "No agent"
-                        )
-                        .font(.system(size: 12))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+
+                TextEditor(text: $viewModel.promptText)
+                    .font(.system(size: 13))
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(DesignTokens.Opacity.subtle))
+                    )
+                    .frame(height: promptEditorHeight, alignment: .top)
+                    .overlay(alignment: .topLeading) {
+                        if viewModel.promptText.isEmpty {
+                            Text("What do you want to do?")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.tertiary)
+                                .padding(12)
+                                .allowsHitTesting(false)
+                        }
+                    }
             }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.primary.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
 
-            // Prompt text area
-            TextEditor(text: $viewModel.promptText)
-                .font(.system(size: 13))
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.primary.opacity(DesignTokens.Opacity.subtle))
-                )
-                .frame(
-                    minHeight: promptHeightRange.lowerBound,
-                    maxHeight: promptHeightRange.upperBound,
-                    alignment: .top
-                )
-                .overlay(alignment: .topLeading) {
-                    if viewModel.promptText.isEmpty {
-                        Text("What do you want to do?")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
-                            .padding(12)
-                            .allowsHitTesting(false)
-                    }
-                }
-
-            // Advanced options
             DisclosureGroup(isExpanded: $viewModel.showAdvancedOptions) {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Terminal")
                             .font(.system(size: 12))
@@ -79,7 +80,7 @@ struct PromptTabView: View {
                             Text("Non-Persistent").tag(WorkspaceTerminalMode.nonPersistent)
                         }
                         .pickerStyle(.segmented)
-                        .frame(width: 200)
+                        .frame(width: 188)
                     }
 
                     Toggle("Remote SSH", isOn: $viewModel.sshEnabled)
@@ -105,7 +106,10 @@ struct PromptTabView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(DesignTokens.Spacing.md)
+        .padding(.horizontal, DesignTokens.Spacing.md)
+        .padding(.top, 12)
+        .padding(.bottom, DesignTokens.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

@@ -2,166 +2,590 @@ import Cocoa
 import Observation
 import SwiftUI
 
+enum SettingsNavigationSection: String, CaseIterable, Identifiable {
+    case general
+    case appShortcuts
+    case terminal
+    case ghostty
+    case usage
+    case telemetry
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .appShortcuts: "App Shortcuts"
+        case .terminal: "Terminal"
+        case .ghostty: "Ghostty"
+        case .usage: "Usage"
+        case .telemetry: "Telemetry"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gearshape"
+        case .appShortcuts: "keyboard"
+        case .terminal: "terminal"
+        case .ghostty: "slider.horizontal.3"
+        case .usage: "chart.line.uptrend.xyaxis"
+        case .telemetry: "chart.bar.xaxis"
+        }
+    }
+
+    var iconTintColor: Color {
+        switch self {
+        case .general:
+            Color(nsColor: .systemGray)
+        case .appShortcuts:
+            Color(nsColor: .systemIndigo)
+        case .terminal:
+            Color(nsColor: .labelColor)
+        case .ghostty:
+            Color(nsColor: .systemOrange)
+        case .usage:
+            Color(nsColor: .systemGreen)
+        case .telemetry:
+            Color(nsColor: .systemPink)
+        }
+    }
+
+    var iconFillColor: Color {
+        switch self {
+        case .general:
+            Color(nsColor: .quaternaryLabelColor)
+        case .appShortcuts:
+            Color(nsColor: .systemIndigo)
+        case .terminal:
+            Color(nsColor: .secondaryLabelColor)
+        case .ghostty:
+            Color(nsColor: .systemOrange)
+        case .usage:
+            Color(nsColor: .systemGreen)
+        case .telemetry:
+            Color(nsColor: .systemPink)
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .general:
+            "App behavior, window restoration, chrome appearance, and update preferences."
+        case .appShortcuts:
+            "Review and customize the shortcuts used across Pnevma windows and panes."
+        case .terminal:
+            "Default shell, typography, and scrollback behavior for new terminal sessions."
+        case .ghostty:
+            "Embedded terminal rendering, config-backed Ghostty options, and terminal keybindings."
+        case .usage:
+            "Provider usage sources, refresh cadence, and dashboard integration settings."
+        case .telemetry:
+            "Analytics and diagnostics preferences for future release quality improvements."
+        }
+    }
+
+    private var searchTerms: [String] {
+        switch self {
+        case .general:
+            ["updates", "restore", "sidebar", "focus border", "tool dock"]
+        case .appShortcuts:
+            ["keyboard", "hotkeys", "bindings", "commands"]
+        case .terminal:
+            ["shell", "font", "scrollback", "terminal defaults"]
+        case .ghostty:
+            ["terminal config", "themes", "rendering", "keybinds"]
+        case .usage:
+            ["providers", "codex", "claude", "quota", "dashboard"]
+        case .telemetry:
+            ["analytics", "crash reports", "privacy", "diagnostics"]
+        }
+    }
+
+    func matches(_ query: String) -> Bool {
+        let normalized = query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return true }
+
+        return ([title, subtitle] + searchTerms)
+            .joined(separator: " ")
+            .lowercased()
+            .contains(normalized)
+    }
+
+    static func filtered(for query: String) -> [SettingsNavigationSection] {
+        allCases.filter { $0.matches(query) }
+    }
+
+    static func resolvedSelection(
+        current: SettingsNavigationSection?,
+        query: String
+    ) -> SettingsNavigationSection? {
+        let filtered = filtered(for: query)
+        guard !filtered.isEmpty else { return current }
+        if let current, filtered.contains(current) {
+            return current
+        }
+        return filtered.first
+    }
+}
+
 struct SettingsView: View {
     @State private var appViewModel = SettingsViewModel()
     @State private var ghosttyViewModel = GhosttySettingsViewModel()
     @State private var providerUsageViewModel = ProviderUsageSettingsViewModel()
+    @State private var searchText = ""
+    @State private var selectedSection: SettingsNavigationSection? = .general
+
+    private var filteredSections: [SettingsNavigationSection] {
+        SettingsNavigationSection.filtered(for: searchText)
+    }
 
     var body: some View {
-        TabView {
-            GeneralSettingsTab(viewModel: appViewModel)
-                .tabItem { Label("General", systemImage: "gear") }
+        HStack(spacing: 0) {
+            SettingsSidebar(
+                searchText: $searchText,
+                selectedSection: $selectedSection,
+                filteredSections: filteredSections
+            )
+            .frame(width: 248)
 
-            AppKeybindingsSettingsTab(viewModel: appViewModel)
-                .tabItem { Label("App Shortcuts", systemImage: "keyboard") }
+            Divider()
 
-            TerminalSettingsTab(viewModel: appViewModel)
-                .tabItem { Label("Terminal", systemImage: "terminal") }
-
-            GhosttySettingsTab(viewModel: ghosttyViewModel)
-                .tabItem { Label("Ghostty", systemImage: "slider.horizontal.3") }
-
-            ProviderUsageSettingsTab(viewModel: providerUsageViewModel)
-                .tabItem { Label("Usage", systemImage: "chart.line.uptrend.xyaxis") }
-
-            TelemetrySettingsTab(viewModel: appViewModel)
-                .tabItem { Label("Telemetry", systemImage: "chart.bar") }
+            Group {
+                if filteredSections.isEmpty {
+                    SettingsSearchEmptyState(query: searchText)
+                } else {
+                    selectedSectionView
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .padding(16)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
         .task {
             appViewModel.load()
             ghosttyViewModel.load()
             providerUsageViewModel.load()
+            syncSelectionToSearch()
         }
+        .onAppear(perform: syncSelectionToSearch)
+        .onChange(of: searchText) { syncSelectionToSearch() }
         .accessibilityIdentifier("settings.root")
-    }
-}
-
-struct GeneralSettingsTab: View {
-    @Bindable var viewModel: SettingsViewModel
-
-    var body: some View {
-        Form {
-            Toggle("Auto-save workspace on quit", isOn: $viewModel.autoSave)
-            Toggle("Restore windows on launch", isOn: $viewModel.restoreWindows)
-            Toggle("Check for updates automatically", isOn: $viewModel.autoUpdate)
-
-            if let coordinator = viewModel.updateCoordinator {
-                GroupBox("Version Info") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Current version:")
-                                .foregroundStyle(.secondary)
-                            Text("\(coordinator.state.currentVersion) (build \(coordinator.state.currentBuild))")
-                        }
-                        .font(.caption)
-
-                        if let latest = coordinator.state.latestVersion {
-                            HStack {
-                                Text("Latest release:")
-                                    .foregroundStyle(.secondary)
-                                Text(latest)
-                            }
-                            .font(.caption)
-                        }
-
-                        if let lastCheck = coordinator.state.lastCheckAt {
-                            HStack {
-                                Text("Last checked:")
-                                    .foregroundStyle(.secondary)
-                                Text(lastCheck, style: .relative)
-                            }
-                            .font(.caption)
-                        }
-
-                        HStack {
-                            Text("Status:")
-                                .foregroundStyle(.secondary)
-                            updateStatusLabel(coordinator.state.status)
-                        }
-                        .font(.caption)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            } else {
-                Text("Version checking initializes after settings load completes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Picker("Default shell", selection: $viewModel.defaultShell) {
-                Text("System default").tag("")
-                Text("/bin/zsh").tag("/bin/zsh")
-                Text("/bin/bash").tag("/bin/bash")
-            }
-
-            Section("Workspace Sidebar") {
-                HStack {
-                    Text("Background tint")
-                    Slider(value: $viewModel.sidebarBackgroundOffset, in: 0.0...0.3, step: 0.01)
-                    Text(viewModel.sidebarBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.sidebarBackgroundOffset * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-            }
-
-            Section("Tool Dock") {
-                Toggle("Auto-hide bottom tool bar", isOn: $viewModel.bottomToolBarAutoHide)
-
-                Text("When enabled, the bottom tool bar collapses to a slim reveal strip until you move the pointer over it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("Background tint")
-                    Slider(value: $viewModel.toolDockBackgroundOffset, in: 0.0...0.3, step: 0.01)
-                    Text(viewModel.toolDockBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.toolDockBackgroundOffset * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-            }
-
-            Section("Right Inspector") {
-                HStack {
-                    Text("Background tint")
-                    Slider(value: $viewModel.rightInspectorBackgroundOffset, in: 0.0...0.3, step: 0.01)
-                    Text(viewModel.rightInspectorBackgroundOffset == 0 ? "Exact" : "\(Int(viewModel.rightInspectorBackgroundOffset * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-            }
-
-            Section("Focus Border") {
-                Toggle("Show focus border on active pane", isOn: $viewModel.focusBorderEnabled)
-
-                if viewModel.focusBorderEnabled {
-                    Toggle("Use system accent color", isOn: $viewModel.focusBorderUseAccent)
-
-                    ColorPicker("Color", selection: $viewModel.focusBorderColor, supportsOpacity: false)
-                        .disabled(viewModel.focusBorderUseAccent)
-
-                    HStack {
-                        Text("Opacity")
-                        Slider(value: $viewModel.focusBorderOpacity, in: 0.1...1.0, step: 0.05)
-                        Text("\(Int(viewModel.focusBorderOpacity * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 36, alignment: .trailing)
-                    }
-
-                    Stepper("Width: \(viewModel.focusBorderWidth, specifier: "%.0f")px",
-                            value: $viewModel.focusBorderWidth, in: 1...6, step: 1)
-                }
-            }
-        }
-        .formStyle(.grouped)
     }
 
     @ViewBuilder
-    private func updateStatusLabel(_ status: AppUpdateStatus) -> some View {
+    private var selectedSectionView: some View {
+        switch selectedSection ?? filteredSections.first ?? .general {
+        case .general:
+            GeneralSettingsTab(viewModel: appViewModel)
+        case .appShortcuts:
+            AppKeybindingsSettingsTab(viewModel: appViewModel)
+        case .terminal:
+            TerminalSettingsTab(viewModel: appViewModel)
+        case .ghostty:
+            GhosttySettingsTab(viewModel: ghosttyViewModel)
+        case .usage:
+            ProviderUsageSettingsTab(viewModel: providerUsageViewModel)
+        case .telemetry:
+            TelemetrySettingsTab(viewModel: appViewModel)
+        }
+    }
+
+    private func syncSelectionToSearch() {
+        selectedSection = SettingsNavigationSection.resolvedSelection(
+            current: selectedSection,
+            query: searchText
+        )
+    }
+}
+
+struct SettingsSidebar: View {
+    @Binding var searchText: String
+    @Binding var selectedSection: SettingsNavigationSection?
+    let filteredSections: [SettingsNavigationSection]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
+            SettingsAppHeaderCard()
+
+            SettingsSidebarSearchField(text: $searchText)
+                .accessibilityIdentifier("settings.sidebar.search")
+
+            if filteredSections.isEmpty {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                    Text("No matching settings")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Try a different search term.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 4)
+
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredSections) { section in
+                            SettingsSidebarRow(
+                                section: section,
+                                isSelected: selectedSection == section
+                            ) {
+                                selectedSection = section
+                            }
+                            .accessibilityIdentifier("settings.sidebar.\(section.id)")
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+}
+
+struct SettingsAppHeaderCard: View {
+    private var versionLabel: String? {
+        guard let info = Bundle.main.infoDictionary else { return nil }
+        let version = info["CFBundleShortVersionString"] as? String
+        let build = info["CFBundleVersion"] as? String
+
+        switch (version, build) {
+        case let (version?, build?) where version != build:
+            return "Version \(version) (\(build))"
+        case let (version?, _):
+            return "Version \(version)"
+        case let (_, build?):
+            return "Build \(build)"
+        default:
+            return nil
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Pnevma")
+                    .font(.headline)
+
+                Text("Settings")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                if let versionLabel {
+                    Text(versionLabel)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
+struct SettingsSidebarSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
+struct SettingsSidebarRow: View {
+    let section: SettingsNavigationSection
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(iconBackground)
+                    .frame(width: 24, height: 24)
+                    .overlay {
+                        Image(systemName: section.systemImage)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(iconForeground)
+                    }
+
+                Text(section.title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(rowForeground)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(rowBackground)
+            )
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onHover { isHovering = $0 }
+    }
+
+    private var rowBackground: Color {
+        if isSelected {
+            return Color.accentColor
+        }
+        if isHovering {
+            return Color.primary.opacity(0.06)
+        }
+        return .clear
+    }
+
+    private var rowForeground: Color {
+        isSelected ? .white : Color.primary
+    }
+
+    private var iconBackground: Color {
+        if isSelected {
+            return .white.opacity(0.18)
+        }
+        return section.iconFillColor.opacity(section == .general ? 0.65 : 0.92)
+    }
+
+    private var iconForeground: Color {
+        if isSelected {
+            return .white
+        }
+        return section == .general ? Color.primary : .white
+    }
+}
+
+struct SettingsSearchEmptyState: View {
+    let query: String
+
+    var body: some View {
+        EmptyStateView(
+            icon: "magnifyingglass",
+            title: "No Matching Settings",
+            message: "No settings matched “\(query)”. Try a broader term."
+        )
+    }
+}
+
+struct SettingsDetailPage<Content: View>: View {
+    let section: SettingsNavigationSection
+    var contentWidth: CGFloat? = 760
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsDetailHeader(section: section)
+                content()
+            }
+            .frame(maxWidth: contentWidth, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct SettingsFramedDetailPage<Content: View>: View {
+    let section: SettingsNavigationSection
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsDetailHeader(section: section)
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 24)
+        .padding(.bottom, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct SettingsDetailHeader: View {
+    let section: SettingsNavigationSection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(section.title)
+                .font(.system(size: 28, weight: .semibold))
+            Text(section.subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct SettingsHeroCard: View {
+    let systemImage: String
+    let title: String
+    let message: String
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Spacing.md) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(width: 72, height: 72)
+
+                Image(systemName: systemImage)
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
+struct SettingsGroupCard<Content: View>: View {
+    let title: String
+    let description: String?
+    @ViewBuilder let content: () -> Content
+
+    init(
+        title: String,
+        description: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.description = description
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                if let description {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            content()
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
+struct SettingsControlRow<Control: View>: View {
+    let title: String
+    let description: String?
+    var alignment: VerticalAlignment = .center
+    @ViewBuilder let control: () -> Control
+
+    var body: some View {
+        HStack(alignment: alignment, spacing: DesignTokens.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.body.weight(.medium))
+                if let description {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: DesignTokens.Spacing.md)
+
+            control()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct SettingsStatusValueView: View {
+    let status: AppUpdateStatus
+
+    var body: some View {
         switch status {
         case .idle:
             Text("Idle")
@@ -182,6 +606,253 @@ struct GeneralSettingsTab: View {
             Text("Failed: \(msg)")
                 .foregroundStyle(.red)
         }
+    }
+}
+
+struct GeneralSettingsTab: View {
+    @Bindable var viewModel: SettingsViewModel
+
+    var body: some View {
+        SettingsDetailPage(section: .general) {
+            SettingsHeroCard(
+                systemImage: "gearshape",
+                title: "Pnevma Settings",
+                message: "Configure launch behavior, workspace chrome, and focus affordances in one place."
+            )
+
+            SettingsGroupCard(
+                title: "Workspace Behavior",
+                description: "Defaults that affect launch, restore, and shell selection across Pnevma."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsControlRow(
+                        title: "Auto-save workspace on quit",
+                        description: "Persist open workspaces automatically when you close the app."
+                    ) {
+                        Toggle("", isOn: $viewModel.autoSave)
+                            .labelsHidden()
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Restore windows on launch",
+                        description: "Bring back your last workspace windows the next time Pnevma opens."
+                    ) {
+                        Toggle("", isOn: $viewModel.restoreWindows)
+                            .labelsHidden()
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Check for updates automatically",
+                        description: "Periodically look for newer Pnevma builds in the background."
+                    ) {
+                        Toggle("", isOn: $viewModel.autoUpdate)
+                            .labelsHidden()
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Default shell",
+                        description: "Used for new local terminal sessions unless a project overrides it."
+                    ) {
+                        Picker("", selection: $viewModel.defaultShell) {
+                            Text("System default").tag("")
+                            Text("/bin/zsh").tag("/bin/zsh")
+                            Text("/bin/bash").tag("/bin/bash")
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 180)
+                    }
+                }
+            }
+
+            SettingsGroupCard(
+                title: "Updates & Version",
+                description: "Current build details and the state of release checks."
+            ) {
+                if let coordinator = viewModel.updateCoordinator {
+                    VStack(spacing: 12) {
+                        SettingsControlRow(title: "Current version", description: nil) {
+                            Text("\(coordinator.state.currentVersion) (build \(coordinator.state.currentBuild))")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if let latest = coordinator.state.latestVersion {
+                            Divider()
+
+                            SettingsControlRow(title: "Latest release", description: nil) {
+                                Text(latest)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let lastCheck = coordinator.state.lastCheckAt {
+                            Divider()
+
+                            SettingsControlRow(title: "Last checked", description: nil) {
+                                Text(lastCheck, style: .relative)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Divider()
+
+                        SettingsControlRow(title: "Status", description: nil) {
+                            SettingsStatusValueView(status: coordinator.state.status)
+                        }
+                    }
+                } else {
+                    Text("Version checking initializes after settings load completes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            SettingsGroupCard(
+                title: "Workspace Chrome",
+                description: "Tune the surrounding surfaces so the workspace feels closer to your preferred contrast."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsControlRow(
+                        title: "Sidebar background tint",
+                        description: "Adjust how much the workspace sidebar diverges from the system background.",
+                        alignment: .top
+                    ) {
+                        sliderRow(
+                            value: $viewModel.sidebarBackgroundOffset,
+                            label: percentageText(for: viewModel.sidebarBackgroundOffset)
+                        )
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Auto-hide bottom tool bar",
+                        description: "Collapse the bottom tool bar into a slim reveal strip until you hover it."
+                    ) {
+                        Toggle("", isOn: $viewModel.bottomToolBarAutoHide)
+                            .labelsHidden()
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Tool dock background tint",
+                        description: "Apply the same subtle tint treatment to the bottom tool dock.",
+                        alignment: .top
+                    ) {
+                        sliderRow(
+                            value: $viewModel.toolDockBackgroundOffset,
+                            label: percentageText(for: viewModel.toolDockBackgroundOffset)
+                        )
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Right inspector background tint",
+                        description: "Adjust the inspector surface so it stays visually distinct without overwhelming content.",
+                        alignment: .top
+                    ) {
+                        sliderRow(
+                            value: $viewModel.rightInspectorBackgroundOffset,
+                            label: percentageText(for: viewModel.rightInspectorBackgroundOffset)
+                        )
+                    }
+                }
+            }
+
+            SettingsGroupCard(
+                title: "Focus Border",
+                description: "Highlight the currently active pane with a configurable accent border."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsControlRow(
+                        title: "Show focus border on active pane",
+                        description: "Display a border around whichever pane currently owns keyboard focus."
+                    ) {
+                        Toggle("", isOn: $viewModel.focusBorderEnabled)
+                            .labelsHidden()
+                    }
+
+                    if viewModel.focusBorderEnabled {
+                        Divider()
+
+                        SettingsControlRow(
+                            title: "Use system accent color",
+                            description: "Follow the current macOS accent color automatically."
+                        ) {
+                            Toggle("", isOn: $viewModel.focusBorderUseAccent)
+                                .labelsHidden()
+                        }
+
+                        Divider()
+
+                        SettingsControlRow(
+                            title: "Custom color",
+                            description: "Pick a manual border color when accent following is disabled."
+                        ) {
+                            ColorPicker("", selection: $viewModel.focusBorderColor, supportsOpacity: false)
+                                .labelsHidden()
+                                .disabled(viewModel.focusBorderUseAccent)
+                        }
+
+                        Divider()
+
+                        SettingsControlRow(
+                            title: "Opacity",
+                            description: "Set how strongly the focus border should read against pane backgrounds.",
+                            alignment: .top
+                        ) {
+                            HStack(spacing: 8) {
+                                Slider(value: $viewModel.focusBorderOpacity, in: 0.1...1.0, step: 0.05)
+                                    .frame(width: 180)
+                                Text("\(Int(viewModel.focusBorderOpacity * 100))%")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 42, alignment: .trailing)
+                            }
+                        }
+
+                        Divider()
+
+                        SettingsControlRow(
+                            title: "Width",
+                            description: "Choose how thick the border should appear around the focused pane."
+                        ) {
+                            Stepper(
+                                "\(viewModel.focusBorderWidth, specifier: "%.0f") px",
+                                value: $viewModel.focusBorderWidth,
+                                in: 1...6,
+                                step: 1
+                            )
+                            .frame(width: 120, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sliderRow(value: Binding<Double>, label: String) -> some View {
+        HStack(spacing: 8) {
+            Slider(value: value, in: 0.0...0.3, step: 0.01)
+                .frame(width: 180)
+            Text(label)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .trailing)
+        }
+    }
+
+    private func percentageText(for value: Double) -> String {
+        value == 0 ? "Exact" : "\(Int(value * 100))%"
     }
 }
 
@@ -217,50 +888,73 @@ struct AppKeybindingsSettingsTab: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Pnevma App Shortcuts")
-                    .font(.headline)
-                Spacer()
-                if viewModel.keybindings.contains(where: { !$0.isDefault }) {
-                    Button("Reset All") {
-                        viewModel.resetAllKeybindings()
+        SettingsDetailPage(section: .appShortcuts, contentWidth: 860) {
+            SettingsGroupCard(
+                title: "Find & Reset",
+                description: "Search shortcut names, action identifiers, or recorded key combinations."
+            ) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        TextField("Filter shortcuts…", text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+
+                        if viewModel.keybindings.contains(where: { !$0.isDefault }) {
+                            Button("Reset All") {
+                                viewModel.resetAllKeybindings()
+                            }
+                            .controlSize(.small)
+                        }
                     }
-                    .controlSize(.small)
+
+                    Text("These are Pnevma window and pane shortcuts. Embedded terminal keybindings live in the Ghostty section.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            Text("These are Pnevma window and pane shortcuts. Ghostty terminal keybindings are edited in the Ghostty tab.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if groupedBindings.isEmpty {
+                EmptyStateView(
+                    icon: "keyboard",
+                    title: "No Matching Shortcuts",
+                    message: "Try a broader filter or clear the search field."
+                )
+                .frame(minHeight: 240)
+            } else {
+                VStack(spacing: 16) {
+                    ForEach(groupedBindings, id: \.0) { category, bindings in
+                        SettingsGroupCard(title: category) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(bindings.enumerated()), id: \.element.id) { index, binding in
+                                    keybindingRow(binding)
+                                        .padding(.vertical, 10)
 
-            TextField("Filter shortcuts…", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-
-            List {
-                ForEach(groupedBindings, id: \.0) { category, bindings in
-                    Section(category) {
-                        ForEach(bindings) { binding in
-                            keybindingRow(binding)
+                                    if index < bindings.count - 1 {
+                                        Divider()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-            .listStyle(.plain)
         }
-        .padding()
         .onAppear { refreshCrossLayerConflicts() }
         .onChange(of: viewModel.keybindings) { refreshCrossLayerConflicts() }
     }
 
     @ViewBuilder
     private func keybindingRow(_ binding: KeybindingEntry) -> some View {
-        HStack {
-            Text(binding.displayName)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(alignment: .center, spacing: DesignTokens.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(binding.displayName)
+                    .font(.body.weight(.medium))
+                Text(binding.action)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
 
-            // Conflict indicators
+            Spacer()
+
             let intraConflicts = binding.conflictsWith
             let crossConflicts = crossLayerConflictActions(for: binding.shortcut)
             let allConflicts = intraConflicts + crossConflicts
@@ -308,25 +1002,66 @@ struct TerminalSettingsTab: View {
     @Bindable var viewModel: SettingsViewModel
 
     var body: some View {
-        Form {
-            Picker("Font", selection: $viewModel.terminalFont) {
-                Text("SF Mono").tag("SF Mono")
-                Text("Menlo").tag("Menlo")
-                Text("Monaco").tag("Monaco")
-                Text("Fira Code").tag("Fira Code")
+        SettingsDetailPage(section: .terminal) {
+            SettingsGroupCard(
+                title: "Terminal Defaults",
+                description: "Choose the typography and scrollback values that new sessions should start from."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsControlRow(
+                        title: "Font",
+                        description: "Default monospace face for newly created terminals."
+                    ) {
+                        Picker("", selection: $viewModel.terminalFont) {
+                            Text("SF Mono").tag("SF Mono")
+                            Text("Menlo").tag("Menlo")
+                            Text("Monaco").tag("Monaco")
+                            Text("Fira Code").tag("Fira Code")
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 180)
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Font size",
+                        description: "Adjust the default terminal type size."
+                    ) {
+                        Stepper(
+                            "\(viewModel.terminalFontSize) pt",
+                            value: $viewModel.terminalFontSize,
+                            in: 8...32
+                        )
+                        .frame(width: 120, alignment: .trailing)
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Scrollback lines",
+                        description: "Limit how many lines each terminal keeps in memory."
+                    ) {
+                        Stepper(
+                            "\(viewModel.scrollbackLines)",
+                            value: $viewModel.scrollbackLines,
+                            in: 1000...100000,
+                            step: 1000
+                        )
+                        .frame(width: 140, alignment: .trailing)
+                    }
+                }
             }
 
-            Stepper("Font size: \(viewModel.terminalFontSize)", value: $viewModel.terminalFontSize,
-                    in: 8...32)
-
-            Stepper("Scrollback lines: \(viewModel.scrollbackLines)",
-                    value: $viewModel.scrollbackLines, in: 1000...100000, step: 1000)
-
-            Text("These terminal defaults are saved but not yet applied at runtime. Current terminal font, size, and scrollback still follow Ghostty configuration in the Ghostty tab.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            SettingsGroupCard(title: "Current Runtime Behavior") {
+                Text("These defaults are saved now, but the live embedded terminal still follows Ghostty configuration until runtime application is wired through.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -339,35 +1074,51 @@ struct GhosttySettingsTab: View {
     @State private var showThemeBrowser = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            if viewModel.snapshot != nil {
-                GhosttySettingsToolbar(
-                    viewModel: viewModel,
-                    showDiagnostics: $showDiagnostics,
-                    showThemeBrowser: $showThemeBrowser
-                )
-                Divider()
-                HSplitView {
-                    GhosttyCategorySidebar(viewModel: viewModel)
-                        .frame(minWidth: 180, idealWidth: 200, maxWidth: 240)
-                    GhosttySettingsDetail(viewModel: viewModel)
+        SettingsFramedDetailPage(section: .ghostty) {
+            Group {
+                if viewModel.snapshot != nil {
+                    VStack(spacing: 0) {
+                        GhosttySettingsToolbar(
+                            viewModel: viewModel,
+                            showDiagnostics: $showDiagnostics,
+                            showThemeBrowser: $showThemeBrowser
+                        )
+                        Divider()
+                        HStack(spacing: 0) {
+                            GhosttyCategorySidebar(viewModel: viewModel)
+                                .frame(minWidth: 220, idealWidth: 220, maxWidth: 220, maxHeight: .infinity)
+                            Divider()
+                            GhosttySettingsDetail(viewModel: viewModel)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        GhosttySettingsBottomBar(
+                            viewModel: viewModel,
+                            showPreview: $showPreview
+                        )
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                } else if viewModel.isLoading {
+                    ProgressView("Loading Ghostty configuration\u{2026}")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    EmptyStateView(
+                        icon: "exclamationmark.triangle",
+                        title: "Ghostty Settings Unavailable",
+                        message: viewModel.errorMessage,
+                        actionTitle: "Retry",
+                        action: { viewModel.reload() }
+                    )
                 }
-                Divider()
-                GhosttySettingsBottomBar(
-                    viewModel: viewModel,
-                    showPreview: $showPreview
-                )
-            } else if viewModel.isLoading {
-                ProgressView("Loading Ghostty configuration\u{2026}")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                EmptyStateView(
-                    icon: "exclamationmark.triangle",
-                    title: "Ghostty Settings Unavailable",
-                    message: viewModel.errorMessage,
-                    actionTitle: "Retry",
-                    action: { viewModel.reload() }
-                )
             }
         }
         .onChange(of: viewModel.snapshot == nil) {
@@ -564,16 +1315,31 @@ private struct GhosttySettingsDetail: View {
                             ? "No changes in this category."
                             : "Try a different search term or filter."
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    Form {
-                        ForEach(items) { descriptor in
-                            GhosttyCompactFieldRow(viewModel: viewModel, descriptor: descriptor)
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { index, descriptor in
+                                GhosttyCompactFieldRow(viewModel: viewModel, descriptor: descriptor)
+                                    .padding(.horizontal, DesignTokens.Spacing.md)
+                                    .padding(.vertical, 10)
+
+                                if index < items.count - 1 {
+                                    Divider()
+                                        .padding(.leading, DesignTokens.Spacing.md)
+                                }
+                            }
                         }
+                        .padding(.vertical, 6)
                     }
-                    .formStyle(.grouped)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(nsColor: .windowBackgroundColor))
+                    )
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -1367,23 +2133,50 @@ struct TelemetrySettingsTab: View {
     @Bindable var viewModel: SettingsViewModel
 
     var body: some View {
-        Form {
-            Toggle("Enable usage analytics", isOn: $viewModel.telemetryEnabled)
-            Toggle("Share crash reports", isOn: $viewModel.crashReports)
+        SettingsDetailPage(section: .telemetry) {
+            SettingsGroupCard(
+                title: "Analytics & Diagnostics",
+                description: "Control whether anonymous usage information and future crash diagnostics are allowed."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsControlRow(
+                        title: "Enable usage analytics",
+                        description: "Allow anonymous product usage events that help improve overall product quality."
+                    ) {
+                        Toggle("", isOn: $viewModel.telemetryEnabled)
+                            .labelsHidden()
+                    }
 
-            Text("Usage analytics controls backend telemetry event collection. Crash report sharing is saved for future crash-report integration and is not active in the current build.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                    Divider()
+
+                    SettingsControlRow(
+                        title: "Share crash reports",
+                        description: "Persist your preference now for the planned crash-reporting integration."
+                    ) {
+                        Toggle("", isOn: $viewModel.crashReports)
+                            .labelsHidden()
+                    }
+                }
+            }
+
+            SettingsGroupCard(title: "What This Means") {
+                Text("Usage analytics controls backend telemetry event collection. Crash report sharing is stored for future crash-report integration and is not active in the current build.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             if viewModel.telemetryEnabled {
-                GroupBox("What we collect") {
+                SettingsGroupCard(title: "What We Collect") {
                     Text("Anonymous usage statistics help us improve Pnevma. No code, file contents, or personal data is transmitted.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
-        .formStyle(.grouped)
     }
 }
 

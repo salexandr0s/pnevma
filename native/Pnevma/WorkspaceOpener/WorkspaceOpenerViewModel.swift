@@ -75,6 +75,15 @@ final class WorkspaceOpenerViewModel {
     // Data loading tasks
     private var loadTask: Task<Void, Never>?
 
+    var preferredPanelSize: CGSize {
+        WorkspaceOpenerPanelLayout.preferredSize(
+            for: selectedTab,
+            showAdvancedOptions: showAdvancedOptions,
+            sshEnabled: sshEnabled,
+            hasErrorMessage: errorMessage != nil
+        )
+    }
+
     var canSubmit: Bool {
         switch selectedTab {
         case .prompt:
@@ -182,28 +191,39 @@ final class WorkspaceOpenerViewModel {
         }
     }
 
-    func loadProjects(from workspaceManager: WorkspaceManager) {
+    func loadProjects(
+        from workspaceManager: WorkspaceManager,
+        preferredProjectPath: String? = nil
+    ) {
         var seen = Set<String>()
         var entries: [ProjectEntry] = []
         for group in workspaceManager.projectGroups {
             for ws in group.workspaces {
                 if let path = ws.projectPath, seen.insert(path).inserted {
-                    let name = URL(fileURLWithPath: path).lastPathComponent
-                    entries.append(ProjectEntry(path: path, name: name))
+                    entries.append(ProjectEntry(path: path))
                 }
             }
         }
         for ws in workspaceManager.pinnedWorkspaces {
             if let path = ws.projectPath, seen.insert(path).inserted {
-                let name = URL(fileURLWithPath: path).lastPathComponent
-                entries.append(ProjectEntry(path: path, name: name))
+                entries.append(ProjectEntry(path: path))
             }
         }
+        applyAvailableProjects(entries, preferredProjectPath: preferredProjectPath)
+    }
+
+    func applyAvailableProjects(
+        _ entries: [ProjectEntry],
+        preferredProjectPath: String? = nil
+    ) {
         availableProjects = entries.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
-        if selectedProjectPath == nil {
-            selectedProjectPath = entries.first?.path
+        if let preferredProjectPath,
+           availableProjects.contains(where: { $0.path == preferredProjectPath }) {
+            selectedProjectPath = preferredProjectPath
+        } else {
+            selectedProjectPath = nil
         }
     }
 

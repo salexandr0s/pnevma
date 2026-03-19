@@ -5,7 +5,8 @@ struct WorkspaceOpenerProjectPicker: View {
     let projects: [ProjectEntry]
 
     private var selectedProject: ProjectEntry? {
-        projects.first { $0.path == selectedPath }
+        guard let selectedPath else { return nil }
+        return projects.first { $0.path == selectedPath } ?? ProjectEntry(path: selectedPath)
     }
 
     var body: some View {
@@ -41,19 +42,11 @@ struct WorkspaceOpenerProjectPicker: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.secondary)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(project.name)
-                            .font(.system(size: 12, weight: .semibold))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Text(project.path)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    Text(project.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 13, weight: .semibold))
@@ -67,19 +60,20 @@ struct WorkspaceOpenerProjectPicker: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
-            .frame(minWidth: 240, maxWidth: 320, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .frame(minWidth: 140, maxWidth: 190, alignment: .leading)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.primary.opacity(0.08))
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.05))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .menuStyle(.borderlessButton)
+        .accessibilityIdentifier("workspaceOpener.projectPicker")
     }
 }

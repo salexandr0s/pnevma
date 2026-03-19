@@ -10,6 +10,7 @@ struct SidebarSectionHeader: View {
     var onAdd: (() -> Void)?
 
     @Environment(GhosttyThemeProvider.self) private var theme
+    @State private var isHoveringAdd = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -41,11 +42,12 @@ struct SidebarSectionHeader: View {
                 Button(action: onAdd) {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isHoveringAdd ? Color.green : Color.secondary)
                         .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { isHoveringAdd = $0 }
                 .help("Add workspace to \(title)")
             }
 

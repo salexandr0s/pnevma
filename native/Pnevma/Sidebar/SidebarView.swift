@@ -8,7 +8,8 @@ struct SidebarView: View {
     @AppStorage("sidebarBackgroundOffset") private var sidebarOffset: Double = BackgroundTint.defaultOffset
 
     /// Called when the user wants to add a new workspace.
-    var onAddWorkspace: (() -> Void)?
+    var onAddWorkspace: ((WorkspaceOpenerLaunchContext) -> Void)?
+    var onOpenSettings: (() -> Void)?
 
     @State private var navigationMode: SidebarNavigationMode = .workspaces
     private let groupState = SidebarGroupState.shared
@@ -32,23 +33,25 @@ struct SidebarView: View {
             )
             Divider()
 
-            switch navigationMode {
-            case .workspaces:
-                workspacesContent
-            case .tasks:
-                EmptyStateView(
-                    icon: "checklist",
-                    title: "No tasks yet",
-                    message: "Task tracking will appear here."
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                switch navigationMode {
+                case .workspaces:
+                    workspacesContent
+                case .tasks:
+                    EmptyStateView(
+                        icon: "checklist",
+                        title: "No tasks yet",
+                        message: "Task tracking will appear here."
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            SidebarFooter(onAddRepository: onAddWorkspace)
+            SidebarFooter(onOpenSettings: onOpenSettings)
         }
         .frame(minWidth: 0, maxWidth: DesignTokens.Layout.sidebarMaxWidth)
         .background(sidebarBackground)
-        .accessibilityIdentifier("sidebar.view")
     }
 
     // MARK: - Workspaces Content
@@ -89,13 +92,24 @@ struct SidebarView: View {
                 let groups = workspaceManager.projectGroups
                 ForEach(groups) { group in
                     let collapsed = groupState.isCollapsed(group.name)
+                    let representativeProjectPath = group.workspaces.first(where: { $0.projectPath != nil })?.projectPath
 
                     SidebarSectionHeader(
                         title: group.name,
                         count: group.count,
                         isCollapsed: collapsed,
-                        onToggle: { groupState.toggleCollapse(group.name) },
-                        onAdd: onAddWorkspace
+                        onToggle: {
+                            withAnimation(ChromeMotion.animation(for: .disclosure)) {
+                                groupState.toggleCollapse(group.name)
+                            }
+                        },
+                        onAdd: {
+                            if let representativeProjectPath {
+                                onAddWorkspace?(.project(path: representativeProjectPath))
+                            } else {
+                                onAddWorkspace?(.generic)
+                            }
+                        }
                     )
                     .padding(.top, 6)
 

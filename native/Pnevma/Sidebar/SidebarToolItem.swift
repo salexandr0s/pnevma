@@ -46,7 +46,7 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(
         id: "workflow",
         title: "Agents",
-        icon: "arrow.triangle.branch",
+        icon: "point.3.connected.trianglepath.dotted",
         paneType: "workflow",
     ),
     SidebarToolItem(
@@ -64,7 +64,7 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(
         id: "ssh",
         title: "SSH Manager",
-        icon: "network",
+        icon: "key.horizontal",
         paneType: "ssh",
     ),
     SidebarToolItem(
@@ -76,7 +76,7 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(
         id: "replay",
         title: "Session Replay",
-        icon: "play.rectangle",
+        icon: "play.square.stack",
         paneType: "replay",
     ),
     SidebarToolItem(
@@ -100,7 +100,7 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(
         id: "analytics",
         title: "Usage",
-        icon: "chart.bar",
+        icon: "chart.bar.xaxis",
         paneType: "analytics",
     ),
     SidebarToolItem(
@@ -112,19 +112,19 @@ private let allSidebarTools: [SidebarToolItem] = [
     SidebarToolItem(
         id: "brief",
         title: "Daily Brief",
-        icon: "newspaper",
+        icon: "doc.text.image",
         paneType: "daily_brief",
     ),
     SidebarToolItem(
         id: "rules",
         title: "Rules Manager",
-        icon: "list.bullet.rectangle",
+        icon: "checklist.checked",
         paneType: "rules",
     ),
     SidebarToolItem(
         id: "secrets",
         title: "Secrets",
-        icon: "key.fill",
+        icon: "key",
         paneType: "secrets",
     ),
     SidebarToolItem(
@@ -173,10 +173,9 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "rules",
             "secrets",
             "ports",
-            "settings",
         ]
     } else {
-        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor", "settings"]
+        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor"]
     }
 
     return allSidebarTools.filter { allowedIDs.contains($0.id) }

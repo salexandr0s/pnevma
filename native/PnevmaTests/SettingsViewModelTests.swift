@@ -208,4 +208,28 @@ final class SettingsViewModelTests: XCTestCase {
         try await waitUntil { AppRuntimeSettings.shared.bottomToolBarAutoHide }
         XCTAssertTrue(AppRuntimeSettings.shared.bottomToolBarAutoHide)
     }
+
+    func testSettingsNavigationFilterMatchesRelevantSections() {
+        XCTAssertEqual(SettingsNavigationSection.filtered(for: "privacy"), [.telemetry])
+        XCTAssertEqual(SettingsNavigationSection.filtered(for: "shell"), [.terminal])
+        XCTAssertTrue(SettingsNavigationSection.filtered(for: "dashboard").contains(.usage))
+    }
+
+    func testSettingsNavigationResolvedSelectionKeepsVisibleSelection() {
+        let selection = SettingsNavigationSection.resolvedSelection(
+            current: .ghostty,
+            query: "terminal"
+        )
+
+        XCTAssertEqual(selection, .ghostty)
+    }
+
+    func testSettingsNavigationResolvedSelectionFallsBackToFirstVisibleMatch() {
+        let selection = SettingsNavigationSection.resolvedSelection(
+            current: .general,
+            query: "crash"
+        )
+
+        XCTAssertEqual(selection, .telemetry)
+    }
 }

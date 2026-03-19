@@ -1,5 +1,19 @@
 import Foundation
 
+enum WorkspaceOpenerLaunchContext: Equatable {
+    case generic
+    case project(path: String)
+
+    var preferredProjectPath: String? {
+        switch self {
+        case .generic:
+            return nil
+        case .project(let path):
+            return path
+        }
+    }
+}
+
 enum WorkspaceOpenerTab: String, CaseIterable, Identifiable {
     case prompt = "Prompt"
     case issues = "Issues"
@@ -22,6 +36,12 @@ struct ProjectEntry: Identifiable, Hashable {
     let path: String
     let name: String
     var id: String { path }
+}
+
+extension ProjectEntry {
+    init(path: String) {
+        self.init(path: path, name: URL(fileURLWithPath: path).lastPathComponent)
+    }
 }
 
 struct BranchItem: Identifiable {
