@@ -91,3 +91,24 @@ struct WorkspaceOpenerGitHubStatus: Decodable {
     let detail: String?
     let resolvedRepo: String?
 }
+
+struct WorkspaceOpenerIssueLaunchParams: Encodable, Sendable {
+    let path: String
+    let issueNumber: Int64
+    let createLinkedTaskWorktree: Bool
+}
+
+struct WorkspaceOpenerPullRequestLaunchParams: Encodable, Sendable {
+    let path: String
+    let prNumber: Int64
+    let createLinkedTaskWorktree: Bool
+}
+
+struct WorkspaceOpenerLaunchResult: Decodable, Sendable {
+    let projectPath: String
+    let workspaceName: String
+    let launchSource: WorkspaceLaunchSource
+    let workingDirectory: String?
+    let taskID: String?
+    let branch: String?
+}

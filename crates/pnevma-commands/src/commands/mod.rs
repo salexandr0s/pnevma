@@ -417,6 +417,24 @@ pub struct IssueResolveView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceLaunchSourceView {
+    pub kind: String,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerLaunchResult {
+    pub project_path: String,
+    pub workspace_name: String,
+    pub launch_source: WorkspaceLaunchSourceView,
+    pub working_directory: Option<String>,
+    pub task_id: Option<String>,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChangeView {
     pub path: String,
     pub additions: i64,

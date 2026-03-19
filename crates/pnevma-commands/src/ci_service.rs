@@ -1,8 +1,8 @@
 //! Service wrapping `gh run` CLI for CI pipeline operations.
 
+use crate::github_cli;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tokio::process::Command as TokioCommand;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhRunInfo {
@@ -30,7 +30,7 @@ pub struct CiService;
 impl CiService {
     /// List recent workflow runs via `gh run list`.
     pub async fn list_runs(cwd: &Path, limit: usize) -> Result<Vec<GhRunInfo>, String> {
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args([
                 "run",
                 "list",
@@ -69,7 +69,7 @@ impl CiService {
 
     /// Get details of a specific run via `gh run view`.
     pub async fn get_run(cwd: &Path, run_id: i64) -> Result<GhRunInfo, String> {
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args([
                 "run",
                 "view",
@@ -104,7 +104,7 @@ impl CiService {
 
     /// List jobs for a given run via `gh run view --json jobs`.
     pub async fn list_jobs(cwd: &Path, run_id: i64) -> Result<Vec<GhRunJob>, String> {
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args(["run", "view", &run_id.to_string(), "--json", "jobs"])
             .current_dir(cwd)
             .output()

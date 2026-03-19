@@ -190,6 +190,26 @@ final class WorkspaceRestoreTests: XCTestCase {
         XCTAssertEqual(manager.activeWorkspace?.name, "Two")
     }
 
+    func testWorkspaceSnapshotRoundTripsLaunchSource() {
+        let workspace = Workspace(name: "Issue #12 — Fix opener", projectPath: "/tmp/project")
+        workspace.launchSource = WorkspaceLaunchSource(
+            kind: "issue",
+            number: 12,
+            title: "Fix opener",
+            url: "https://github.com/acme/widgets/issues/12"
+        )
+
+        let restored = Workspace(snapshot: workspace.snapshot())
+
+        XCTAssertEqual(restored.launchSource?.kind, "issue")
+        XCTAssertEqual(restored.launchSource?.number, 12)
+        XCTAssertEqual(restored.launchSource?.title, "Fix opener")
+        XCTAssertEqual(
+            restored.launchSource?.url,
+            "https://github.com/acme/widgets/issues/12"
+        )
+    }
+
     func testWorkspaceManagerRestorePreservesMultipleProjectWorkspaces() {
         let bridge = PnevmaBridge()
         let manager = WorkspaceManager(bridge: bridge, commandBus: CommandBus(bridge: bridge))

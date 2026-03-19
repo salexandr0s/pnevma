@@ -148,6 +148,16 @@ impl GitService {
         base_branch: &str,
         slug: &str,
     ) -> Result<WorktreeLease, GitError> {
+        self.create_worktree_from_start_point(task_id, base_branch, slug)
+            .await
+    }
+
+    pub async fn create_worktree_from_start_point(
+        &self,
+        task_id: Uuid,
+        start_point: &str,
+        slug: &str,
+    ) -> Result<WorktreeLease, GitError> {
         // Insert a placeholder lease under the mutex lock BEFORE doing I/O
         // to prevent TOCTOU race conditions.
         {
@@ -181,7 +191,7 @@ impl GitService {
 
         // Perform git I/O without holding the lock
         let result = async {
-            self.git(["branch", &branch, base_branch]).await?;
+            self.git(["branch", &branch, start_point]).await?;
             self.git(["worktree", "add", path.to_string_lossy().as_ref(), &branch])
                 .await?;
             Ok::<_, GitError>(())

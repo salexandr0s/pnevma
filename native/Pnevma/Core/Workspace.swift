@@ -115,6 +115,13 @@ struct TerminalPaneSeed {
     let metadataJSON: String?
 }
 
+struct WorkspaceLaunchSource: Codable, Equatable, Sendable {
+    let kind: String
+    let number: Int64
+    let title: String
+    let url: String
+}
+
 struct WorkspacePaneLocation: Equatable {
     let tabIndex: Int
     let paneID: PaneID
@@ -181,7 +188,7 @@ final class WorkspaceTab: Identifiable {
         guard paneIDs.count == 1 else { return false }
 
         if let existingPane = layoutEngine.persistedPane(for: rootPaneID) {
-            guard existingPane.type == "welcome" else {
+            guard existingPane.type == "welcome" || existingPane.type == "terminal" else {
                 return false
             }
 
@@ -189,7 +196,7 @@ final class WorkspaceTab: Identifiable {
                 PersistedPane(
                     paneID: rootPaneID,
                     type: "terminal",
-                    workingDirectory: seed.workingDirectory,
+                    workingDirectory: seed.workingDirectory ?? existingPane.workingDirectory,
                     sessionID: existingPane.sessionID ?? seed.sessionID,
                     taskID: existingPane.taskID ?? seed.taskID,
                     metadataJSON: seed.metadataJSON ?? existingPane.metadataJSON
@@ -273,6 +280,7 @@ final class Workspace: Identifiable {
     var rightInspectorSection: RightInspectorSection = .files
     var browserLastURL: String?
     var browserDrawerHeight: Double?
+    var launchSource: WorkspaceLaunchSource?
 
     /// Tabs within this workspace.
     var tabs: [WorkspaceTab]
@@ -504,14 +512,19 @@ final class Workspace: Identifiable {
     }
 
     @discardableResult
-    func ensureActiveTabHasDisplayableRootPane() -> Bool {
-        ensureTabHasDisplayableRootPane(at: activeTabIndex)
+    func ensureActiveTabHasDisplayableRootPane(
+        seed: TerminalPaneSeed? = nil
+    ) -> Bool {
+        ensureTabHasDisplayableRootPane(at: activeTabIndex, seed: seed)
     }
 
     @discardableResult
-    func ensureTabHasDisplayableRootPane(at index: Int) -> Bool {
+    func ensureTabHasDisplayableRootPane(
+        at index: Int,
+        seed: TerminalPaneSeed? = nil
+    ) -> Bool {
         guard index >= 0, index < tabs.count else { return false }
-        return tabs[index].ensureDisplayableRootPane(seed: defaultTerminalSeed())
+        return tabs[index].ensureDisplayableRootPane(seed: seed ?? defaultTerminalSeed())
     }
 
     func activeTabPaneID(ofType paneType: String) -> PaneID? {
@@ -574,6 +587,7 @@ extension Workspace {
         var rightInspectorSection: RightInspectorSection?
         var browserLastURL: String?
         var browserDrawerHeight: Double?
+        var launchSource: WorkspaceLaunchSource?
     }
 
     func snapshot() -> Snapshot {
@@ -592,7 +606,8 @@ extension Workspace {
             isPinned: isPinned,
             rightInspectorSection: rightInspectorSection,
             browserLastURL: browserLastURL,
-            browserDrawerHeight: nil
+            browserDrawerHeight: nil,
+            launchSource: launchSource
         )
     }
 
@@ -643,5 +658,6 @@ extension Workspace {
         self.rightInspectorSection = snapshot.rightInspectorSection ?? .files
         self.browserLastURL = snapshot.browserLastURL
         self.browserDrawerHeight = snapshot.browserDrawerHeight
+        self.launchSource = snapshot.launchSource
     }
 }

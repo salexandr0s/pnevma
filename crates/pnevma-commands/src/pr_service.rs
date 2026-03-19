@@ -1,8 +1,8 @@
 //! Service wrapping `gh pr` CLI for pull request operations.
 
+use crate::github_cli;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tokio::process::Command as TokioCommand;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhPrInfo {
@@ -27,7 +27,7 @@ impl PrService {
         head: &str,
         base: &str,
     ) -> Result<GhPrInfo, String> {
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args([
                 "pr",
                 "create",
@@ -58,7 +58,7 @@ impl PrService {
 
     /// Get PR info via `gh pr view`.
     pub async fn get(cwd: &Path, number: i64) -> Result<GhPrInfo, String> {
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args([
                 "pr",
                 "view",
@@ -88,7 +88,7 @@ impl PrService {
             _ => "--merge",
         };
 
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args(["pr", "merge", &number.to_string(), merge_flag, "--auto"])
             .current_dir(cwd)
             .output()
@@ -104,7 +104,7 @@ impl PrService {
 
     /// Close a PR via `gh pr close`.
     pub async fn close(cwd: &Path, number: i64) -> Result<(), String> {
-        let output = TokioCommand::new("gh")
+        let output = github_cli::command()
             .args(["pr", "close", &number.to_string()])
             .current_dir(cwd)
             .output()

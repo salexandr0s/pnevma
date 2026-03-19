@@ -24,6 +24,17 @@ private final class UITestReadinessView: NSView {
     override func accessibilityValue() -> Any? { detail }
 }
 
+private struct WorkspaceOpenerTrustParams: Encodable {
+    let path: String
+}
+
+private struct WorkspaceOpenerInitializeParams: Encodable {
+    let path: String
+    let projectName: String?
+    let projectBrief: String?
+    let defaultProvider: String?
+}
+
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -2573,13 +2584,68 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         case .issues:
-            guard let path = viewModel.selectedProjectPath else { return }
-            openLocalWorkspace(path: path, terminalMode: terminalMode)
+            guard let path = viewModel.selectedProjectPath,
+                  let issueNumber = viewModel.selectedIssueNumber,
+                  let bus = commandBus else { return }
+            viewModel.isLoading = true
+            viewModel.errorMessage = nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { viewModel.isLoading = false }
+                do {
+                    let launch = try await self.createWorkspaceFromIssue(
+                        path: path,
+                        issueNumber: issueNumber,
+                        createLinkedTaskWorktree: viewModel.createLinkedTaskWorktree,
+                        commandBus: bus
+                    )
+                    guard self.openLocalWorkspace(
+                        path: launch.projectPath,
+                        terminalMode: terminalMode,
+                        workspaceName: launch.workspaceName,
+                        launchSource: launch.launchSource,
+                        workingDirectory: launch.workingDirectory,
+                        taskID: launch.taskID
+                    ) != nil else { return }
+                    self.openerViewModel = nil
+                    self.openerPanel = nil
+                } catch {
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            }
+            return
 
         case .pullRequests:
-            guard let path = viewModel.selectedProjectPath else { return }
-            // TODO: Check out PR head branch after opening workspace
-            openLocalWorkspace(path: path, terminalMode: terminalMode)
+            guard let path = viewModel.selectedProjectPath,
+                  let prNumber = viewModel.selectedPRNumber,
+                  let bus = commandBus else { return }
+            viewModel.isLoading = true
+            viewModel.errorMessage = nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { viewModel.isLoading = false }
+                do {
+                    let launch = try await self.createWorkspaceFromPullRequest(
+                        path: path,
+                        prNumber: prNumber,
+                        createLinkedTaskWorktree: viewModel.createLinkedTaskWorktree,
+                        commandBus: bus
+                    )
+                    guard self.openLocalWorkspace(
+                        path: launch.projectPath,
+                        terminalMode: terminalMode,
+                        workspaceName: launch.workspaceName,
+                        launchSource: launch.launchSource,
+                        workingDirectory: launch.workingDirectory,
+                        taskID: launch.taskID
+                    ) != nil else { return }
+                    self.openerViewModel = nil
+                    self.openerPanel = nil
+                } catch {
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            }
+            return
 
         case .branches:
             guard let path = viewModel.selectedProjectPath else { return }
@@ -2902,6 +2968,130 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         uiTestReadinessView.detail = detail
     }
 
+    private func createWorkspaceFromIssue(
+        path: String,
+        issueNumber: Int64,
+        createLinkedTaskWorktree: Bool,
+        commandBus: any CommandCalling
+    ) async throws -> WorkspaceOpenerLaunchResult {
+        let params = WorkspaceOpenerIssueLaunchParams(
+            path: path,
+            issueNumber: issueNumber,
+            createLinkedTaskWorktree: createLinkedTaskWorktree
+        )
+
+        for _ in 0..<3 {
+            do {
+                return try await commandBus.call(
+                    method: "workspace_opener.create_from_issue",
+                    params: params
+                )
+            } catch {
+                try await recoverWorkspaceOpenerProjectIfNeeded(
+                    path: path,
+                    workspaceName: "Issue #\(issueNumber)",
+                    commandBus: commandBus,
+                    error: error
+                )
+            }
+        }
+
+        throw NSError(
+            domain: "WorkspaceOpener",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Issue workspace launch retries were exhausted."]
+        )
+    }
+
+    private func createWorkspaceFromPullRequest(
+        path: String,
+        prNumber: Int64,
+        createLinkedTaskWorktree: Bool,
+        commandBus: any CommandCalling
+    ) async throws -> WorkspaceOpenerLaunchResult {
+        let params = WorkspaceOpenerPullRequestLaunchParams(
+            path: path,
+            prNumber: prNumber,
+            createLinkedTaskWorktree: createLinkedTaskWorktree
+        )
+
+        for _ in 0..<3 {
+            do {
+                return try await commandBus.call(
+                    method: "workspace_opener.create_from_pr",
+                    params: params
+                )
+            } catch {
+                try await recoverWorkspaceOpenerProjectIfNeeded(
+                    path: path,
+                    workspaceName: "PR #\(prNumber)",
+                    commandBus: commandBus,
+                    error: error
+                )
+            }
+        }
+
+        throw NSError(
+            domain: "WorkspaceOpener",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Pull request workspace launch retries were exhausted."]
+        )
+    }
+
+    private func recoverWorkspaceOpenerProjectIfNeeded(
+        path: String,
+        workspaceName: String,
+        commandBus: any CommandCalling,
+        error: Error
+    ) async throws {
+        guard case .backendError(_, let message) = error as? PnevmaError else {
+            throw error
+        }
+
+        switch message {
+        case "workspace_not_initialized":
+            guard await promptToInitializeWorkspace(named: workspaceName, path: path) else {
+                throw NSError(
+                    domain: "WorkspaceOpener",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Workspace initialization was canceled."]
+                )
+            }
+            let trimmedName = URL(fileURLWithPath: path)
+                .lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let _: InitializeProjectScaffoldResult = try await commandBus.call(
+                method: "project.initialize_scaffold",
+                params: WorkspaceOpenerInitializeParams(
+                    path: path,
+                    projectName: trimmedName.isEmpty ? nil : trimmedName,
+                    projectBrief: nil,
+                    defaultProvider: nil
+                )
+            )
+        case "workspace_not_trusted", "workspace_config_changed":
+            let _: OkResponse = try await commandBus.call(
+                method: "project.trust",
+                params: WorkspaceOpenerTrustParams(path: path)
+            )
+        default:
+            throw error
+        }
+    }
+
+    private func promptToInitializeWorkspace(named workspaceName: String, path: String) async -> Bool {
+        let displayName = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = displayName.isEmpty
+            ? URL(fileURLWithPath: path).lastPathComponent
+            : displayName
+        let alert = NSAlert()
+        alert.messageText = "Initialize Project Scaffold?"
+        alert.informativeText = "\(subject) is missing pnevma.toml and the .pnevma support directory. Initialize them now to open this workspace?"
+        alert.addButton(withTitle: "Initialize")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func openUITestProjectWorkspace(path: String) async {
         guard let workspace = openLocalWorkspace(path: path, terminalMode: .persistent) else {
             setUITestReadiness(.projectOpenFailed, detail: "workspace manager unavailable")
@@ -2923,7 +3113,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) -> Workspace? {
+    private func openLocalWorkspace(
+        path: String,
+        terminalMode: WorkspaceTerminalMode,
+        workspaceName: String? = nil,
+        launchSource: WorkspaceLaunchSource? = nil,
+        workingDirectory: String? = nil,
+        taskID: String? = nil
+    ) -> Workspace? {
         guard let workspaceManager else {
             ToastManager.shared.show(
                 "Workspace manager unavailable",
@@ -2933,11 +3130,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
 
-        let name = URL(fileURLWithPath: path).lastPathComponent
+        let trimmedWorkspaceName = workspaceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (trimmedWorkspaceName?.isEmpty == false)
+            ? trimmedWorkspaceName!
+            : URL(fileURLWithPath: path).lastPathComponent
         let workspace = workspaceManager.createLocalProjectWorkspace(
             name: name,
             projectPath: path,
-            terminalMode: terminalMode
+            terminalMode: terminalMode,
+            launchSource: launchSource,
+            initialWorkingDirectory: workingDirectory,
+            initialTaskID: taskID
         )
         ToastManager.shared.show(
             "Workspace opened: \(name)",

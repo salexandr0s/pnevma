@@ -51,6 +51,7 @@ final class WorkspaceOpenerViewModel {
     var issues: [GitHubIssueItem] = []
     var selectedIssueNumber: Int64?
     var isLoadingIssues: Bool = false
+    var createLinkedTaskWorktree: Bool = false
 
     // Pull requests tab
     var prSearchText: String = ""
@@ -154,8 +155,10 @@ final class WorkspaceOpenerViewModel {
 
     var gitHubEmptyStateTitle: String {
         switch gitHubStatus?.state {
-        case .missingGhCLI, .notAuthenticated, .noDefaultRepo, .ready:
+        case .missingGhCLI, .notAuthenticated, .ready:
             return "Connect GitHub"
+        case .noDefaultRepo:
+            return "GitHub Unavailable"
         case .noGitHubRemote:
             return "No GitHub Remote"
         case .notGitRepo:
@@ -184,8 +187,10 @@ final class WorkspaceOpenerViewModel {
         switch gitHubStatus?.state {
         case .missingGhCLI:
             return "Install GitHub CLI"
-        case .notAuthenticated, .noDefaultRepo:
+        case .notAuthenticated:
             return "Connect GitHub"
+        case .noDefaultRepo:
+            return "Refresh GitHub"
         default:
             return nil
         }
@@ -229,6 +234,7 @@ final class WorkspaceOpenerViewModel {
 
     func onProjectChanged(using bus: any CommandCalling) {
         loadTask?.cancel()
+        errorMessage = nil
         loadTask = Task { [weak self] in
             guard let self else { return }
             await self.fetchBranches(using: bus)
@@ -265,8 +271,10 @@ final class WorkspaceOpenerViewModel {
                     worktreePath: nil
                 )
             }
+            errorMessage = nil
         } catch {
             branches = []
+            errorMessage = "Could not load branches: \(error.localizedDescription)"
         }
     }
 
@@ -284,6 +292,9 @@ final class WorkspaceOpenerViewModel {
                 method: "workspace_opener.github_status",
                 params: WorkspaceOpenerPathParams(path: selectedProjectPath)
             )
+            if gitHubStatus?.state == .ready {
+                errorMessage = nil
+            }
         } catch {
             gitHubStatus = WorkspaceOpenerGitHubStatus(
                 state: .error,
@@ -317,10 +328,11 @@ final class WorkspaceOpenerViewModel {
                     author: $0.author
                 )
             }
+            errorMessage = nil
         } catch {
             issues = []
             selectedIssueNumber = nil
-            await refreshGitHubStatus(using: bus)
+            errorMessage = "Could not load GitHub issues: \(error.localizedDescription)"
         }
     }
 
@@ -347,10 +359,11 @@ final class WorkspaceOpenerViewModel {
                     status: $0.status
                 )
             }
+            errorMessage = nil
         } catch {
             pullRequests = []
             selectedPRNumber = nil
-            await refreshGitHubStatus(using: bus)
+            errorMessage = "Could not load pull requests: \(error.localizedDescription)"
         }
     }
 
@@ -392,22 +405,7 @@ final class WorkspaceOpenerViewModel {
                 errorMessage = error.localizedDescription
             }
 
-        case .noDefaultRepo:
-            do {
-                gitHubStatus = try await bus.call(
-                    method: "workspace_opener.github_connect",
-                    params: WorkspaceOpenerPathParams(path: selectedProjectPath)
-                )
-                if gitHubStatus?.state == .ready {
-                    await fetchIssues(using: bus)
-                    await fetchPullRequests(using: bus)
-                }
-            } catch {
-                errorMessage = error.localizedDescription
-                await refreshGitHubStatus(using: bus)
-            }
-
-        case .noGitHubRemote, .notGitRepo, .error, .none:
+        case .noDefaultRepo, .noGitHubRemote, .notGitRepo, .error, .none:
             await refreshGitHubStatus(using: bus)
         }
     }
@@ -468,6 +466,7 @@ final class WorkspaceOpenerViewModel {
         issueSearchText = ""
         issues = []
         selectedIssueNumber = nil
+        createLinkedTaskWorktree = false
         prSearchText = ""
         pullRequests = []
         selectedPRNumber = nil

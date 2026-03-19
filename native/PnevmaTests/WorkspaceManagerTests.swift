@@ -611,6 +611,34 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
+    func testCreateLocalProjectWorkspaceAppliesLaunchSourceAndInitialTerminalSeed() throws {
+        let manager = WorkspaceManager()
+        defer { manager.shutdown() }
+
+        let workspace = manager.createLocalProjectWorkspace(
+            name: "Issue #12 — Fix opener",
+            projectPath: "/tmp/project",
+            terminalMode: .persistent,
+            launchSource: WorkspaceLaunchSource(
+                kind: "issue",
+                number: 12,
+                title: "Fix opener",
+                url: "https://github.com/acme/widgets/issues/12"
+            ),
+            initialWorkingDirectory: "/tmp/project/.pnevma/worktrees/task-12",
+            initialTaskID: "task-12"
+        )
+
+        let rootPaneID = try XCTUnwrap(workspace.layoutEngine.root?.allPaneIDs.first)
+        let rootPane = try XCTUnwrap(workspace.layoutEngine.persistedPane(for: rootPaneID))
+
+        XCTAssertEqual(workspace.launchSource?.kind, "issue")
+        XCTAssertEqual(workspace.launchSource?.number, 12)
+        XCTAssertEqual(rootPane.type, "terminal")
+        XCTAssertEqual(rootPane.workingDirectory, "/tmp/project/.pnevma/worktrees/task-12")
+        XCTAssertEqual(rootPane.taskID, "task-12")
+    }
+
     func testRemoteWorkspaceResolvesProjectPathAndOpensBackendProject() async throws {
         let mountPath = "/tmp/remote-mounted-project"
         let bus = MockCommandBus(specs: [

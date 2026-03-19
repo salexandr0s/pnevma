@@ -17,6 +17,12 @@ struct IssuesTabView: View {
                 .padding(.horizontal, DesignTokens.Spacing.md)
                 .padding(.vertical, DesignTokens.Spacing.sm)
 
+                Toggle("Create linked task/worktree", isOn: $viewModel.createLinkedTaskWorktree)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12))
+                    .padding(.horizontal, DesignTokens.Spacing.md)
+                    .padding(.bottom, DesignTokens.Spacing.sm)
+
                 Divider()
 
                 if viewModel.isLoadingIssues {

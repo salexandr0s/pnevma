@@ -968,6 +968,28 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "workspace_opener.create_from_issue" => {
+            let input: commands::WorkspaceOpenerIssueLaunchInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::create_workspace_from_issue(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace_opener.create_from_pr" => {
+            let input: commands::WorkspaceOpenerPullRequestLaunchInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::create_workspace_from_pull_request(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "git.list_branches" => serde_json::to_value(
             commands::list_branches(state)
                 .await

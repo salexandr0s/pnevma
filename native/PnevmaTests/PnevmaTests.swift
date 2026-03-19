@@ -42,4 +42,15 @@ final class PnevmaTests: XCTestCase {
 
         XCTAssertNil(viewModel.selectedProjectPath)
     }
+
+    func testWorkspaceOpenerLinkedTaskWorktreeDefaultsOffAndResets() throws {
+        let viewModel = WorkspaceOpenerViewModel()
+
+        XCTAssertFalse(viewModel.createLinkedTaskWorktree)
+
+        viewModel.createLinkedTaskWorktree = true
+        viewModel.reset()
+
+        XCTAssertFalse(viewModel.createLinkedTaskWorktree)
+    }
 }

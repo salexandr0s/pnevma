@@ -220,7 +220,10 @@ final class WorkspaceManager {
     func createLocalProjectWorkspace(
         name: String,
         projectPath: String,
-        terminalMode: WorkspaceTerminalMode
+        terminalMode: WorkspaceTerminalMode,
+        launchSource: WorkspaceLaunchSource? = nil,
+        initialWorkingDirectory: String? = nil,
+        initialTaskID: String? = nil
     ) -> Workspace {
         let workspace = createWorkspace(
             name: name,
@@ -230,7 +233,15 @@ final class WorkspaceManager {
             terminalMode: terminalMode
         )
         resetMetadata(for: workspace)
-        _ = workspace.ensureActiveTabHasDisplayableRootPane()
+        workspace.launchSource = launchSource
+        _ = workspace.ensureActiveTabHasDisplayableRootPane(
+            seed: TerminalPaneSeed(
+                workingDirectory: initialWorkingDirectory ?? workspace.defaultWorkingDirectory,
+                sessionID: nil,
+                taskID: initialTaskID,
+                metadataJSON: workspace.defaultTerminalMetadata().encodedJSON()
+            )
+        )
         Log.workspace.info(
             "Created local project workspace \(workspace.id, privacy: .public) for \(projectPath, privacy: .public)"
         )

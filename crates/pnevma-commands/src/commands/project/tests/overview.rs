@@ -774,3 +774,362 @@ async fn list_branches_for_path_uses_selected_repository_path() {
     assert!(branches.contains(&"main".to_string()));
     assert!(branches.contains(&"feature/workspace-opener".to_string()));
 }
+
+fn init_workspace_opener_repo(project_root: &Path) {
+    std::fs::create_dir_all(project_root).expect("create repo dir");
+    run_git(project_root, &["init", "-b", "main"]);
+    std::fs::write(project_root.join("README.md"), "hello\n").expect("write readme");
+    run_git(project_root, &["add", "README.md"]);
+    run_git(
+        project_root,
+        &[
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    );
+    run_git(
+        project_root,
+        &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+    );
+}
+
+fn fake_gh_script(log_path: &Path, pr_head_repo: Option<&Path>) -> String {
+    let head_repo_case = pr_head_repo.map(|path| {
+        format!(
+            r#"    echo '{{"number":88,"title":"Review fork changes","headRefName":"feature/from-fork","baseRefName":"main","state":"OPEN","url":"https://github.com/acme/widgets/pull/88","headRepository":{{"url":"{}"}}}}'
+    exit 0
+"#,
+            path.to_string_lossy()
+        )
+    });
+    let head_repo_case = head_repo_case.unwrap_or_else(|| {
+        r#"    echo '{"number":88,"title":"Review fork changes","headRefName":"feature/from-fork","baseRefName":"main","state":"OPEN","url":"https://github.com/acme/widgets/pull/88","headRepository":{"url":"https://github.com/acme/widgets"}}'
+    exit 0
+"#
+        .to_string()
+    });
+
+    format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+if [ "$1" = "--version" ]; then
+    echo "gh version 2.99.0"
+    exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+    exit 0
+fi
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+    if [ "$3" != "acme/widgets" ]; then
+        echo "expected explicit repo target" >&2
+        exit 1
+    fi
+    echo '{{"nameWithOwner":"acme/widgets","defaultBranchRef":{{"name":"main"}}}}'
+    exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+    if [ "$3" != "-R" ] || [ "$4" != "acme/widgets" ]; then
+        echo "expected issue list -R acme/widgets" >&2
+        exit 1
+    fi
+    echo '[{{"number":123,"title":"Fix opener","state":"OPEN","labels":[],"author":{{"login":"octocat"}}}}]'
+    exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+    if [ "$3" = "-R" ] && [ "$4" = "acme/widgets" ]; then
+        echo '[{{"number":88,"title":"Review fork changes","headRefName":"feature/from-fork","baseRefName":"main","state":"OPEN"}}]'
+        exit 0
+    fi
+    echo '[]'
+    exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+    echo '{{"number":123,"title":"Fix opener","state":"OPEN","url":"https://github.com/acme/widgets/issues/123"}}'
+    exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+{head_repo_case}fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+        log_path.to_string_lossy()
+    )
+}
+
+#[tokio::test]
+async fn github_status_for_path_uses_detected_gh_and_explicit_repo_target() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+
+    let gh_dir = temp.path().join("gh-bin");
+    std::fs::create_dir_all(&gh_dir).expect("create gh dir");
+    let log_path = temp.path().join("gh.log");
+    let gh_path = gh_dir.join("gh");
+    write_fake_executable(&gh_path, &fake_gh_script(&log_path, None));
+    let _gh = crate::github_cli::TestGithubCliBinaryOverride::new(gh_path);
+
+    let status = github_status_for_path(WorkspaceOpenerPathInput {
+        path: project_root.to_string_lossy().to_string(),
+    })
+    .await
+    .expect("github status");
+
+    assert_eq!(status.state, "ready");
+    assert_eq!(status.resolved_repo.as_deref(), Some("acme/widgets"));
+
+    let log = std::fs::read_to_string(&log_path).expect("read gh log");
+    assert!(
+        log.lines()
+            .any(|line| line
+                .contains("repo view acme/widgets --json nameWithOwner,defaultBranchRef")),
+        "expected explicit repo view call in log: {log}"
+    );
+}
+
+#[tokio::test]
+async fn list_github_issues_for_path_passes_explicit_repo_flag() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+
+    let gh_dir = temp.path().join("gh-bin");
+    std::fs::create_dir_all(&gh_dir).expect("create gh dir");
+    let log_path = temp.path().join("gh.log");
+    let gh_path = gh_dir.join("gh");
+    write_fake_executable(&gh_path, &fake_gh_script(&log_path, None));
+    let _gh = crate::github_cli::TestGithubCliBinaryOverride::new(gh_path);
+
+    let issues = list_github_issues_for_path(WorkspaceOpenerPathInput {
+        path: project_root.to_string_lossy().to_string(),
+    })
+    .await
+    .expect("list issues");
+
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].number, 123);
+    assert_eq!(issues[0].title, "Fix opener");
+
+    let log = std::fs::read_to_string(&log_path).expect("read gh log");
+    assert!(
+        log.lines().any(|line| line.contains(
+            "issue list -R acme/widgets --json number,title,state,labels,author --limit 50"
+        )),
+        "expected explicit issue list call in log: {log}"
+    );
+}
+
+#[tokio::test]
+async fn create_workspace_from_issue_without_linked_task_returns_repo_launch_result() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+
+    let gh_dir = temp.path().join("gh-bin");
+    std::fs::create_dir_all(&gh_dir).expect("create gh dir");
+    let log_path = temp.path().join("gh.log");
+    let gh_path = gh_dir.join("gh");
+    write_fake_executable(&gh_path, &fake_gh_script(&log_path, None));
+    let _gh = crate::github_cli::TestGithubCliBinaryOverride::new(gh_path);
+
+    let state = AppState::new(Arc::new(NullEmitter));
+    let result = create_workspace_from_issue(
+        WorkspaceOpenerIssueLaunchInput {
+            path: project_root.to_string_lossy().to_string(),
+            issue_number: 123,
+            create_linked_task_worktree: false,
+        },
+        &state,
+    )
+    .await
+    .expect("create from issue");
+
+    let expected_project_path = std::fs::canonicalize(&project_root)
+        .expect("canonical project root")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(result.project_path, expected_project_path);
+    assert_eq!(result.workspace_name, "Issue #123 — Fix opener");
+    assert_eq!(result.launch_source.kind, "issue");
+    assert_eq!(result.launch_source.number, 123);
+    assert_eq!(
+        result.launch_source.url,
+        "https://github.com/acme/widgets/issues/123"
+    );
+    assert!(result.working_directory.is_none());
+    assert!(result.task_id.is_none());
+    assert!(result.branch.is_none());
+}
+
+#[tokio::test]
+async fn create_workspace_from_issue_with_linked_task_creates_task_and_worktree() {
+    let home = tempdir().expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+
+    let project_root = home.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+    std::fs::create_dir_all(project_root.join(".pnevma/data")).expect("create scaffold");
+    write_test_project_config(&project_root, &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+
+    let gh_dir = home.path().join("gh-bin");
+    std::fs::create_dir_all(&gh_dir).expect("create gh dir");
+    let log_path = home.path().join("gh.log");
+    let gh_path = gh_dir.join("gh");
+    write_fake_executable(&gh_path, &fake_gh_script(&log_path, None));
+    let _gh = crate::github_cli::TestGithubCliBinaryOverride::new(gh_path);
+
+    let result = create_workspace_from_issue(
+        WorkspaceOpenerIssueLaunchInput {
+            path: project_root.to_string_lossy().to_string(),
+            issue_number: 123,
+            create_linked_task_worktree: true,
+        },
+        &state,
+    )
+    .await
+    .expect("create linked issue workspace");
+
+    let task_id = result.task_id.clone().expect("task id");
+    let working_directory = result.working_directory.clone().expect("working dir");
+    let branch = result.branch.clone().expect("branch");
+
+    assert!(Path::new(&working_directory).exists());
+    assert!(branch.starts_with("pnevma/"));
+
+    let db = Db::open(&project_root).await.expect("open db");
+    let task = db
+        .get_task(&task_id)
+        .await
+        .expect("get task")
+        .expect("task exists");
+    assert_eq!(task.title, "Issue #123: Fix opener");
+    assert_eq!(task.branch.as_deref(), Some(branch.as_str()));
+    assert!(task.worktree_id.is_some());
+
+    let source = db
+        .get_task_external_source(&task.project_id, "github_issue", "123")
+        .await
+        .expect("get external source")
+        .expect("external source exists");
+    assert_eq!(source.task_id, task_id);
+
+    let worktrees = db
+        .list_worktrees(&task.project_id)
+        .await
+        .expect("list worktrees");
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].path, working_directory);
+}
+
+#[tokio::test]
+async fn create_workspace_from_pull_request_with_linked_task_fetches_fork_head() {
+    let home = tempdir().expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+
+    let project_root = home.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+    std::fs::create_dir_all(project_root.join(".pnevma/data")).expect("create scaffold");
+    write_test_project_config(&project_root, &[]);
+
+    let fork_root = home.path().join("fork");
+    init_workspace_opener_repo(&fork_root);
+    run_git(&fork_root, &["checkout", "-b", "feature/from-fork"]);
+    std::fs::write(fork_root.join("fork.txt"), "from fork\n").expect("write fork change");
+    run_git(&fork_root, &["add", "fork.txt"]);
+    run_git(
+        &fork_root,
+        &[
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "fork change",
+        ],
+    );
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+
+    let gh_dir = home.path().join("gh-bin");
+    std::fs::create_dir_all(&gh_dir).expect("create gh dir");
+    let log_path = home.path().join("gh.log");
+    let gh_path = gh_dir.join("gh");
+    write_fake_executable(&gh_path, &fake_gh_script(&log_path, Some(&fork_root)));
+    let _gh = crate::github_cli::TestGithubCliBinaryOverride::new(gh_path);
+
+    let result = create_workspace_from_pull_request(
+        WorkspaceOpenerPullRequestLaunchInput {
+            path: project_root.to_string_lossy().to_string(),
+            pr_number: 88,
+            create_linked_task_worktree: true,
+        },
+        &state,
+    )
+    .await
+    .expect("create linked pr workspace");
+
+    let task_id = result.task_id.expect("task id");
+    let working_directory = result.working_directory.expect("working directory");
+    assert!(Path::new(&working_directory).exists());
+
+    let fetched_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&working_directory)
+        .output()
+        .expect("rev-parse worktree head");
+    assert!(
+        fetched_head.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fetched_head.stderr)
+    );
+    let fetched_head = String::from_utf8_lossy(&fetched_head.stdout)
+        .trim()
+        .to_string();
+
+    let fork_head = Command::new("git")
+        .args(["rev-parse", "feature/from-fork"])
+        .current_dir(&fork_root)
+        .output()
+        .expect("rev-parse fork head");
+    assert!(
+        fork_head.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fork_head.stderr)
+    );
+    let fork_head = String::from_utf8_lossy(&fork_head.stdout)
+        .trim()
+        .to_string();
+
+    assert_eq!(fetched_head, fork_head);
+
+    let db = Db::open(&project_root).await.expect("open db");
+    let task = db
+        .get_task(&task_id)
+        .await
+        .expect("get task")
+        .expect("task exists");
+    assert_eq!(task.title, "PR #88: Review fork changes");
+
+    let source = db
+        .get_task_external_source(&task.project_id, "github_pull_request", "88")
+        .await
+        .expect("get external source")
+        .expect("external source exists");
+    assert_eq!(source.task_id, task_id);
+}
