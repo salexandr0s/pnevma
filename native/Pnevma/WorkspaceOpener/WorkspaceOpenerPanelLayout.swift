@@ -2,9 +2,11 @@ import Foundation
 
 enum WorkspaceOpenerPanelLayout {
     static let minimumSize = CGSize(width: 480, height: 236)
+    private static let maximumHeight: CGFloat = 520
 
     static func preferredSize(
         for selectedTab: WorkspaceOpenerTab,
+        promptHasText: Bool,
         showAdvancedOptions: Bool,
         sshEnabled: Bool,
         hasErrorMessage: Bool
@@ -15,13 +17,13 @@ enum WorkspaceOpenerPanelLayout {
         switch selectedTab {
         case .prompt:
             width = 484
-            height = 304
+            height = promptHasText ? 356 : 320
             if showAdvancedOptions {
-                height += sshEnabled ? 144 : 68
+                height += sshEnabled ? 172 : 92
             }
         case .issues, .pullRequests, .branches:
             width = 560
-            height = 352
+            height = 368
         }
 
         if hasErrorMessage {
@@ -30,7 +32,7 @@ enum WorkspaceOpenerPanelLayout {
 
         return CGSize(
             width: max(width, minimumSize.width),
-            height: max(min(height, 480), minimumSize.height)
+            height: max(min(height, maximumHeight), minimumSize.height)
         )
     }
 }

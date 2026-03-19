@@ -2655,7 +2655,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             commandBus: bus,
             onPreferredSizeChange: { [weak self, weak panel] size in
                 guard let self, let panel else { return }
-                self.resizeOpenerPanel(panel, to: size)
+                DispatchQueue.main.async { [weak self, weak panel] in
+                    guard let self, let panel else { return }
+                    if vm.selectedTab == .prompt,
+                       let hostingView = panel.contentView as? NSHostingView<AnyView> {
+                        self.resizeOpenerPanel(panel, hostingView: hostingView, to: size)
+                    } else {
+                        self.resizeOpenerPanel(panel, to: size)
+                    }
+                }
             },
             onSubmit: { [weak self] viewModel in
                 panel.close()
@@ -2680,7 +2688,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let hostingView = NSHostingView(rootView: openerView)
+        let hostingView = NSHostingView(rootView: AnyView(openerView))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
         panel.setContentSize(initialPanelSize)
@@ -2694,22 +2702,85 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func resizeOpenerPanel(_ panel: NSPanel, to contentSize: CGSize) {
+        let maxContentHeight = maximumOpenerContentHeight(for: panel)
         let targetSize = CGSize(
             width: max(contentSize.width, WorkspaceOpenerPanelLayout.minimumSize.width),
-            height: max(contentSize.height, WorkspaceOpenerPanelLayout.minimumSize.height)
+            height: min(
+                max(contentSize.height, WorkspaceOpenerPanelLayout.minimumSize.height),
+                maxContentHeight
+            )
         )
+        animateOpenerPanel(panel, to: targetSize)
+    }
+
+    private func resizeOpenerPanel(
+        _ panel: NSPanel,
+        hostingView: NSHostingView<AnyView>,
+        to contentSize: CGSize
+    ) {
+        let targetWidth = max(contentSize.width, WorkspaceOpenerPanelLayout.minimumSize.width)
+        let measuredHeight = measureOpenerHeight(hostingView, width: targetWidth)
+        let unclampedHeight = max(
+            contentSize.height,
+            measuredHeight,
+            WorkspaceOpenerPanelLayout.minimumSize.height
+        )
+        let maxContentHeight = maximumOpenerContentHeight(for: panel)
+        let targetSize = CGSize(
+            width: targetWidth,
+            height: min(unclampedHeight, maxContentHeight)
+        )
+        animateOpenerPanel(panel, to: targetSize)
+    }
+
+    private func animateOpenerPanel(_ panel: NSPanel, to targetSize: CGSize) {
         guard panel.contentRect(forFrameRect: panel.frame).size != targetSize else { return }
 
         let currentFrame = panel.frame
         var nextFrame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: targetSize))
         nextFrame.origin.x = currentFrame.midX - (nextFrame.width / 2)
-        nextFrame.origin.y = currentFrame.maxY - nextFrame.height
+        nextFrame.origin.y = currentFrame.midY - (nextFrame.height / 2)
+        nextFrame = clampOpenerFrame(nextFrame, for: panel)
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(nextFrame, display: true)
         }
+    }
+
+    private func measureOpenerHeight(_ hostingView: NSHostingView<AnyView>, width: CGFloat) -> CGFloat {
+        hostingView.frame = NSRect(origin: .zero, size: NSSize(width: width, height: 1))
+        hostingView.layoutSubtreeIfNeeded()
+        return hostingView.fittingSize.height
+    }
+
+    private func maximumOpenerContentHeight(for panel: NSPanel) -> CGFloat {
+        let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        guard let visibleFrame else { return 640 }
+        return max(
+            WorkspaceOpenerPanelLayout.minimumSize.height,
+            visibleFrame.height - 80
+        )
+    }
+
+    private func clampOpenerFrame(_ frame: NSRect, for panel: NSPanel) -> NSRect {
+        guard let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            return frame
+        }
+
+        var clamped = frame
+        let horizontalMargin: CGFloat = 20
+        let verticalMargin: CGFloat = 20
+        clamped.origin.x = min(
+            max(clamped.origin.x, visibleFrame.minX + horizontalMargin),
+            visibleFrame.maxX - clamped.width - horizontalMargin
+        )
+        clamped.origin.y = min(
+            max(clamped.origin.y, visibleFrame.minY + verticalMargin),
+            visibleFrame.maxY - clamped.height - verticalMargin
+        )
+        return clamped
     }
 
     private func handleOpenerSubmit(_ viewModel: WorkspaceOpenerViewModel) {

@@ -7,7 +7,23 @@ final class WorkspaceOpenerPanelLayoutTests: XCTestCase {
         let viewModel = WorkspaceOpenerViewModel()
 
         XCTAssertEqual(viewModel.preferredPanelSize.width, 484)
-        XCTAssertEqual(viewModel.preferredPanelSize.height, 304)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 320)
+    }
+
+    func testPromptTypingExpandsPanelHeight() {
+        let viewModel = WorkspaceOpenerViewModel()
+        viewModel.promptText = "a"
+
+        XCTAssertEqual(viewModel.preferredPanelSize.width, 484)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 356)
+    }
+
+    func testPromptAdvancedLocalLayoutUsesTallerPanel() {
+        let viewModel = WorkspaceOpenerViewModel()
+        viewModel.showAdvancedOptions = true
+
+        XCTAssertEqual(viewModel.preferredPanelSize.width, 484)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 412)
     }
 
     func testPromptAdvancedRemoteLayoutExpandsButStaysCapped() {
@@ -17,7 +33,7 @@ final class WorkspaceOpenerPanelLayoutTests: XCTestCase {
         viewModel.errorMessage = "Example"
 
         XCTAssertEqual(viewModel.preferredPanelSize.width, 484)
-        XCTAssertEqual(viewModel.preferredPanelSize.height, 476)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 520)
     }
 
     func testListTabsUseLargerBrowsingLayout() {
@@ -25,6 +41,6 @@ final class WorkspaceOpenerPanelLayoutTests: XCTestCase {
         viewModel.selectedTab = .issues
 
         XCTAssertEqual(viewModel.preferredPanelSize.width, 560)
-        XCTAssertEqual(viewModel.preferredPanelSize.height, 352)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 368)
     }
 }

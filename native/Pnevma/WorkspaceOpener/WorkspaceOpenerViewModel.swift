@@ -76,9 +76,18 @@ final class WorkspaceOpenerViewModel {
     // Data loading tasks
     private var loadTask: Task<Void, Never>?
 
+    var promptHasText: Bool {
+        !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var promptEditorHeight: CGFloat {
+        promptHasText ? 96 : 60
+    }
+
     var preferredPanelSize: CGSize {
         WorkspaceOpenerPanelLayout.preferredSize(
             for: selectedTab,
+            promptHasText: promptHasText,
             showAdvancedOptions: showAdvancedOptions,
             sshEnabled: sshEnabled,
             hasErrorMessage: errorMessage != nil

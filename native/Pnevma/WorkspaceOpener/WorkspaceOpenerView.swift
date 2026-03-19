@@ -84,10 +84,11 @@ struct WorkspaceOpenerView: View {
                     .disabled(!viewModel.canSubmit || viewModel.isLoading)
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, 12)
+            .padding(.vertical, DesignTokens.Spacing.md)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear {
+        .fixedSize(horizontal: false, vertical: true)
+        .onChange(of: viewModel.promptText) { _, _ in
             onPreferredSizeChange(viewModel.preferredPanelSize)
         }
         .onChange(of: viewModel.selectedTab) { _, _ in

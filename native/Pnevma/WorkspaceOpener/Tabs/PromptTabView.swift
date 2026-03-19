@@ -3,10 +3,6 @@ import SwiftUI
 struct PromptTabView: View {
     @Bindable var viewModel: WorkspaceOpenerViewModel
 
-    private var promptEditorHeight: CGFloat {
-        viewModel.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 60 : 96
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 10) {
@@ -48,7 +44,7 @@ struct PromptTabView: View {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(Color.primary.opacity(DesignTokens.Opacity.subtle))
                     )
-                    .frame(height: promptEditorHeight, alignment: .top)
+                    .frame(height: viewModel.promptEditorHeight, alignment: .top)
                     .overlay(alignment: .topLeading) {
                         if viewModel.promptText.isEmpty {
                             Text("What do you want to do?")
