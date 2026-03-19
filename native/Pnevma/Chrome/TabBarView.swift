@@ -75,21 +75,30 @@ final class TabBarView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard bounds.contains(point) else { return nil }
+        let localPoint: NSPoint
+        if bounds.contains(point) {
+            localPoint = point
+        } else if let superview, frame.contains(point) {
+            localPoint = convert(point, from: superview)
+        } else {
+            localPoint = point
+        }
 
-        if let addButton, addButton.frame.contains(point) {
+        guard bounds.contains(localPoint) else { return nil }
+
+        if let addButton, addButton.frame.contains(localPoint) {
             return addButton
         }
 
         for button in tabButtons.reversed() {
-            let buttonPoint = convert(point, to: button)
+            let buttonPoint = convert(localPoint, to: button)
             if let hit = button.hitTest(buttonPoint) {
                 return hit
             }
         }
 
         guard let window else { return self }
-        let windowPoint = superview?.convert(point, to: nil) ?? point
+        let windowPoint = convert(localPoint, to: nil)
         let threshold: CGFloat = 5
         if windowPoint.x >= window.frame.width - threshold { return nil }
         if windowPoint.y < threshold && windowPoint.x >= window.frame.width - 15 { return nil }

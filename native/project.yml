@@ -25,8 +25,18 @@ schemes:
     test:
       config: Debug
       targets:
+        - PnevmaAppDelegateTests
         - PnevmaTests
         - PnevmaUITests
+  PnevmaAppDelegateTests:
+    build:
+      targets:
+        Pnevma: [test]
+        PnevmaAppDelegateTests: [test]
+    test:
+      config: Debug
+      targets:
+        - PnevmaAppDelegateTests
   PnevmaTests:
     build:
       targets:
@@ -112,6 +122,24 @@ targets:
         PRODUCT_MODULE_NAME: PnevmaTests
         PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.tests
         GENERATE_INFOPLIST_FILE: YES
+
+  PnevmaAppDelegateTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: PnevmaAppDelegateTests
+    dependencies:
+      - target: Pnevma
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_NAME: PnevmaAppDelegateTests
+        PRODUCT_MODULE_NAME: PnevmaAppDelegateTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.pnevma.appdelegatetests
+        GENERATE_INFOPLIST_FILE: YES
+        BUNDLE_LOADER: "$(BUILT_PRODUCTS_DIR)/Pnevma.app/Contents/MacOS/Pnevma"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Pnevma.app/Contents/MacOS/Pnevma"
 
   PnevmaUITests:
     type: bundle.ui-testing

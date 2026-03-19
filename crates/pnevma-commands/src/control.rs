@@ -990,6 +990,17 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "workspace_opener.create_from_branch" => {
+            let input: commands::WorkspaceOpenerBranchLaunchInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::create_workspace_from_branch(input)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "git.list_branches" => serde_json::to_value(
             commands::list_branches(state)
                 .await

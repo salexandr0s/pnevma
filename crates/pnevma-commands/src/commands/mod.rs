@@ -446,6 +446,13 @@ pub struct WorkspaceLaunchSourceView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerBranchView {
+    pub name: String,
+    pub has_worktree: bool,
+    pub worktree_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceOpenerLaunchResult {
     pub project_path: String,
     pub workspace_name: String,
@@ -1950,8 +1957,14 @@ fn session_lifecycle_state_for_status(status: &str) -> String {
 }
 
 fn tmux_attach_launch_command() -> String {
-    r#"tmux set -t "$PNEVMA_TMUX_TARGET" status off 2>/dev/null; tmux set -t "$PNEVMA_TMUX_TARGET" allow-passthrough all 2>/dev/null; exec tmux -u attach-session -t "$PNEVMA_TMUX_TARGET""#
-        .to_string()
+    let tmux = pnevma_ssh::shell_escape_arg(
+        pnevma_session::resolve_binary("tmux")
+            .to_string_lossy()
+            .as_ref(),
+    );
+    format!(
+        r#"{tmux} set -t "$PNEVMA_TMUX_TARGET" status off 2>/dev/null; {tmux} set -t "$PNEVMA_TMUX_TARGET" allow-passthrough all 2>/dev/null; exec {tmux} -u attach-session -t "$PNEVMA_TMUX_TARGET""#
+    )
 }
 
 fn parse_optional_datetime(value: &Option<String>) -> Option<DateTime<Utc>> {

@@ -1,3 +1,4 @@
+import AppKit
 import Observation
 import SwiftUI
 
@@ -26,6 +27,33 @@ final class BottomDrawerContentModel {
 
 typealias ToolDrawerChromeState = BottomDrawerChromeState
 typealias ToolDrawerContentModel = BottomDrawerContentModel
+
+private struct AccessibilityProbe: NSViewRepresentable {
+    let identifier: String
+    let label: String
+
+    func makeNSView(context: Context) -> AccessibilityProbeView {
+        let view = AccessibilityProbeView(frame: .zero)
+        view.probeIdentifier = identifier
+        view.probeLabel = label
+        return view
+    }
+
+    func updateNSView(_ nsView: AccessibilityProbeView, context: Context) {
+        nsView.probeIdentifier = identifier
+        nsView.probeLabel = label
+    }
+}
+
+private final class AccessibilityProbeView: NSView {
+    var probeIdentifier: String = ""
+    var probeLabel: String = ""
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    override func accessibilityIdentifier() -> String { probeIdentifier }
+    override func accessibilityLabel() -> String? { probeLabel }
+}
 
 // MARK: - NSView wrapper for pane content
 
@@ -176,6 +204,13 @@ struct BottomDrawerOverlayView: View {
                         .lineLimit(1)
                         .accessibilityIdentifier("bottom.drawer.title")
 
+                    AccessibilityProbe(
+                        identifier: "bottom.drawer.state",
+                        label: contentModel.activeToolID ?? "empty"
+                    )
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+
                     if let drawerSubtitle {
                         Text(drawerSubtitle)
                             .font(.caption)
@@ -232,18 +267,20 @@ struct BottomDrawerOverlayView: View {
                 if chromeState.isPresented, let session = contentModel.activeBrowserSession {
                     BrowserView(session: session)
                         .id(session.workspaceID)
+                        .accessibilityIdentifier("bottom.drawer.content.browser")
                 } else if chromeState.isPresented, let paneView = contentModel.activePaneView {
                     PaneContentBridge(paneView: paneView)
                         .id(contentModel.activePaneID)
+                        .accessibilityIdentifier(
+                            contentModel.activeToolID.map { "bottom.drawer.content.\($0)" }
+                                ?? "bottom.drawer.content.empty"
+                        )
                 } else {
                     Color.clear
+                        .accessibilityIdentifier("bottom.drawer.content.empty")
                 }
             }
             .id(contentModel.contentRevision)
-            .accessibilityIdentifier(
-                contentModel.activeToolID.map { "bottom.drawer.content.\($0)" }
-                    ?? "bottom.drawer.content.empty"
-            )
         }
         .frame(maxWidth: .infinity)
         .frame(height: effectiveHeight)
@@ -302,7 +339,19 @@ final class BottomDrawerOverlayBlockerView: NSView {
     var overlayHitRect: CGRect = .zero
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
+        guard capturesPointerEvents else { return nil }
+
+        let localPoint: NSPoint
+        if bounds.contains(point) {
+            localPoint = point
+        } else if let superview, frame.contains(point) {
+            localPoint = convert(point, from: superview)
+        } else {
+            return nil
+        }
+
+        guard overlayHitRect.contains(localPoint) else { return nil }
+        return self
     }
 }
 
@@ -312,7 +361,18 @@ final class BottomDrawerOverlayHostingView<Content: View>: FirstMouseHostingView
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard capturesPointerEvents else { return nil }
-        return super.hitTest(point)
+
+        let localPoint: NSPoint
+        if bounds.contains(point) {
+            localPoint = point
+        } else if let superview, frame.contains(point) {
+            localPoint = convert(point, from: superview)
+        } else {
+            return nil
+        }
+
+        guard overlayHitRect.contains(localPoint) else { return nil }
+        return super.hitTest(localPoint)
     }
 }
 

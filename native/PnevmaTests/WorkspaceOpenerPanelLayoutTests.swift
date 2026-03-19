@@ -43,4 +43,21 @@ final class WorkspaceOpenerPanelLayoutTests: XCTestCase {
         XCTAssertEqual(viewModel.preferredPanelSize.width, 560)
         XCTAssertEqual(viewModel.preferredPanelSize.height, 368)
     }
+
+    func testBranchesTabGetsTallerDefaultLayout() {
+        let viewModel = WorkspaceOpenerViewModel()
+        viewModel.selectedTab = .branches
+
+        XCTAssertEqual(viewModel.preferredPanelSize.width, 560)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 404)
+    }
+
+    func testBranchesTabExpandsForNewBranchComposer() {
+        let viewModel = WorkspaceOpenerViewModel()
+        viewModel.selectedTab = .branches
+        viewModel.isCreatingNewBranch = true
+
+        XCTAssertEqual(viewModel.preferredPanelSize.width, 560)
+        XCTAssertEqual(viewModel.preferredPanelSize.height, 468)
+    }
 }

@@ -9,6 +9,7 @@ enum WorkspaceOpenerPanelLayout {
         promptHasText: Bool,
         showAdvancedOptions: Bool,
         sshEnabled: Bool,
+        isCreatingNewBranch: Bool,
         hasErrorMessage: Bool
     ) -> CGSize {
         let width: CGFloat
@@ -21,9 +22,12 @@ enum WorkspaceOpenerPanelLayout {
             if showAdvancedOptions {
                 height += sshEnabled ? 172 : 92
             }
-        case .issues, .pullRequests, .branches:
+        case .issues, .pullRequests:
             width = 560
             height = 368
+        case .branches:
+            width = 560
+            height = isCreatingNewBranch ? 468 : 404
         }
 
         if hasErrorMessage {

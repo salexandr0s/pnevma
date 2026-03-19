@@ -72,16 +72,18 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     func testToolDockSwapReplacesDrawerContent() {
         toolDockItem("browser").click()
 
-        let drawerTitle = identifiedElement("bottom.drawer.title")
-        waitForLabel(drawerTitle, toContain: "Browser")
+        requireExists(identifiedElement("bottom.drawer.content.browser"))
         requireExists(identifiedElement("bottom.drawer.close"))
         requireExists(identifiedElement("bottom.drawer.openAsTab"))
+        let drawerState = requireExists(identifiedElement("bottom.drawer.state"))
+        waitForLabel(drawerState, toContain: "browser")
 
         toolDockItem("analytics").click()
-        waitForLabel(drawerTitle, toContain: "Usage")
+        waitForLabel(drawerState, toContain: "analytics")
+        requireExists(identifiedElement("bottom.drawer.close"))
 
         toolDockItem("notifications").click()
-        waitForLabel(drawerTitle, toContain: "Notifications")
+        waitForLabel(drawerState, toContain: "notifications")
         requireExists(identifiedElement("bottom.drawer.close"))
         requireExists(identifiedElement("bottom.drawer.openAsTab"))
     }

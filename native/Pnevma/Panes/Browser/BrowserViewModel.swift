@@ -28,96 +28,33 @@ final class BrowserViewModel: NSObject {
         )
     }
 
-    let webView: PnevmaWebView
-
     var onURLChanged: ((URL?) -> Void)?
 
-    private var observations: [NSKeyValueObservation] = []
+    var existingWebView: PnevmaWebView? {
+        webViewStorage
+    }
 
-    override init() {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()
-        config.preferences.isElementFullscreenEnabled = true
-        config.defaultWebpagePreferences.allowsContentJavaScript = true
-
-        // Bootstrap script for console/error telemetry
-        let bootstrap = WKUserScript(
-            source: """
-            (function() {
-                window.__pnevmaConsoleLog = [];
-                window.__pnevmaErrorLog = [];
-                var orig = console.log.bind(console);
-                console.log = function() {
-                    window.__pnevmaConsoleLog.push(Array.from(arguments).map(String).join(' '));
-                    orig.apply(console, arguments);
-                };
-                window.addEventListener('error', function(e) {
-                    window.__pnevmaErrorLog.push(e.message + ' at ' + e.filename + ':' + e.lineno);
-                });
-            })();
-            """,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true
-        )
-        config.userContentController.addUserScript(bootstrap)
-
-        let darkModeHint = WKUserScript(
-            source: "document.documentElement.style.colorScheme = 'dark light';",
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        )
-        config.userContentController.addUserScript(darkModeHint)
-
-        webView = PnevmaWebView(frame: .zero, configuration: config)
-        PerformanceDiagnostics.shared.recordBrowserWebViewCreation()
-        webView.appearance = NSAppearance(named: .darkAqua)
-        webView.underPageBackgroundColor = NSColor(white: 0.15, alpha: 1.0)
-        webView.allowsBackForwardNavigationGestures = true
-
-        // Safari user agent to avoid bot checks
-        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15"
-
-        #if DEBUG
-        // Enable Web Inspector only in debug builds
-        if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+    var webView: PnevmaWebView {
+        if let webViewStorage {
+            return webViewStorage
         }
-        #endif
 
-        super.init()
-
+        let webView = makeWebView()
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        webView.onRequestPanelFocus = panelFocusHandler
+        installObservations(on: webView)
+        webViewStorage = webView
+        return webView
+    }
 
-        // KVO closures may fire on a background thread. Do NOT read WKWebView
-        // properties (wv.url, wv.title, etc.) inside the closure — they must be
-        // accessed on the main thread. Instead, dispatch to MainActor and read
-        // from self.webView there.
-        observations = [
-            webView.observe(\.url) { [weak self] _, _ in
-                self?.applyObservedUpdate {
-                    let url = $0.webView.url
-                    $0.currentURL = url
-                    $0.omnibarText = url?.absoluteString ?? ""
-                    $0.onURLChanged?(url)
-                }
-            },
-            webView.observe(\.title) { [weak self] _, _ in
-                self?.applyObservedUpdate { $0.pageTitle = $0.webView.title ?? "" }
-            },
-            webView.observe(\.isLoading) { [weak self] _, _ in
-                self?.applyObservedUpdate { $0.isLoading = $0.webView.isLoading }
-            },
-            webView.observe(\.canGoBack) { [weak self] _, _ in
-                self?.applyObservedUpdate { $0.canGoBack = $0.webView.canGoBack }
-            },
-            webView.observe(\.canGoForward) { [weak self] _, _ in
-                self?.applyObservedUpdate { $0.canGoForward = $0.webView.canGoForward }
-            },
-            webView.observe(\.estimatedProgress) { [weak self] _, _ in
-                self?.applyObservedUpdate { $0.estimatedProgress = $0.webView.estimatedProgress }
-            },
-        ]
+    @ObservationIgnored
+    private var webViewStorage: PnevmaWebView?
+    private var observations: [NSKeyValueObservation] = []
+    private var panelFocusHandler: (() -> Void)?
+
+    override init() {
+        super.init()
     }
 
     // KVO observations are automatically invalidated when their tokens are deallocated.
@@ -171,6 +108,11 @@ final class BrowserViewModel: NSObject {
         omnibarFocusToken &+= 1
     }
 
+    func setPanelFocusHandler(_ handler: @escaping () -> Void) {
+        panelFocusHandler = handler
+        webViewStorage?.onRequestPanelFocus = handler
+    }
+
     func updateSuggestions(for query: String) {
         guard !query.isEmpty else {
             suggestions = []
@@ -183,6 +125,98 @@ final class BrowserViewModel: NSObject {
 
     var persistedURL: URL? {
         currentURL ?? navigatedURL
+    }
+
+    func prepareForTeardown() {
+        onURLChanged = nil
+        observations.removeAll()
+        panelFocusHandler = nil
+        guard let webView = webViewStorage else { return }
+        webViewStorage = nil
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.onRequestPanelFocus = nil
+        webView.removeFromSuperview()
+    }
+
+    private func makeWebView() -> PnevmaWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        config.preferences.isElementFullscreenEnabled = true
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
+
+        let bootstrap = WKUserScript(
+            source: """
+            (function() {
+                window.__pnevmaConsoleLog = [];
+                window.__pnevmaErrorLog = [];
+                var orig = console.log.bind(console);
+                console.log = function() {
+                    window.__pnevmaConsoleLog.push(Array.from(arguments).map(String).join(' '));
+                    orig.apply(console, arguments);
+                };
+                window.addEventListener('error', function(e) {
+                    window.__pnevmaErrorLog.push(e.message + ' at ' + e.filename + ':' + e.lineno);
+                });
+            })();
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(bootstrap)
+
+        let darkModeHint = WKUserScript(
+            source: "document.documentElement.style.colorScheme = 'dark light';",
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(darkModeHint)
+
+        let webView = PnevmaWebView(frame: .zero, configuration: config)
+        PerformanceDiagnostics.shared.recordBrowserWebViewCreation()
+        webView.appearance = NSAppearance(named: .darkAqua)
+        webView.underPageBackgroundColor = NSColor(white: 0.15, alpha: 1.0)
+        webView.allowsBackForwardNavigationGestures = true
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15"
+
+        #if DEBUG
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
+        #endif
+
+        return webView
+    }
+
+    private func installObservations(on webView: PnevmaWebView) {
+        // KVO closures may fire on a background thread. Do NOT read WKWebView
+        // properties inside the closure; dispatch to MainActor and re-read there.
+        observations = [
+            webView.observe(\.url) { [weak self] _, _ in
+                self?.applyObservedUpdate {
+                    let url = $0.existingWebView?.url
+                    $0.currentURL = url
+                    $0.omnibarText = url?.absoluteString ?? ""
+                    $0.onURLChanged?(url)
+                }
+            },
+            webView.observe(\.title) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.pageTitle = $0.existingWebView?.title ?? "" }
+            },
+            webView.observe(\.isLoading) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.isLoading = $0.existingWebView?.isLoading ?? false }
+            },
+            webView.observe(\.canGoBack) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.canGoBack = $0.existingWebView?.canGoBack ?? false }
+            },
+            webView.observe(\.canGoForward) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.canGoForward = $0.existingWebView?.canGoForward ?? false }
+            },
+            webView.observe(\.estimatedProgress) { [weak self] _, _ in
+                self?.applyObservedUpdate { $0.estimatedProgress = $0.existingWebView?.estimatedProgress ?? 0 }
+            },
+        ]
     }
 
     private func isLocalhostURL(_ url: URL) -> Bool {

@@ -79,7 +79,7 @@ struct WorkspaceOpenerView: View {
                 Spacer()
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.cancelAction)
-                Button("Create Workspace") { onSubmit(viewModel) }
+                Button(viewModel.submitButtonTitle) { onSubmit(viewModel) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!viewModel.canSubmit || viewModel.isLoading)
             }
@@ -87,7 +87,7 @@ struct WorkspaceOpenerView: View {
             .padding(.vertical, DesignTokens.Spacing.md)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize(horizontal: false, vertical: viewModel.selectedTab == .prompt)
         .onChange(of: viewModel.promptText) { _, _ in
             onPreferredSizeChange(viewModel.preferredPanelSize)
         }
@@ -101,6 +101,9 @@ struct WorkspaceOpenerView: View {
             onPreferredSizeChange(viewModel.preferredPanelSize)
         }
         .onChange(of: viewModel.errorMessage) { _, _ in
+            onPreferredSizeChange(viewModel.preferredPanelSize)
+        }
+        .onChange(of: viewModel.isCreatingNewBranch) { _, _ in
             onPreferredSizeChange(viewModel.preferredPanelSize)
         }
         .onChange(of: viewModel.selectedProjectPath) { _, _ in

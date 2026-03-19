@@ -150,10 +150,20 @@ async fn get_session_binding_reports_live_and_archived_modes() {
         .expect("live binding");
     assert_eq!(live.mode, "live_attach");
     assert_eq!(live.cwd, project_root.to_string_lossy());
+    let expected_tmux = pnevma_ssh::shell_escape_arg(
+        pnevma_session::resolve_binary("tmux")
+            .to_string_lossy()
+            .as_ref(),
+    );
     assert_eq!(
         live.launch_command.as_deref(),
         Some(tmux_attach_launch_command().as_str())
     );
+    assert!(live
+        .launch_command
+        .as_deref()
+        .unwrap_or_default()
+        .contains(&expected_tmux));
     assert!(live
         .env
         .iter()

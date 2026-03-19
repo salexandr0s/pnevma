@@ -20,6 +20,12 @@ private struct GitHubIssueResult: Decodable, Sendable {
     let author: String
 }
 
+private struct BranchListItem: Decodable, Sendable {
+    let name: String
+    let hasWorktree: Bool
+    let worktreePath: String?
+}
+
 private struct WorkspaceOpenerPathParams: Encodable, Sendable {
     let path: String
 }
@@ -63,6 +69,8 @@ final class WorkspaceOpenerViewModel {
     var branchSearchText: String = ""
     var branches: [BranchItem] = []
     var selectedBranchName: String?
+    var isCreatingNewBranch: Bool = false
+    var newBranchName: String = ""
     var branchFilter: BranchFilter = .all
     var isLoadingBranches: Bool = false
 
@@ -90,6 +98,7 @@ final class WorkspaceOpenerViewModel {
             promptHasText: promptHasText,
             showAdvancedOptions: showAdvancedOptions,
             sshEnabled: sshEnabled,
+            isCreatingNewBranch: isCreatingNewBranch,
             hasErrorMessage: errorMessage != nil
         )
     }
@@ -106,7 +115,28 @@ final class WorkspaceOpenerViewModel {
         case .pullRequests:
             return selectedPRNumber != nil && selectedProjectPath != nil
         case .branches:
-            return selectedBranchName != nil && selectedProjectPath != nil
+            guard selectedProjectPath != nil else { return false }
+            if isCreatingNewBranch {
+                return !trimmedNewBranchName.isEmpty
+            }
+            return selectedBranchName != nil
+        }
+    }
+
+    var submitButtonTitle: String {
+        switch selectedTab {
+        case .prompt, .issues, .pullRequests:
+            return "Create Workspace"
+        case .branches:
+            if isCreatingNewBranch {
+                return "Create and Checkout Branch"
+            }
+            guard let selectedBranch else {
+                return "Open Branch Workspace"
+            }
+            return selectedBranch.hasWorktree
+                ? "Open Branch Workspace"
+                : "Checkout and Open Workspace"
         }
     }
 
@@ -137,6 +167,15 @@ final class WorkspaceOpenerViewModel {
         guard !branchSearchText.isEmpty else { return items }
         let query = branchSearchText.lowercased()
         return items.filter { $0.name.lowercased().contains(query) }
+    }
+
+    var selectedBranch: BranchItem? {
+        guard let selectedBranchName else { return nil }
+        return branches.first { $0.name == selectedBranchName }
+    }
+
+    var trimmedNewBranchName: String {
+        newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var issuesAvailable: Bool {
@@ -244,6 +283,9 @@ final class WorkspaceOpenerViewModel {
     func onProjectChanged(using bus: any CommandCalling) {
         loadTask?.cancel()
         errorMessage = nil
+        selectedBranchName = nil
+        isCreatingNewBranch = false
+        newBranchName = ""
         loadTask = Task { [weak self] in
             guard let self else { return }
             await self.fetchBranches(using: bus)
@@ -268,21 +310,29 @@ final class WorkspaceOpenerViewModel {
         isLoadingBranches = true
         defer { isLoadingBranches = false }
         do {
-            let names: [String] = try await bus.call(
+            let items: [BranchListItem] = try await bus.call(
                 method: "workspace_opener.list_branches",
                 params: WorkspaceOpenerPathParams(path: selectedProjectPath)
             )
-            branches = names.map { name in
+            let previousSelection = selectedBranchName
+            branches = items.map { item in
                 BranchItem(
-                    name: name,
-                    isDefault: name == "main" || name == "master",
-                    hasWorktree: false,
-                    worktreePath: nil
+                    name: item.name,
+                    isDefault: item.name == "main" || item.name == "master",
+                    hasWorktree: item.hasWorktree,
+                    worktreePath: item.worktreePath
                 )
+            }
+            if let previousSelection,
+               branches.contains(where: { $0.name == previousSelection }) {
+                selectedBranchName = previousSelection
+            } else if !isCreatingNewBranch {
+                selectedBranchName = nil
             }
             errorMessage = nil
         } catch {
             branches = []
+            selectedBranchName = nil
             errorMessage = "Could not load branches: \(error.localizedDescription)"
         }
     }
@@ -482,11 +532,29 @@ final class WorkspaceOpenerViewModel {
         branchSearchText = ""
         branches = []
         selectedBranchName = nil
+        isCreatingNewBranch = false
+        newBranchName = ""
         gitHubStatus = nil
         isLoadingGitHubStatus = false
         isConnectingGitHub = false
         errorMessage = nil
         isLoading = false
         loadTask?.cancel()
+    }
+
+    func selectBranch(_ branchName: String) {
+        selectedBranchName = branchName
+        isCreatingNewBranch = false
+        newBranchName = ""
+    }
+
+    func beginNewBranchCreation() {
+        selectedBranchName = nil
+        isCreatingNewBranch = true
+    }
+
+    func cancelNewBranchCreation() {
+        isCreatingNewBranch = false
+        newBranchName = ""
     }
 }

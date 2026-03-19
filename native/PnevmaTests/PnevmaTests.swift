@@ -53,4 +53,29 @@ final class PnevmaTests: XCTestCase {
 
         XCTAssertFalse(viewModel.createLinkedTaskWorktree)
     }
+
+    func testWorkspaceOpenerBranchCreationRequiresNewBranchName() throws {
+        let viewModel = WorkspaceOpenerViewModel()
+        viewModel.selectedTab = .branches
+        viewModel.selectedProjectPath = "/tmp/project"
+
+        viewModel.beginNewBranchCreation()
+        XCTAssertFalse(viewModel.canSubmit)
+
+        viewModel.newBranchName = "feature/new-branch"
+        XCTAssertTrue(viewModel.canSubmit)
+        XCTAssertEqual(viewModel.submitButtonTitle, "Create and Checkout Branch")
+    }
+
+    func testWorkspaceOpenerSelectingExistingBranchExitsNewBranchMode() throws {
+        let viewModel = WorkspaceOpenerViewModel()
+        viewModel.beginNewBranchCreation()
+        viewModel.newBranchName = "feature/new-branch"
+
+        viewModel.selectBranch("feature/existing")
+
+        XCTAssertEqual(viewModel.selectedBranchName, "feature/existing")
+        XCTAssertFalse(viewModel.isCreatingNewBranch)
+        XCTAssertEqual(viewModel.newBranchName, "")
+    }
 }

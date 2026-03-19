@@ -771,8 +771,143 @@ async fn list_branches_for_path_uses_selected_repository_path() {
     .await
     .expect("list branches");
 
-    assert!(branches.contains(&"main".to_string()));
-    assert!(branches.contains(&"feature/workspace-opener".to_string()));
+    assert!(branches.iter().any(|branch| branch.name == "main"));
+    assert!(branches
+        .iter()
+        .any(|branch| branch.name == "feature/workspace-opener"));
+}
+
+#[tokio::test]
+async fn list_branches_for_path_marks_auxiliary_worktrees() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/worktree"]);
+
+    let worktree_path = project_root.join(".pnevma/worktrees/feature-worktree");
+    run_git(
+        &project_root,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_string_lossy().as_ref(),
+            "feature/worktree",
+        ],
+    );
+
+    let branches = list_branches_for_path(WorkspaceOpenerPathInput {
+        path: project_root.to_string_lossy().to_string(),
+    })
+    .await
+    .expect("list branches");
+
+    let feature_branch = branches
+        .into_iter()
+        .find(|branch| branch.name == "feature/worktree")
+        .expect("feature branch");
+    assert!(feature_branch.has_worktree);
+    let expected_worktree_path = canonical_string(&worktree_path);
+    assert_eq!(
+        feature_branch.worktree_path.as_deref(),
+        Some(expected_worktree_path.as_str())
+    );
+}
+
+fn current_branch(project_root: &Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(project_root)
+        .output()
+        .expect("git branch --show-current");
+    assert!(
+        output.status.success(),
+        "git branch --show-current failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn canonical_string(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .expect("canonicalize path")
+        .to_string_lossy()
+        .to_string()
+}
+
+#[tokio::test]
+async fn create_workspace_from_branch_checks_out_existing_branch() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/existing"]);
+
+    let result = create_workspace_from_branch(WorkspaceOpenerBranchLaunchInput {
+        path: project_root.to_string_lossy().to_string(),
+        branch_name: "feature/existing".to_string(),
+        create_new: false,
+    })
+    .await
+    .expect("create branch workspace");
+
+    assert_eq!(result.project_path, canonical_string(&project_root));
+    assert_eq!(result.workspace_name, "feature/existing");
+    assert_eq!(result.branch.as_deref(), Some("feature/existing"));
+    assert!(result.working_directory.is_none());
+    assert_eq!(current_branch(&project_root), "feature/existing");
+}
+
+#[tokio::test]
+async fn create_workspace_from_branch_creates_and_checks_out_new_branch() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+
+    let result = create_workspace_from_branch(WorkspaceOpenerBranchLaunchInput {
+        path: project_root.to_string_lossy().to_string(),
+        branch_name: "feature/new-workspace".to_string(),
+        create_new: true,
+    })
+    .await
+    .expect("create new branch workspace");
+
+    assert_eq!(result.branch.as_deref(), Some("feature/new-workspace"));
+    assert!(result.working_directory.is_none());
+    assert_eq!(current_branch(&project_root), "feature/new-workspace");
+}
+
+#[tokio::test]
+async fn create_workspace_from_branch_reuses_existing_worktree_without_checkout() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_workspace_opener_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/worktree"]);
+
+    let worktree_path = project_root.join(".pnevma/worktrees/feature-worktree");
+    run_git(
+        &project_root,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_string_lossy().as_ref(),
+            "feature/worktree",
+        ],
+    );
+
+    let result = create_workspace_from_branch(WorkspaceOpenerBranchLaunchInput {
+        path: project_root.to_string_lossy().to_string(),
+        branch_name: "feature/worktree".to_string(),
+        create_new: false,
+    })
+    .await
+    .expect("reuse branch worktree");
+
+    assert_eq!(result.branch.as_deref(), Some("feature/worktree"));
+    let expected_worktree_path = canonical_string(&worktree_path);
+    assert_eq!(
+        result.working_directory.as_deref(),
+        Some(expected_worktree_path.as_str())
+    );
+    assert_eq!(current_branch(&project_root), "main");
 }
 
 fn init_workspace_opener_repo(project_root: &Path) {

@@ -18,6 +18,10 @@ enum ChromeMotion {
     static let dockRevealHeight: CGFloat = 6
     static let dockCollapsedOpacity: CGFloat = 0.94
     static let drawerHiddenOvershoot: CGFloat = 24
+    static var disablesAnimationsForLightweightTesting: Bool {
+        ProcessInfo.processInfo.environment["PNEVMA_UI_TESTING"] == "1"
+            && ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_LIGHTWEIGHT_MODE"] == "1"
+    }
 
     static var prefersReducedMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -31,7 +35,7 @@ enum ChromeMotion {
         for transition: ChromeMotionTransition,
         reducedMotion: Bool
     ) -> TimeInterval {
-        guard !reducedMotion else { return 0 }
+        guard !reducedMotion, !disablesAnimationsForLightweightTesting else { return 0 }
 
         switch transition {
         case .sidebar, .rightInspector:

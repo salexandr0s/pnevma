@@ -12,15 +12,47 @@ struct BranchesTabView: View {
                     message: "Choose a folder first to browse branches for that workspace."
                 )
             } else {
-                WorkspaceOpenerSearchField(
-                    "Search by branch name",
-                    text: $viewModel.branchSearchText
-                ) {
-                    BranchFilterToggle(
-                        filter: $viewModel.branchFilter,
-                        totalCount: viewModel.branches.count,
-                        worktreeCount: viewModel.branches.filter(\.hasWorktree).count
-                    )
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
+                    WorkspaceOpenerSearchField(
+                        "Search by branch name",
+                        text: $viewModel.branchSearchText
+                    ) {
+                        BranchFilterToggle(
+                            filter: $viewModel.branchFilter,
+                            totalCount: viewModel.branches.count,
+                            worktreeCount: viewModel.branches.filter(\.hasWorktree).count
+                        )
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            if viewModel.isCreatingNewBranch {
+                                viewModel.cancelNewBranchCreation()
+                            } else {
+                                viewModel.beginNewBranchCreation()
+                            }
+                        } label: {
+                            Label(
+                                viewModel.isCreatingNewBranch ? "Cancel New Branch" : "New Branch",
+                                systemImage: viewModel.isCreatingNewBranch ? "xmark" : "plus"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        if viewModel.isCreatingNewBranch {
+                            Text("Name the branch, then use the primary action below.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+
+                    if viewModel.isCreatingNewBranch {
+                        NewBranchComposer(viewModel: viewModel)
+                    }
                 }
                 .padding(.horizontal, DesignTokens.Spacing.md)
                 .padding(.vertical, DesignTokens.Spacing.sm)
@@ -34,7 +66,9 @@ struct BranchesTabView: View {
                     WorkspaceOpenerStateCard(
                         icon: "arrow.triangle.branch",
                         title: "No branches found",
-                        message: "Try a different search or open another project."
+                        message: viewModel.isCreatingNewBranch
+                            ? "Create a branch above or try a different search."
+                            : "Try a different search or open another project."
                     )
                 } else {
                     WorkspaceOpenerListContainer {
@@ -43,13 +77,42 @@ struct BranchesTabView: View {
                                 branch: branch,
                                 isSelected: viewModel.selectedBranchName == branch.name
                             ) {
-                                viewModel.selectedBranchName = branch.name
+                                viewModel.selectBranch(branch.name)
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+private struct NewBranchComposer: View {
+    @Bindable var viewModel: WorkspaceOpenerViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("New branch name")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            TextField("feature/my-branch", text: $viewModel.newBranchName)
+                .textFieldStyle(.roundedBorder)
+
+            Text("Pnevma will create the branch in the selected repository checkout and open the workspace on it.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 }
 

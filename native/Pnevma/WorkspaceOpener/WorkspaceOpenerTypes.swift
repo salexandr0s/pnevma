@@ -104,6 +104,12 @@ struct WorkspaceOpenerPullRequestLaunchParams: Encodable, Sendable {
     let createLinkedTaskWorktree: Bool
 }
 
+struct WorkspaceOpenerBranchLaunchParams: Encodable, Sendable {
+    let path: String
+    let branchName: String
+    let createNew: Bool
+}
+
 struct WorkspaceOpenerLaunchResult: Decodable, Sendable {
     let projectPath: String
     let workspaceName: String

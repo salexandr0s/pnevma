@@ -78,10 +78,11 @@ class TerminalSurface {
     nonisolated(unsafe) private static let surfaceRegistry = NSHashTable<TerminalSurface>.weakObjects()
     private static let surfaceRegistryLock = NSLock()
 
-    /// Create the ghostty app singleton. Call once at launch from AppDelegate.
+    /// Create the ghostty app singleton. Returns true when this call created it.
     @MainActor
-    static func initializeGhostty() {
-        guard !isAppInitialized else { return }
+    @discardableResult
+    static func initializeGhostty() -> Bool {
+        guard !isAppInitialized else { return false }
 
         let termConfig = GhosttyConfigController.shared.runtimeConfigOwner()
         ghosttyConfigOwner = termConfig
@@ -89,7 +90,7 @@ class TerminalSurface {
             Log.terminal.error("Failed to load ghostty config")
             emitSmokeDiagnostic("failed to load ghostty config")
             ghosttyConfigOwner = nil
-            return
+            return false
         }
 
         var runtimeConfig = Self.makeRuntimeConfig()
@@ -99,6 +100,7 @@ class TerminalSurface {
             Log.terminal.error("ghostty_app_new() returned nil")
             emitSmokeDiagnostic("ghostty_app_new returned nil")
             ghosttyConfigOwner = nil
+            return false
         } else {
             isAppInitialized = true
             // Tell ghostty the current color scheme so conditional themes
@@ -107,6 +109,7 @@ class TerminalSurface {
                 ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
             if let app = ghosttyApp { ghostty_app_set_color_scheme(app, scheme) }
             Log.terminal.info("ghostty app initialized")
+            return true
         }
     }
 

@@ -5,15 +5,32 @@ import GhosttyKit
 
 @MainActor
 enum GhosttyRuntime {
-    private(set) static var isInitialized = false
+    #if canImport(GhosttyKit)
+    private(set) static var isProcessInitialized = false
 
-    static func markInitialized() {
-        isInitialized = true
-    }
+    @discardableResult
+    static func initializeIfNeeded() -> Bool {
+        guard !isProcessInitialized else { return false }
 
-    static func reset() {
-        isInitialized = false
+        let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
+        if initResult != 0 {
+            Log.general.error("ghostty_init() failed with code \(initResult)")
+            return false
+        }
+
+        isProcessInitialized = true
+        return true
     }
+    #else
+    static var isProcessInitialized: Bool { false }
+
+    @discardableResult
+    static func initializeIfNeeded() -> Bool {
+        false
+    }
+    #endif
+
+    static var isInitialized: Bool { isProcessInitialized }
 }
 
 /// Reads and applies Ghostty configuration for terminal instances.

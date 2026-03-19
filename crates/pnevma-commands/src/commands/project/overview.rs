@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
@@ -106,6 +107,14 @@ pub struct WorkspaceOpenerPullRequestLaunchInput {
     pub create_linked_task_worktree: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerBranchLaunchInput {
+    pub path: String,
+    pub branch_name: String,
+    #[serde(default)]
+    pub create_new: bool,
+}
+
 struct WorkspaceOpenerRepoContext {
     repo_root: PathBuf,
     repo_spec: String,
@@ -143,6 +152,54 @@ async fn git_repo_root_for_path(path: &Path) -> Result<PathBuf, String> {
     }
 
     Ok(PathBuf::from(root))
+}
+
+async fn workspace_opener_auxiliary_worktrees_by_branch(
+    repo_root: &Path,
+) -> Result<HashMap<String, String>, String> {
+    let output = TokioCommand::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git worktree list: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree list failed: {}", stderr.trim()));
+    }
+
+    let canonical_repo_root = tokio::fs::canonicalize(repo_root)
+        .await
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut worktrees_by_branch = HashMap::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let (Some(path), Some(branch)) = (current_path.take(), current_branch.take()) {
+                let path_buf = PathBuf::from(&path);
+                let canonical_path = tokio::fs::canonicalize(&path_buf).await.unwrap_or(path_buf);
+                if canonical_path != canonical_repo_root {
+                    worktrees_by_branch
+                        .insert(branch, canonical_path.to_string_lossy().to_string());
+                }
+            }
+            current_path = None;
+            current_branch = None;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            current_path = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
+            current_branch = Some(rest.to_string());
+        }
+    }
+
+    Ok(worktrees_by_branch)
 }
 
 async fn gh_cli_available() -> bool {
@@ -422,6 +479,35 @@ fn workspace_opener_task_title(prefix: &str, number: i64, title: &str) -> String
 
 fn workspace_opener_task_goal(prefix: &str, number: i64, title: &str) -> String {
     format!("Track {prefix} #{number}: {title}")
+}
+
+fn workspace_opener_branch_launch_source(branch_name: &str) -> WorkspaceLaunchSourceView {
+    workspace_launch_source("branch", 0, branch_name, "")
+}
+
+async fn workspace_opener_validated_branch_name(
+    repo_root: &Path,
+    raw_branch_name: &str,
+) -> Result<String, String> {
+    ensure_bounded_text_field(raw_branch_name, "branch name", 255)?;
+    let branch_name = raw_branch_name.trim().to_string();
+    let output = TokioCommand::new("git")
+        .args(["check-ref-format", "--branch", &branch_name])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to validate branch name: {e}"))?;
+
+    if output.status.success() {
+        Ok(branch_name)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("Branch name is invalid.".to_string())
+        } else {
+            Err(format!("Branch name is invalid: {stderr}"))
+        }
+    }
 }
 
 async fn workspace_opener_existing_launch_result(
@@ -705,9 +791,10 @@ pub async fn github_connect_for_path(
 
 pub async fn list_branches_for_path(
     input: WorkspaceOpenerPathInput,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<WorkspaceOpenerBranchView>, String> {
     let requested_path = project_path_from_input(&input)?;
     let project_path = git_repo_root_for_path(&requested_path).await?;
+    let worktrees_by_branch = workspace_opener_auxiliary_worktrees_by_branch(&project_path).await?;
     let output = TokioCommand::new("git")
         .args([
             "branch",
@@ -725,9 +812,74 @@ pub async fn list_branches_for_path(
 
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
-        .map(|line| line.trim().to_string())
+        .map(str::trim)
         .filter(|branch| !branch.is_empty())
+        .map(|branch| WorkspaceOpenerBranchView {
+            name: branch.to_string(),
+            has_worktree: worktrees_by_branch.contains_key(branch),
+            worktree_path: worktrees_by_branch.get(branch).cloned(),
+        })
         .collect())
+}
+
+pub async fn create_workspace_from_branch(
+    input: WorkspaceOpenerBranchLaunchInput,
+) -> Result<WorkspaceOpenerLaunchResult, String> {
+    ensure_safe_path_input(&input.path, "project path")?;
+
+    let requested_path = PathBuf::from(&input.path);
+    let repo_root = git_repo_root_for_path(&requested_path).await?;
+    let branch_name =
+        workspace_opener_validated_branch_name(&repo_root, &input.branch_name).await?;
+    let launch_source = workspace_opener_branch_launch_source(&branch_name);
+    let worktrees_by_branch = workspace_opener_auxiliary_worktrees_by_branch(&repo_root).await?;
+
+    if let Some(worktree_path) = worktrees_by_branch.get(&branch_name) {
+        return Ok(WorkspaceOpenerLaunchResult {
+            project_path: repo_root.to_string_lossy().to_string(),
+            workspace_name: branch_name.clone(),
+            launch_source,
+            working_directory: Some(worktree_path.clone()),
+            task_id: None,
+            branch: Some(branch_name),
+        });
+    }
+
+    let git_args = if input.create_new {
+        vec!["checkout", "-b", branch_name.as_str()]
+    } else {
+        vec!["checkout", branch_name.as_str()]
+    };
+    let output = TokioCommand::new("git")
+        .args(&git_args)
+        .current_dir(&repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git checkout: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let action = if input.create_new {
+            "create branch"
+        } else {
+            "checkout branch"
+        };
+        let message = if stderr.is_empty() {
+            format!("Could not {action}.")
+        } else {
+            format!("Could not {action}: {stderr}")
+        };
+        return Err(message);
+    }
+
+    Ok(WorkspaceOpenerLaunchResult {
+        project_path: repo_root.to_string_lossy().to_string(),
+        workspace_name: branch_name.clone(),
+        launch_source,
+        working_directory: None,
+        task_id: None,
+        branch: Some(branch_name),
+    })
 }
 
 pub async fn list_github_issues_for_path(

@@ -105,6 +105,12 @@ final class BrowserWorkspaceSession {
         pendingDrawerRestoreTask = nil
     }
 
+    func prepareForTeardown() {
+        cancelPendingDrawerRestore()
+        isDrawerVisible = false
+        viewModel.prepareForTeardown()
+    }
+
     func scheduleDrawerRestoreIfNeeded(after delay: Duration = .seconds(0)) {
         cancelPendingDrawerRestore()
         guard isDrawerVisible else { return }
