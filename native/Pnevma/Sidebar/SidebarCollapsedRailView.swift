@@ -64,6 +64,7 @@ struct SidebarCollapsedRailView: View {
             }
         }
         .frame(width: DesignTokens.Layout.sidebarCollapsedWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(railBackground)
         .accessibilityIdentifier("sidebar.collapsedRail")
     }

@@ -92,6 +92,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
     private var currentSidebarMode: SidebarMode = SidebarPreferences.sidebarMode
+    private var renderedSidebarMode: SidebarMode = .expanded
     private var collapsedRailHostView: NSView?
     private var isFocusMode = false
     private var focusModeEscapeHatchWindow: NSWindow?
@@ -1755,6 +1756,30 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         applySidebarMode(animated: true)
     }
 
+    private func targetSidebarWidth(for mode: SidebarMode) -> CGFloat {
+        switch mode {
+        case .expanded:
+            SidebarPreferences.sidebarWidth
+        case .collapsed:
+            DesignTokens.Layout.sidebarCollapsedWidth
+        case .hidden:
+            0
+        }
+    }
+
+    private func finalizeSidebarPresentation(for mode: SidebarMode) {
+        sidebarWidthConstraint?.constant = targetSidebarWidth(for: mode)
+        switch mode {
+        case .hidden:
+            sidebarHostView?.isHidden = true
+            sidebarHostView?.alphaValue = 0
+        case .expanded, .collapsed:
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            setSidebarContentVisibility(for: mode)
+        }
+    }
+
     private func setSidebarContentVisibility(for mode: SidebarMode) {
         switch mode {
         case .expanded:
@@ -1772,10 +1797,60 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func animateSidebarContentSwapIfNeeded(to mode: SidebarMode, animated: Bool) {
+    private func visibleSidebarMode() -> SidebarMode {
+        guard let sidebarHostView,
+              let sidebarWidthConstraint,
+              sidebarHostView.isHidden == false,
+              sidebarHostView.alphaValue > 0.01,
+              sidebarWidthConstraint.constant > 0.5 else {
+            return .hidden
+        }
+
+        let contentAlpha = if let sidebarContentView, sidebarContentView.isHidden == false {
+            sidebarContentView.alphaValue
+        } else {
+            CGFloat.zero
+        }
+        let railAlpha = if let collapsedRailHostView, collapsedRailHostView.isHidden == false {
+            collapsedRailHostView.alphaValue
+        } else {
+            CGFloat.zero
+        }
+
+        return railAlpha > contentAlpha ? .collapsed : .expanded
+    }
+
+    private func animateSidebarWidth(
+        to width: CGFloat,
+        hostAlpha: CGFloat,
+        animated: Bool,
+        completion: @escaping () -> Void
+    ) {
+        guard animated, ChromeMotion.duration(for: .sidebar) > 0 else {
+            sidebarWidthConstraint?.constant = width
+            sidebarHostView?.alphaValue = hostAlpha
+            completion()
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = ChromeMotion.duration(for: .sidebar)
+            context.timingFunction = ChromeMotion.timingFunction(for: .sidebar)
+            context.allowsImplicitAnimation = true
+            sidebarWidthConstraint?.animator().constant = width
+            sidebarHostView?.animator().alphaValue = hostAlpha
+        }, completionHandler: completion)
+    }
+
+    private func animateSidebarContentSwapIfNeeded(
+        to mode: SidebarMode,
+        animated: Bool,
+        completion: (() -> Void)? = nil
+    ) {
         guard mode != .hidden,
               let sidebarContentView,
               let collapsedRailHostView else {
+            completion?()
             return
         }
 
@@ -1798,6 +1873,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 sidebarContentView.alphaValue = 0
                 sidebarContentView.isHidden = true
             }
+            completion?()
             return
         }
 
@@ -1824,74 +1900,133 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 sidebarContentView.alphaValue = 0
                 sidebarContentView.isHidden = true
             }
+            completion?()
         })
     }
 
+    private func animateSidebarModeTransition(
+        from fromMode: SidebarMode,
+        to toMode: SidebarMode,
+        animated: Bool,
+        generation: UInt64,
+        completion: @escaping () -> Void
+    ) {
+        guard animated else {
+            completion()
+            return
+        }
+
+        let guardCurrentGeneration = { [weak self] in
+            self?.sidebarTransitionGeneration == generation
+        }
+
+        switch (fromMode, toMode) {
+        case (.expanded, .collapsed):
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            sidebarWidthConstraint?.constant = targetSidebarWidth(for: .expanded)
+            animateSidebarContentSwapIfNeeded(to: .collapsed, animated: true) { [weak self] in
+                guard let self else {
+                    completion()
+                    return
+                }
+                guard guardCurrentGeneration() else {
+                    completion()
+                    return
+                }
+                self.animateSidebarWidth(
+                    to: self.targetSidebarWidth(for: .collapsed),
+                    hostAlpha: 1,
+                    animated: true,
+                    completion: completion
+                )
+            }
+
+        case (.collapsed, .expanded):
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            setSidebarContentVisibility(for: .collapsed)
+            animateSidebarWidth(
+                to: targetSidebarWidth(for: .expanded),
+                hostAlpha: 1,
+                animated: true
+            ) { [weak self] in
+                guard let self else {
+                    completion()
+                    return
+                }
+                guard guardCurrentGeneration() else {
+                    completion()
+                    return
+                }
+                self.animateSidebarContentSwapIfNeeded(to: .expanded, animated: true, completion: completion)
+            }
+
+        case (_, .hidden):
+            if fromMode != .hidden {
+                setSidebarContentVisibility(for: fromMode)
+            }
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            animateSidebarWidth(to: 0, hostAlpha: 0, animated: true, completion: completion)
+
+        case (.hidden, .expanded), (.hidden, .collapsed):
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 0
+            setSidebarContentVisibility(for: toMode)
+            animateSidebarWidth(
+                to: targetSidebarWidth(for: toMode),
+                hostAlpha: 1,
+                animated: true,
+                completion: completion
+            )
+
+        default:
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            setSidebarContentVisibility(for: toMode)
+            animateSidebarWidth(
+                to: targetSidebarWidth(for: toMode),
+                hostAlpha: toMode == .hidden ? 0 : 1,
+                animated: true,
+                completion: completion
+            )
+        }
+    }
+
     private func applySidebarMode(animated: Bool) {
+        let fromMode = visibleSidebarMode()
+        let toMode = currentSidebarMode
         let shouldAnimate = animated && ChromeMotion.duration(for: .sidebar) > 0
         sidebarTransitionGeneration &+= 1
         let transitionGeneration = sidebarTransitionGeneration
-
-        let width: CGFloat
-        switch currentSidebarMode {
-        case .expanded:
-            width = SidebarPreferences.sidebarWidth
-            isSidebarVisible = true
-            sidebarHostView?.isHidden = false
-        case .collapsed:
-            width = DesignTokens.Layout.sidebarCollapsedWidth
-            isSidebarVisible = true
-            sidebarHostView?.isHidden = false
-        case .hidden:
-            width = 0
-            isSidebarVisible = false
-        }
+        isSidebarVisible = toMode != .hidden
 
         let signpost = PerformanceDiagnostics.shared.beginInterval("sidebar.toggle")
         ChromeTransitionCoordinator.shared.begin(.sidebar)
 
-        if currentSidebarMode != .hidden, let sidebarHostView {
-            let wasHidden = sidebarHostView.isHidden
-            sidebarHostView.isHidden = false
-            if wasHidden {
-                sidebarHostView.alphaValue = 0
-            }
+        let completeTransition = { [weak self] in
+            guard let self else { return }
+            ChromeTransitionCoordinator.shared.end(.sidebar)
+            PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
+            guard self.sidebarTransitionGeneration == transitionGeneration else { return }
+            self.finalizeSidebarPresentation(for: toMode)
+            self.renderedSidebarMode = toMode
         }
 
         if shouldAnimate {
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = ChromeMotion.duration(for: .sidebar)
-                ctx.timingFunction = ChromeMotion.timingFunction(for: .sidebar)
-                ctx.allowsImplicitAnimation = true
-                sidebarWidthConstraint?.animator().constant = width
-                sidebarHostView?.animator().alphaValue = currentSidebarMode == .hidden ? 0 : 1
-            }, completionHandler: {
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    ChromeTransitionCoordinator.shared.end(.sidebar)
-                    PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
-                    guard self.sidebarTransitionGeneration == transitionGeneration else { return }
-                    if self.currentSidebarMode == .hidden {
-                        self.sidebarHostView?.isHidden = true
-                        self.sidebarHostView?.alphaValue = 0
-                    } else {
-                        self.sidebarHostView?.alphaValue = 1
-                        self.animateSidebarContentSwapIfNeeded(to: self.currentSidebarMode, animated: true)
-                    }
-                }
-            })
+            animateSidebarModeTransition(
+                from: fromMode,
+                to: toMode,
+                animated: true,
+                generation: transitionGeneration,
+                completion: completeTransition
+            )
         } else {
-            sidebarWidthConstraint?.constant = width
+            finalizeSidebarPresentation(for: toMode)
+            renderedSidebarMode = toMode
             ChromeTransitionCoordinator.shared.end(.sidebar)
             PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
-            if currentSidebarMode == .hidden {
-                sidebarHostView?.isHidden = true
-                sidebarHostView?.alphaValue = 0
-            } else {
-                sidebarHostView?.isHidden = false
-                sidebarHostView?.alphaValue = 1
-                setSidebarContentVisibility(for: currentSidebarMode)
-            }
         }
 
         updateWindowMinWidth()

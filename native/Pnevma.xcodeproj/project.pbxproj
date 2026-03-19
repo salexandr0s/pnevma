@@ -11,6 +11,7 @@
 		01AF653A6C7B1F2BF4F614EF /* AppUpdateCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECE72994743B389BD49E89BD /* AppUpdateCoordinator.swift */; };
 		02E6F538894460C4C00E0928 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C867176B0B0B77C7E95830B1 /* AppDelegate.swift */; };
 		03D7C347F2A9A3C4B7F27DE9 /* NotificationsPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0F8F30B2834C839A23EF433 /* NotificationsPaneTests.swift */; };
+		04223317BFC38DF4C3952448 /* AppDelegateSidebarTransitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 393936D81018A5E31D8A9383 /* AppDelegateSidebarTransitionTests.swift */; };
 		0478C676BA381D7378E1A0A5 /* NativeContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B130BE9A4E1C7023F066CC2 /* NativeContractDecodingTests.swift */; };
 		05F0F974E55AA38AB470D415 /* ReducedMotionHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7346602A015C29FE6E91355 /* ReducedMotionHelper.swift */; };
 		0D8104A38269DA8025B98478 /* GhosttyConfigController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13398913ACB6EB8AD6478CC /* GhosttyConfigController.swift */; };
@@ -290,6 +291,7 @@
 		36532A2C710809FD14A78124 /* AppKeybindingManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKeybindingManagerTests.swift; sourceTree = "<group>"; };
 		3743831F660A6F4B38C7670A /* AppDelegateTabBarIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateTabBarIntegrationTests.swift; sourceTree = "<group>"; };
 		38BF7E2A9214B92C4D41EF6B /* AgentStripView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStripView.swift; sourceTree = "<group>"; };
+		393936D81018A5E31D8A9383 /* AppDelegateSidebarTransitionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateSidebarTransitionTests.swift; sourceTree = "<group>"; };
 		3B3B8C4EEF207DAB4E090F10 /* WorkspaceRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRuntime.swift; sourceTree = "<group>"; };
 		3D300A6B296B827DF919689F /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		3F0279B0EC2BF6670E471C1C /* PromptTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTabView.swift; sourceTree = "<group>"; };
@@ -707,6 +709,7 @@
 			isa = PBXGroup;
 			children = (
 				A99AD2ED9E04B529C0A40432 /* AnalyticsPaneTests.swift */,
+				393936D81018A5E31D8A9383 /* AppDelegateSidebarTransitionTests.swift */,
 				3743831F660A6F4B38C7670A /* AppDelegateTabBarIntegrationTests.swift */,
 				36532A2C710809FD14A78124 /* AppKeybindingManagerTests.swift */,
 				B6800D33AEB839FC8E6DE560 /* AppLaunchContextTests.swift */,
@@ -1002,6 +1005,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				45CD12FF8659175326E93EF0 /* AnalyticsPaneTests.swift in Sources */,
+				04223317BFC38DF4C3952448 /* AppDelegateSidebarTransitionTests.swift in Sources */,
 				CAF029A5477915C4ED5BD273 /* AppDelegateTabBarIntegrationTests.swift in Sources */,
 				E14240A827D08C8EE9A1DFC2 /* AppKeybindingManagerTests.swift in Sources */,
 				67151FA13A049289D08BFECD /* AppLaunchContextTests.swift in Sources */,
