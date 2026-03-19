@@ -72,6 +72,15 @@ pub struct SshRuntimeHealthView {
     pub controller_id: String,
     pub healthy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_triple: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
+    pub protocol_compatible: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_dependencies: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub installed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_kind: Option<String>,
@@ -249,6 +258,75 @@ async fn delete_legacy_project_tailscale_profiles(state: &AppState, ids: &[Strin
     }
 }
 
+async fn find_reusable_remote_ssh_session(
+    state: &AppState,
+    db: &Db,
+    profile_id: &str,
+) -> Result<Option<SessionRow>, String> {
+    let project_id = state
+        .with_project("find_reusable_remote_ssh_session", |ctx| ctx.project_id)
+        .await?;
+    let mut rows = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    rows.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+
+    for row in rows {
+        if !is_remote_ssh_durable_backend(&row.backend)
+            || row.r#type.as_deref() != Some("ssh")
+            || row.connection_id.as_deref() != Some(profile_id)
+            || !remote_session_is_live(&row)
+        {
+            continue;
+        }
+
+        let refreshed = match refresh_remote_session_row(state, db, &row).await {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                mark_remote_session_row_lost(db, &row, error, "ssh_connect_reuse").await?
+            }
+        };
+        if remote_session_is_live(&refreshed) {
+            return Ok(Some(refreshed));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn ensure_remote_ssh_pane(
+    db: &Db,
+    project_id: Uuid,
+    session_id: &str,
+    profile: &pnevma_ssh::SshProfile,
+) -> Result<(), String> {
+    let panes = db
+        .list_panes(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    if panes
+        .iter()
+        .any(|pane| pane.r#type == "terminal" && pane.session_id.as_deref() == Some(session_id))
+    {
+        return Ok(());
+    }
+
+    let pane_row = PaneRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.to_string(),
+        session_id: Some(session_id.to_string()),
+        r#type: "terminal".to_string(),
+        position: "root".to_string(),
+        label: profile.name.clone(),
+        metadata_json: Some(remote_launch_metadata_json(
+            &remote_target_from_ssh_profile(profile, "~"),
+        )?),
+    };
+    db.upsert_pane(&pane_row).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub async fn list_ssh_profiles(state: &AppState) -> Result<Vec<SshProfileView>, String> {
     let global_views: Vec<SshProfileView> = state
         .global_db()?
@@ -287,12 +365,12 @@ pub async fn upsert_ssh_profile(
     )
     .map_err(|e| e.to_string())?;
     let row = ssh_profile_input_to_global_row(input);
-    state
+    let stored = state
         .global_db()?
         .upsert_global_ssh_profile(&row)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(row.id)
+    Ok(stored.id)
 }
 
 pub async fn delete_ssh_profile(id: String, state: &AppState) -> Result<(), String> {
@@ -311,12 +389,12 @@ pub async fn import_ssh_config(state: &AppState) -> Result<Vec<SshProfileView>, 
     let mut views = Vec::new();
     for profile in &profiles {
         let row = ssh_profile_to_global_row(profile);
-        state
+        let stored = state
             .global_db()?
             .upsert_global_ssh_profile(&row)
             .await
             .map_err(|e| e.to_string())?;
-        views.push(global_ssh_profile_row_to_view(row));
+        views.push(global_ssh_profile_row_to_view(stored));
     }
     Ok(views)
 }
@@ -336,6 +414,27 @@ pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String,
         .await?
         .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
 
+    if let Some(existing) = find_reusable_remote_ssh_session(state, &db, &profile_id).await? {
+        ensure_remote_ssh_pane(&db, project_id, &existing.id, &ssh_profile).await?;
+        append_event(
+            &db,
+            project_id,
+            None,
+            Uuid::parse_str(&existing.id).ok(),
+            "session",
+            "SessionReattached",
+            json!({
+                "backend": existing.backend,
+                "action": "ssh_connect_reuse",
+                "connection_id": profile_id,
+                "remote_session_id": existing.remote_session_id,
+                "controller_id": existing.controller_id,
+            }),
+        )
+        .await;
+        return Ok(existing.id);
+    }
+
     let row = create_remote_managed_session(CreateRemoteManagedSessionInput {
         db: &db,
         project_id,
@@ -347,19 +446,7 @@ pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String,
         command: None,
     })
     .await?;
-
-    let pane_row = PaneRow {
-        id: Uuid::new_v4().to_string(),
-        project_id: project_id.to_string(),
-        session_id: Some(row.id.clone()),
-        r#type: "terminal".to_string(),
-        position: "root".to_string(),
-        label: ssh_profile.name.clone(),
-        metadata_json: Some(remote_launch_metadata_json(
-            &remote_target_from_ssh_profile(&ssh_profile, "~"),
-        )?),
-    };
-    db.upsert_pane(&pane_row).await.map_err(|e| e.to_string())?;
+    ensure_remote_ssh_pane(&db, project_id, &row.id, &ssh_profile).await?;
 
     Ok(row.id)
 }
@@ -394,6 +481,7 @@ pub async fn disconnect_ssh(profile_id: String, state: &AppState) -> Result<(), 
         row.pid = None;
         row.last_heartbeat = Utc::now();
         row.last_error = None;
+        row.restore_status = Some(SESSION_LIFECYCLE_EXITED.to_string());
         row.ended_at = Some(Utc::now().to_rfc3339());
         db.upsert_session(&row).await.map_err(|e| e.to_string())?;
         append_event(
@@ -433,6 +521,11 @@ pub async fn ensure_ssh_runtime_helper(
         state_root: ensured.health.state_root,
         controller_id: ensured.health.controller_id,
         healthy: ensured.health.healthy,
+        target_triple: ensured.health.target_triple,
+        artifact_source: ensured.health.artifact_source,
+        artifact_sha256: ensured.health.artifact_sha256,
+        protocol_compatible: ensured.health.protocol_compatible,
+        missing_dependencies: ensured.health.missing_dependencies,
         installed: Some(ensured.installed),
         install_kind: Some(ensured.install_kind.as_str().to_string()),
     })
@@ -461,6 +554,11 @@ pub async fn ssh_runtime_health(
         state_root: health.state_root,
         controller_id: health.controller_id,
         healthy: health.healthy,
+        target_triple: health.target_triple,
+        artifact_source: health.artifact_source,
+        artifact_sha256: health.artifact_sha256,
+        protocol_compatible: health.protocol_compatible,
+        missing_dependencies: health.missing_dependencies,
         installed: None,
         install_kind: None,
     })

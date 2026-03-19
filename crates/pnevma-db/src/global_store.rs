@@ -555,8 +555,8 @@ impl GlobalDb {
     pub async fn upsert_global_ssh_profile(
         &self,
         row: &GlobalSshProfileRow,
-    ) -> Result<(), DbError> {
-        sqlx::query(
+    ) -> Result<GlobalSshProfileRow, DbError> {
+        let stored = sqlx::query_as::<_, GlobalSshProfileRow>(
             "INSERT INTO global_ssh_profiles
                 (id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
@@ -568,7 +568,8 @@ impl GlobalDb {
                 proxy_jump = excluded.proxy_jump,
                 tags_json = excluded.tags_json,
                 source = excluded.source,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at
+             RETURNING id, name, host, port, user, identity_file, proxy_jump, tags_json, source, created_at, updated_at",
         )
         .bind(&row.id)
         .bind(&row.name)
@@ -581,9 +582,9 @@ impl GlobalDb {
         .bind(&row.source)
         .bind(row.created_at)
         .bind(row.updated_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Ok(stored)
     }
 
     pub async fn delete_global_ssh_profile(&self, id: &str) -> Result<(), DbError> {
@@ -700,6 +701,87 @@ mod tests {
             "expected global db file mode 0600, got {:o}",
             mode
         );
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn upsert_global_ssh_profile_returns_persisted_row_on_name_conflict() {
+        let root = std::env::temp_dir().join(format!("pnevma-gdb-ssh-upsert-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let db = GlobalDb::open_in_dir(db_dir).await.expect("open global db");
+        let now = Utc::now();
+        let original = GlobalSshProfileRow {
+            id: "profile-original".to_string(),
+            name: "Build Box".to_string(),
+            host: "build-1.example.com".to_string(),
+            port: 22,
+            user: Some("builder".to_string()),
+            identity_file: Some("/tmp/id_ed25519".to_string()),
+            proxy_jump: None,
+            tags_json: "[]".to_string(),
+            source: "manual".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let updated = GlobalSshProfileRow {
+            id: "profile-updated".to_string(),
+            name: original.name.clone(),
+            host: "build-2.example.com".to_string(),
+            port: 2222,
+            user: Some("ops".to_string()),
+            identity_file: Some("/tmp/id_ed25519_new".to_string()),
+            proxy_jump: Some("jump.example.com".to_string()),
+            tags_json: "[\"release\"]".to_string(),
+            source: "manual".to_string(),
+            created_at: now + chrono::Duration::seconds(30),
+            updated_at: now + chrono::Duration::seconds(30),
+        };
+
+        let first = db
+            .upsert_global_ssh_profile(&original)
+            .await
+            .expect("insert ssh profile");
+        let second = db
+            .upsert_global_ssh_profile(&updated)
+            .await
+            .expect("update ssh profile");
+
+        assert_eq!(first.id, original.id);
+        assert_eq!(
+            second.id, original.id,
+            "name conflict must keep persisted row id"
+        );
+        assert_eq!(second.host, updated.host);
+        assert_eq!(second.port, updated.port);
+        assert_eq!(second.user, updated.user);
+        assert_eq!(second.identity_file, updated.identity_file);
+        assert_eq!(second.proxy_jump, updated.proxy_jump);
+        assert_eq!(second.tags_json, updated.tags_json);
+        assert_eq!(second.created_at, original.created_at);
+        assert_eq!(second.updated_at, updated.updated_at);
+
+        assert!(
+            db.get_global_ssh_profile(&updated.id)
+                .await
+                .expect("get conflicting id")
+                .is_none(),
+            "conflicting insert id must not create a second row"
+        );
+
+        let persisted = db
+            .get_global_ssh_profile(&original.id)
+            .await
+            .expect("get persisted row")
+            .expect("persisted row exists");
+        assert_eq!(persisted.host, updated.host);
+        assert_eq!(persisted.port, updated.port);
+        assert_eq!(persisted.user, updated.user);
 
         drop(db);
         let _ = tokio::fs::remove_dir_all(&root).await;

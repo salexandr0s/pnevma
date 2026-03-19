@@ -14,6 +14,8 @@ This directory contains the current operator, developer, and release documentati
 - [Release Readiness](./release-readiness.md): release quality gates, CI expectations, and validation checks for the next public macOS release.
 - [macOS Release Runbook](./macos-release.md): signing, notarization, stapling, and packaged launch verification for the public macOS release.
 - [Manual Smoke Tests](./manual-smoke-tests.md): ordered v0.2.0 operator checks for DMG install, project/task/session flows, DB verification, and cleanup.
+- [Remote SSH Helper Smoke Tests](./manual-remote-ssh-tests.md): real-host Linux and macOS validation for packaged remote helper install and upgrade behavior.
+- [Remote Durable Lifecycle Validation](./manual-remote-durable-lifecycle-tests.md): packaged remote durable session validation for detach, relaunch, reconnect, and evidence capture on the Apple Silicon mac-to-mac path.
 - [macOS Website Release Plan](./macos-website-release-plan.md): release sequencing and the execution plan for the website distribution path.
 
 ## Security and Operations

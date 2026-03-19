@@ -158,6 +158,10 @@ final class WorkspaceManager {
     func prepareForShutdown() async {
         runtimeOpenTasks.values.forEach { $0.cancel() }
         runtimeOpenTasks.removeAll()
+        let runtimes = Array(workspaceRuntimes.values)
+        for runtime in runtimes {
+            await runtime.closeProject()
+        }
     }
 
     @discardableResult

@@ -51,3 +51,6 @@ native/TestResults/
 # Local release artifacts
 *.dmg
 *.dmg.sha256
+
+# Generated remote helper artifacts
+artifacts/remote-helper/

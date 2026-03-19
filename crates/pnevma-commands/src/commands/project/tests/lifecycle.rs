@@ -83,6 +83,100 @@ async fn trust_and_open_project_expand_home_relative_paths() {
 }
 
 #[tokio::test]
+async fn open_project_restores_remote_durable_rows_and_records_restore_log() {
+    let temp = tempdir().expect("temp root");
+    let _env = super::sessions::RemoteSshTestEnv::new(temp.path()).await;
+    let project_root = temp.path().join("restore-remote-project");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback"))
+        .expect("create scaffold dirs");
+    write_test_project_config(&project_root, &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+    let opened_project_id = open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("open project");
+    let project_id = Uuid::parse_str(&opened_project_id).expect("project id");
+
+    let (db, current_project_id) = state
+        .with_project("tests.remote_restore.seed", |ctx| {
+            (ctx.db.clone(), ctx.project_id)
+        })
+        .await
+        .expect("current project");
+    assert_eq!(current_project_id, project_id);
+    super::sessions::upsert_test_project_ssh_profile(&db, project_id, "ssh-profile-1", "Builder")
+        .await;
+
+    let created = create_remote_managed_session(CreateRemoteManagedSessionInput {
+        db: &db,
+        project_id,
+        name: "ssh-Builder".to_string(),
+        session_type: Some("ssh".to_string()),
+        profile: &super::sessions::test_remote_profile("ssh-profile-1", "Builder"),
+        connection_id: "ssh-profile-1".to_string(),
+        cwd: "~".to_string(),
+        command: None,
+    })
+    .await
+    .expect("create remote managed session");
+
+    close_project(&state).await.expect("close project");
+    open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("reopen project");
+
+    let reopened_db = state
+        .with_project("tests.remote_restore.db", |ctx| ctx.db.clone())
+        .await
+        .expect("project db");
+    let row = reopened_db
+        .get_session(&project_id.to_string(), &created.id)
+        .await
+        .expect("load reopened session")
+        .expect("session row should exist");
+    assert_eq!(row.backend, "remote_ssh_durable");
+    assert_eq!(row.status, "waiting");
+    assert_eq!(row.lifecycle_state, "detached");
+    assert_eq!(row.remote_session_id, created.remote_session_id);
+    assert_eq!(row.controller_id, created.controller_id);
+
+    let binding = get_session_binding(created.id.clone(), &state)
+        .await
+        .expect("remote session binding");
+    assert_eq!(binding.mode, "live_attach");
+    assert_eq!(binding.lifecycle_state, "detached");
+    assert!(binding
+        .launch_command
+        .as_deref()
+        .is_some_and(|command| command.contains("fake-ssh.sh")));
+
+    let restore_log = reopened_db
+        .list_session_restore_log(&created.id)
+        .await
+        .expect("list restore log");
+    assert!(restore_log.iter().any(|entry| {
+        entry.action == "project_open"
+            && entry.outcome == "detached"
+            && entry.error_message.is_none()
+    }));
+}
+
+#[tokio::test]
 async fn open_project_invalid_redaction_does_not_replace_live_runtime_config() {
     let _guard = redaction_config_lock().lock().await;
     let home = tempdir().expect("temp home");

@@ -31,7 +31,7 @@ jobs:
         with:
           toolchain: 1.93.1
           components: rustfmt, clippy
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
 
       - name: Cache cargo registry and build
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
@@ -71,6 +71,9 @@ jobs:
 
       - name: Install cargo-deny
         run: command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked
+
+      - name: Install cargo-zigbuild
+        run: command -v cargo-zigbuild >/dev/null 2>&1 || cargo install cargo-zigbuild --locked
 
       - name: Run release preflight
         run: ./scripts/release-preflight.sh

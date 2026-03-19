@@ -1,9 +1,16 @@
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use thiserror::Error;
@@ -14,6 +21,9 @@ const HELPER_KIND: &str = "binary";
 const DEFAULT_ATTACH_TAIL_BYTES: u64 = 16_384;
 const DEFAULT_SHELL_COMMAND: &str = "${SHELL:-/bin/sh} -il";
 const CONTROLLER_ID_FILENAME: &str = "controller-id";
+const INSTALL_METADATA_EXTENSION: &str = "metadata";
+const HELPER_DEPENDENCIES: &[&str] = &["sh", "mkfifo", "nohup", "kill"];
+const FIFO_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Error)]
 pub enum HelperError {
@@ -69,9 +79,20 @@ impl HelperPaths {
         self.controller_root.join(CONTROLLER_ID_FILENAME)
     }
 
+    fn install_metadata_path(&self) -> PathBuf {
+        self.helper_path.with_extension(INSTALL_METADATA_EXTENSION)
+    }
+
     fn session_dir(&self, session_id: &str) -> PathBuf {
         self.sessions_root.join(session_id)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct InstallMetadata {
+    target_triple: Option<String>,
+    artifact_source: Option<String>,
+    artifact_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +104,10 @@ pub struct HelperHealth {
     pub state_root: String,
     pub controller_id: String,
     pub healthy: bool,
+    pub target_triple: Option<String>,
+    pub artifact_source: Option<String>,
+    pub artifact_sha256: Option<String>,
+    pub missing_dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +159,8 @@ impl HelperRuntime {
 
     pub fn health(&self) -> Result<HelperHealth, HelperError> {
         let controller_id = self.ensure_controller_id(None)?;
+        let install_metadata = read_install_metadata(&self.paths.install_metadata_path())?;
+        let missing_dependencies = missing_dependencies();
         Ok(HelperHealth {
             version: helper_version(),
             protocol_version: PROTOCOL_VERSION.to_string(),
@@ -141,7 +168,11 @@ impl HelperRuntime {
             helper_path: self.paths.helper_path.display().to_string(),
             state_root: self.paths.state_root.display().to_string(),
             controller_id,
-            healthy: true,
+            healthy: missing_dependencies.is_empty(),
+            target_triple: install_metadata.target_triple,
+            artifact_source: install_metadata.artifact_source,
+            artifact_sha256: install_metadata.artifact_sha256,
+            missing_dependencies,
         })
     }
 
@@ -182,9 +213,11 @@ impl HelperRuntime {
         let log_path = session_dir.join("output.log");
         let launch_path = session_dir.join("launch.sh");
         let runner_pid_path = session_dir.join("runner.pid");
+        let child_pid_path = session_dir.join("child.pid");
         let keepalive_pid_path = session_dir.join("keepalive.pid");
         let exit_code_path = session_dir.join("exit_code");
         let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
 
         ensure_fifo(&fifo_path)?;
         touch_file(&log_path)?;
@@ -212,19 +245,17 @@ impl HelperRuntime {
 
         remove_if_exists(&exit_code_path)?;
         remove_if_exists(&attach_marker_path)?;
+        remove_if_exists(&attach_pid_path)?;
+        remove_if_exists(&child_pid_path)?;
 
-        let launch_cmd = script_launch_command(&launch_path)?;
         let runner_command = format!(
-            "{launch_cmd} < {fifo} >> {log} 2>&1; code=$?; printf '%s' \"$code\" > {exit_code}; rm -f {runner_pid}",
-            fifo = shell_quote(&fifo_path.display().to_string()),
-            log = shell_quote(&log_path.display().to_string()),
-            exit_code = shell_quote(&exit_code_path.display().to_string()),
-            runner_pid = shell_quote(&runner_pid_path.display().to_string()),
+            "exec {} session-runner --session-id {}",
+            shell_quote(&self.paths.helper_path.display().to_string()),
+            shell_quote(session_id),
         );
         let runner_pid = spawn_detached_shell(&runner_command)?;
         write_private_file(&runner_pid_path, format!("{runner_pid}\n").as_bytes())?;
-
-        start_keepalive_writer(&fifo_path, &keepalive_pid_path)?;
+        remove_if_exists(&keepalive_pid_path)?;
 
         Ok(SessionCreateResult {
             session_id: session_id.to_string(),
@@ -259,14 +290,23 @@ impl HelperRuntime {
         let log_path = session_dir.join("output.log");
         let exit_code_path = session_dir.join("exit_code");
         let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
 
         cleanup_dead_pid_file(&runner_pid_path)?;
         cleanup_dead_pid_file(&keepalive_pid_path)?;
+        cleanup_dead_pid_file(&attach_pid_path)?;
+
+        let attach_active = read_pid_file(&attach_pid_path)?
+            .filter(|pid| pid_alive(*pid))
+            .is_some();
+        if !attach_active {
+            let _ = remove_if_exists(&attach_marker_path);
+        }
 
         let runner_pid = read_pid_file(&runner_pid_path)?;
         let state = if let Some(pid) = runner_pid {
             if pid_alive(pid) {
-                if attach_marker_path.exists() {
+                if attach_active {
                     "attached"
                 } else {
                     "detached"
@@ -301,6 +341,7 @@ impl HelperRuntime {
         let session_dir = self.paths.session_dir(session_id);
         let fifo_path = session_dir.join("input.fifo");
         let runner_pid_path = session_dir.join("runner.pid");
+        let child_pid_path = session_dir.join("child.pid");
         let runner_pid = read_pid_file(&runner_pid_path)?
             .filter(|pid| pid_alive(*pid))
             .ok_or_else(|| HelperError::CommandFailed("session is not running".to_string()))?;
@@ -310,8 +351,24 @@ impl HelperRuntime {
                 let mut fifo = OpenOptions::new().write(true).open(&fifo_path)?;
                 fifo.write_all(&[3])?;
             }
-            "TERM" => kill_pid("-TERM", runner_pid)?,
-            "KILL" => kill_pid("-KILL", runner_pid)?,
+            "TERM" => {
+                if let Some(child_pid) =
+                    read_pid_file(&child_pid_path)?.filter(|pid| pid_alive(*pid))
+                {
+                    kill_process_group("-TERM", child_pid)?;
+                } else {
+                    kill_pid("-TERM", runner_pid)?;
+                }
+            }
+            "KILL" => {
+                if let Some(child_pid) =
+                    read_pid_file(&child_pid_path)?.filter(|pid| pid_alive(*pid))
+                {
+                    kill_process_group("-KILL", child_pid)?;
+                } else {
+                    kill_pid("-KILL", runner_pid)?;
+                }
+            }
             other => {
                 return Err(HelperError::InvalidArgs(format!(
                     "unsupported signal: {other}"
@@ -327,27 +384,39 @@ impl HelperRuntime {
         }
         let session_dir = self.paths.session_dir(session_id);
         let runner_pid_path = session_dir.join("runner.pid");
+        let child_pid_path = session_dir.join("child.pid");
         let keepalive_pid_path = session_dir.join("keepalive.pid");
         let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
+        let child_pid = read_pid_file(&child_pid_path)?.filter(|pid| pid_alive(*pid));
 
+        if let Some(child_pid) = child_pid {
+            kill_process_group("-TERM", child_pid)?;
+            thread::sleep(Duration::from_secs(1));
+            if pid_alive(child_pid) {
+                kill_process_group("-KILL", child_pid)?;
+            }
+        }
         if let Some(runner_pid) = read_pid_file(&runner_pid_path)? {
             if pid_alive(runner_pid) {
-                kill_pid("-TERM", runner_pid)?;
+                let _ = kill_pid("-TERM", runner_pid);
                 thread::sleep(Duration::from_secs(1));
                 if pid_alive(runner_pid) {
-                    kill_pid("-KILL", runner_pid)?;
+                    let _ = kill_pid("-KILL", runner_pid);
                 }
             }
         }
-        if let Some(keepalive_pid) = read_pid_file(&keepalive_pid_path)? {
-            if pid_alive(keepalive_pid) {
-                let _ = kill_pid("-TERM", keepalive_pid);
-            }
+        if let Some(keepalive_pid) =
+            read_pid_file(&keepalive_pid_path)?.filter(|pid| pid_alive(*pid))
+        {
+            let _ = kill_pid("-TERM", keepalive_pid);
         }
 
         remove_if_exists(&runner_pid_path)?;
+        remove_if_exists(&child_pid_path)?;
         remove_if_exists(&keepalive_pid_path)?;
         remove_if_exists(&attach_marker_path)?;
+        remove_if_exists(&attach_pid_path)?;
         Ok(())
     }
 
@@ -372,13 +441,18 @@ impl HelperRuntime {
         let log_path = session_dir.join("output.log");
         let runner_pid_path = session_dir.join("runner.pid");
         let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
         let runner_pid = read_pid_file(&runner_pid_path)?
             .filter(|pid| pid_alive(*pid))
             .ok_or_else(|| HelperError::CommandFailed("session is not running".to_string()))?;
         let _ = runner_pid;
         touch_file(&log_path)?;
         write_private_file(&attach_marker_path, b"attached\n")?;
-        let cleanup = AttachCleanup::new(attach_marker_path.clone());
+        write_private_file(
+            &attach_pid_path,
+            format!("{}\n", std::process::id()).as_bytes(),
+        )?;
+        let cleanup = AttachCleanup::new(attach_marker_path.clone(), attach_pid_path.clone());
 
         let fifo_for_input = fifo_path.clone();
         let input_handle = thread::spawn(move || -> io::Result<()> {
@@ -413,6 +487,84 @@ impl HelperRuntime {
             .map_err(|_| HelperError::CommandFailed("attach input thread panicked".to_string()))?;
         cleanup.finish();
         input_result?;
+        Ok(())
+    }
+
+    pub fn run_session_runner(&self, session_id: &str) -> Result<(), HelperError> {
+        if session_id.trim().is_empty() {
+            return Err(HelperError::InvalidArgs("missing --session-id".to_string()));
+        }
+
+        let session_dir = self.paths.session_dir(session_id);
+        let log_path = session_dir.join("output.log");
+        let runner_pid_path = session_dir.join("runner.pid");
+        let child_pid_path = session_dir.join("child.pid");
+        let exit_code_path = session_dir.join("exit_code");
+        let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
+
+        let result = self.run_session_runner_inner(session_id);
+        if let Err(error) = &result {
+            touch_file(&log_path)?;
+            let mut log = OpenOptions::new().append(true).open(&log_path)?;
+            writeln!(log, "runner error: {error}")?;
+            write_private_file(&exit_code_path, b"1\n")?;
+            let _ = remove_if_exists(&child_pid_path);
+            let _ = remove_if_exists(&runner_pid_path);
+            let _ = remove_if_exists(&attach_marker_path);
+            let _ = remove_if_exists(&attach_pid_path);
+        }
+        result
+    }
+
+    fn run_session_runner_inner(&self, session_id: &str) -> Result<(), HelperError> {
+        let session_dir = self.paths.session_dir(session_id);
+        let fifo_path = session_dir.join("input.fifo");
+        let log_path = session_dir.join("output.log");
+        let launch_path = session_dir.join("launch.sh");
+        let runner_pid_path = session_dir.join("runner.pid");
+        let child_pid_path = session_dir.join("child.pid");
+        let exit_code_path = session_dir.join("exit_code");
+        let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
+
+        ensure_fifo(&fifo_path)?;
+        touch_file(&log_path)?;
+
+        let (master_fd, slave_fd) = open_pty_pair()?;
+        let master = File::from(master_fd);
+        let input_master = master.try_clone()?;
+        let output_master = master;
+        let fifo = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo_path)?;
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let input_stop = Arc::clone(&stop);
+        let input_handle = thread::spawn(move || copy_fifo_to_pty(fifo, input_master, input_stop));
+        let output_handle = thread::spawn(move || copy_pty_to_log(output_master, log));
+
+        let mut child = spawn_session_child(&launch_path, slave_fd)?;
+        write_private_file(&child_pid_path, format!("{}\n", child.id()).as_bytes())?;
+
+        let status = child.wait()?;
+        let exit_code = exit_status_code(status);
+        write_private_file(&exit_code_path, format!("{exit_code}\n").as_bytes())?;
+
+        stop.store(true, Ordering::Relaxed);
+        join_helper_thread(input_handle, "session input forwarder")?;
+        join_helper_thread(output_handle, "session output recorder")?;
+
+        remove_if_exists(&child_pid_path)?;
+        remove_if_exists(&runner_pid_path)?;
+        remove_if_exists(&attach_marker_path)?;
+        remove_if_exists(&attach_pid_path)?;
         Ok(())
     }
 
@@ -463,6 +615,10 @@ impl HelperRuntime {
                 let request = SessionIdArgs::parse(args)?;
                 self.attach_session(&request.session_id)
             }
+            "session-runner" => {
+                let request = SessionIdArgs::parse(args)?;
+                self.run_session_runner(&request.session_id)
+            }
             other => Err(HelperError::InvalidArgs(format!(
                 "unknown command: {other}"
             ))),
@@ -477,6 +633,22 @@ impl HelperRuntime {
         print_kv("helper_path", &health.helper_path);
         print_kv("state_root", &health.state_root);
         print_kv("controller_id", &health.controller_id);
+        print_kv(
+            "target_triple",
+            health.target_triple.as_deref().unwrap_or(""),
+        );
+        print_kv(
+            "artifact_source",
+            health.artifact_source.as_deref().unwrap_or(""),
+        );
+        print_kv(
+            "artifact_sha256",
+            health.artifact_sha256.as_deref().unwrap_or(""),
+        );
+        print_kv(
+            "missing_dependencies",
+            &health.missing_dependencies.join(","),
+        );
         if include_healthy {
             print_kv("healthy", if health.healthy { "true" } else { "false" });
         }
@@ -771,13 +943,15 @@ impl TailSessionArgs {
 
 struct AttachCleanup {
     attach_marker_path: PathBuf,
+    attach_pid_path: PathBuf,
     active: bool,
 }
 
 impl AttachCleanup {
-    fn new(attach_marker_path: PathBuf) -> Self {
+    fn new(attach_marker_path: PathBuf, attach_pid_path: PathBuf) -> Self {
         Self {
             attach_marker_path,
+            attach_pid_path,
             active: true,
         }
     }
@@ -785,6 +959,7 @@ impl AttachCleanup {
     fn finish(mut self) {
         self.active = false;
         let _ = remove_if_exists(&self.attach_marker_path);
+        let _ = remove_if_exists(&self.attach_pid_path);
     }
 }
 
@@ -792,6 +967,7 @@ impl Drop for AttachCleanup {
     fn drop(&mut self) {
         if self.active {
             let _ = remove_if_exists(&self.attach_marker_path);
+            let _ = remove_if_exists(&self.attach_pid_path);
         }
     }
 }
@@ -859,8 +1035,54 @@ fn read_trimmed_string(path: &Path) -> Result<Option<String>, HelperError> {
     }
 }
 
+fn read_install_metadata(path: &Path) -> Result<InstallMetadata, HelperError> {
+    let Some(contents) = read_trimmed_string(path)? else {
+        return Ok(InstallMetadata::default());
+    };
+
+    let mut metadata = InstallMetadata::default();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "target_triple" => metadata.target_triple = Some(value.to_string()),
+            "artifact_source" => metadata.artifact_source = Some(value.to_string()),
+            "artifact_sha256" => metadata.artifact_sha256 = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    Ok(metadata)
+}
+
 fn read_pid_file(path: &Path) -> Result<Option<u32>, HelperError> {
     Ok(read_trimmed_string(path)?.and_then(|value| value.parse::<u32>().ok()))
+}
+
+fn command_exists(name: &str) -> bool {
+    Command::new("sh")
+        .arg("-lc")
+        .arg(format!("command -v {} >/dev/null 2>&1", shell_quote(name)))
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn missing_dependencies() -> Vec<String> {
+    HELPER_DEPENDENCIES
+        .iter()
+        .copied()
+        .filter(|dependency| !command_exists(dependency))
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -901,9 +1123,10 @@ fn ensure_fifo(path: &Path) -> Result<(), HelperError> {
 }
 
 fn write_launch_script(path: &Path, cwd: &str, command: &str) -> Result<(), HelperError> {
+    let cwd = resolve_launch_cwd(cwd)?;
     let contents = format!(
         "#!/bin/sh\nset -eu\ncd -- {}\nexec /bin/sh -lc {}\n",
-        shell_quote(cwd),
+        shell_quote(&cwd),
         shell_quote(command)
     );
     write_private_file(path, contents.as_bytes())?;
@@ -911,37 +1134,133 @@ fn write_launch_script(path: &Path, cwd: &str, command: &str) -> Result<(), Help
     Ok(())
 }
 
-fn start_keepalive_writer(fifo_path: &Path, keepalive_pid_path: &Path) -> Result<(), HelperError> {
-    if let Some(pid) = read_pid_file(keepalive_pid_path)? {
-        if pid_alive(pid) {
-            return Ok(());
-        }
+fn resolve_launch_cwd(cwd: &str) -> Result<String, HelperError> {
+    if cwd == "~" {
+        return env::var("HOME")
+            .map_err(|_| HelperError::Environment("HOME is not set".to_string()));
     }
-    let command = format!(
-        "exec tail -f /dev/null > {}",
-        shell_quote(&fifo_path.display().to_string())
-    );
-    let keepalive_pid = spawn_detached_shell(&command)?;
-    write_private_file(keepalive_pid_path, format!("{keepalive_pid}\n").as_bytes())
+    if let Some(relative) = cwd.strip_prefix("~/") {
+        let home = env::var("HOME")
+            .map_err(|_| HelperError::Environment("HOME is not set".to_string()))?;
+        return Ok(PathBuf::from(home).join(relative).display().to_string());
+    }
+    Ok(cwd.to_string())
 }
 
-fn script_launch_command(launch_path: &Path) -> Result<String, HelperError> {
-    let supports_qefc = Command::new("sh")
-        .arg("-lc")
-        .arg("script -qefc \"printf ''\" /dev/null >/dev/null 2>&1")
-        .status()?
-        .success();
-    Ok(if supports_qefc {
-        format!(
-            "script -qefc {} /dev/null",
-            shell_quote(&format!("sh {}", launch_path.display()))
+fn open_pty_pair() -> Result<(OwnedFd, OwnedFd), HelperError> {
+    let mut master = -1;
+    let mut slave = -1;
+    let mut winsize = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut winsize,
         )
-    } else {
-        format!(
-            "script -q /dev/null sh {}",
-            shell_quote(&launch_path.display().to_string())
-        )
-    })
+    };
+    if rc == -1 {
+        return Err(HelperError::Io(io::Error::last_os_error()));
+    }
+    let master = unsafe { OwnedFd::from_raw_fd(master) };
+    let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+    Ok((master, slave))
+}
+
+fn spawn_session_child(launch_path: &Path, slave_fd: OwnedFd) -> Result<Child, HelperError> {
+    let slave = File::from(slave_fd);
+    let stdin = slave.try_clone()?;
+    let stdout = slave.try_clone()?;
+    let stderr = slave;
+    let tty_fd = stderr.as_raw_fd();
+    let mut command = Command::new("sh");
+    command.arg(launch_path);
+    command.stdin(Stdio::from(stdin));
+    command.stdout(Stdio::from(stdout));
+    command.stderr(Stdio::from(stderr));
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(tty_fd, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn().map_err(HelperError::Io)
+}
+
+fn copy_fifo_to_pty(
+    mut fifo: File,
+    mut pty_input: File,
+    stop: Arc<AtomicBool>,
+) -> Result<(), HelperError> {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match fifo.read(&mut buffer) {
+            Ok(0) => thread::sleep(FIFO_POLL_INTERVAL),
+            Ok(bytes_read) => {
+                if let Err(error) = pty_input.write_all(&buffer[..bytes_read]) {
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof
+                    ) {
+                        return Ok(());
+                    }
+                    return Err(HelperError::Io(error));
+                }
+                pty_input.flush()?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(FIFO_POLL_INTERVAL);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(HelperError::Io(error)),
+        }
+    }
+}
+
+fn copy_pty_to_log(mut pty_output: File, mut log: File) -> Result<(), HelperError> {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match pty_output.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(bytes_read) => {
+                log.write_all(&buffer[..bytes_read])?;
+                log.flush()?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(()),
+            Err(error) => return Err(HelperError::Io(error)),
+        }
+    }
+}
+
+fn exit_status_code(status: std::process::ExitStatus) -> i32 {
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1)
+}
+
+fn join_helper_thread(
+    handle: thread::JoinHandle<Result<(), HelperError>>,
+    label: &str,
+) -> Result<(), HelperError> {
+    handle
+        .join()
+        .map_err(|_| HelperError::CommandFailed(format!("{label} panicked")))?
 }
 
 fn spawn_detached_shell(command: &str) -> Result<u32, HelperError> {
@@ -972,6 +1291,21 @@ fn kill_pid(signal: &str, pid: u32) -> Result<(), HelperError> {
     } else {
         Err(HelperError::CommandFailed(format!(
             "kill {signal} {pid} failed with status {status}"
+        )))
+    }
+}
+
+fn kill_process_group(signal: &str, pid: u32) -> Result<(), HelperError> {
+    let status = Command::new("kill")
+        .arg(signal)
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(HelperError::CommandFailed(format!(
+            "kill {signal} -- -{pid} failed with status {status}"
         )))
     }
 }
@@ -1068,6 +1402,28 @@ mod tests {
         assert_eq!(health.protocol_version, PROTOCOL_VERSION);
         assert!(health.healthy);
         assert!(health.version.contains("pnevma-remote-helper/"));
+        assert!(health.target_triple.is_none());
+        assert!(health.artifact_source.is_none());
+        assert!(health.artifact_sha256.is_none());
+        assert!(health.missing_dependencies.is_empty());
+    }
+
+    #[test]
+    fn health_reports_install_metadata_fields() {
+        let runtime = test_runtime();
+        write_private_file(
+            &runtime.paths.install_metadata_path(),
+            b"target_triple=x86_64-unknown-linux-musl\nartifact_source=bundle_relative\nartifact_sha256=abc123\n",
+        )
+        .expect("write install metadata");
+
+        let health = runtime.health().expect("health");
+        assert_eq!(
+            health.target_triple.as_deref(),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(health.artifact_source.as_deref(), Some("bundle_relative"));
+        assert_eq!(health.artifact_sha256.as_deref(), Some("abc123"));
     }
 
     #[test]
@@ -1077,6 +1433,99 @@ mod tests {
         assert_eq!(status.state, "lost");
         assert_eq!(status.session_id, "missing");
         assert_eq!(status.total_bytes, 0);
+    }
+
+    #[test]
+    fn resolve_launch_cwd_expands_home_aliases() {
+        let home = env::var("HOME").expect("HOME");
+        assert_eq!(resolve_launch_cwd("~").expect("expand home"), home);
+        assert_eq!(
+            resolve_launch_cwd("~/nested/path").expect("expand nested home"),
+            PathBuf::from(&home)
+                .join("nested/path")
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn session_runner_records_output_and_exit_code() {
+        let runtime = test_runtime();
+        let session_id = "runner-test";
+        let session_dir = runtime.paths.session_dir(session_id);
+        ensure_dir(&session_dir).expect("session dir");
+
+        let fifo_path = session_dir.join("input.fifo");
+        let log_path = session_dir.join("output.log");
+        let launch_path = session_dir.join("launch.sh");
+        let runner_pid_path = session_dir.join("runner.pid");
+        let child_pid_path = session_dir.join("child.pid");
+        let exit_code_path = session_dir.join("exit_code");
+
+        ensure_fifo(&fifo_path).expect("fifo");
+        touch_file(&log_path).expect("log");
+        write_launch_script(
+            &launch_path,
+            env::temp_dir().to_str().expect("temp dir str"),
+            "printf 'runner-ok\\n'",
+        )
+        .expect("launch script");
+        write_private_file(&runner_pid_path, b"999999\n").expect("runner pid");
+
+        runtime
+            .run_session_runner(session_id)
+            .expect("run session runner");
+
+        let output = fs::read_to_string(&log_path).expect("read log");
+        assert!(
+            output.contains("runner-ok"),
+            "expected runner output in log, got: {output:?}"
+        );
+        assert_eq!(
+            read_trimmed_string(&exit_code_path).expect("exit code"),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            read_trimmed_string(&runner_pid_path).expect("runner pid removed"),
+            None
+        );
+        assert_eq!(
+            read_trimmed_string(&child_pid_path).expect("child pid removed"),
+            None
+        );
+    }
+
+    #[test]
+    fn session_status_clears_stale_attach_marker_when_attach_pid_is_dead() {
+        let runtime = test_runtime();
+        let session_id = "stale-attach-test";
+        let session_dir = runtime.paths.session_dir(session_id);
+        ensure_dir(&session_dir).expect("session dir");
+
+        let log_path = session_dir.join("output.log");
+        let runner_pid_path = session_dir.join("runner.pid");
+        let attach_marker_path = session_dir.join("attached.lock");
+        let attach_pid_path = session_dir.join("attach.pid");
+
+        touch_file(&log_path).expect("log");
+        write_private_file(
+            &runner_pid_path,
+            format!("{}\n", std::process::id()).as_bytes(),
+        )
+        .expect("runner pid");
+        write_private_file(&attach_marker_path, b"attached\n").expect("attach marker");
+        write_private_file(&attach_pid_path, b"999999\n").expect("attach pid");
+
+        let status = runtime.session_status(session_id).expect("status");
+        assert_eq!(status.state, "detached");
+        assert!(
+            !attach_marker_path.exists(),
+            "stale attach marker should be removed"
+        );
+        assert!(
+            !attach_pid_path.exists(),
+            "stale attach pid should be removed"
+        );
     }
 
     #[test]

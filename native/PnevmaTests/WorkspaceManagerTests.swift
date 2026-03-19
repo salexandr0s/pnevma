@@ -611,7 +611,7 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
-    func testPrepareForShutdownDoesNotCloseOpenProjects() async throws {
+    func testPrepareForShutdownClosesOpenProjects() async throws {
         let bus = MockCommandBus(specs: [
             .init(
                 projectID: "project-a",
@@ -636,8 +636,8 @@ final class WorkspaceManagerTests: XCTestCase {
         await manager.prepareForShutdown()
 
         let closeCount = await bus.closeCount()
-        XCTAssertEqual(closeCount, 0)
-        XCTAssertEqual(manager.runtime(for: projectWorkspace.id)?.projectID, "project-a")
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertNil(manager.runtime(for: projectWorkspace.id)?.projectID)
     }
 
     func testCreateLocalProjectWorkspaceAppliesLaunchSourceAndInitialTerminalSeed() throws {

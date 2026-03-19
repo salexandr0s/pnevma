@@ -330,6 +330,7 @@ Release evidence bundle must include:
 - notarization logs,
 - stapling logs,
 - packaged launch smoke logs,
+- packaged remote durable lifecycle logs for the Apple Silicon mac-to-mac path when remote functionality ships,
 - remote/manual security test results,
 - latency validation notes.
 
@@ -392,6 +393,7 @@ Track these signals for every RC and GA:
 - user reports of Gatekeeper failures or launch denial,
 - reports of terminal rendering regressions in packaged builds,
 - reports of session restore regressions in packaged builds.
+- reports of remote durable relaunch or reattach regressions in packaged builds.
 
 Thresholds:
 

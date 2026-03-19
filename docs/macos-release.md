@@ -151,6 +151,85 @@ APP_PATH="$PWD/native/build/Pnevma-smoke.app" ./scripts/run-packaged-launch-smok
 hdiutil detach "$DMG_MOUNT"
 ```
 
+Real-host remote helper validation for remote-enabled candidates:
+
+```bash
+export REMOTE_USER="pnevma"
+export REMOTE_PORT="22"
+export REMOTE_IDENTITY_FILE="$HOME/.ssh/pnevma-smoke"
+export REMOTE_X64_HOST="linux-x64.example.internal"
+export REMOTE_ARM64_HOST="linux-arm64.example.internal"
+export REMOTE_MAC_STUDIO_HOST="mac-studio.example.internal"
+
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" \
+REMOTE_HOST="$REMOTE_X64_HOST" \
+REMOTE_USER="$REMOTE_USER" \
+REMOTE_PORT="$REMOTE_PORT" \
+REMOTE_IDENTITY_FILE="$REMOTE_IDENTITY_FILE" \
+EXPECTED_TARGET_TRIPLE="x86_64-unknown-linux-musl" \
+SCENARIO="fresh" \
+./scripts/run-packaged-remote-helper-smoke.sh
+
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" \
+REMOTE_HOST="$REMOTE_ARM64_HOST" \
+REMOTE_USER="$REMOTE_USER" \
+REMOTE_PORT="$REMOTE_PORT" \
+REMOTE_IDENTITY_FILE="$REMOTE_IDENTITY_FILE" \
+EXPECTED_TARGET_TRIPLE="aarch64-unknown-linux-musl" \
+SCENARIO="fresh" \
+./scripts/run-packaged-remote-helper-smoke.sh
+
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" \
+REMOTE_HOST="$REMOTE_MAC_STUDIO_HOST" \
+REMOTE_USER="$REMOTE_USER" \
+REMOTE_PORT="$REMOTE_PORT" \
+REMOTE_IDENTITY_FILE="$REMOTE_IDENTITY_FILE" \
+EXPECTED_TARGET_TRIPLE="aarch64-apple-darwin" \
+SCENARIO="fresh" \
+./scripts/run-packaged-remote-helper-smoke.sh
+```
+
+Packaged remote durable lifecycle validation on the Apple Silicon Mac Studio:
+
+```bash
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" \
+REMOTE_HOST="savorgserver" \
+REMOTE_USER="savorgserver" \
+REMOTE_PORT="$REMOTE_PORT" \
+REMOTE_IDENTITY_FILE="$REMOTE_IDENTITY_FILE" \
+EXPECTED_TARGET_TRIPLE="aarch64-apple-darwin" \
+SCENARIO="disconnect_reconnect" \
+./scripts/run-packaged-remote-durable-lifecycle-smoke.sh
+
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" \
+REMOTE_HOST="savorgserver" \
+REMOTE_USER="savorgserver" \
+REMOTE_PORT="$REMOTE_PORT" \
+REMOTE_IDENTITY_FILE="$REMOTE_IDENTITY_FILE" \
+EXPECTED_TARGET_TRIPLE="aarch64-apple-darwin" \
+SCENARIO="detach_reattach" \
+./scripts/run-packaged-remote-durable-lifecycle-smoke.sh
+
+APP_PATH="$PWD/native/build/Pnevma-smoke.app" \
+REMOTE_HOST="savorgserver" \
+REMOTE_USER="savorgserver" \
+REMOTE_PORT="$REMOTE_PORT" \
+REMOTE_IDENTITY_FILE="$REMOTE_IDENTITY_FILE" \
+EXPECTED_TARGET_TRIPLE="aarch64-apple-darwin" \
+SCENARIO="quit_relaunch_reattach" \
+./scripts/run-packaged-remote-durable-lifecycle-smoke.sh
+```
+
+Run the canonical upgrade scenarios on the Linux `x86_64` host as documented in
+[`manual-remote-ssh-tests.md`](./manual-remote-ssh-tests.md), and run the
+mac-to-mac upgrade scenarios on the Apple Silicon Mac Studio using the same
+harness. Then run the packaged remote durable lifecycle scenarios and the
+clean-machine DMG lifecycle pass documented in
+[`manual-remote-durable-lifecycle-tests.md`](./manual-remote-durable-lifecycle-tests.md).
+This validation is required for remote-enabled release candidates, but it is
+currently an operator-run evidence step rather than a GitHub-hosted blocking
+workflow gate.
+
 ## Evidence bundle
 
 Each release should preserve:
@@ -162,6 +241,9 @@ Each release should preserve:
 - notarization/stapling logs
 - DMG checksum output
 - DMG mount or extraction smoke logs
+- remote helper smoke logs for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio, and the canonical upgrade scenarios
+- remote durable lifecycle logs for the Apple Silicon Mac Studio packaged-app or DMG path
+- clean-machine DMG remote lifecycle notes and any Console or crash evidence captured during failures
 - remote/manual security test results
 
 For `v0.2.0`, the expected evidence set is:
@@ -173,6 +255,10 @@ For `v0.2.0`, the expected evidence set is:
 - app notarization submission and stapling logs
 - DMG notarization submission and stapling logs
 - packaged launch smoke output from a DMG-extracted app
+- real-host remote helper smoke logs from the packaged app or DMG on Linux `x86_64`, Linux `aarch64`, and Apple Silicon Mac Studio (`aarch64-apple-darwin`)
+- canonical remote helper upgrade scenario logs from the Linux `x86_64` host and the Apple Silicon Mac Studio
+- packaged remote durable lifecycle logs for `disconnect_reconnect`, `detach_reattach`, and `quit_relaunch_reattach` on the Apple Silicon Mac Studio
+- clean-machine DMG remote lifecycle validation notes and any associated Console or crash evidence
 - `Pnevma-0.2.0-macos-arm64.dmg.sha256`
 - SBOM artifact(s)
 

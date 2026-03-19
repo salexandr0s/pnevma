@@ -14,7 +14,6 @@ use pnevma_core::config::{
 };
 use pnevma_core::{RemoteSection, TrackerSection};
 use pnevma_db::{AutomationRetryRow, AutomationRunRow, GlobalDb, WorktreeRow};
-use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::ffi::OsString;
 use std::fs;

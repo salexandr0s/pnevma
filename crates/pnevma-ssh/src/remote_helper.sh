@@ -5,10 +5,12 @@ HELPER_VERSION="pnevma-remote-helper-v1"
 PROTOCOL_VERSION="1"
 HELPER_KIND="shell_compat"
 HELPER_PATH="${HOME}/.local/share/pnevma/bin/pnevma-remote-helper"
+HELPER_METADATA_PATH="${HOME}/.local/share/pnevma/bin/pnevma-remote-helper.metadata"
 STATE_ROOT="${XDG_STATE_HOME:-${HOME}/.local/state}/pnevma/remote"
 SESSIONS_ROOT="${STATE_ROOT}/sessions"
 CONTROLLER_ID="remote-helper-v1"
 DEFAULT_ATTACH_TAIL_BYTES=16384
+HELPER_DEPENDENCIES="sh mkfifo script nohup tail kill"
 
 mkdir -p "${SESSIONS_ROOT}"
 
@@ -23,6 +25,26 @@ fail() {
 
 shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"
+}
+
+metadata_value() {
+  key="$1"
+  if [ -f "$HELPER_METADATA_PATH" ]; then
+    sed -n "s/^${key}=//p" "$HELPER_METADATA_PATH" | head -n 1
+  fi
+}
+
+missing_dependencies() {
+  missing=""
+  for dependency in $HELPER_DEPENDENCIES; do
+    if ! command -v "$dependency" >/dev/null 2>&1; then
+      if [ -n "$missing" ]; then
+        missing="${missing},"
+      fi
+      missing="${missing}${dependency}"
+    fi
+  done
+  printf '%s' "$missing"
 }
 
 session_dir() {
@@ -97,17 +119,29 @@ script_launch_command() {
 }
 
 cmd_version() {
+  target_triple="$(metadata_value target_triple)"
+  artifact_source="$(metadata_value artifact_source)"
+  artifact_sha256="$(metadata_value artifact_sha256)"
+  missing="$(missing_dependencies)"
   print_kv version "$HELPER_VERSION"
   print_kv protocol_version "$PROTOCOL_VERSION"
   print_kv helper_kind "$HELPER_KIND"
   print_kv helper_path "$HELPER_PATH"
   print_kv state_root "$STATE_ROOT"
   print_kv controller_id "$CONTROLLER_ID"
+  print_kv target_triple "$target_triple"
+  print_kv artifact_source "$artifact_source"
+  print_kv artifact_sha256 "$artifact_sha256"
+  print_kv missing_dependencies "$missing"
 }
 
 cmd_health() {
   cmd_version
-  print_kv healthy "true"
+  if [ -n "$(missing_dependencies)" ]; then
+    print_kv healthy "false"
+  else
+    print_kv healthy "true"
+  fi
 }
 
 cmd_controller_ensure() {

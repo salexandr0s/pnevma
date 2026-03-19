@@ -196,6 +196,7 @@ async fn shutdown_project_sessions(
             row.detached_at = Some(Utc::now());
             row.last_heartbeat = Utc::now();
             row.last_error = None;
+            row.restore_status = Some(SESSION_LIFECYCLE_DETACHED.to_string());
             if let Err(error) = db.upsert_session(&row).await {
                 tracing::warn!(session_id = %row.id, %error, "failed to persist remote durable session row during project shutdown");
             } else if let Ok(session_id) = Uuid::parse_str(&row.id) {
@@ -391,9 +392,13 @@ pub async fn open_project(
     let restore_root = path_buf.join(".pnevma/data");
     for row in session_rows {
         if row.status == "complete" || row.status == "error" {
+            if is_remote_ssh_durable_backend(&row.backend) {
+                record_remote_session_restore_outcome(&db, &row, "project_open").await;
+            }
             continue;
         }
         if is_remote_ssh_durable_backend(&row.backend) {
+            record_remote_session_restore_outcome(&db, &row, "project_open").await;
             continue;
         }
         if let Some(meta) = session_meta_from_row(&row, &restore_root) {

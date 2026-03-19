@@ -58,8 +58,8 @@ use pnevma_core::{
 use pnevma_db::{
     sha256_hex, ArtifactRow, CheckResultRow, CheckRunRow, CheckpointRow, Db, EventQueryFilter,
     EventRow, FeedbackRow, MergeQueueRow, NewEvent, NotificationRow, OnboardingStateRow,
-    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SessionRow, SshProfileRow, TaskRow,
-    TelemetryEventRow, TrustRecord, WorkflowInstanceRow, WorkflowRow,
+    PaneLayoutTemplateRow, PaneRow, ReviewRow, RuleRow, SessionRestoreLogRow, SessionRow,
+    SshProfileRow, TaskRow, TelemetryEventRow, TrustRecord, WorkflowInstanceRow, WorkflowRow,
 };
 use pnevma_git::{parse_hook_defs, run_hooks, GitService, HookPhase};
 use pnevma_redaction::{
@@ -78,6 +78,10 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
+
+const REMOTE_SESSION_STATUS_STARTUP_GRACE_WINDOW_SECS: i64 = 3;
+const REMOTE_SESSION_STATUS_STARTUP_RETRIES: usize = 4;
+const REMOTE_SESSION_STATUS_STARTUP_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInput {
@@ -1957,6 +1961,64 @@ fn parse_optional_datetime(value: &Option<String>) -> Option<DateTime<Utc>> {
         .map(|parsed| parsed.with_timezone(&Utc))
 }
 
+fn remote_session_is_live(row: &SessionRow) -> bool {
+    matches!(row.status.as_str(), "running" | "waiting")
+}
+
+fn remote_session_last_error_for_state(state: &str) -> Option<String> {
+    match state {
+        "lost" => Some("remote durable session missing on remote host".to_string()),
+        "error" => Some("remote durable session reported an error".to_string()),
+        _ => None,
+    }
+}
+
+fn remote_restore_log_outcome(row: &SessionRow) -> String {
+    row.restore_status
+        .clone()
+        .unwrap_or_else(|| row.lifecycle_state.clone())
+}
+
+async fn create_session_restore_log_entry(
+    db: &Db,
+    row: &SessionRow,
+    action: &str,
+    error_message: Option<String>,
+) {
+    if let Err(error) = db
+        .create_session_restore_log(&SessionRestoreLogRow {
+            id: Uuid::new_v4().to_string(),
+            session_id: row.id.clone(),
+            project_id: row.project_id.clone(),
+            action: action.to_string(),
+            outcome: remote_restore_log_outcome(row),
+            error_message,
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .await
+    {
+        tracing::warn!(
+            session_id = %row.id,
+            action,
+            error = %error,
+            "failed to persist session restore log entry"
+        );
+    }
+}
+
+async fn record_remote_session_restore_outcome(db: &Db, row: &SessionRow, action: &str) {
+    let outcome = remote_restore_log_outcome(row);
+    if let Err(error) = db.update_session_restore_status(&row.id, &outcome).await {
+        tracing::warn!(
+            session_id = %row.id,
+            action,
+            error = %error,
+            "failed to persist remote session restore status"
+        );
+    }
+    create_session_restore_log_entry(db, row, action, row.last_error.clone()).await;
+}
+
 async fn resolve_ssh_profile_by_id(
     state: &AppState,
     project_db: Option<&Db>,
@@ -2068,6 +2130,41 @@ async fn session_backend_alive(project_path: &Path, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+async fn mark_remote_session_row_lost(
+    db: &Db,
+    row: &SessionRow,
+    reason: String,
+    action: &str,
+) -> Result<SessionRow, String> {
+    let mut lost = row.clone();
+    lost.status = "complete".to_string();
+    lost.lifecycle_state = SESSION_LIFECYCLE_LOST.to_string();
+    lost.pid = None;
+    lost.last_heartbeat = Utc::now();
+    lost.ended_at = Some(Utc::now().to_rfc3339());
+    lost.last_error = Some(reason.clone());
+    lost.restore_status = Some(format!("restore_failed:{action}"));
+    db.upsert_session(&lost).await.map_err(|e| e.to_string())?;
+    if let Ok(project_id) = Uuid::parse_str(&lost.project_id) {
+        append_event(
+            db,
+            project_id,
+            None,
+            Uuid::parse_str(&lost.id).ok(),
+            "session",
+            "SessionLost",
+            json!({
+                "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
+                "action": action,
+                "error": reason,
+            }),
+        )
+        .await;
+    }
+    create_session_restore_log_entry(db, &lost, action, lost.last_error.clone()).await;
+    Ok(lost)
+}
+
 async fn refresh_remote_session_row(
     state: &AppState,
     db: &Db,
@@ -2079,9 +2176,22 @@ async fn refresh_remote_session_row(
         .as_deref()
         .unwrap_or(row.id.as_str())
         .to_string();
-    let status = pnevma_ssh::remote_session_status(&profile, &remote_session_id)
+    let mut status = pnevma_ssh::remote_session_status(&profile, &remote_session_id)
         .await
         .map_err(|e| e.to_string())?;
+    if status.state == "lost" && remote_session_startup_grace_active(row) {
+        for _ in 0..REMOTE_SESSION_STATUS_STARTUP_RETRIES {
+            tokio::time::sleep(REMOTE_SESSION_STATUS_STARTUP_RETRY_DELAY).await;
+            let retried = pnevma_ssh::remote_session_status(&profile, &remote_session_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            if retried.state != "lost" {
+                status = retried;
+                break;
+            }
+            status = retried;
+        }
+    }
     let Some(project_uuid) = Uuid::parse_str(&row.project_id).ok() else {
         return Err(format!("invalid project id for session {}", row.id));
     };
@@ -2161,6 +2271,16 @@ async fn refresh_remote_session_row(
     Ok(next)
 }
 
+fn remote_session_startup_grace_active(row: &SessionRow) -> bool {
+    if !remote_session_is_live(row) {
+        return false;
+    }
+
+    let age = Utc::now().signed_duration_since(row.started_at);
+    age >= chrono::Duration::zero()
+        && age <= chrono::Duration::seconds(REMOTE_SESSION_STATUS_STARTUP_GRACE_WINDOW_SECS)
+}
+
 async fn reconcile_persisted_sessions(
     db: &Db,
     project_id: Uuid,
@@ -2175,35 +2295,19 @@ async fn reconcile_persisted_sessions(
     let mut out = Vec::with_capacity(rows.len());
     for mut row in rows {
         if is_remote_ssh_durable_backend(&row.backend) {
-            if matches!(row.status.as_str(), "running" | "waiting") {
+            if remote_session_is_live(&row) {
                 row = match refresh_remote_session_row(state, db, &row).await {
                     Ok(refreshed) => refreshed,
                     Err(error) => {
-                        let mut lost = row.clone();
-                        lost.status = "complete".to_string();
-                        lost.lifecycle_state = SESSION_LIFECYCLE_LOST.to_string();
-                        lost.last_error = Some(error.clone());
-                        lost.pid = None;
-                        lost.last_heartbeat = Utc::now();
-                        if let Ok(session_uuid) = Uuid::parse_str(&lost.id) {
-                            append_event(
-                                db,
-                                project_id,
-                                None,
-                                Some(session_uuid),
-                                "session",
-                                "SessionLost",
-                                json!({
-                                    "backend": SESSION_BACKEND_REMOTE_SSH_DURABLE,
-                                    "error": error,
-                                }),
-                            )
-                            .await;
-                        }
-                        lost
+                        mark_remote_session_row_lost(
+                            db,
+                            &row,
+                            error,
+                            "reconcile_persisted_sessions",
+                        )
+                        .await?
                     }
                 };
-                db.upsert_session(&row).await.map_err(|e| e.to_string())?;
             }
             out.push(row);
             continue;
@@ -2320,6 +2424,10 @@ fn remote_session_row_from_status(
     status: &pnevma_ssh::RemoteSessionStatus,
 ) -> SessionRow {
     let (row_status, lifecycle_state) = remote_session_state_mapping(&status.state);
+    let terminal_lifecycle = matches!(
+        lifecycle_state.as_str(),
+        SESSION_LIFECYCLE_EXITED | SESSION_LIFECYCLE_LOST | SESSION_LIFECYCLE_ERROR
+    );
     let last_output_at = status
         .last_output_at_epoch
         .and_then(|epoch| DateTime::<Utc>::from_timestamp(epoch, 0));
@@ -2349,10 +2457,10 @@ fn remote_session_row_from_status(
         last_heartbeat: Utc::now(),
         last_output_at,
         detached_at,
-        last_error: None,
+        last_error: remote_session_last_error_for_state(&status.state),
         restore_status: Some(status.state.clone()),
         exit_code: status.exit_code.map(i64::from),
-        ended_at: matches!(status.state.as_str(), "exited").then(|| Utc::now().to_rfc3339()),
+        ended_at: terminal_lifecycle.then(|| Utc::now().to_rfc3339()),
     }
 }
 
@@ -2399,8 +2507,13 @@ pub(crate) async fn create_remote_managed_session(
                 "controller_id": helper.health.controller_id,
                 "helper_path": helper.health.helper_path,
                 "helper_kind": helper.health.helper_kind,
+                "artifact_sha256": helper.health.artifact_sha256,
+                "artifact_source": helper.health.artifact_source,
+                "target_triple": helper.health.target_triple,
+                "protocol_compatible": helper.health.protocol_compatible,
                 "protocol_version": helper.health.protocol_version,
                 "install_kind": helper.install_kind.as_str(),
+                "missing_dependencies": helper.health.missing_dependencies,
                 "version": helper.health.version,
             }),
         )
@@ -2420,7 +2533,12 @@ pub(crate) async fn create_remote_managed_session(
             "helper_path": helper.health.helper_path,
             "helper_kind": helper.health.helper_kind,
             "healthy": helper.health.healthy,
+            "artifact_sha256": helper.health.artifact_sha256,
+            "artifact_source": helper.health.artifact_source,
+            "target_triple": helper.health.target_triple,
+            "protocol_compatible": helper.health.protocol_compatible,
             "protocol_version": helper.health.protocol_version,
+            "missing_dependencies": helper.health.missing_dependencies,
             "version": helper.health.version,
         }),
     )

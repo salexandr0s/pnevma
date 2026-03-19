@@ -12,6 +12,7 @@ A release candidate is ready only when all of the following are true:
 4. Release package preflight is green on `main`.
 5. Sign/notarize rehearsal is green anywhere the Apple signing and `notarytool` credential secrets are available.
 6. `main` is stable across the native and release-rehearsal lanes, with recent consecutive green runs before cutting the candidate.
+7. For remote-enabled candidates, operator-run real-host remote helper smoke evidence exists for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio (`aarch64-apple-darwin`), the canonical upgrade scenarios on Linux `x86_64` and the Mac Studio, packaged remote durable lifecycle evidence exists for the Apple Silicon Mac Studio path, and a clean-machine DMG remote lifecycle pass is recorded.
 
 ## CI Jobs
 
@@ -26,6 +27,8 @@ The rehearsal lanes are expected to validate the public `v0.2.0` DMG release pat
 
 - `just ghostty-smoke`
 - `APP_PATH=/path/to/Pnevma.app ./scripts/run-packaged-launch-smoke.sh`
+- `APP_PATH=/path/to/Pnevma.app REMOTE_HOST=... REMOTE_USER=... EXPECTED_TARGET_TRIPLE=... SCENARIO=... ./scripts/run-packaged-remote-helper-smoke.sh`
+- `APP_PATH=/path/to/Pnevma.app REMOTE_HOST=savorgserver REMOTE_USER=savorgserver EXPECTED_TARGET_TRIPLE=aarch64-apple-darwin SCENARIO=... ./scripts/run-packaged-remote-durable-lifecycle-smoke.sh`
 
 ## Current Release Focus
 

@@ -194,11 +194,19 @@ pub async fn get_session_binding(
         .await?;
     let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     let Some(meta) = sessions.get(session_uuid).await else {
-        let row = db
+        let mut row = db
             .get_session(&project_id.to_string(), &session_id)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("session not found: {session_id}"))?;
+        if is_remote_ssh_durable_backend(&row.backend) && remote_session_is_live(&row) {
+            row = match refresh_remote_session_row(state, &db, &row).await {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    mark_remote_session_row_lost(&db, &row, error, "session_binding").await?
+                }
+            };
+        }
         let recovery_options = recovery_options_for_row(&row);
         let remote_attach = if is_remote_ssh_durable_backend(&row.backend)
             && matches!(
@@ -309,10 +317,13 @@ pub async fn list_live_session_views(state: &AppState) -> Result<Vec<LiveSession
         {
             continue;
         }
-        let row = refresh_remote_session_row(state, &db, &row)
-            .await
-            .unwrap_or(row);
-        if seen.insert(row.id.clone()) {
+        let row = match refresh_remote_session_row(state, &db, &row).await {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                mark_remote_session_row_lost(&db, &row, error, "list_live_session_views").await?
+            }
+        };
+        if remote_session_is_live(&row) && seen.insert(row.id.clone()) {
             views.push(live_session_view_from_row(&row));
         }
     }
@@ -362,6 +373,7 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
         prior.lifecycle_state = SESSION_LIFECYCLE_EXITED.to_string();
         prior.last_heartbeat = Utc::now();
         prior.last_error = None;
+        prior.restore_status = Some(SESSION_LIFECYCLE_EXITED.to_string());
         prior.ended_at = Some(Utc::now().to_rfc3339());
         db.upsert_session(&prior).await.map_err(|e| e.to_string())?;
 
@@ -606,6 +618,7 @@ pub async fn restore_sessions(state: &AppState) -> Result<Vec<SessionRow>, Strin
     let rows = reconcile_persisted_sessions(&db, project_id, project_path.as_path(), state).await?;
     for row in &rows {
         if is_remote_ssh_durable_backend(&row.backend) {
+            record_remote_session_restore_outcome(&db, row, "restore_sessions").await;
             continue;
         }
         if row.status != "waiting" {
@@ -630,9 +643,17 @@ pub async fn reattach_session(session_id: String, state: &AppState) -> Result<()
         .map_err(|e| e.to_string())?
     {
         if is_remote_ssh_durable_backend(&row.backend) {
-            let refreshed = refresh_remote_session_row(state, &db, &row)
-                .await
-                .unwrap_or(row);
+            let refreshed = match refresh_remote_session_row(state, &db, &row).await {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    mark_remote_session_row_lost(&db, &row, error, "reattach_session").await?
+                }
+            };
+            if !remote_session_is_live(&refreshed) {
+                return Err(refreshed.last_error.clone().unwrap_or_else(|| {
+                    "remote durable session is no longer available".to_string()
+                }));
+            }
             append_event(
                 &db,
                 project_id,
@@ -1186,9 +1207,23 @@ pub async fn recover_session(
         "reattach" => {
             if let Some(row) = persisted_row.as_ref() {
                 if is_remote_ssh_durable_backend(&row.backend) {
-                    let refreshed = refresh_remote_session_row(state, &db, row)
-                        .await
-                        .unwrap_or_else(|_| row.clone());
+                    let refreshed = match refresh_remote_session_row(state, &db, row).await {
+                        Ok(refreshed) => refreshed,
+                        Err(error) => {
+                            mark_remote_session_row_lost(
+                                &db,
+                                row,
+                                error,
+                                "session_recovery_reattach",
+                            )
+                            .await?
+                        }
+                    };
+                    if !remote_session_is_live(&refreshed) {
+                        return Err(refreshed.last_error.clone().unwrap_or_else(|| {
+                            "remote durable session is no longer available".to_string()
+                        }));
+                    }
                     append_event(
                         &db,
                         project_id,

@@ -10,6 +10,8 @@ Run these checks in order against the `0.2.0` DMG. Stop at the first failure and
 This document complements:
 
 - `scripts/run-packaged-launch-smoke.sh` for packaged app launch smoke,
+- `docs/manual-remote-ssh-tests.md` for real-host remote helper validation on Linux and remote macOS hosts,
+- `docs/manual-remote-durable-lifecycle-tests.md` for packaged remote durable session lifecycle validation and clean-machine relaunch evidence,
 - `docs/manual-security-tests.md` for remote/security validation,
 - `docs/macos-release.md` for signing/notarization/stapling evidence.
 
