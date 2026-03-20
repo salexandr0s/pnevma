@@ -136,6 +136,18 @@ final class CommandPalette: NSPanel {
         }
     }
 
+    /// Show the palette with a prefix pre-filled (e.g. ":" for files).
+    func show(prefix: String) {
+        searchField.stringValue = prefix
+        makeKeyAndOrderFront(nil)
+        searchField.becomeFirstResponder()
+        // Position cursor at end of prefix
+        if let editor = searchField.currentEditor() {
+            editor.selectedRange = NSRange(location: prefix.utf16.count, length: 0)
+        }
+        searchChanged()
+    }
+
     /// Hide the palette.
     func dismiss() {
         orderOut(nil)
@@ -168,12 +180,28 @@ final class CommandPalette: NSPanel {
     // MARK: - Actions
 
     @objc private func searchChanged() {
-        let query = searchField.stringValue.lowercased()
+        let query = searchField.stringValue
         if query.isEmpty {
             filteredCommands = allCommands
+        } else if let firstChar = query.first,
+                  let category = PaletteCategory.allCases.first(where: { $0.filterPrefix == firstChar }) {
+            let searchText = String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
+            // For command prefix (>), all palette items are commands — show all.
+            // For other prefixes, filter by the matching category key.
+            let categoryItems = category == .command
+                ? allCommands
+                : allCommands.filter { $0.category == category.commandItemKey }
+            if searchText.isEmpty {
+                filteredCommands = categoryItems
+            } else {
+                filteredCommands = categoryItems.filter { item in
+                    fuzzyMatch(query: searchText, target: item.title.lowercased())
+                }
+            }
         } else {
+            let lowerQuery = query.lowercased()
             filteredCommands = allCommands.filter { item in
-                fuzzyMatch(query: query, target: item.title.lowercased())
+                fuzzyMatch(query: lowerQuery, target: item.title.lowercased())
             }
         }
         tableView.reloadData()

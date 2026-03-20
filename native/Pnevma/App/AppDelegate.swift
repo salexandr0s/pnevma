@@ -2672,8 +2672,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showCommandPalette() { commandPalette?.show() }
 
     @objc private func showFileQuickOpen() {
-        // TODO: When palette supports prefix mode, pre-fill with ":"
-        commandPalette?.show()
+        commandPalette?.show(prefix: ":")
     }
 
     @objc private func showShortcutSheet() {

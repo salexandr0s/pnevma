@@ -32,6 +32,18 @@ enum PaletteCategory: String, CaseIterable {
         case .template: return nil
         }
     }
+
+    /// Key used in `CommandItem.category` for palette prefix filtering.
+    var commandItemKey: String {
+        switch self {
+        case .command: return "command"
+        case .workspace: return "workspace"
+        case .task: return "task"
+        case .session: return "session"
+        case .file: return "file"
+        case .template: return "template"
+        }
+    }
 }
 
 /// Enhanced command item with category metadata.
