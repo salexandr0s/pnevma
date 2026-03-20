@@ -9,6 +9,24 @@ final class ToolDockState {
     var notificationBadgeCount: Int = 0
 }
 
+// MARK: - Dock Tooltip Preference
+
+private struct DockTooltipPreferenceKey: PreferenceKey {
+    static let defaultValue: DockTooltipAnchor? = nil
+    static func reduce(value: inout DockTooltipAnchor?, nextValue: () -> DockTooltipAnchor?) {
+        value = nextValue() ?? value
+    }
+}
+
+private struct DockTooltipAnchor: Equatable {
+    let title: String
+    let anchor: Anchor<CGRect>
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.title == rhs.title
+    }
+}
+
 struct ToolDockBarView: View {
     var workspaceManager: WorkspaceManager
     @Bindable var dockState: ToolDockState
@@ -58,7 +76,7 @@ struct ToolDockBarView: View {
                 if geometry.size.width >= minimumDockContentWidth {
                     centeredDockContent(minWidth: geometry.size.width)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
+                    ScrollView(.horizontal) {
                         centeredDockContent(minWidth: geometry.size.width)
                     }
                     .scrollIndicators(.hidden)
@@ -73,6 +91,17 @@ struct ToolDockBarView: View {
                 Color.white.opacity(0.016)
             }
         )
+        .overlayPreferenceValue(DockTooltipPreferenceKey.self) { anchor in
+            if let anchor {
+                GeometryReader { proxy in
+                    let rect = proxy[anchor.anchor]
+                    DockTooltipLabel(text: anchor.title)
+                        .fixedSize()
+                        .position(x: rect.midX, y: rect.minY - 22)
+                }
+                .allowsHitTesting(false)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { isHovering in
             onHoverChanged?(isHovering)
@@ -214,27 +243,28 @@ private struct ToolDockItemButton: View {
             }
             .frame(width: 50, height: 40)
             .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                RoundedRectangle(cornerRadius: 13)
                     .fill(backgroundFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                RoundedRectangle(cornerRadius: 13)
                     .stroke(borderColor, lineWidth: 1)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 12)
                     .stroke(highlightStrokeColor, lineWidth: 1)
                     .padding(1)
             )
             .shadow(color: .black.opacity(buttonShadowOpacity), radius: 6, y: 1)
         }
         .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .background(ToolDockNativeTooltipBridge(text: tool.title))
+        .contentShape(RoundedRectangle(cornerRadius: 13))
+        .anchorPreference(key: DockTooltipPreferenceKey.self, value: .bounds) { anchor in
+            isHovering ? DockTooltipAnchor(title: tool.title, anchor: anchor) : nil
+        }
         .onHover { hovering in
             isHovering = hovering
         }
-        .help(tool.title)
         .animation(ChromeMotion.animation(for: .hover), value: isHovering)
         .animation(ChromeMotion.animation(for: .hover), value: isActive)
         .contextMenu {
@@ -269,31 +299,45 @@ private struct ToolDockItemButton: View {
     }
 }
 
-private struct ToolDockNativeTooltipBridge: NSViewRepresentable {
+private struct DockTooltipLabel: View {
     let text: String
+    private let cornerRadius: CGFloat = 9
+    private let arrowHeight: CGFloat = 7
+    private let arrowWidth: CGFloat = 14
 
-    func makeNSView(context: Context) -> ToolDockNativeTooltipView {
-        let view = ToolDockNativeTooltipView()
-        view.toolTip = text
-        return view
-    }
-
-    func updateNSView(_ nsView: ToolDockNativeTooltipView, context: Context) {
-        nsView.toolTip = text
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.95))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+            Color.clear
+                .frame(height: arrowHeight)
+        }
+        .background(
+            TooltipBubbleShape(cornerRadius: cornerRadius, arrowHeight: arrowHeight, arrowWidth: arrowWidth)
+                .fill(Color(nsColor: NSColor(white: 0.24, alpha: 0.85)))
+        )
+        .transition(.opacity)
+        .animation(ChromeMotion.animation(for: .tooltip), value: text)
     }
 }
 
-private final class ToolDockNativeTooltipView: NSView {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = false
-    }
+private struct TooltipBubbleShape: Shape {
+    let cornerRadius: CGFloat
+    let arrowHeight: CGFloat
+    let arrowWidth: CGFloat
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
+    func path(in rect: CGRect) -> Path {
+        let bodyRect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height - arrowHeight)
+        var path = Path(roundedRect: bodyRect, cornerRadius: cornerRadius)
+        let midX = bodyRect.midX
+        let arrowTop = bodyRect.maxY
+        path.move(to: CGPoint(x: midX - arrowWidth / 2, y: arrowTop))
+        path.addLine(to: CGPoint(x: midX, y: arrowTop + arrowHeight))
+        path.addLine(to: CGPoint(x: midX + arrowWidth / 2, y: arrowTop))
+        path.closeSubpath()
+        return path
     }
 }
