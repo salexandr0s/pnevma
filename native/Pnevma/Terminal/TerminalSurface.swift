@@ -68,6 +68,42 @@ class TerminalSurface {
     }
 
     #if canImport(GhosttyKit)
+    private struct ClipboardWriteContent {
+        let mime: String
+        let data: String
+
+        static func from(content: ghostty_clipboard_content_s) -> ClipboardWriteContent? {
+            guard let mimePtr = content.mime,
+                  let dataPtr = content.data else {
+                return nil
+            }
+
+            return ClipboardWriteContent(
+                mime: String(cString: mimePtr),
+                data: String(cString: dataPtr)
+            )
+        }
+    }
+
+    private static func preferredClipboardWriteString(
+        content: UnsafePointer<ghostty_clipboard_content_s>?,
+        length: Int
+    ) -> String? {
+        guard let content, length > 0 else { return nil }
+
+        let items = (0..<length).compactMap { ClipboardWriteContent.from(content: content[$0]) }
+        guard !items.isEmpty else { return nil }
+
+        if let plainText = items.first(where: { $0.mime == "text/plain" })?.data,
+           !plainText.isEmpty {
+            return plainText
+        }
+
+        return items.first(where: { !$0.data.isEmpty })?.data
+    }
+    #endif
+
+    #if canImport(GhosttyKit)
 
     // MARK: - Static App Singleton
 
@@ -465,10 +501,9 @@ class TerminalSurface {
                     surface.completeClipboardRead(state: sp, confirmed: true)
                 }
             },
-            write_clipboard_cb: { _, str, _, confirm in
-                guard !confirm, let str else { return }
-                let string = String(cString: str)
-                guard !string.isEmpty else { return }
+            write_clipboard_cb: { _, _, content, length, confirm in
+                guard !confirm,
+                      let string = TerminalSurface.preferredClipboardWriteString(content: content, length: length) else { return }
                 Task { @MainActor in
                     TerminalSurface.writeClipboardString(string)
                 }
