@@ -19,9 +19,9 @@ use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 // ---------------------------------------------------------------------------
 // Types matching pnevma-bridge.h
@@ -56,9 +56,20 @@ pub struct PnevmaResult {
 /// same memory address.
 static GLOBAL_HANDLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// Process-wide Tokio runtime shared by all `PnevmaHandle` instances.
+///
+/// Using a single runtime avoids spawning a separate thread pool per workspace,
+/// which previously caused thread count to scale linearly with open workspaces.
+static SHARED_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Return a reference to the shared Tokio runtime, creating it on first call.
+fn shared_runtime() -> &'static Runtime {
+    SHARED_RUNTIME.get_or_init(|| Runtime::new().expect("failed to create Tokio runtime"))
+}
+
 /// Opaque handle holding all Pnevma runtime state.
 pub struct PnevmaHandle {
-    runtime: Runtime,
+    runtime: Handle,
     state: Arc<AppState>,
     session_output_cb: Arc<std::sync::Mutex<Option<Arc<SessionOutputCallbackRegistration>>>>,
     session_output_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -580,11 +591,8 @@ async fn stop_project_services(state: Arc<AppState>) {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaHandle {
     let result = panic::catch_unwind(|| {
-        // Build tokio runtime
-        let runtime = match Runtime::new() {
-            Ok(rt) => rt,
-            Err(_) => return ptr::null_mut(),
-        };
+        let runtime = shared_runtime();
+        let handle = runtime.handle().clone();
 
         // Create emitter
         let emitter: Arc<dyn EventEmitter> = if cb as usize == 0 {
@@ -613,7 +621,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         // Start background services
         let state_clone = Arc::clone(&state);
         let cost_shutdown_rx = shutdown_tx.subscribe();
-        runtime.spawn(async move {
+        handle.spawn(async move {
             pnevma_commands::cost_aggregation::start_cost_aggregation(
                 state_clone,
                 cost_shutdown_rx,
@@ -621,7 +629,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
         });
 
         Arc::into_raw(Arc::new(PnevmaHandle {
-            runtime,
+            runtime: handle,
             state,
             session_output_cb: Arc::new(std::sync::Mutex::new(None)),
             session_output_task: std::sync::Mutex::new(None),
@@ -679,17 +687,14 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
         for callback in pending_callbacks {
             release_async_context(callback);
         }
-        // Wait briefly for in-flight calls to release their Arc clones
+        // Wait briefly for in-flight calls to release their Arc clones,
+        // then drop per-handle state. The shared runtime is not shut down —
+        // it persists for the process lifetime.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while Arc::strong_count(&handle) > 1 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        match Arc::try_unwrap(handle) {
-            Ok(inner) => inner
-                .runtime
-                .shutdown_timeout(std::time::Duration::from_secs(5)),
-            Err(_) => { /* in-flight calls still running; Runtime drops via background shutdown */ }
-        }
+        drop(handle);
     }));
 }
 
