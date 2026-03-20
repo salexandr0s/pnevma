@@ -1,5 +1,15 @@
 use super::*;
 
+fn tmux_binary_is_available() -> bool {
+    std::process::Command::new(pnevma_session::resolve_binary("tmux"))
+        .arg("-V")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 #[tokio::test]
 async fn open_project_returns_workspace_not_initialized_for_existing_repo_without_scaffold() {
     let project_root = tempdir().expect("temp project");
@@ -450,6 +460,11 @@ async fn close_project_terminates_running_session_helpers_and_persists_complete_
 
 #[tokio::test]
 async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdown() {
+    if !tmux_binary_is_available() {
+        eprintln!("skipping tmux restore test because tmux is unavailable");
+        return;
+    }
+
     let temp = tempfile::Builder::new()
         .prefix("pnv")
         .tempdir_in("/tmp")
