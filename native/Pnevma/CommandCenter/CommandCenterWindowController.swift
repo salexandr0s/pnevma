@@ -6,8 +6,6 @@ final class CommandCenterWindowController: NSWindowController, NSWindowDelegate 
     private let store: CommandCenterStore
     private let onVisibilityChanged: (Bool) -> Void
     private let onFrameChanged: (NSRect) -> Void
-    nonisolated(unsafe) private var themeObserver: NSObjectProtocol?
-
     init(
         store: CommandCenterStore,
         onVisibilityChanged: @escaping (Bool) -> Void,
@@ -28,8 +26,7 @@ final class CommandCenterWindowController: NSWindowController, NSWindowDelegate 
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unifiedCompact
         window.minSize = NSSize(width: 1180, height: 760)
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = GhosttyThemeProvider.shared.backgroundColor
+        window.backgroundColor = ChromeSurfaceStyle.window.baseColor
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.fullScreenPrimary]
@@ -42,28 +39,11 @@ final class CommandCenterWindowController: NSWindowController, NSWindowDelegate 
         shouldCascadeWindows = false
         window.delegate = self
         window.center()
-
-        themeObserver = NotificationCenter.default.addObserver(
-            forName: GhosttyThemeProvider.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.window?.backgroundColor = GhosttyThemeProvider.shared.backgroundColor
-            }
-        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
     var isWindowVisible: Bool {
         window?.isVisible == true
     }

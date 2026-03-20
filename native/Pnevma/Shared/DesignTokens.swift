@@ -49,8 +49,8 @@ enum DesignTokens {
         static let rightInspectorDefaultWidth: CGFloat = 340
         static let rightInspectorMinWidth: CGFloat = 280
         static let rightInspectorMaxWidth: CGFloat = 520
-        static let toolDockHeight: CGFloat = 44
-        static let toolDockRevealHeight: CGFloat = 0
+        static let toolDockHeight: CGFloat = 54
+        static let toolDockRevealHeight: CGFloat = 6
         static let statusBarHeight: CGFloat = 28
         static let dividerWidth: CGFloat = 1
         static let dividerHoverWidth: CGFloat = 5
@@ -60,6 +60,9 @@ enum DesignTokens {
         static let paneMinWidth: CGFloat = 200
         static let paneMinHeight: CGFloat = 100
         static let treeIndent: CGFloat = 14
+        static let paneToolbarHeight: CGFloat = 40
+        static let groupedCornerRadius: CGFloat = 12
+        static let utilityShelfCornerRadius: CGFloat = 0
     }
 
     // MARK: - Opacity

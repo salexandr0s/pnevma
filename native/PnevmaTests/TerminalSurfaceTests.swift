@@ -5,12 +5,14 @@ import XCTest
 @MainActor
 final class TerminalSurfaceTests: XCTestCase {
     override func tearDown() {
-        TerminalSurface.clipboardStringProvider = {
-            NSPasteboard.general.string(forType: .string) ?? ""
-        }
-        TerminalSurface.clipboardStringWriter = { string in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(string, forType: .string)
+        MainActor.assumeIsolated {
+            TerminalSurface.clipboardStringProvider = {
+                NSPasteboard.general.string(forType: .string) ?? ""
+            }
+            TerminalSurface.clipboardStringWriter = { string in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(string, forType: .string)
+            }
         }
         super.tearDown()
     }

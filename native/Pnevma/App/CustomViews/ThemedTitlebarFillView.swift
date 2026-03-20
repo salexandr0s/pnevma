@@ -1,8 +1,8 @@
 @preconcurrency import ObjectiveC
 import Cocoa
 
-/// Covers the titlebar area with the ghostty theme background so the
-/// transparent titlebar matches the rest of the chrome instead of being clear.
+/// Covers the titlebar area with a native toolbar surface and a subtle
+/// terminal-derived tint so the shell respects system appearance.
 final class ThemedTitlebarFillView: NSView {
     nonisolated(unsafe) var themeObserver: NSObjectProtocol?
 
@@ -58,13 +58,20 @@ final class ThemedTitlebarFillView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let theme = GhosttyThemeProvider.shared
-        theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).setFill()
+        ChromeSurfaceStyle.toolbar.resolvedColor(
+            themeColor: theme.backgroundColor,
+            tintAmount: Double(theme.backgroundOpacity) * 0.25
+        ).setFill()
         bounds.fill()
     }
 
     private func updateBackgroundColor() {
         let theme = GhosttyThemeProvider.shared
-        layer?.backgroundColor = theme.backgroundColor.withAlphaComponent(theme.backgroundOpacity).cgColor
+        let resolved = ChromeSurfaceStyle.toolbar.resolvedColor(
+            themeColor: theme.backgroundColor,
+            tintAmount: Double(theme.backgroundOpacity) * 0.25
+        )
+        layer?.backgroundColor = resolved.cgColor
         needsDisplay = true
     }
 }

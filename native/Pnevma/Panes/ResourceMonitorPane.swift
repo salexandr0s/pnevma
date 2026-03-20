@@ -45,7 +45,12 @@ struct ResourceMonitorDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        NativePaneScaffold(
+            title: "Resource Monitor",
+            subtitle: "Host, process, and live usage data for the current workspace",
+            systemImage: "chart.bar.xaxis",
+            role: .monitor
+        ) {
             Picker("Tab", selection: $selectedTab) {
                 ForEach(MonitorTab.allCases, id: \.self) { tab in
                     Text(tab.rawValue).tag(tab)
@@ -53,11 +58,8 @@ struct ResourceMonitorDetailView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.sm)
-
-            Divider()
-
+            .frame(width: 260)
+        } content: {
             Group {
                 if let error = store.errorMessage, store.snapshot == nil {
                     ContentUnavailableView(

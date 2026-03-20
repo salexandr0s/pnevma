@@ -991,6 +991,7 @@ struct UsageView: View {
     @State private var isShowingDateRangePicker = false
     @State private var draftRangeStart = Date()
     @State private var draftRangeEnd = Date()
+    @Environment(\.paneChromeContext) private var paneChromeContext
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1016,6 +1017,7 @@ struct UsageView: View {
                 segmentContent
             }
         }
+        .background(ChromeSurfaceStyle.window.color)
         .task { await viewModel.activate() }
         .accessibilityIdentifier("pane.analytics")
     }
@@ -1030,12 +1032,21 @@ struct UsageView: View {
     private var standardToolbar: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Usage Intelligence")
-                        .font(.headline)
-                    Text("Track spend, token flow, activity timing, and provider parity")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if paneChromeContext.showsInlinePaneHeader {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Usage Intelligence")
+                            .font(.headline)
+                        Text("Track spend, token flow, activity timing, and provider parity")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        AccessibilityMarker(
+                            identifier: "pane.analytics.inlineHeader",
+                            label: "Usage inline header"
+                        )
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                    }
                 }
                 Spacer()
                 Button("Refresh", systemImage: "arrow.clockwise") {
@@ -1065,17 +1076,20 @@ struct UsageView: View {
             }
         }
         .padding(12)
+        .background(ChromeSurfaceStyle.toolbar.color)
     }
 
     private var providersToolbar: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Provider Usage")
-                        .font(.headline)
-                    Text("Codex and Claude quota windows, credits, and local usage context")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if paneChromeContext.showsInlinePaneHeader {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Provider Usage")
+                            .font(.headline)
+                        Text("Codex and Claude quota windows, credits, and local usage context")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Button("Refresh", systemImage: "arrow.clockwise") {
@@ -1098,6 +1112,7 @@ struct UsageView: View {
             }
         }
         .padding(12)
+        .background(ChromeSurfaceStyle.toolbar.color)
     }
 
     private var scopeSection: some View {
@@ -1248,16 +1263,20 @@ private struct UsageChoiceBar<Option: Identifiable & Hashable>: View {
                 .frame(minHeight: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(isSelected ? Color.accentColor : Color.clear)
+                        .fill(isSelected ? ChromeSurfaceStyle.pane.selectionColor : Color.clear)
                 )
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .foregroundStyle(.primary)
                 .contentShape(RoundedRectangle(cornerRadius: 8))
             }
         }
         .padding(4)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.10))
+                .fill(ChromeSurfaceStyle.groupedCard.color)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(nsColor: ChromeSurfaceStyle.groupedCard.separatorColor).opacity(0.45), lineWidth: 1)
         )
     }
 }
@@ -2351,9 +2370,9 @@ final class UsagePaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Usage" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(UsageView())
+        _ = addSwiftUISubview(UsageView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

@@ -5,7 +5,6 @@ import Cocoa
 struct NotificationsView: View {
     @State private var viewModel: NotificationsViewModel
     @State private var showClearAllAlert = false
-    @Environment(GhosttyThemeProvider.self) var theme
 
     @MainActor
     init(viewModel: NotificationsViewModel) {
@@ -19,59 +18,54 @@ struct NotificationsView: View {
 
     var body: some View {
         @Bindable var viewModel = viewModel
-        VStack(spacing: 0) {
-            HStack {
-                Text("Notifications")
-                    .font(.headline)
-                Spacer()
-
-                Picker("Filter", selection: $viewModel.filter) {
-                    Text("All").tag(NotificationsViewModel.Filter.all)
-                    Text("Unread").tag(NotificationsViewModel.Filter.unread)
-                    Text("Errors").tag(NotificationsViewModel.Filter.errors)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 200)
-                .accessibilityLabel("Filter notifications")
-
-                Button("Mark All Read") { viewModel.markAllRead() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityLabel("Mark all notifications as read")
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
-
-                Button("Clear") { showClearAllAlert = true }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Clear all notifications")
+        NativePaneScaffold(
+            title: "Notifications",
+            subtitle: "Project activity, unread items, and delivery errors",
+            systemImage: "bell.badge",
+            role: .manager,
+            inlineHeaderIdentifier: "pane.notifications.inlineHeader",
+            inlineHeaderLabel: "Notifications inline header"
+        ) {
+            Picker("Filter", selection: $viewModel.filter) {
+                Text("All").tag(NotificationsViewModel.Filter.all)
+                Text("Unread").tag(NotificationsViewModel.Filter.unread)
+                Text("Errors").tag(NotificationsViewModel.Filter.errors)
             }
-            .padding(12)
+            .pickerStyle(.segmented)
+            .frame(width: 200)
+            .accessibilityLabel("Filter notifications")
 
-            Divider()
+            Button("Mark All Read") { viewModel.markAllRead() }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
+                .accessibilityLabel("Mark all notifications as read")
+                .keyboardShortcut("r", modifiers: [.command, .shift])
 
+            Button("Clear") { showClearAllAlert = true }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Clear all notifications")
+        } content: {
             if let statusMessage = viewModel.statusMessage {
-                VStack(spacing: 10) {
-                    Image(systemName: "bell.badge")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                    Text(statusMessage)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 40)
-                Spacer()
+                EmptyStateView(
+                    icon: "bell.badge",
+                    title: statusMessage
+                )
             } else if viewModel.filteredNotifications.isEmpty {
                 EmptyStateView(icon: "bell.slash", title: "No Notifications", message: "You're all caught up")
             } else {
-                List(viewModel.filteredNotifications) { notification in
-                    Button {
-                        viewModel.markRead(notification.id)
-                    } label: {
-                        NotificationRow(notification: notification)
+                NativeCollectionShell {
+                    List(viewModel.filteredNotifications) { notification in
+                        Button {
+                            viewModel.markRead(notification.id)
+                        } label: {
+                            NotificationRow(notification: notification)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.plain)
             }
         }
         .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
@@ -144,9 +138,9 @@ final class NotificationsPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Notifications" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(NotificationsView())
+        _ = addSwiftUISubview(NotificationsView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

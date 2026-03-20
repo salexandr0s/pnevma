@@ -16,11 +16,18 @@ private struct TerminalPaneAnyEncodable: Encodable {
 
 private actor TerminalPaneCommandBus: CommandCalling {
     private var createSessionCallCountValue = 0
+    private var lastCreateParamsValue: [String: Any]?
 
     func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
         switch method {
         case "session.new":
             createSessionCallCountValue += 1
+            if let params {
+                let encoder = JSONEncoder()
+                encoder.keyEncodingStrategy = .convertToSnakeCase
+                let data = try encoder.encode(TerminalPaneAnyEncodable(params))
+                lastCreateParamsValue = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
             return try decode(
                 #"""
                 {
@@ -43,6 +50,22 @@ private actor TerminalPaneCommandBus: CommandCalling {
 
     func createSessionCallCount() -> Int {
         createSessionCallCountValue
+    }
+
+    func lastCreateCwd() -> String? {
+        lastCreateParamsValue?["cwd"] as? String
+    }
+
+    func lastCreateCommand() -> String? {
+        lastCreateParamsValue?["command"] as? String
+    }
+
+    func lastCreateRemoteProfileID() -> String? {
+        (lastCreateParamsValue?["remote_target"] as? [String: Any])?["ssh_profile_id"] as? String
+    }
+
+    func lastCreateRemotePath() -> String? {
+        (lastCreateParamsValue?["remote_target"] as? [String: Any])?["remote_path"] as? String
     }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
@@ -102,7 +125,9 @@ private actor ExistingSessionTerminalPaneCommandBus: CommandCalling {
         case "session.binding":
             bindingCallCountValue += 1
             if let params {
-                let data = try JSONEncoder().encode(TerminalPaneAnyEncodable(params))
+                let encoder = JSONEncoder()
+                encoder.keyEncodingStrategy = .convertToSnakeCase
+                let data = try encoder.encode(TerminalPaneAnyEncodable(params))
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 lastBoundSessionIDValue = json?["session_id"] as? String ?? json?["sessionID"] as? String
             }
@@ -141,11 +166,87 @@ private actor ExistingSessionTerminalPaneCommandBus: CommandCalling {
     }
 }
 
+private actor MissingSessionTerminalPaneCommandBus: CommandCalling {
+    private var bindingCallCountValue = 0
+
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
+        switch method {
+        case "session.binding":
+            bindingCallCountValue += 1
+            throw PnevmaError.backendError(method: method, message: "session not found: session-missing")
+        default:
+            throw NSError(domain: "MissingSessionTerminalPaneCommandBus", code: 1)
+        }
+    }
+
+    func bindingCallCount() -> Int {
+        bindingCallCountValue
+    }
+}
+
+private actor ArchivedSessionTerminalPaneCommandBus: CommandCalling {
+    private var bindingCallCountValue = 0
+
+    func call<T: Decodable & Sendable>(method: String, params: (any Encodable & Sendable)?) async throws -> T {
+        switch method {
+        case "session.binding":
+            bindingCallCountValue += 1
+            return try decode(
+                #"""
+                {
+                  "session_id": "session-archived",
+                  "backend": "tmux_compat",
+                  "durability": "durable",
+                  "lifecycle_state": "exited",
+                  "mode": "archived",
+                  "cwd": "/tmp/project",
+                  "launch_command": null,
+                  "env": [],
+                  "wait_after_command": false,
+                  "recovery_options": [
+                    {
+                      "id": "restart",
+                      "label": "Restart Session",
+                      "description": "Restart backend process and rebind panes.",
+                      "enabled": true
+                    }
+                  ]
+                }
+                """#
+            )
+        case "session.scrollback":
+            return try decode(
+                #"""
+                {
+                  "session_id": "session-archived",
+                  "start_offset": 0,
+                  "end_offset": 12,
+                  "total_bytes": 12,
+                  "data": "restored log"
+                }
+                """#
+            )
+        default:
+            throw NSError(domain: "ArchivedSessionTerminalPaneCommandBus", code: 1)
+        }
+    }
+
+    func bindingCallCount() -> Int {
+        bindingCallCountValue
+    }
+
+    private func decode<T: Decodable>(_ json: String) throws -> T {
+        try PnevmaJSON.decoder().decode(T.self, from: Data(json.utf8))
+    }
+}
+
 @MainActor
 final class TerminalPaneViewTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     private func waitUntil(
@@ -219,6 +320,53 @@ final class TerminalPaneViewTests: XCTestCase {
         }
     }
 
+    func testRemoteManagedTerminalCreatesStructuredRemoteBackendSession() async throws {
+        let bus = TerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let remoteTarget = WorkspaceRemoteTarget(
+            sshProfileID: "ssh-profile-1",
+            sshProfileName: "Builder",
+            host: "example.internal",
+            port: 22,
+            user: "builder",
+            identityFile: "/tmp/id_ed25519",
+            proxyJump: "jump.internal",
+            remotePath: "/srv/project"
+        )
+
+        let pane = TerminalPaneView(
+            workingDirectory: remoteTarget.remotePath,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .managedSession,
+                startBehavior: .immediate,
+                remoteTarget: remoteTarget
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        try await waitUntil {
+            await bus.createSessionCallCount() == 1 && pane.sessionID == "session-1"
+        }
+
+        let lastCreateCwd = await bus.lastCreateCwd()
+        let lastCreateCommand = await bus.lastCreateCommand()
+        let lastCreateRemoteProfileID = await bus.lastCreateRemoteProfileID()
+        let lastCreateRemotePath = await bus.lastCreateRemotePath()
+
+        XCTAssertEqual(lastCreateCwd, remoteTarget.remotePath)
+        XCTAssertEqual(lastCreateCommand, "")
+        XCTAssertEqual(lastCreateRemoteProfileID, remoteTarget.sshProfileID)
+        XCTAssertEqual(lastCreateRemotePath, remoteTarget.remotePath)
+    }
+
     func testTerminalPaneLoadsExistingSessionIntoDeferredPane() async throws {
         let bus = ExistingSessionTerminalPaneCommandBus()
         let activationHub = ActiveWorkspaceActivationHub()
@@ -259,6 +407,88 @@ final class TerminalPaneViewTests: XCTestCase {
 
         XCTAssertEqual(createSessionCallCount, 0)
         XCTAssertEqual(lastBoundSessionID, "session-existing")
+        XCTAssertEqual(
+            TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
+            .managedSession
+        )
+    }
+
+    func testTerminalPaneClearsMissingRestoredSessionIntoStaleState() async throws {
+        let bus = MissingSessionTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        let priorWorkspaceProvider = PaneFactory.activeWorkspaceProvider
+        PaneFactory.sessionBridge = bridge
+        PaneFactory.activeWorkspaceProvider = {
+            Workspace(name: "Project", projectPath: "/tmp/project")
+        }
+        defer {
+            PaneFactory.sessionBridge = priorBridge
+            PaneFactory.activeWorkspaceProvider = priorWorkspaceProvider
+        }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        pane.loadSession(sessionID: "session-missing", workingDirectory: "/tmp/project")
+
+        try await waitUntil {
+            await bus.bindingCallCount() == 1 && pane.sessionID == nil
+        }
+
+        XCTAssertEqual(
+            TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
+            .managedSession
+        )
+    }
+
+    func testTerminalPaneKeepsArchivedRestoredSessionAvailableForRecovery() async throws {
+        let bus = ArchivedSessionTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        let priorWorkspaceProvider = PaneFactory.activeWorkspaceProvider
+        PaneFactory.sessionBridge = bridge
+        PaneFactory.activeWorkspaceProvider = {
+            Workspace(name: "Project", projectPath: "/tmp/project")
+        }
+        defer {
+            PaneFactory.sessionBridge = priorBridge
+            PaneFactory.activeWorkspaceProvider = priorWorkspaceProvider
+        }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        pane.loadSession(sessionID: "session-archived", workingDirectory: "/tmp/project")
+
+        try await waitUntil {
+            await bus.bindingCallCount() == 1 && pane.sessionID == "session-archived"
+        }
+
         XCTAssertEqual(
             TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
             .managedSession

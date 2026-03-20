@@ -44,125 +44,36 @@ struct FileBrowserView: View {
     }
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Files")
-                        .font(.headline)
-                    Spacer()
-                    Button(action: { viewModel.refresh() }) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.plain)
-                    Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isViewerVisible.toggle() } }) {
-                        Image(systemName: "sidebar.right")
-                            .foregroundStyle(isViewerVisible ? .primary : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(isViewerVisible ? "Hide file viewer" : "Show file viewer")
-                }
-                .padding(12)
-
-                fileSearchBar
-
-                Divider()
-
-                if let waitingMessage = viewModel.projectStatusMessage {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text(waitingMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if !viewModel.isProjectOpen {
-                    EmptyStateView(
-                        icon: "folder",
-                        title: "No project open",
-                        message: "Open a project to browse files"
-                    )
-                } else if viewModel.isLoadingRoot {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text("Loading files...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if viewModel.isSearching && viewModel.visibleRootNodes.isEmpty {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text("Searching files...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if viewModel.hasActiveSearch && viewModel.visibleRootNodes.isEmpty {
-                    EmptyStateView(
-                        icon: "magnifyingglass",
-                        title: "No matching files",
-                        message: "Try a different file name or path"
-                    )
-                } else if viewModel.visibleRootNodes.isEmpty {
-                    EmptyStateView(
-                        icon: "folder",
-                        title: "No files found",
-                        message: "This directory is empty"
-                    )
-                } else {
-                    FileTreeList(viewModel: viewModel, onSelect: { node in
-                        handleFileSelect(node)
-                    })
-                }
+        NativePaneScaffold(
+            title: "Files",
+            subtitle: "Browse project content and edit or preview the selected file",
+            systemImage: "folder",
+            role: .document
+        ) {
+            Button(action: { viewModel.refresh() }) {
+                Image(systemName: "arrow.clockwise")
             }
-            .frame(minWidth: 200, maxWidth: isViewerVisible ? 300 : .infinity)
+            .buttonStyle(.plain)
 
+            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isViewerVisible.toggle() } }) {
+                Image(systemName: "sidebar.right")
+                    .foregroundStyle(isViewerVisible ? .primary : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(isViewerVisible ? "Hide file viewer" : "Show file viewer")
+        } content: {
             if isViewerVisible {
-                VStack(spacing: 0) {
-                    if viewModel.previewContent != nil {
-                        // Editor toolbar
-                        editorToolbar
-
-                        Divider()
-
-                        if isReaderMode && isMarkdownFile {
-                            MarkdownReaderView(content: viewModel.editableContent)
-                        } else if isBinaryPreview {
-                            Text(viewModel.previewContent ?? "")
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if viewModel.isTruncated {
-                            ScrollView {
-                                Text(viewModel.previewContent ?? "")
-                                    .font(.system(.body, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        } else {
-                            TextEditor(text: $viewModel.editableContent)
-                                .font(.system(.body, design: .monospaced))
-                                .scrollContentBackground(.hidden)
-                        }
-                    } else if viewModel.isLoadingPreview {
-                        Text("Loading...")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if viewModel.selectedFilePath != nil {
-                        Text("Preview unavailable")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        Text("Select a file to preview")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                NativeSplitScaffold(
+                    sidebarMinWidth: 200,
+                    sidebarIdealWidth: 280,
+                    sidebarMaxWidth: 320
+                ) {
+                    sidebarContent
+                } detail: {
+                    viewerContent
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: viewModel.selectedFilePath) {
-                    isReaderMode = false
-                }
+            } else {
+                sidebarContent
             }
         }
         .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
@@ -189,6 +100,109 @@ struct FileBrowserView: View {
         }
         .task { await viewModel.activate() }
         .accessibilityIdentifier("pane.fileBrowser")
+    }
+
+    private var sidebarContent: some View {
+        VStack(spacing: 0) {
+            fileSearchBar
+            Divider()
+
+            if let waitingMessage = viewModel.projectStatusMessage {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text(waitingMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !viewModel.isProjectOpen {
+                EmptyStateView(
+                    icon: "folder",
+                    title: "No project open",
+                    message: "Open a project to browse files"
+                )
+            } else if viewModel.isLoadingRoot {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading files...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.isSearching && viewModel.visibleRootNodes.isEmpty {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Searching files...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.hasActiveSearch && viewModel.visibleRootNodes.isEmpty {
+                EmptyStateView(
+                    icon: "magnifyingglass",
+                    title: "No matching files",
+                    message: "Try a different file name or path"
+                )
+            } else if viewModel.visibleRootNodes.isEmpty {
+                EmptyStateView(
+                    icon: "folder",
+                    title: "No files found",
+                    message: "This directory is empty"
+                )
+            } else {
+                FileTreeList(viewModel: viewModel, onSelect: { node in
+                    handleFileSelect(node)
+                })
+            }
+        }
+    }
+
+    private var viewerContent: some View {
+        VStack(spacing: 0) {
+            if viewModel.previewContent != nil {
+                editorToolbar
+
+                Divider()
+
+                if isReaderMode && isMarkdownFile {
+                    MarkdownReaderView(content: viewModel.editableContent)
+                } else if isBinaryPreview {
+                    Text(viewModel.previewContent ?? "")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if viewModel.isTruncated {
+                    ScrollView {
+                        Text(viewModel.previewContent ?? "")
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    TextEditor(text: $viewModel.editableContent)
+                        .font(.system(.body, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                }
+            } else if viewModel.isLoadingPreview {
+                Text("Loading...")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.selectedFilePath != nil {
+                Text("Preview unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                EmptyStateView(
+                    icon: "doc.text",
+                    title: "Select a file to preview"
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: viewModel.selectedFilePath) {
+            isReaderMode = false
+        }
     }
 
     // MARK: Editor Toolbar

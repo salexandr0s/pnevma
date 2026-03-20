@@ -1039,10 +1039,13 @@ private final class DividerView: NSView {
     var parentSize: CGFloat = 0
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
+    private var lastDragPoint: NSPoint?
 
     init(frame: NSRect, direction: SplitDirection) {
         self.direction = direction
         super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityIdentifier("content.divider")
         updateTrackingArea()
     }
 
@@ -1086,29 +1089,17 @@ private final class DividerView: NSView {
     override func mouseEntered(with event: NSEvent) {
         isHovering = true
         needsDisplay = true
-        let cursor: NSCursor = direction == .horizontal ? .resizeLeftRight : .resizeUpDown
-        cursor.push()
     }
 
     override func mouseExited(with event: NSEvent) {
         isHovering = false
         needsDisplay = true
-        NSCursor.pop()
-    }
-
-    override func viewDidMoveToSuperview() {
-        super.viewDidMoveToSuperview()
-        if superview == nil, isHovering {
-            isHovering = false
-            // Reset to arrow instead of pop() to avoid corrupting the global cursor
-            // stack if another view also has a pushed cursor.
-            NSCursor.arrow.set()
-            discardCursorRects()
-        }
     }
 
     override func resetCursorRects() {
-        let cursor: NSCursor = direction == .horizontal ? .resizeLeftRight : .resizeUpDown
+        let cursor: NSCursor = direction == .horizontal
+            ? AppCursor.cursor(for: .horizontalResize)
+            : AppCursor.cursor(for: .verticalResize)
         addCursorRect(bounds, cursor: cursor)
     }
 
@@ -1116,22 +1107,25 @@ private final class DividerView: NSView {
         // Convert in the (flipped) superview's coordinate space so that
         // dragging down produces a positive Y delta matching the layout direction.
         let coordSpace = superview ?? self
-        var lastPoint = coordSpace.convert(event.locationInWindow, from: nil)
+        lastDragPoint = coordSpace.convert(event.locationInWindow, from: nil)
+    }
 
-        while true {
-            guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
-            let current = coordSpace.convert(next.locationInWindow, from: nil)
-            let delta = direction == .horizontal
-                ? (current.x - lastPoint.x)
-                : (current.y - lastPoint.y)
+    override func mouseDragged(with event: NSEvent) {
+        let coordSpace = superview ?? self
+        guard let lastDragPoint else { return }
 
-            if abs(delta) > 0.5 {
-                onDrag?(delta)
-                lastPoint = current
-            }
+        let current = coordSpace.convert(event.locationInWindow, from: nil)
+        let delta = direction == .horizontal
+            ? (current.x - lastDragPoint.x)
+            : (current.y - lastDragPoint.y)
 
-            if next.type == .leftMouseUp { break }
-        }
+        guard abs(delta) > 0.5 else { return }
+        onDrag?(delta)
+        self.lastDragPoint = current
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        lastDragPoint = nil
     }
 
     // MARK: - Accessibility

@@ -44,6 +44,17 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "F95A2F46499C082173B29205"
+               BuildableName = "PnevmaAppDelegateTests.xctest"
+               BlueprintName = "PnevmaAppDelegateTests"
+               ReferencedContainer = "container:Pnevma.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "847F36B446EC99E0A02AD68D"
                BuildableName = "PnevmaTests.xctest"
                BlueprintName = "PnevmaTests"

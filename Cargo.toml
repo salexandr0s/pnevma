@@ -8,6 +8,7 @@ members = [
   "crates/pnevma-context",
   "crates/pnevma-db",
   "crates/pnevma-ssh",
+  "crates/pnevma-remote-helper",
   "crates/pnevma-remote",
   "crates/pnevma-commands",
   "crates/pnevma-bridge",

@@ -5,6 +5,9 @@ import Cocoa
 /// events near the bottom and bottom-right window edges so the resize
 /// handles remain accessible.
 final class ToolDockContainerView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let window else { return super.hitTest(point) }
         let windowPoint = superview?.convert(point, to: nil) ?? point
@@ -22,9 +25,8 @@ final class ToolDockContainerView: NSView {
     }
 }
 
-/// Sidebar backing view that uses the ghostty theme background color
-/// instead of the system NSVisualEffectView blur, so the sidebar matches
-/// the terminal's color scheme.
+/// Sidebar backing view that keeps the shell in a native system surface
+/// while allowing a subtle terminal-derived tint.
 final class ThemedSidebarBackingView: NSView {
     nonisolated(unsafe) var themeObserver: NSObjectProtocol?
     nonisolated(unsafe) var tintObserver: NSObjectProtocol?
@@ -89,29 +91,21 @@ final class ThemedSidebarBackingView: NSView {
     override var isOpaque: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
-        if offset == 0 {
-            bg.setFill()
-        } else {
-            bg.blended(withFraction: offset, of: .white)?.setFill() ?? bg.setFill()
-        }
+        let resolved = ChromeSurfaceStyle.sidebar.resolvedColor(
+            themeColor: GhosttyThemeProvider.shared.backgroundColor,
+            tintAmount: SidebarPreferences.backgroundOffset
+        )
+        resolved.setFill()
         bounds.fill()
     }
 
     private func updateBackgroundColor() {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        let offset = SidebarPreferences.backgroundOffset
-        let resolved: NSColor
-        if offset == 0 {
-            resolved = bg
-        } else {
-            resolved = bg.blended(withFraction: offset, of: .white) ?? bg
-        }
+        let resolved = ChromeSurfaceStyle.sidebar.resolvedColor(
+            themeColor: GhosttyThemeProvider.shared.backgroundColor,
+            tintAmount: SidebarPreferences.backgroundOffset
+        )
         layer?.backgroundColor = resolved.cgColor
-        rightSeparator.layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
+        rightSeparator.layer?.backgroundColor = ChromeSurfaceStyle.sidebar.separatorColor.cgColor
         needsDisplay = true
     }
 }

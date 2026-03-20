@@ -32,7 +32,9 @@ private actor NotificationsPaneCommandBus: CommandCalling {
 final class NotificationsPaneTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     private func waitUntil(

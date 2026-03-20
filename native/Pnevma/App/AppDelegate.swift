@@ -2,6 +2,7 @@ import Cocoa
 #if canImport(GhosttyKit)
 import GhosttyKit
 #endif
+import QuartzCore
 import SwiftUI
 import os
 
@@ -21,6 +22,17 @@ private final class UITestReadinessView: NSView {
     override func accessibilityIdentifier() -> String { "ui-test.readiness" }
     override func accessibilityLabel() -> String? { state }
     override func accessibilityValue() -> Any? { detail }
+}
+
+private struct WorkspaceOpenerTrustParams: Encodable {
+    let path: String
+}
+
+private struct WorkspaceOpenerInitializeParams: Encodable {
+    let path: String
+    let projectName: String?
+    let projectBrief: String?
+    let defaultProvider: String?
 }
 
 @MainActor
@@ -48,13 +60,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarTopToTitlebar: NSLayoutConstraint?
     private var sidebarTopToToolbarSep: NSLayoutConstraint?
     private var sidebarWidthConstraint: NSLayoutConstraint?
+    private var sidebarResizerView: NSView?
     private var rightInspectorHostView: NSView?
+    private var rightInspectorFooterView: NSView?
     private var rightInspectorWidthConstraint: NSLayoutConstraint?
     private var rightInspectorResizerView: NSView?
     private var rightInspectorOverlayBlockerView: RightInspectorOverlayBlockerView?
     private var rightInspectorOverlayHostView: RightInspectorOverlayHostingView<AnyView>?
-    private var browserDrawerOverlayBlockerView: BrowserDrawerOverlayBlockerView?
-    private var browserDrawerOverlayHostView: BrowserDrawerOverlayHostingView<AnyView>?
     private var toolDrawerOverlayBlockerView: ToolDrawerOverlayBlockerView?
     private var toolDrawerOverlayHostView: ToolDrawerOverlayHostingView<AnyView>?
     private var uiTestReadinessView: UITestReadinessView?
@@ -81,6 +93,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
     private var currentSidebarMode: SidebarMode = SidebarPreferences.sidebarMode
+    private var renderedSidebarMode: SidebarMode = .expanded
     private var collapsedRailHostView: NSView?
     private var isFocusMode = false
     private var focusModeEscapeHatchWindow: NSWindow?
@@ -95,8 +108,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restoredCommandCenterWindowFrame: NSRect?
     private var restoredCommandCenterVisible = false
     private let rightInspectorChromeState = RightInspectorChromeState()
-    private let browserDrawerChromeState = BrowserDrawerChromeState()
-    private let browserDrawerPresentationModel = BrowserDrawerPresentationModel()
     private let toolDrawerChromeState = ToolDrawerChromeState()
     private let toolDrawerContentModel = ToolDrawerContentModel()
     private var browserToolBridge: BrowserToolBridge?
@@ -104,7 +115,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var nativeNotificationBridgeObserverID: UUID?
     private var browserSessions: [UUID: BrowserWorkspaceSession] = [:]
     private var browserSessionPrewarmTask: Task<Void, Never>?
-    private weak var browserDrawerPreviousFirstResponder: NSResponder?
     private weak var toolDrawerPreviousFirstResponder: NSResponder?
     private lazy var rightInspectorFileBrowserViewModel = FileBrowserViewModel(
         commandBus: commandBus ?? CommandBus.shared
@@ -132,9 +142,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isToolDockContentHovered = false
     private var isToolDockEdgeHovered = false
     private var isToolDockHovered: Bool { isToolDockContentHovered || isToolDockEdgeHovered }
+    private var shouldKeepToolDockExpanded: Bool { toolDrawerChromeState.isPresented }
     private var toolDockCollapseWorkItem: DispatchWorkItem?
+    private var toolDrawerCleanupWorkItem: DispatchWorkItem?
     private var toolDockTriggerView: NSView?
     var updateCoordinator: AppUpdateCoordinator?
+    private var ownsGhosttyAppLifecycle = false
+    private var previousSharedCommandBus: (any CommandCalling)?
+    private var previousSharedSessionBridge: (any SessionBridging)?
+    private var previousPaneFactorySessionBridge: (any SessionBridging)?
+    private var previousPaneFactoryActiveWorkspaceProvider: (() -> Workspace?)?
+    private var previousPaneFactoryBrowserSessionProvider: ((Workspace) -> BrowserWorkspaceSession)?
 
     private var activeWorkspaceSupportsRightInspector: Bool {
         workspaceManager?.activeWorkspace?.showsProjectToolsInUI == true
@@ -151,7 +169,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.appearance = NSAppearance(named: .darkAqua)
         initializeRuntime()
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -175,7 +192,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         createMainWindow(showWindow: true)
 
         // Request notification permission and register delegate
-        NativeNotificationManager.shared.setup()
+        if !AppLaunchContext.isTesting {
+            NativeNotificationManager.shared.setup()
+        }
 
         // Reload ghostty config now that window exists so appearance-conditional
         // themes (e.g. light:X,dark:Y) resolve correctly.
@@ -259,6 +278,58 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         shutdownRuntime()
     }
 
+    func shutdownForTesting() {
+        ChromeTransitionCoordinator.shared.reset()
+        persistence?.stopAutoSave()
+        cancelPendingToolDrawerCleanup()
+        toolDockCollapseWorkItem?.cancel()
+        toolDockCollapseWorkItem = nil
+        prepareOwnedChromeForTestingShutdown()
+        releaseOwnedWindowsForTesting()
+        clearOwnedUIStateForTesting()
+        shutdownRuntime()
+        if let delegate = NSApp.delegate as AnyObject?, delegate === self {
+            NSApp.delegate = nil
+        }
+    }
+
+    func resetForIntegrationTesting() {
+        closeOpenerPanel()
+        cancelPendingToolDrawerCleanup()
+        toolDockCollapseWorkItem?.cancel()
+        toolDockCollapseWorkItem = nil
+        toolDrawerPreviousFirstResponder = nil
+
+        toolDrawerChromeState.isPresented = false
+        toolDrawerChromeState.drawerHitRect = .zero
+        toolDrawerOverlayBlockerView?.capturesPointerEvents = false
+        toolDrawerOverlayBlockerView?.overlayHitRect = .zero
+        toolDrawerOverlayHostView?.capturesPointerEvents = false
+        toolDrawerOverlayHostView?.overlayHitRect = .zero
+        clearToolDrawerContent()
+        toolDockState.activeToolID = nil
+
+        browserSessions.values.forEach { $0.prepareForTeardown() }
+        browserSessions.removeAll()
+
+        if let workspace = workspaceManager?.activeWorkspace {
+            contentAreaView?.syncPersistedPanes()
+            while workspace.tabs.count > 1 {
+                _ = workspace.closeTab(at: workspace.tabs.count - 1)
+            }
+            workspace.activeTabIndex = 0
+            _ = workspace.renameTab(at: 0, to: "Terminal")
+            _ = workspace.ensureActiveTabHasDisplayableRootPane()
+            contentAreaView?.setLayoutEngine(workspace.layoutEngine)
+            updateTabBar()
+        }
+
+        refreshToolDockAutoHide(animated: false)
+        window?.makeFirstResponder(contentAreaView?.activePaneView)
+        window?.makeKeyAndOrderFront(nil)
+        window?.contentView?.layoutSubtreeIfNeeded()
+    }
+
     private func initializeRuntime() {
         // Point ghostty at the Ghostty.app resource directory so it can find
         // built-in themes, terminfo, etc. Without this, the embedded library
@@ -267,16 +338,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if FileManager.default.fileExists(atPath: ghosttyResources) {
             setenv("GHOSTTY_RESOURCES_DIR", ghosttyResources, 0)
         }
-
-        // ghostty_init must be the very first ghostty call.
-        #if canImport(GhosttyKit)
-        let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
-        if initResult != 0 {
-            Log.general.error("ghostty_init() failed with code \(initResult)")
-        } else {
-            GhosttyRuntime.markInitialized()
-        }
-        #endif
 
         bridge = PnevmaBridge()
         if let bridge = bridge {
@@ -290,11 +351,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             self.activeCommandBus = activeCommandBus
             commandBus = activeCommandBus
+            previousSharedCommandBus = CommandBus.shared
             CommandBus.shared = activeCommandBus
         }
 
         if !AppLaunchContext.uiTestLightweightMode {
-            TerminalSurface.initializeGhostty()
+            _ = GhosttyRuntime.initializeIfNeeded()
+            if GhosttyRuntime.isProcessInitialized {
+                ownsGhosttyAppLifecycle = TerminalSurface.initializeGhostty()
+            }
         }
 
         if let fallbackCommandBus {
@@ -310,6 +375,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.workspaceManager?.activeWorkspace?.defaultWorkingDirectory
             }
             self.sessionBridge = sessionBridge
+            previousSharedSessionBridge = SessionBridge.shared
+            previousPaneFactorySessionBridge = PaneFactory.sessionBridge
+            previousPaneFactoryActiveWorkspaceProvider = PaneFactory.activeWorkspaceProvider
+            previousPaneFactoryBrowserSessionProvider = PaneFactory.browserSessionProvider
             SessionBridge.shared = sessionBridge
             PaneFactory.sessionBridge = sessionBridge
             PaneFactory.activeWorkspaceProvider = { [weak self] in
@@ -353,7 +422,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 workspace.terminalNotificationCount = self?.contentAreaView?.paneIDsWithNotificationRings.count ?? 0
             }
             self?.syncRightInspectorPresentation(animated: false)
-            self?.refreshBrowserDrawerOverlayRootView()
+            self?.refreshBottomDrawerBrowserSession()
             if let workspace = self?.workspaceManager?.activeWorkspace {
                 self?.scheduleBrowserSessionPrewarm(for: workspace)
                 self?.titlebarStatusView?.updateBranch(workspace.gitBranch)
@@ -426,10 +495,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         hideFocusModeEscapeHatch()
         smokeTimeoutWorkItem?.cancel()
         smokeTimeoutWorkItem = nil
+        toolDockCollapseWorkItem?.cancel()
+        toolDockCollapseWorkItem = nil
+        toolDrawerCleanupWorkItem?.cancel()
+        toolDrawerCleanupWorkItem = nil
         browserSessionPrewarmTask?.cancel()
         browserSessionPrewarmTask = nil
         for session in browserSessions.values {
             session.cancelPendingDrawerRestore()
+            session.prepareForTeardown()
         }
         if let terminalOpenURLObserver {
             NotificationCenter.default.removeObserver(terminalOpenURLObserver)
@@ -448,19 +522,150 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self.providerUsageStoreObserver = nil
         }
 
-        // Free ghostty app singleton before process exit.
-        #if canImport(GhosttyKit)
-        TerminalSurface.shutdownGhostty()
-        GhosttyRuntime.reset()
-        #endif
-
         workspaceManager?.shutdown()
+        workspaceManager = nil
+        sessionStore = nil
+        browserSessions.removeAll()
+        browserToolBridge = nil
+        commandCenterStore = nil
+        activeCommandBus = nil
+        fallbackCommandBus = nil
+        commandBus = nil
+        CommandBus.shared = previousSharedCommandBus
+        previousSharedCommandBus = nil
+        SessionBridge.shared = previousSharedSessionBridge
+        previousSharedSessionBridge = nil
+        PaneFactory.sessionBridge = previousPaneFactorySessionBridge
+        previousPaneFactorySessionBridge = nil
+        PaneFactory.activeWorkspaceProvider = previousPaneFactoryActiveWorkspaceProvider
+        previousPaneFactoryActiveWorkspaceProvider = nil
+        PaneFactory.browserSessionProvider = previousPaneFactoryBrowserSessionProvider
+        previousPaneFactoryBrowserSessionProvider = nil
+        sessionBridge = nil
+
+        if ownsGhosttyAppLifecycle {
+            TerminalSurface.shutdownGhostty()
+            ownsGhosttyAppLifecycle = false
+        }
+
         bridge?.destroy()
         bridge = nil
     }
 
+    private func releaseOwnedWindowsForTesting() {
+        ownedWindowsForTesting.forEach { releaseWindowForTesting($0) }
+    }
+
+    private var ownedWindowsForTesting: [NSWindow] {
+        [
+            commandCenterWindowController?.window,
+            openerPanel,
+            settingsWindow,
+            smokeWindow,
+            focusModeEscapeHatchWindow,
+            window,
+        ]
+        .compactMap { $0 }
+    }
+
+    private func prepareOwnedChromeForTestingShutdown() {
+        toolDrawerChromeState.isPresented = false
+        toolDrawerChromeState.drawerHitRect = .zero
+        rightInspectorChromeState.isVisible = false
+        rightInspectorChromeState.overlayHitRect = .zero
+
+        toolDrawerOverlayBlockerView?.capturesPointerEvents = false
+        toolDrawerOverlayBlockerView?.overlayHitRect = .zero
+        toolDrawerOverlayHostView?.capturesPointerEvents = false
+        toolDrawerOverlayHostView?.overlayHitRect = .zero
+        toolDrawerOverlayHostView?.rootView = AnyView(EmptyView())
+
+        rightInspectorOverlayBlockerView?.capturesPointerEvents = false
+        rightInspectorOverlayBlockerView?.overlayHitRect = .zero
+        rightInspectorOverlayHostView?.capturesPointerEvents = false
+        rightInspectorOverlayHostView?.overlayHitRect = .zero
+        rightInspectorOverlayHostView?.rootView = AnyView(EmptyView())
+
+        clearToolDrawerContent(markChanged: false)
+    }
+
+    private func releaseWindowForTesting(_ window: NSWindow) {
+        window.childWindows?.forEach { child in
+            window.removeChildWindow(child)
+            child.orderOut(nil)
+            child.close()
+        }
+        window.orderOut(nil)
+        window.close()
+    }
+
+    private func clearOwnedUIStateForTesting() {
+        clearToolDrawerContent(markChanged: false)
+        toolDrawerChromeState.isPresented = false
+        toolDrawerChromeState.drawerHitRect = .zero
+        rightInspectorChromeState.isVisible = false
+        rightInspectorChromeState.overlayHitRect = .zero
+        rightInspectorOverlayBlockerView?.capturesPointerEvents = false
+        rightInspectorOverlayHostView?.capturesPointerEvents = false
+        toolDrawerOverlayBlockerView?.capturesPointerEvents = false
+        toolDrawerOverlayHostView?.capturesPointerEvents = false
+
+        contentAreaView = nil
+        tabBarView = nil
+        titlebarStatusView = nil
+        toolDockHostView = nil
+        sidebarHostView = nil
+        sidebarContentView = nil
+        sidebarResizerView = nil
+        rightInspectorHostView = nil
+        rightInspectorFooterView = nil
+        rightInspectorResizerView = nil
+        rightInspectorOverlayBlockerView = nil
+        rightInspectorOverlayHostView = nil
+        toolDrawerOverlayBlockerView = nil
+        toolDrawerOverlayHostView = nil
+        uiTestReadinessView = nil
+        toolbarSeparator = nil
+        titlebarOpenBtn = nil
+        titlebarCommitBtn = nil
+        titlebarPushBtn = nil
+        titlebarTemplateBtn = nil
+        sidebarToggleBtn = nil
+        agentStripHostView = nil
+        collapsedRailHostView = nil
+        toolDockTriggerView = nil
+        smokeHostView = nil
+
+        contentLeadingConstraint = nil
+        contentMinWidthConstraint = nil
+        tabBarLeadingConstraint = nil
+        agentStripTopToTabBar = nil
+        agentStripTopToToolbarSep = nil
+        titlebarFillBottomConstraint = nil
+        titlebarFillMinHeightConstraint = nil
+        sidebarTopToTitlebar = nil
+        sidebarTopToToolbarSep = nil
+        sidebarWidthConstraint = nil
+        rightInspectorWidthConstraint = nil
+        toolDockHeightConstraint = nil
+        sidebarToggleLeadingConstraint = nil
+        sidebarToggleWidthConstraint = nil
+        sidebarToggleHeightConstraint = nil
+        agentStripHeightConstraint = nil
+
+        toolDrawerPreviousFirstResponder = nil
+        commandPalette = nil
+        toastController = nil
+        openerViewModel = nil
+        openerPanel = nil
+        settingsWindow = nil
+        smokeWindow = nil
+        window = nil
+        commandCenterWindowController = nil
+    }
+
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
+        !AppLaunchContext.isTesting
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -473,7 +678,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if requiresConfirmation {
                 self.confirmClose(
                     title: "Quit Pnevma?",
-                    message: "The terminal still has a running process. If you quit the process will be killed.",
+                    message: "The terminal still has a running process. Managed sessions will be restored on next launch; unmanaged shells will exit when the app quits.",
                     onCancel: {
                         sender.reply(toApplicationShouldTerminate: false)
                     }
@@ -516,12 +721,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.title = ""
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
-        win.appearance = NSAppearance(named: .darkAqua)
         // Tab bar — added as a content-level view below the titlebar, not a toolbar item
         let tabBar = TabBarView()
         tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
         tabBar.onCloseTab = { [weak self] index in self?.closeTab(at: index) }
         tabBar.onAddTab = { [weak self] in self?.newTab() }
+        tabBar.onRenameTab = { [weak self] tabID, title in
+            self?.renameTab(id: tabID, to: title)
+        }
         tabBar.isHidden = true
         self.tabBarView = tabBar
 
@@ -529,7 +736,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.minSize = NSSize(width: 800, height: 500)
         win.isRestorable = false
 
-        guard let windowContent = win.contentView else { return }
+        let windowContent = MainWindowContentView(frame: NSRect(origin: .zero, size: contentRect.size))
+        windowContent.autoresizingMask = [.width, .height]
+        win.contentView = windowContent
+
         installUITestReadinessView(in: windowContent)
 
         // Root placeholder pane
@@ -590,7 +800,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let sidebarView = SidebarView(
             workspaceManager: workspaceManager,
-            onAddWorkspace: { [weak self] in self?.openWorkspace() }
+            onAddWorkspace: { [weak self] context in
+                self?.openWorkspace(context: context)
+            },
+            onOpenSettings: { [weak self] in
+                self?.openSettingsPane()
+            }
         )
         let sidebarHost = NSHostingView(rootView: sidebarView.environment(GhosttyThemeProvider.shared))
         sidebarHost.sizingOptions = []
@@ -607,6 +822,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.sidebarHostView = sidebarBacking
         self.sidebarContentView = sidebarHost
+
+        let sidebarResizer = SidebarResizeHandleView()
+        sidebarResizer.onResize = { [weak self] delta in
+            self?.adjustSidebarWidth(by: delta)
+        }
+        sidebarResizer.isHidden = currentSidebarMode != .expanded
+        sidebarResizer.alphaValue = currentSidebarMode == .expanded ? 1 : 0
+        self.sidebarResizerView = sidebarResizer
 
         // Collapsed sidebar rail — icon-only mode
         let collapsedRailView = SidebarCollapsedRailView(
@@ -636,14 +859,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onOpenToolAsPane: { [weak self] (toolID: String) in self?.openToolAsPane(toolID) },
             onHoverChanged: { [weak self] isHovering in self?.setToolDockContentHovering(isHovering) }
         )
-        let toolDockHost = NSHostingView(rootView: toolDockView.environment(GhosttyThemeProvider.shared))
+        let toolDockHost = FirstMouseHostingView(
+            rootView: toolDockView.environment(GhosttyThemeProvider.shared)
+        )
         toolDockHost.sizingOptions = []
         toolDockHost.setAccessibilityIdentifier("tool-dock.view")
         toolDockHost.wantsLayer = true
-        toolDockHost.layer?.masksToBounds = true
+        toolDockHost.layer?.masksToBounds = false
 
         let toolDockContainer = ToolDockContainerView()
         toolDockContainer.wantsLayer = true
+        toolDockContainer.layer?.masksToBounds = false
         toolDockContainer.addSubview(toolDockHost)
         toolDockHost.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -684,6 +910,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.rightInspectorHostView = rightInspectorBacking
 
+        let rightInspectorFooter = ThemedRightInspectorBackingView(showsTopSeparator: true)
+        self.rightInspectorFooterView = rightInspectorFooter
+
         let rightInspectorResizer = RightInspectorResizeHandleView()
         rightInspectorResizer.onResize = { [weak self] delta in
             self?.adjustRightInspectorWidth(by: delta)
@@ -715,34 +944,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         rightInspectorOverlayHost.capturesPointerEvents = false
         self.rightInspectorOverlayHostView = rightInspectorOverlayHost
 
-        let browserDrawerBlocker = BrowserDrawerOverlayBlockerView(frame: .zero)
-        browserDrawerBlocker.capturesPointerEvents = false
-        self.browserDrawerOverlayBlockerView = browserDrawerBlocker
-
-        let browserSession = workspaceManager.activeWorkspace.flatMap { self.existingBrowserSession(for: $0) }
-        browserDrawerPresentationModel.session = browserSession
-        let browserDrawerOverlay = BrowserDrawerOverlayView(
-            chromeState: browserDrawerChromeState,
-            presentationModel: browserDrawerPresentationModel,
-            onClose: { [weak self] in self?.closeBrowserDrawer() },
-            onPinToPane: { [weak self] in self?.pinBrowserToPane() },
-            onOpenAsTab: { [weak self] in self?.openBrowserAsTab() },
-            onVisibilityChanged: { [weak self] isVisible in
-                self?.browserDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
-                self?.browserDrawerOverlayHostView?.capturesPointerEvents = isVisible
-            },
-            onHitRectChanged: { [weak self] rect in
-                self?.browserDrawerOverlayBlockerView?.overlayHitRect = rect
-                self?.browserDrawerOverlayHostView?.overlayHitRect = rect
-            }
-        )
-        let browserDrawerHost = BrowserDrawerOverlayHostingView(
-            rootView: AnyView(browserDrawerOverlay.environment(GhosttyThemeProvider.shared))
-        )
-        PerformanceDiagnostics.shared.recordBrowserDrawerRootViewAssignment()
-        browserDrawerHost.capturesPointerEvents = false
-        self.browserDrawerOverlayHostView = browserDrawerHost
-
         // Tool drawer overlay — generic drawer for non-browser tools
         let toolDrawerBlocker = ToolDrawerOverlayBlockerView(frame: .zero)
         toolDrawerBlocker.capturesPointerEvents = false
@@ -766,6 +967,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: AnyView(toolDrawerOverlay.environment(GhosttyThemeProvider.shared))
         )
         toolDrawerHost.capturesPointerEvents = false
+        toolDrawerHost.onBoundsChanged = { [weak self] in
+            self?.syncToolDrawerPointerCapture()
+        }
         self.toolDrawerOverlayHostView = toolDrawerHost
 
         // Titlebar fill: themed background behind the transparent titlebar
@@ -797,6 +1001,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             size: titlebarButtonSize,
             symbolConfig: titlebarSymbolConfig
         )
+        sidebarToggleBtn.setAccessibilityIdentifier("titlebar.toggleSidebar")
         self.sidebarToggleBtn = sidebarToggleBtn
         let notificationsBtn = makeTitlebarButton(
             symbolName: "bell",
@@ -807,6 +1012,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             symbolConfig: titlebarSymbolConfig,
             hoverTintColor: .systemYellow
         )
+        notificationsBtn.setAccessibilityIdentifier("titlebar.notifications")
         notificationToolbarButton = notificationsBtn
         let badge = BadgeOverlayView(frame: NSRect(x: 12, y: 0, width: 18, height: 12))
         notificationsBtn.addSubview(badge)
@@ -820,6 +1026,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             symbolConfig: titlebarSymbolConfig,
             hoverTintColor: .systemBlue
         )
+        usageBtn.setAccessibilityIdentifier("titlebar.usage")
         usageToolbarButton = usageBtn
         let statusDot = StatusDotOverlayView(frame: NSRect(x: 16, y: 3, width: 8, height: 8))
         usageBtn.addSubview(statusDot)
@@ -833,6 +1040,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             symbolConfig: titlebarSymbolConfig,
             hoverTintColor: .systemTeal
         )
+        resourceMonitorBtn.setAccessibilityIdentifier("titlebar.resources")
         resourceMonitorToolbarButton = resourceMonitorBtn
         let addWorkspaceBtn = makeTitlebarButton(
             symbolName: "plus",
@@ -845,16 +1053,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         addWorkspaceBtn.setAccessibilityIdentifier("titlebar.openWorkspace")
 
-        let settingsBtn = makeTitlebarButton(
-            symbolName: "gearshape",
-            accessibilityDescription: "Settings",
-            toolTip: "Settings",
-            action: #selector(openSettingsAction),
-            size: titlebarButtonSize,
-            symbolConfig: titlebarSymbolConfig
-        )
-        settingsBtn.setAccessibilityIdentifier("titlebar.settings")
-
         // Layout template button — positioned at the content area leading edge
         let templateBtn = makeTitlebarButton(
             symbolName: "rectangle.split.2x1",
@@ -864,22 +1062,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             size: titlebarButtonSize,
             symbolConfig: titlebarSymbolConfig
         )
+        templateBtn.setAccessibilityIdentifier("titlebar.layoutTemplates")
         self.titlebarTemplateBtn = templateBtn
 
         // Titlebar action buttons (Open, Commit, Push) — direct subviews like the icon buttons
         let openBtn = CapsuleButton(icon: "folder", label: "Open")
         openBtn.target = self
         openBtn.action = #selector(titlebarOpenAction)
+        openBtn.setAccessibilityIdentifier("titlebar.open")
         self.titlebarOpenBtn = openBtn
 
         let commitBtn = CapsuleButton(icon: "point.3.connected.trianglepath.dotted", label: "Commit")
         commitBtn.target = self
         commitBtn.action = #selector(titlebarCommitAction)
+        commitBtn.setAccessibilityIdentifier("titlebar.commit")
         self.titlebarCommitBtn = commitBtn
 
         let pushBtn = CapsuleButton(icon: "arrow.up.circle", label: "Push")
         pushBtn.target = self
         pushBtn.action = #selector(titlebarPushAction)
+        pushBtn.setAccessibilityIdentifier("titlebar.push")
         self.titlebarPushBtn = pushBtn
 
         // Agent strip — horizontal bar of agent chips above content area
@@ -895,9 +1097,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         agentStrip.setAccessibilityIdentifier("agentStrip.host")
         self.agentStripHostView = agentStrip
 
-        for view in [sidebarBacking, tabBar, agentStrip, contentArea, toolDock, toolbarSep,
-                      rightInspectorBacking, rightInspectorResizer,
-                      sidebarToggleBtn, notificationsBtn, usageBtn, resourceMonitorBtn, settingsBtn, addWorkspaceBtn,
+        for view in [sidebarBacking, tabBar, agentStrip, contentArea, sidebarResizer, toolDock, toolbarSep,
+                      rightInspectorBacking, rightInspectorFooter, rightInspectorResizer,
+                      sidebarToggleBtn, notificationsBtn, usageBtn, resourceMonitorBtn, addWorkspaceBtn,
                       templateBtn, titlebarStatus,
                       openBtn, commitBtn, pushBtn] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -912,14 +1114,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowContent.addSubview(rightInspectorOverlayBlocker)
         rightInspectorOverlayHost.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(rightInspectorOverlayHost)
-        browserDrawerBlocker.translatesAutoresizingMaskIntoConstraints = false
-        windowContent.addSubview(browserDrawerBlocker)
-        browserDrawerHost.translatesAutoresizingMaskIntoConstraints = false
-        windowContent.addSubview(browserDrawerHost)
         toolDrawerBlocker.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(toolDrawerBlocker)
         toolDrawerHost.translatesAutoresizingMaskIntoConstraints = false
         windowContent.addSubview(toolDrawerHost)
+
+        // Keep the chrome bands above content/overlay hosts so transparent or
+        // zero-height content views cannot steal interaction from the tab bar.
+        windowContent.addSubview(toolDock, positioned: .above, relativeTo: rightInspectorOverlayBlocker)
+        windowContent.addSubview(toolDock, positioned: .above, relativeTo: rightInspectorOverlayHost)
+        windowContent.addSubview(toolDock, positioned: .above, relativeTo: toolDrawerBlocker)
+        windowContent.addSubview(toolDock, positioned: .above, relativeTo: toolDrawerHost)
+        windowContent.addSubview(tabBar, positioned: .above, relativeTo: toolDrawerHost)
+        windowContent.addSubview(agentStrip, positioned: .above, relativeTo: toolDrawerHost)
+        windowContent.addSubview(toolbarSep, positioned: .above, relativeTo: tabBar)
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let toolDockHeight = DesignTokens.Layout.toolDockHeight
@@ -1016,10 +1224,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             contentMinWidth,
 
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+            sidebarResizer.leadingAnchor.constraint(
+                equalTo: sidebarBacking.trailingAnchor,
+                constant: -DesignTokens.Layout.dividerHoverWidth
+            ),
+            sidebarResizer.trailingAnchor.constraint(
+                equalTo: sidebarBacking.trailingAnchor,
+                constant: DesignTokens.Layout.dividerHoverWidth
+            ),
+            sidebarResizer.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
+            sidebarResizer.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+
             rightInspectorBacking.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
+            rightInspectorFooter.leadingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
+            rightInspectorFooter.trailingAnchor.constraint(equalTo: rightInspectorBacking.trailingAnchor),
+            rightInspectorFooter.topAnchor.constraint(equalTo: toolDock.topAnchor),
+            rightInspectorFooter.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
 
             toolDock.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
-            toolDock.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            toolDock.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
             toolDock.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
             toolDockHeightConstraint,
 
@@ -1040,7 +1263,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarToggleHeight,
 
             notificationsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            notificationsBtn.trailingAnchor.constraint(equalTo: settingsBtn.leadingAnchor, constant: -4),
+            notificationsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
             notificationsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             notificationsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
@@ -1053,11 +1276,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             resourceMonitorBtn.trailingAnchor.constraint(equalTo: notificationsBtn.leadingAnchor, constant: -4),
             resourceMonitorBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
             resourceMonitorBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
-
-            settingsBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
-            settingsBtn.trailingAnchor.constraint(equalTo: addWorkspaceBtn.leadingAnchor, constant: -4),
-            settingsBtn.widthAnchor.constraint(equalToConstant: titlebarButtonSize.width),
-            settingsBtn.heightAnchor.constraint(equalToConstant: titlebarButtonSize.height),
 
             addWorkspaceBtn.centerYAnchor.constraint(equalTo: titlebarFill.centerYAnchor),
             addWorkspaceBtn.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor, constant: -12),
@@ -1094,16 +1312,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rightInspectorOverlayHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
             rightInspectorOverlayHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
 
-            browserDrawerBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
-            browserDrawerBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
-            browserDrawerBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
-            browserDrawerBlocker.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
-
-            browserDrawerHost.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
-            browserDrawerHost.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
-            browserDrawerHost.topAnchor.constraint(equalTo: contentArea.topAnchor),
-            browserDrawerHost.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
-
             toolDrawerBlocker.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
             toolDrawerBlocker.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
             toolDrawerBlocker.topAnchor.constraint(equalTo: contentArea.topAnchor),
@@ -1126,13 +1334,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         rightInspectorBacking.isHidden = !isRightInspectorPresented
         rightInspectorResizer.isHidden = !isRightInspectorPresented
-        let isBrowserDrawerVisible = browserSession?.isDrawerVisible ?? false
-        browserDrawerChromeState.isPresented = isBrowserDrawerVisible
-        browserDrawerBlocker.capturesPointerEvents = isBrowserDrawerVisible
-        browserDrawerHost.capturesPointerEvents = isBrowserDrawerVisible
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
-        refreshBrowserDrawerOverlayRootView()
+        refreshBottomDrawerBrowserSession()
         if let workspace = workspaceManager.activeWorkspace {
             scheduleBrowserSessionPrewarm(for: workspace)
         }
@@ -1572,6 +1775,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func renameTab(id: UUID, to title: String) {
+        guard let workspace = workspaceManager?.activeWorkspace else { return }
+        guard let index = workspace.tabs.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard workspace.tabs[index].title != trimmed else { return }
+        guard workspace.renameTab(at: index, to: trimmed) else { return }
+        updateTabBar()
+        persistence?.markDirty()
+    }
+
     private func performCloseTab(at index: Int) {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         guard workspace.tabs.count > 1 else { return }
@@ -1773,58 +1987,293 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         applySidebarMode(animated: true)
     }
 
+    private func targetSidebarWidth(for mode: SidebarMode) -> CGFloat {
+        switch mode {
+        case .expanded:
+            SidebarPreferences.sidebarWidth
+        case .collapsed:
+            DesignTokens.Layout.sidebarCollapsedWidth
+        case .hidden:
+            0
+        }
+    }
+
+    private func finalizeSidebarPresentation(for mode: SidebarMode) {
+        sidebarWidthConstraint?.constant = targetSidebarWidth(for: mode)
+        switch mode {
+        case .hidden:
+            sidebarHostView?.isHidden = true
+            sidebarHostView?.alphaValue = 0
+        case .expanded, .collapsed:
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            setSidebarContentVisibility(for: mode)
+        }
+        syncSidebarResizerPresentation(for: mode)
+    }
+
+    private func syncSidebarResizerPresentation(for mode: SidebarMode) {
+        let shouldShow = mode == .expanded
+        sidebarResizerView?.isHidden = !shouldShow
+        sidebarResizerView?.alphaValue = shouldShow ? 1 : 0
+    }
+
+    private func setSidebarContentVisibility(for mode: SidebarMode) {
+        switch mode {
+        case .expanded:
+            sidebarContentView?.isHidden = false
+            sidebarContentView?.alphaValue = 1
+            collapsedRailHostView?.alphaValue = 0
+            collapsedRailHostView?.isHidden = true
+        case .collapsed:
+            collapsedRailHostView?.isHidden = false
+            collapsedRailHostView?.alphaValue = 1
+            sidebarContentView?.alphaValue = 0
+            sidebarContentView?.isHidden = true
+        case .hidden:
+            break
+        }
+    }
+
+    private func visibleSidebarMode() -> SidebarMode {
+        guard let sidebarHostView,
+              let sidebarWidthConstraint,
+              sidebarHostView.isHidden == false,
+              sidebarHostView.alphaValue > 0.01,
+              sidebarWidthConstraint.constant > 0.5 else {
+            return .hidden
+        }
+
+        let contentAlpha = if let sidebarContentView, sidebarContentView.isHidden == false {
+            sidebarContentView.alphaValue
+        } else {
+            CGFloat.zero
+        }
+        let railAlpha = if let collapsedRailHostView, collapsedRailHostView.isHidden == false {
+            collapsedRailHostView.alphaValue
+        } else {
+            CGFloat.zero
+        }
+
+        return railAlpha > contentAlpha ? .collapsed : .expanded
+    }
+
+    private final class SidebarAnimationCallbackBox: @unchecked Sendable {
+        let run: () -> Void
+
+        init(_ run: @escaping () -> Void) {
+            self.run = run
+        }
+    }
+
+    private func animateSidebarWidth(
+        to width: CGFloat,
+        hostAlpha: CGFloat,
+        animated: Bool,
+        completion: @escaping () -> Void
+    ) {
+        guard animated, ChromeMotion.duration(for: .sidebar) > 0 else {
+            sidebarWidthConstraint?.constant = width
+            sidebarHostView?.alphaValue = hostAlpha
+            completion()
+            return
+        }
+
+        let completionBox = SidebarAnimationCallbackBox(completion)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = ChromeMotion.duration(for: .sidebar)
+            context.timingFunction = ChromeMotion.timingFunction(for: .sidebar)
+            context.allowsImplicitAnimation = true
+            sidebarWidthConstraint?.animator().constant = width
+            sidebarHostView?.animator().alphaValue = hostAlpha
+        }, completionHandler: {
+            completionBox.run()
+        })
+    }
+
+    private func animateSidebarContentSwapIfNeeded(
+        to mode: SidebarMode,
+        animated: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        guard mode != .hidden,
+              let sidebarContentView,
+              let collapsedRailHostView else {
+            completion?()
+            return
+        }
+
+        let showExpandedContent = mode == .expanded
+        let targetContentAlpha: CGFloat = showExpandedContent ? 1 : 0
+        let targetRailAlpha: CGFloat = showExpandedContent ? 0 : 1
+
+        sidebarContentView.isHidden = false
+        collapsedRailHostView.isHidden = false
+
+        guard animated, ChromeMotion.duration(for: .disclosure) > 0 else {
+            if showExpandedContent {
+                sidebarContentView.isHidden = false
+                sidebarContentView.alphaValue = 1
+                collapsedRailHostView.alphaValue = 0
+                collapsedRailHostView.isHidden = true
+            } else {
+                collapsedRailHostView.isHidden = false
+                collapsedRailHostView.alphaValue = 1
+                sidebarContentView.alphaValue = 0
+                sidebarContentView.isHidden = true
+            }
+            completion?()
+            return
+        }
+
+        if sidebarContentView.alphaValue == collapsedRailHostView.alphaValue {
+            sidebarContentView.alphaValue = showExpandedContent ? 0 : 1
+            collapsedRailHostView.alphaValue = showExpandedContent ? 1 : 0
+        }
+
+        let finalizeBox = SidebarAnimationCallbackBox { [weak self] in
+            self?.setSidebarContentVisibility(for: mode)
+            completion?()
+        }
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = ChromeMotion.duration(for: .disclosure)
+            context.timingFunction = ChromeMotion.timingFunction(for: .disclosure)
+            context.allowsImplicitAnimation = true
+            sidebarContentView.animator().alphaValue = targetContentAlpha
+            collapsedRailHostView.animator().alphaValue = targetRailAlpha
+        }, completionHandler: {
+            finalizeBox.run()
+        })
+    }
+
+    private func animateSidebarModeTransition(
+        from fromMode: SidebarMode,
+        to toMode: SidebarMode,
+        animated: Bool,
+        generation: UInt64,
+        completion: @escaping () -> Void
+    ) {
+        guard animated else {
+            completion()
+            return
+        }
+
+        let guardCurrentGeneration = { [weak self] in
+            self?.sidebarTransitionGeneration == generation
+        }
+
+        switch (fromMode, toMode) {
+        case (.expanded, .collapsed):
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            sidebarWidthConstraint?.constant = targetSidebarWidth(for: .expanded)
+            animateSidebarContentSwapIfNeeded(to: .collapsed, animated: true) { [weak self] in
+                guard let self else {
+                    completion()
+                    return
+                }
+                guard guardCurrentGeneration() else {
+                    completion()
+                    return
+                }
+                self.animateSidebarWidth(
+                    to: self.targetSidebarWidth(for: .collapsed),
+                    hostAlpha: 1,
+                    animated: true,
+                    completion: completion
+                )
+            }
+
+        case (.collapsed, .expanded):
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            setSidebarContentVisibility(for: .collapsed)
+            animateSidebarWidth(
+                to: targetSidebarWidth(for: .expanded),
+                hostAlpha: 1,
+                animated: true
+            ) { [weak self] in
+                guard let self else {
+                    completion()
+                    return
+                }
+                guard guardCurrentGeneration() else {
+                    completion()
+                    return
+                }
+                self.animateSidebarContentSwapIfNeeded(to: .expanded, animated: true, completion: completion)
+            }
+
+        case (_, .hidden):
+            if fromMode != .hidden {
+                setSidebarContentVisibility(for: fromMode)
+            }
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            animateSidebarWidth(to: 0, hostAlpha: 0, animated: true, completion: completion)
+
+        case (.hidden, .expanded), (.hidden, .collapsed):
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 0
+            setSidebarContentVisibility(for: toMode)
+            animateSidebarWidth(
+                to: targetSidebarWidth(for: toMode),
+                hostAlpha: 1,
+                animated: true,
+                completion: completion
+            )
+
+        default:
+            sidebarHostView?.isHidden = false
+            sidebarHostView?.alphaValue = 1
+            setSidebarContentVisibility(for: toMode)
+            animateSidebarWidth(
+                to: targetSidebarWidth(for: toMode),
+                hostAlpha: toMode == .hidden ? 0 : 1,
+                animated: true,
+                completion: completion
+            )
+        }
+    }
+
     private func applySidebarMode(animated: Bool) {
-        rightInspectorChromeState.overlayShouldAnimateAlignment = animated
+        let fromMode = visibleSidebarMode()
+        let toMode = currentSidebarMode
+        let shouldAnimate = animated && ChromeMotion.duration(for: .sidebar) > 0
         sidebarTransitionGeneration &+= 1
         let transitionGeneration = sidebarTransitionGeneration
-
-        let width: CGFloat
-        switch currentSidebarMode {
-        case .expanded:
-            width = SidebarPreferences.sidebarWidth
-            isSidebarVisible = true
-            sidebarContentView?.isHidden = false
-            collapsedRailHostView?.isHidden = true
-            sidebarHostView?.isHidden = false
-        case .collapsed:
-            width = DesignTokens.Layout.sidebarCollapsedWidth
-            isSidebarVisible = true
-            sidebarContentView?.isHidden = true
-            collapsedRailHostView?.isHidden = false
-            sidebarHostView?.isHidden = false
-        case .hidden:
-            width = 0
-            isSidebarVisible = false
-        }
+        isSidebarVisible = toMode != .hidden
+        syncSidebarResizerPresentation(for: toMode)
 
         let signpost = PerformanceDiagnostics.shared.beginInterval("sidebar.toggle")
         ChromeTransitionCoordinator.shared.begin(.sidebar)
 
-        if animated {
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DesignTokens.Motion.normal
-                ctx.allowsImplicitAnimation = true
-                sidebarWidthConstraint?.animator().constant = width
-            }, completionHandler: {
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    ChromeTransitionCoordinator.shared.end(.sidebar)
-                    PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
-                    guard self.sidebarTransitionGeneration == transitionGeneration else { return }
-                    if self.currentSidebarMode == .hidden { self.sidebarHostView?.isHidden = true }
-                    self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
-                }
-            })
-        } else {
-            sidebarWidthConstraint?.constant = width
+        let completeTransition = { [weak self] in
+            guard let self else { return }
             ChromeTransitionCoordinator.shared.end(.sidebar)
             PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
-            if currentSidebarMode == .hidden { sidebarHostView?.isHidden = true }
-            rightInspectorChromeState.overlayShouldAnimateAlignment = false
+            guard self.sidebarTransitionGeneration == transitionGeneration else { return }
+            self.finalizeSidebarPresentation(for: toMode)
+            self.renderedSidebarMode = toMode
+        }
+
+        if shouldAnimate {
+            animateSidebarModeTransition(
+                from: fromMode,
+                to: toMode,
+                animated: true,
+                generation: transitionGeneration,
+                completion: completeTransition
+            )
+        } else {
+            finalizeSidebarPresentation(for: toMode)
+            renderedSidebarMode = toMode
+            ChromeTransitionCoordinator.shared.end(.sidebar)
+            PerformanceDiagnostics.shared.endInterval("sidebar.toggle", signpost)
         }
 
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
         persistence?.markDirty()
     }
 
@@ -2060,22 +2509,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let transitionGeneration = rightInspectorTransitionGeneration
         let shouldPresent = isRightInspectorPresented
         rightInspectorChromeState.isVisible = shouldPresent
-        rightInspectorChromeState.overlayShouldAnimateAlignment = animated
+        let shouldAnimate = animated && ChromeMotion.duration(for: .rightInspector) > 0
         let targetWidth = shouldPresent ? rightInspectorStoredWidth : 0
         let hostView = rightInspectorHostView
+        let footerView = rightInspectorFooterView
         let resizerView = rightInspectorResizerView
         if shouldPresent {
+            let hostWasHidden = hostView?.isHidden == true
+            let footerWasHidden = footerView?.isHidden == true
+            let resizerWasHidden = resizerView?.isHidden == true
             hostView?.isHidden = false
+            footerView?.isHidden = false
             resizerView?.isHidden = false
+            if hostWasHidden { hostView?.alphaValue = 0 }
+            if footerWasHidden { footerView?.alphaValue = 0 }
+            if resizerWasHidden { resizerView?.alphaValue = 0 }
         }
         let updates = { [weak self] in
             self?.rightInspectorWidthConstraint?.animator().constant = targetWidth
+            hostView?.animator().alphaValue = shouldPresent ? 1 : 0
+            footerView?.animator().alphaValue = shouldPresent ? 1 : 0
+            resizerView?.animator().alphaValue = shouldPresent ? 1 : 0
         }
-        if animated {
+        if shouldAnimate {
             let signpost = PerformanceDiagnostics.shared.beginInterval("right_inspector.toggle")
             ChromeTransitionCoordinator.shared.begin(.rightInspector)
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DesignTokens.Motion.normal
+                ctx.duration = ChromeMotion.duration(for: .rightInspector)
+                ctx.timingFunction = ChromeMotion.timingFunction(for: .rightInspector)
                 ctx.allowsImplicitAnimation = true
                 updates()
             }, completionHandler: {
@@ -2084,27 +2545,39 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     ChromeTransitionCoordinator.shared.end(.rightInspector)
                     PerformanceDiagnostics.shared.endInterval("right_inspector.toggle", signpost)
                     guard self.rightInspectorTransitionGeneration == transitionGeneration else { return }
-                    self.rightInspectorChromeState.overlayShouldAnimateAlignment = false
                     if !self.isRightInspectorPresented {
                         hostView?.isHidden = true
+                        footerView?.isHidden = true
                         resizerView?.isHidden = true
+                    } else {
+                        hostView?.alphaValue = 1
+                        footerView?.alphaValue = 1
+                        resizerView?.alphaValue = 1
                     }
                 }
             })
         } else {
-            rightInspectorChromeState.overlayShouldAnimateAlignment = false
             rightInspectorWidthConstraint?.constant = targetWidth
             if !shouldPresent {
                 hostView?.isHidden = true
+                footerView?.isHidden = true
                 resizerView?.isHidden = true
+                hostView?.alphaValue = 0
+                footerView?.alphaValue = 0
+                resizerView?.alphaValue = 0
+            } else {
+                hostView?.isHidden = false
+                footerView?.isHidden = false
+                resizerView?.isHidden = false
+                hostView?.alphaValue = 1
+                footerView?.alphaValue = 1
+                resizerView?.alphaValue = 1
             }
         }
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
     }
 
     private func adjustRightInspectorWidth(by delta: CGFloat) {
-        rightInspectorChromeState.overlayShouldAnimateAlignment = false
         rightInspectorStoredWidth = min(
             max(rightInspectorStoredWidth - delta, DesignTokens.Layout.rightInspectorMinWidth),
             DesignTokens.Layout.rightInspectorMaxWidth
@@ -2112,7 +2585,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard isRightInspectorPresented else { return }
         rightInspectorWidthConstraint?.constant = rightInspectorStoredWidth
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
+        persistence?.markDirty()
+    }
+
+    private func adjustSidebarWidth(by delta: CGFloat) {
+        guard currentSidebarMode == .expanded else { return }
+
+        let width = min(
+            max(SidebarPreferences.sidebarWidth + delta, DesignTokens.Layout.sidebarMinWidth),
+            DesignTokens.Layout.sidebarMaxWidth
+        )
+        SidebarPreferences.sidebarWidth = width
+        sidebarWidthConstraint?.constant = width
+        updateWindowMinWidth()
         persistence?.markDirty()
     }
 
@@ -2172,10 +2657,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.setFrame(frame, display: true)
     }
 
-    private func updateRightInspectorOverlayAlignment() {
-        rightInspectorChromeState.overlayHorizontalOffset = 0
-    }
-
     @objc private func showCommandPalette() { commandPalette?.show() }
 
     @objc private func showFileQuickOpen() {
@@ -2192,7 +2673,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.appearance = NSAppearance(named: .darkAqua)
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.level = .floating
@@ -2386,45 +2866,56 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Helpers
 
-    private func openWorkspace() {
-        presentOpenWorkspacePanel()
+    private func openWorkspace(context: WorkspaceOpenerLaunchContext = .generic) {
+        presentOpenWorkspacePanel(context: context)
     }
 
-    private func presentOpenWorkspacePanel() {
+    private func presentOpenWorkspacePanel(context: WorkspaceOpenerLaunchContext = .generic) {
         let vm = WorkspaceOpenerViewModel()
         if let wm = workspaceManager {
-            vm.loadProjects(from: wm)
+            vm.loadProjects(from: wm, preferredProjectPath: context.preferredProjectPath)
         }
         openerViewModel = vm
+        let initialPanelSize = vm.preferredPanelSize
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 500),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            contentRect: NSRect(origin: .zero, size: initialPanelSize),
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.appearance = NSAppearance(named: .darkAqua)
-        panel.isMovableByWindowBackground = true
+        panel.title = "New Workspace"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = false
+        panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.level = .modalPanel
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.contentMinSize = WorkspaceOpenerPanelLayout.minimumSize
         openerPanel = panel
 
         guard let bus = commandBus ?? CommandBus.shared else { return }
         let openerView = WorkspaceOpenerView(
             viewModel: vm,
             commandBus: bus,
+            onPreferredSizeChange: { [weak self, weak panel] size in
+                guard let self, let panel else { return }
+                DispatchQueue.main.async { [weak self, weak panel] in
+                    guard let self, let panel else { return }
+                    if vm.selectedTab == .prompt,
+                       let hostingView = panel.contentView as? NSHostingView<AnyView> {
+                        self.resizeOpenerPanel(panel, hostingView: hostingView, to: size)
+                    } else {
+                        self.resizeOpenerPanel(panel, to: size)
+                    }
+                }
+            },
             onSubmit: { [weak self] viewModel in
-                panel.close()
                 self?.handleOpenerSubmit(viewModel)
             },
             onCancel: { [weak self] in
-                panel.close()
-                self?.openerViewModel = nil
-                self?.openerPanel = nil
+                self?.closeOpenerPanel()
             }
         ).environment(GhosttyThemeProvider.shared)
 
@@ -2440,9 +2931,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let hostingView = NSHostingView(rootView: openerView)
+        let hostingView = NSHostingView(rootView: AnyView(openerView))
+        hostingView.sizingOptions = []
         panel.contentView = hostingView
-        panel.setContentSize(NSSize(width: 680, height: 500))
+        panel.setContentSize(initialPanelSize)
         panel.center()
         panel.makeKeyAndOrderFront(nil)
 
@@ -2452,11 +2944,101 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func closeOpenerPanel() {
+        let panel = openerPanel
+        openerViewModel = nil
+        openerPanel = nil
+        panel?.close()
+    }
+
+    private func resizeOpenerPanel(_ panel: NSPanel, to contentSize: CGSize) {
+        let maxContentHeight = maximumOpenerContentHeight(for: panel)
+        let targetSize = CGSize(
+            width: max(contentSize.width, WorkspaceOpenerPanelLayout.minimumSize.width),
+            height: min(
+                max(contentSize.height, WorkspaceOpenerPanelLayout.minimumSize.height),
+                maxContentHeight
+            )
+        )
+        animateOpenerPanel(panel, to: targetSize)
+    }
+
+    private func resizeOpenerPanel(
+        _ panel: NSPanel,
+        hostingView: NSHostingView<AnyView>,
+        to contentSize: CGSize
+    ) {
+        let targetWidth = max(contentSize.width, WorkspaceOpenerPanelLayout.minimumSize.width)
+        let measuredHeight = measureOpenerHeight(hostingView, width: targetWidth)
+        let unclampedHeight = max(
+            contentSize.height,
+            measuredHeight,
+            WorkspaceOpenerPanelLayout.minimumSize.height
+        )
+        let maxContentHeight = maximumOpenerContentHeight(for: panel)
+        let targetSize = CGSize(
+            width: targetWidth,
+            height: min(unclampedHeight, maxContentHeight)
+        )
+        animateOpenerPanel(panel, to: targetSize)
+    }
+
+    private func animateOpenerPanel(_ panel: NSPanel, to targetSize: CGSize) {
+        guard panel.contentRect(forFrameRect: panel.frame).size != targetSize else { return }
+
+        let currentFrame = panel.frame
+        var nextFrame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: targetSize))
+        nextFrame.origin.x = currentFrame.midX - (nextFrame.width / 2)
+        nextFrame.origin.y = currentFrame.midY - (nextFrame.height / 2)
+        nextFrame = clampOpenerFrame(nextFrame, for: panel)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(nextFrame, display: true)
+        }
+    }
+
+    private func measureOpenerHeight(_ hostingView: NSHostingView<AnyView>, width: CGFloat) -> CGFloat {
+        hostingView.frame = NSRect(origin: .zero, size: NSSize(width: width, height: 1))
+        hostingView.layoutSubtreeIfNeeded()
+        return hostingView.fittingSize.height
+    }
+
+    private func maximumOpenerContentHeight(for panel: NSPanel) -> CGFloat {
+        let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        guard let visibleFrame else { return 640 }
+        return max(
+            WorkspaceOpenerPanelLayout.minimumSize.height,
+            visibleFrame.height - 80
+        )
+    }
+
+    private func clampOpenerFrame(_ frame: NSRect, for panel: NSPanel) -> NSRect {
+        guard let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            return frame
+        }
+
+        var clamped = frame
+        let horizontalMargin: CGFloat = 20
+        let verticalMargin: CGFloat = 20
+        clamped.origin.x = min(
+            max(clamped.origin.x, visibleFrame.minX + horizontalMargin),
+            visibleFrame.maxX - clamped.width - horizontalMargin
+        )
+        clamped.origin.y = min(
+            max(clamped.origin.y, visibleFrame.minY + verticalMargin),
+            visibleFrame.maxY - clamped.height - verticalMargin
+        )
+        return clamped
+    }
+
     private func handleOpenerSubmit(_ viewModel: WorkspaceOpenerViewModel) {
         let terminalMode = viewModel.terminalMode
 
         switch viewModel.selectedTab {
         case .prompt:
+            closeOpenerPanel()
             if viewModel.sshEnabled {
                 Task { @MainActor [weak self] in
                     await self?.presentOpenRemoteWorkspacePanel(terminalMode: terminalMode)
@@ -2468,21 +3050,101 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         case .issues:
-            guard let path = viewModel.selectedProjectPath else { return }
-            openLocalWorkspace(path: path, terminalMode: terminalMode)
+            guard let path = viewModel.selectedProjectPath,
+                  let issueNumber = viewModel.selectedIssueNumber,
+                  let bus = commandBus else { return }
+            viewModel.isLoading = true
+            viewModel.errorMessage = nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { viewModel.isLoading = false }
+                do {
+                    let launch = try await self.createWorkspaceFromIssue(
+                        path: path,
+                        issueNumber: issueNumber,
+                        createLinkedTaskWorktree: viewModel.createLinkedTaskWorktree,
+                        commandBus: bus
+                    )
+                    guard self.openLocalWorkspace(
+                        path: launch.projectPath,
+                        terminalMode: terminalMode,
+                        workspaceName: launch.workspaceName,
+                        launchSource: launch.launchSource,
+                        workingDirectory: launch.workingDirectory,
+                        taskID: launch.taskID
+                    ) != nil else { return }
+                    self.closeOpenerPanel()
+                } catch {
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            }
+            return
 
         case .pullRequests:
-            guard let path = viewModel.selectedProjectPath else { return }
-            // TODO: Check out PR head branch after opening workspace
-            openLocalWorkspace(path: path, terminalMode: terminalMode)
+            guard let path = viewModel.selectedProjectPath,
+                  let prNumber = viewModel.selectedPRNumber,
+                  let bus = commandBus else { return }
+            viewModel.isLoading = true
+            viewModel.errorMessage = nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { viewModel.isLoading = false }
+                do {
+                    let launch = try await self.createWorkspaceFromPullRequest(
+                        path: path,
+                        prNumber: prNumber,
+                        createLinkedTaskWorktree: viewModel.createLinkedTaskWorktree,
+                        commandBus: bus
+                    )
+                    guard self.openLocalWorkspace(
+                        path: launch.projectPath,
+                        terminalMode: terminalMode,
+                        workspaceName: launch.workspaceName,
+                        launchSource: launch.launchSource,
+                        workingDirectory: launch.workingDirectory,
+                        taskID: launch.taskID
+                    ) != nil else { return }
+                    self.closeOpenerPanel()
+                } catch {
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            }
+            return
 
         case .branches:
-            guard let path = viewModel.selectedProjectPath else { return }
-            openLocalWorkspace(path: path, terminalMode: terminalMode)
+            guard let path = viewModel.selectedProjectPath,
+                  let bus = commandBus else { return }
+            let branchName = viewModel.isCreatingNewBranch
+                ? viewModel.trimmedNewBranchName
+                : viewModel.selectedBranchName
+            guard let branchName, !branchName.isEmpty else { return }
+            viewModel.isLoading = true
+            viewModel.errorMessage = nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { viewModel.isLoading = false }
+                do {
+                    let launch = try await self.createWorkspaceFromBranch(
+                        path: path,
+                        branchName: branchName,
+                        createNew: viewModel.isCreatingNewBranch,
+                        commandBus: bus
+                    )
+                    guard self.openLocalWorkspace(
+                        path: launch.projectPath,
+                        terminalMode: terminalMode,
+                        workspaceName: launch.workspaceName,
+                        launchSource: launch.launchSource,
+                        workingDirectory: launch.workingDirectory,
+                        taskID: launch.taskID
+                    ) != nil else { return }
+                    self.closeOpenerPanel()
+                } catch {
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            }
+            return
         }
-
-        openerViewModel = nil
-        openerPanel = nil
     }
 
     private func presentOpenLocalWorkspacePanel(terminalMode: WorkspaceTerminalMode) {
@@ -2797,6 +3459,146 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         uiTestReadinessView.detail = detail
     }
 
+    private func createWorkspaceFromIssue(
+        path: String,
+        issueNumber: Int64,
+        createLinkedTaskWorktree: Bool,
+        commandBus: any CommandCalling
+    ) async throws -> WorkspaceOpenerLaunchResult {
+        let params = WorkspaceOpenerIssueLaunchParams(
+            path: path,
+            issueNumber: issueNumber,
+            createLinkedTaskWorktree: createLinkedTaskWorktree
+        )
+
+        for _ in 0..<3 {
+            do {
+                return try await commandBus.call(
+                    method: "workspace_opener.create_from_issue",
+                    params: params
+                )
+            } catch {
+                try await recoverWorkspaceOpenerProjectIfNeeded(
+                    path: path,
+                    workspaceName: "Issue #\(issueNumber)",
+                    commandBus: commandBus,
+                    error: error
+                )
+            }
+        }
+
+        throw NSError(
+            domain: "WorkspaceOpener",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Issue workspace launch retries were exhausted."]
+        )
+    }
+
+    private func createWorkspaceFromPullRequest(
+        path: String,
+        prNumber: Int64,
+        createLinkedTaskWorktree: Bool,
+        commandBus: any CommandCalling
+    ) async throws -> WorkspaceOpenerLaunchResult {
+        let params = WorkspaceOpenerPullRequestLaunchParams(
+            path: path,
+            prNumber: prNumber,
+            createLinkedTaskWorktree: createLinkedTaskWorktree
+        )
+
+        for _ in 0..<3 {
+            do {
+                return try await commandBus.call(
+                    method: "workspace_opener.create_from_pr",
+                    params: params
+                )
+            } catch {
+                try await recoverWorkspaceOpenerProjectIfNeeded(
+                    path: path,
+                    workspaceName: "PR #\(prNumber)",
+                    commandBus: commandBus,
+                    error: error
+                )
+            }
+        }
+
+        throw NSError(
+            domain: "WorkspaceOpener",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Pull request workspace launch retries were exhausted."]
+        )
+    }
+
+    private func createWorkspaceFromBranch(
+        path: String,
+        branchName: String,
+        createNew: Bool,
+        commandBus: any CommandCalling
+    ) async throws -> WorkspaceOpenerLaunchResult {
+        try await commandBus.call(
+            method: "workspace_opener.create_from_branch",
+            params: WorkspaceOpenerBranchLaunchParams(
+                path: path,
+                branchName: branchName,
+                createNew: createNew
+            )
+        )
+    }
+
+    private func recoverWorkspaceOpenerProjectIfNeeded(
+        path: String,
+        workspaceName: String,
+        commandBus: any CommandCalling,
+        error: Error
+    ) async throws {
+        guard case .backendError(_, let message) = error as? PnevmaError else {
+            throw error
+        }
+
+        switch message {
+        case "workspace_not_initialized":
+            guard await promptToInitializeWorkspace(named: workspaceName, path: path) else {
+                throw NSError(
+                    domain: "WorkspaceOpener",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Workspace initialization was canceled."]
+                )
+            }
+            let trimmedName = URL(fileURLWithPath: path)
+                .lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let _: InitializeProjectScaffoldResult = try await commandBus.call(
+                method: "project.initialize_scaffold",
+                params: WorkspaceOpenerInitializeParams(
+                    path: path,
+                    projectName: trimmedName.isEmpty ? nil : trimmedName,
+                    projectBrief: nil,
+                    defaultProvider: nil
+                )
+            )
+        case "workspace_not_trusted", "workspace_config_changed":
+            let _: OkResponse = try await commandBus.call(
+                method: "project.trust",
+                params: WorkspaceOpenerTrustParams(path: path)
+            )
+        default:
+            throw error
+        }
+    }
+
+    private func promptToInitializeWorkspace(named workspaceName: String, path: String) async -> Bool {
+        let displayName = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = displayName.isEmpty
+            ? URL(fileURLWithPath: path).lastPathComponent
+            : displayName
+        let alert = NSAlert()
+        alert.messageText = "Initialize Project Scaffold?"
+        alert.informativeText = "\(subject) is missing pnevma.toml and the .pnevma support directory. Initialize them now to open this workspace?"
+        alert.addButton(withTitle: "Initialize")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func openUITestProjectWorkspace(path: String) async {
         guard let workspace = openLocalWorkspace(path: path, terminalMode: .persistent) else {
             setUITestReadiness(.projectOpenFailed, detail: "workspace manager unavailable")
@@ -2818,7 +3620,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    private func openLocalWorkspace(path: String, terminalMode: WorkspaceTerminalMode) -> Workspace? {
+    private func openLocalWorkspace(
+        path: String,
+        terminalMode: WorkspaceTerminalMode,
+        workspaceName: String? = nil,
+        launchSource: WorkspaceLaunchSource? = nil,
+        workingDirectory: String? = nil,
+        taskID: String? = nil
+    ) -> Workspace? {
         guard let workspaceManager else {
             ToastManager.shared.show(
                 "Workspace manager unavailable",
@@ -2828,11 +3637,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
 
-        let name = URL(fileURLWithPath: path).lastPathComponent
+        let trimmedWorkspaceName = workspaceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (trimmedWorkspaceName?.isEmpty == false)
+            ? trimmedWorkspaceName!
+            : URL(fileURLWithPath: path).lastPathComponent
         let workspace = workspaceManager.createLocalProjectWorkspace(
             name: name,
             projectPath: path,
-            terminalMode: terminalMode
+            terminalMode: terminalMode,
+            launchSource: launchSource,
+            initialWorkingDirectory: workingDirectory,
+            initialTaskID: taskID
         )
         ToastManager.shared.show(
             "Workspace opened: \(name)",
@@ -2870,16 +3685,38 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
-            styleMask: [.titled, .closable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         win.isReleasedWhenClosed = false
-        win.title = "Settings"
-        win.appearance = NSAppearance(named: .darkAqua)
-        win.minSize = NSSize(width: 600, height: 400)
-        win.contentView = NSHostingView(rootView: SettingsView().environment(GhosttyThemeProvider.shared))
+        win.title = ""
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
+        win.toolbarStyle = .unifiedCompact
+        win.isMovableByWindowBackground = true
+        win.minSize = NSSize(width: 840, height: 560)
+        let contentContainer = NSView(frame: NSRect(origin: .zero, size: NSSize(width: 960, height: 680)))
+        contentContainer.wantsLayer = true
+        contentContainer.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        contentContainer.setAccessibilityIdentifier("settings.window.content")
+        let hostingView = NSHostingView(
+            rootView: SettingsView()
+                .environment(GhosttyThemeProvider.shared)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        )
+        hostingView.sizingOptions = []
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+        ])
+        win.contentView = contentContainer
+        win.setContentSize(NSSize(width: 960, height: 680))
         win.center()
         win.makeKeyAndOrderFront(nil)
         settingsWindow = win
@@ -2924,6 +3761,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.persistence?.markDirty()
             },
             onDrawerHeightChanged: { [weak self] _ in
+                self?.syncToolDrawerPointerCapture()
                 self?.persistence?.markDirty()
             }
         )
@@ -2952,44 +3790,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let activeWorkspace = self.workspaceManager?.activeWorkspace else { return }
             guard self.existingBrowserSession(for: activeWorkspace) == nil else { return }
             _ = self.browserSession(for: activeWorkspace)
-            self.refreshBrowserDrawerOverlayRootView()
+            self.refreshBottomDrawerBrowserSession()
         }
     }
 
-    private func refreshBrowserDrawerOverlayRootView() {
-        guard let host = browserDrawerOverlayHostView else { return }
-        let previousSession = browserDrawerPresentationModel.session
-
-        guard let workspace = workspaceManager?.activeWorkspace else {
-            previousSession?.cancelPendingDrawerRestore()
-            browserDrawerPresentationModel.session = nil
-            browserDrawerChromeState.isPresented = false
-            host.capturesPointerEvents = false
-            browserDrawerOverlayBlockerView?.capturesPointerEvents = false
-            browserDrawerChromeState.drawerHitRect = .zero
-            host.overlayHitRect = .zero
-            browserDrawerOverlayBlockerView?.overlayHitRect = .zero
-            updateToolDockState()
-            return
-        }
-
-        let session = existingBrowserSession(for: workspace)
-        if let previousSession, previousSession !== session {
-            previousSession.cancelPendingDrawerRestore()
-        }
-        browserDrawerPresentationModel.session = session
-        let captures = session?.isDrawerVisible ?? false
-        // Enforce single-drawer: dismiss tool drawer when browser drawer presents
-        if captures && toolDrawerChromeState.isPresented {
-            closeToolDrawer()
-        }
-        browserDrawerChromeState.isPresented = captures
-        host.capturesPointerEvents = captures
-        browserDrawerOverlayBlockerView?.capturesPointerEvents = captures
-        if !captures {
-            browserDrawerChromeState.drawerHitRect = .zero
-            host.overlayHitRect = .zero
-            browserDrawerOverlayBlockerView?.overlayHitRect = .zero
+    private func refreshBottomDrawerBrowserSession() {
+        if toolDrawerContentModel.activeToolID == "browser" {
+            toolDrawerContentModel.activeBrowserSession = workspaceManager?.activeWorkspace.map {
+                browserSession(for: $0)
+            }
         }
         updateToolDockState()
     }
@@ -3010,29 +3819,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let session = activeBrowserSession() else { return }
-        if session.isDrawerVisible {
+        if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
             closeBrowserDrawer()
         } else {
-            if toolDrawerChromeState.isPresented { closeToolDrawer() }
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-            session.showDrawer()
-            refreshBrowserDrawerOverlayRootView()
+            openToolInDrawer("browser")
             persistence?.markDirty()
         }
     }
 
     private func closeBrowserDrawer() {
-        guard let session = existingActiveBrowserSession(), session.isDrawerVisible else { return }
-        session.hideDrawer()
-        browserDrawerChromeState.drawerHitRect = .zero
-        refreshBrowserDrawerOverlayRootView()
-        if let previous = browserDrawerPreviousFirstResponder {
-            window?.makeFirstResponder(previous)
-        } else if let pane = contentAreaView?.activePaneView {
-            window?.makeFirstResponder(pane)
-        }
-        browserDrawerPreviousFirstResponder = nil
+        guard toolDrawerChromeState.isPresented,
+              toolDrawerContentModel.activeToolID == "browser" else { return }
+        closeToolDrawer()
         persistence?.markDirty()
     }
 
@@ -3042,46 +3840,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let session = activeBrowserSession() else { return }
-        if !session.isDrawerVisible {
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-        }
-        if toolDrawerChromeState.isPresented { closeToolDrawer() }
-        session.showDrawer()
-        session.requestOmnibarFocus()
-        refreshBrowserDrawerOverlayRootView()
+        openToolInDrawer("browser")
+        activeBrowserSession()?.requestOmnibarFocus()
         persistence?.markDirty()
     }
 
     private func resizeBrowserDrawer(by delta: CGFloat) {
         guard let session = activeBrowserSession() else { return }
-        if !session.isDrawerVisible {
+        if !toolDrawerChromeState.isPresented || toolDrawerContentModel.activeToolID != "browser" {
             guard !activeWorkspaceHasBrowserPane() else { return }
-            if toolDrawerChromeState.isPresented { closeToolDrawer() }
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-            session.showDrawer(focusOmnibar: false)
+            openToolInDrawer("browser")
         }
 
-        let availableHeight = browserDrawerOverlayHostView?.bounds.height
+        let availableHeight = toolDrawerOverlayHostView?.bounds.height
             ?? contentAreaView?.bounds.height
             ?? window?.contentView?.bounds.height
             ?? 0
         session.adjustDrawerHeight(by: delta, availableHeight: availableHeight)
-        refreshBrowserDrawerOverlayRootView()
         persistence?.markDirty()
     }
 
     private func openBrowserInWorkspace(url: URL?, source: BrowserOpenSource) {
         guard let workspace = workspaceManager?.activeWorkspace else { return }
         let session = browserSession(for: workspace)
-
-        // Close the generic tool drawer if it's open, carrying height to browser
-        if toolDrawerChromeState.isPresented {
-            if let h = toolDrawerContentModel.drawerHeight {
-                session.setDrawerHeight(h)
-            }
-            closeToolDrawer()
-        }
 
         if focusExistingBrowserPaneIfPresent() {
             if let url {
@@ -3093,58 +3874,80 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if !session.isDrawerVisible {
-            browserDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
-        }
+        openToolInDrawer("browser")
         if let url {
-            session.navigate(to: url)
+            session.navigate(to: url, revealInDrawer: false)
         } else {
-            session.showDrawer()
+            session.restoreIfNeeded()
         }
 
         if source == .command && url == nil {
             session.requestOmnibarFocus()
         }
 
-        refreshBrowserDrawerOverlayRootView()
         persistence?.markDirty()
     }
 
     private func pinBrowserToPane() {
-        guard let session = activeBrowserSession() else { return }
-        session.hideDrawer()
-        refreshBrowserDrawerOverlayRootView()
-        Task { @MainActor [weak self] in
-            self?.openToolAsPane("browser")
+        if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
+            pinToolDrawerToPane()
+            return
         }
+        openToolAsPane("browser")
     }
 
     private func openBrowserAsTab() {
-        guard let session = activeBrowserSession() else { return }
-        session.hideDrawer()
-        refreshBrowserDrawerOverlayRootView()
-        Task { @MainActor [weak self] in
-            self?.openToolAsTab("browser")
+        if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
+            openToolDrawerAsTab()
+            return
         }
+        openToolAsTab("browser")
     }
 
     // MARK: - Generic tool drawer
 
+    private func replaceToolDrawerContent(
+        toolID: String,
+        title: String,
+        paneID: PaneID? = nil,
+        paneView: (NSView & PaneContent)? = nil,
+        browserSession: BrowserWorkspaceSession? = nil
+    ) {
+        toolDrawerContentModel.activeToolID = toolID
+        toolDrawerContentModel.activeToolTitle = title
+        toolDrawerContentModel.activePaneView = paneView
+        toolDrawerContentModel.activePaneID = paneID
+        toolDrawerContentModel.activeBrowserSession = browserSession
+        toolDrawerContentModel.markContentChanged()
+    }
+
+    private func preserveToolDrawerHeightForCurrentContentIfNeeded() {
+        if toolDrawerContentModel.activeToolID == "browser",
+           let previousBrowserHeight = toolDrawerContentModel.activeBrowserSession?.preferredDrawerHeight {
+            toolDrawerContentModel.drawerHeight = previousBrowserHeight
+        }
+    }
+
+    private func discardCurrentToolDrawerPaneView() {
+        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+    }
+
+    private func clearToolDrawerContent(markChanged: Bool = true) {
+        discardCurrentToolDrawerPaneView()
+        toolDrawerContentModel.activePaneView = nil
+        toolDrawerContentModel.activePaneID = nil
+        toolDrawerContentModel.activeToolID = nil
+        toolDrawerContentModel.activeToolTitle = nil
+        toolDrawerContentModel.activeBrowserSession = nil
+        if markChanged {
+            toolDrawerContentModel.markContentChanged()
+        }
+    }
+
     private func openToolInDrawer(_ toolID: String) {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace) else { return }
-
-        // Close browser drawer if open, carrying height to tool drawer
-        if browserDrawerChromeState.isPresented {
-            let browserHeight = existingActiveBrowserSession()?.preferredDrawerHeight
-            if let session = existingActiveBrowserSession() {
-                session.hideDrawer()
-            }
-            refreshBrowserDrawerOverlayRootView()
-            if let h = browserHeight {
-                toolDrawerContentModel.drawerHeight = h
-            }
-        }
+        cancelPendingToolDrawerCleanup()
 
         // Same tool — toggle the drawer
         if toolDrawerContentModel.activeToolID == toolID {
@@ -3153,7 +3956,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
                 toolDrawerChromeState.isPresented = true
+                syncToolDrawerPointerCapture()
                 toolDockState.activeToolID = toolID
+                refreshToolDockAutoHide(animated: true)
+                if toolID == "browser" {
+                    activeBrowserSession()?.requestOmnibarFocus()
+                }
             }
             return
         }
@@ -3161,42 +3969,81 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Different tool while drawer is already open — swap content instantly
         let alreadyPresented = toolDrawerChromeState.isPresented
 
-        // Discard previous pane
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
-
-        // Create a fresh pane for the new tool
-        guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
-              let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
-
         if !alreadyPresented {
             toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
         }
+
+        if toolID == "browser" {
+            let session = browserSession(for: workspace)
+            if alreadyPresented, let preservedHeight = toolDrawerContentModel.drawerHeight {
+                session.setDrawerHeight(preservedHeight)
+            }
+            preserveToolDrawerHeightForCurrentContentIfNeeded()
+            discardCurrentToolDrawerPaneView()
+
+            if alreadyPresented {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    replaceToolDrawerContent(
+                        toolID: toolID,
+                        title: tool.title,
+                        browserSession: session
+                    )
+                }
+                syncToolDrawerPointerCapture()
+            } else {
+                replaceToolDrawerContent(
+                    toolID: toolID,
+                    title: tool.title,
+                    browserSession: session
+                )
+                toolDrawerChromeState.isPresented = true
+                syncToolDrawerPointerCapture()
+                refreshToolDockAutoHide(animated: true)
+            }
+            toolDockState.activeToolID = toolID
+            session.restoreIfNeeded()
+            return
+        }
+
+        // Create a fresh pane for the new tool
+        guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
+              let (paneID, paneView) = PaneFactory.make(type: tool.paneType, chromeContext: .drawer) else { return }
+        preserveToolDrawerHeightForCurrentContentIfNeeded()
+        discardCurrentToolDrawerPaneView()
 
         // Swap content without animation when replacing
         if alreadyPresented {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                toolDrawerContentModel.activeToolID = toolID
-                toolDrawerContentModel.activeToolTitle = tool.title
-                toolDrawerContentModel.activePaneView = paneView
-                toolDrawerContentModel.activePaneID = paneID
+                replaceToolDrawerContent(
+                    toolID: toolID,
+                    title: tool.title,
+                    paneID: paneID,
+                    paneView: paneView
+                )
                 // Keep current drawer height — don't reset on tool switch
             }
+            syncToolDrawerPointerCapture()
         } else {
-            toolDrawerContentModel.activeToolID = toolID
-            toolDrawerContentModel.activeToolTitle = tool.title
-            toolDrawerContentModel.activePaneView = paneView
-            toolDrawerContentModel.activePaneID = paneID
+            replaceToolDrawerContent(
+                toolID: toolID,
+                title: tool.title,
+                paneID: paneID,
+                paneView: paneView
+            )
             toolDrawerContentModel.drawerHeight = DrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
+            syncToolDrawerPointerCapture()
+            refreshToolDockAutoHide(animated: true)
         }
         toolDockState.activeToolID = toolID
     }
 
     private func closeToolDrawer() {
-        toolDrawerChromeState.isPresented = false
-        toolDrawerChromeState.drawerHitRect = .zero
+        cancelPendingToolDrawerCleanup()
         toolDockState.activeToolID = nil
         if let previous = toolDrawerPreviousFirstResponder {
             window?.makeFirstResponder(previous)
@@ -3204,29 +4051,58 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             window?.makeFirstResponder(pane)
         }
         toolDrawerPreviousFirstResponder = nil
-        // Defer cleanup so the dismiss animation can play
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard let self, !self.toolDrawerChromeState.isPresented else { return }
-            self.toolDrawerContentModel.activePaneView?.removeFromSuperview()
-            self.toolDrawerContentModel.activePaneView = nil
-            self.toolDrawerContentModel.activePaneID = nil
-            self.toolDrawerContentModel.activeToolID = nil
-            self.toolDrawerContentModel.activeToolTitle = nil
+        if let animation = ChromeMotion.animation(for: .bottomDrawerClose) {
+            withAnimation(animation) {
+                toolDrawerChromeState.isPresented = false
+                toolDrawerChromeState.drawerHitRect = .zero
+            }
+        } else {
+            toolDrawerChromeState.isPresented = false
+            toolDrawerChromeState.drawerHitRect = .zero
         }
+        syncToolDrawerPointerCapture()
+        refreshToolDockAutoHide(animated: true)
+        scheduleToolDrawerCleanupAfterClose()
+    }
+
+    private func clearClosedToolDrawerContentIfNeeded() {
+        guard !toolDrawerChromeState.isPresented else { return }
+        clearToolDrawerContent()
+        toolDrawerCleanupWorkItem = nil
+    }
+
+    private func cancelPendingToolDrawerCleanup() {
+        toolDrawerCleanupWorkItem?.cancel()
+        toolDrawerCleanupWorkItem = nil
+    }
+
+    private func scheduleToolDrawerCleanupAfterClose() {
+        // SwiftUI animation completions were not reliable enough here; keep the
+        // drawer content mounted for the close animation, then clear it on a
+        // bounded delay unless the drawer has already reopened.
+        let cleanup = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.clearClosedToolDrawerContentIfNeeded()
+        }
+        toolDrawerCleanupWorkItem = cleanup
+
+        let delay = ChromeMotion.duration(for: .bottomDrawerClose)
+        if delay <= 0 {
+            cleanup.perform()
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: cleanup)
     }
 
     private func pinToolDrawerToPane() {
-        guard let paneView = toolDrawerContentModel.activePaneView,
-              let toolID = toolDrawerContentModel.activeToolID else { return }
-        // Detach the pane view from the drawer before moving it
-        paneView.removeFromSuperview()
+        guard let toolID = toolDrawerContentModel.activeToolID else { return }
+        cancelPendingToolDrawerCleanup()
         toolDrawerChromeState.isPresented = false
+        syncToolDrawerPointerCapture()
         toolDockState.activeToolID = nil
-        toolDrawerContentModel.activePaneView = nil
-        toolDrawerContentModel.activePaneID = nil
-        toolDrawerContentModel.activeToolID = nil
-        toolDrawerContentModel.activeToolTitle = nil
+        clearToolDrawerContent()
+        refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsPane(toolID)
         }
@@ -3234,17 +4110,57 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openToolDrawerAsTab() {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
-        // Detach the pane view from the drawer
-        toolDrawerContentModel.activePaneView?.removeFromSuperview()
+        cancelPendingToolDrawerCleanup()
         toolDrawerChromeState.isPresented = false
+        syncToolDrawerPointerCapture()
         toolDockState.activeToolID = nil
-        toolDrawerContentModel.activePaneView = nil
-        toolDrawerContentModel.activePaneID = nil
-        toolDrawerContentModel.activeToolID = nil
-        toolDrawerContentModel.activeToolTitle = nil
+        clearToolDrawerContent()
+        refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsTab(toolID)
         }
+    }
+
+    private func syncToolDrawerPointerCapture() {
+        let isVisible = toolDrawerChromeState.isPresented
+        toolDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
+        toolDrawerOverlayHostView?.capturesPointerEvents = isVisible
+        let hitRect = resolvedToolDrawerOverlayHitRect()
+        toolDrawerChromeState.drawerHitRect = hitRect
+        toolDrawerOverlayBlockerView?.overlayHitRect = hitRect
+        toolDrawerOverlayHostView?.overlayHitRect = hitRect
+    }
+
+    private func resolvedToolDrawerOverlayHitRect() -> CGRect {
+        guard toolDrawerChromeState.isPresented else { return .zero }
+        guard toolDrawerContentModel.activePaneView != nil || toolDrawerContentModel.activeBrowserSession != nil else {
+            return .zero
+        }
+
+        let bounds = toolDrawerOverlayHostView?.bounds
+            ?? contentAreaView?.bounds
+            ?? .zero
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+
+        let drawerHeight: CGFloat
+        if let session = toolDrawerContentModel.activeBrowserSession {
+            drawerHeight = session.resolvedDrawerHeight(for: bounds.height)
+        } else {
+            drawerHeight = DrawerSizing.resolvedHeight(
+                storedHeight: toolDrawerContentModel.drawerHeight,
+                availableHeight: bounds.height
+            )
+        }
+
+        let resolvedHeight = min(max(0, drawerHeight), bounds.height)
+        guard resolvedHeight > 0 else { return .zero }
+
+        return CGRect(
+            x: bounds.minX,
+            y: max(bounds.minY, bounds.maxY - resolvedHeight),
+            width: bounds.width,
+            height: resolvedHeight
+        )
     }
 
     private func copyBrowserSelectionWithSource() async {
@@ -3317,6 +4233,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func openSettingsFromSidebar() {
+        guard let settingsTool = sidebarToolDefinition(id: "settings") else {
+            openSettingsPane()
+            return
+        }
+
+        if focusExistingTool(settingsTool, scope: .anyTab) {
+            return
+        }
+
+        guard let pane = PaneFactory.make(type: settingsTool.paneType)?.1 else {
+            openSettingsPane()
+            return
+        }
+
+        if contentAreaView?.replaceActivePane(with: pane) == nil {
+            contentAreaView?.setRootPane(pane)
+        }
+        persistence?.markDirty()
+    }
+
     private func makeToolPane(_ toolID: String) -> (NSView & PaneContent)? {
         guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else {
             return nil
@@ -3376,9 +4313,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if existingBrowserSession(for: workspace)?.isDrawerVisible == true,
-           sidebarTool(id: "browser", in: workspace) != nil {
-            toolDockState.activeToolID = "browser"
+        if toolDrawerChromeState.isPresented,
+           let activeToolID = toolDrawerContentModel.activeToolID,
+           sidebarTool(id: activeToolID, in: workspace) != nil {
+            toolDockState.activeToolID = activeToolID
         } else if let paneType = contentAreaView?.activePaneView?.paneType,
                   let tool = sidebarToolDefinition(paneType: paneType),
                   sidebarTool(id: tool.id, in: workspace) != nil {
@@ -3408,23 +4346,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if isToolDockHovered {
+        if shouldKeepToolDockExpanded || isToolDockHovered {
             setToolDockExpanded(true, animated: true)
             return
         }
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard !self.isToolDockHovered, AppRuntimeSettings.shared.bottomToolBarAutoHide else { return }
+            guard !self.shouldKeepToolDockExpanded,
+                  !self.isToolDockHovered,
+                  AppRuntimeSettings.shared.bottomToolBarAutoHide else { return }
             self.setToolDockExpanded(false, animated: true)
         }
         toolDockCollapseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ChromeMotion.dockHideDelay, execute: workItem)
     }
 
     private func refreshToolDockAutoHide(animated: Bool) {
         toolDockCollapseWorkItem?.cancel()
-        let shouldExpand = !AppRuntimeSettings.shared.bottomToolBarAutoHide || isToolDockHovered
+        let shouldExpand = !AppRuntimeSettings.shared.bottomToolBarAutoHide
+            || shouldKeepToolDockExpanded
+            || isToolDockHovered
         setToolDockExpanded(shouldExpand, animated: animated)
     }
 
@@ -3432,18 +4374,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let toolDockHeightConstraint else { return }
         let targetHeight = isExpanded || !AppRuntimeSettings.shared.bottomToolBarAutoHide
             ? DesignTokens.Layout.toolDockHeight
-            : DesignTokens.Layout.toolDockRevealHeight
-        guard toolDockHeightConstraint.constant != targetHeight else { return }
+            : ChromeMotion.dockRevealHeight
+        let targetAlpha: CGFloat = isExpanded || !AppRuntimeSettings.shared.bottomToolBarAutoHide
+            ? 1
+            : ChromeMotion.dockCollapsedOpacity
+        let currentAlpha = toolDockHostView?.alphaValue ?? 1
+        guard toolDockHeightConstraint.constant != targetHeight || abs(currentAlpha - targetAlpha) > 0.001 else {
+            return
+        }
 
-        if animated {
+        let shouldAnimate = animated && ChromeMotion.duration(for: .overlay) > 0
+        if shouldAnimate {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = DesignTokens.Motion.normal
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.duration = ChromeMotion.duration(for: .overlay)
+                context.timingFunction = ChromeMotion.timingFunction(for: .overlay)
                 toolDockHeightConstraint.animator().constant = targetHeight
+                toolDockHostView?.animator().alphaValue = targetAlpha
                 window?.contentView?.layoutSubtreeIfNeeded()
             }
         } else {
             toolDockHeightConstraint.constant = targetHeight
+            toolDockHostView?.alphaValue = targetAlpha
             window?.contentView?.layoutSubtreeIfNeeded()
         }
     }
@@ -3451,14 +4402,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openToolWithDefaultPresentation(_ toolID: String) {
         if toolID == "settings" {
             openSettingsPane()
-            return
-        }
-        if toolID == "browser" {
-            // Close the generic tool drawer if it's open
-            if toolDrawerChromeState.isPresented {
-                closeToolDrawer()
-            }
-            openBrowserInWorkspace(url: nil, source: .command)
             return
         }
         openToolInDrawer(toolID)
@@ -3486,9 +4429,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace = workspaceManager?.activeWorkspace,
               let tool = sidebarTool(id: toolID, in: workspace),
               PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace) else { return }
-        if toolID == "browser" {
-            activeBrowserSession()?.hideDrawer()
-            refreshBrowserDrawerOverlayRootView()
+        if toolID == "browser",
+           toolDrawerChromeState.isPresented,
+           toolDrawerContentModel.activeToolID == "browser" {
+            closeToolDrawer()
         }
         if focusExistingTool(tool, scope: .anyTab) {
             return
@@ -3506,8 +4450,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openToolAsPane(_ toolID: String) {
         guard let tool = sidebarTool(id: toolID, in: workspaceManager?.activeWorkspace) else { return }
         if toolID == "browser" {
-            activeBrowserSession()?.hideDrawer()
-            refreshBrowserDrawerOverlayRootView()
+            if toolDrawerChromeState.isPresented, toolDrawerContentModel.activeToolID == "browser" {
+                closeToolDrawer()
+            }
             if focusExistingTool(tool, scope: .anyTab) {
                 return
             }
@@ -3795,9 +4740,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         rightInspectorWidthConstraint?.constant = isRightInspectorPresented ? rightInspectorStoredWidth : 0
         rightInspectorHostView?.isHidden = !isRightInspectorPresented
+        rightInspectorFooterView?.isHidden = !isRightInspectorPresented
         rightInspectorResizerView?.isHidden = !isRightInspectorPresented
         updateWindowMinWidth()
-        updateRightInspectorOverlayAlignment()
 
         if let frame = state.windowFrame?.nsRect, let win = window {
             var restored = frame
@@ -3828,7 +4773,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceManager?.ensureTerminalWorkspace(name: AppLaunchContext.initialWorkspaceName)
         }
         syncRightInspectorPresentation(animated: false)
-        refreshBrowserDrawerOverlayRootView()
+        refreshBottomDrawerBrowserSession()
         updateTabBar()
     }
 
@@ -4168,6 +5113,7 @@ extension AppDelegate {
 extension AppDelegate: NSWindowDelegate {
     public func windowDidResize(_ notification: Notification) {
         contentAreaView?.needsLayout = true
+        syncToolDrawerPointerCapture()
     }
 
     public func windowDidEnterFullScreen(_ notification: Notification) {
@@ -4249,6 +5195,24 @@ extension AppDelegate {
         }
     }
 }
+
+#if DEBUG
+extension AppDelegate {
+    func openToolInDrawerForTesting(_ toolID: String) {
+        openToolInDrawer(toolID)
+    }
+
+    var toolDrawerContentModelForTesting: ToolDrawerContentModel {
+        toolDrawerContentModel
+    }
+
+    var toolDrawerChromeStateForTesting: ToolDrawerChromeState {
+        toolDrawerChromeState
+    }
+}
+#endif
+
+private final class MainWindowContentView: NSView {}
 
 // MARK: - BottomEdgeTracker
 

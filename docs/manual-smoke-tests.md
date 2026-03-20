@@ -10,8 +10,10 @@ Run these checks in order against the `0.2.0` DMG. Stop at the first failure and
 This document complements:
 
 - `scripts/run-packaged-launch-smoke.sh` for packaged app launch smoke,
+- `docs/manual-remote-ssh-tests.md` for real-host remote helper validation on Linux and remote macOS hosts,
+- `docs/manual-remote-durable-lifecycle-tests.md` for packaged remote durable session lifecycle validation and clean-machine relaunch evidence,
 - `docs/manual-security-tests.md` for remote/security validation,
-- `docs/macos-release.md` for signing/notarization/stapling evidence.
+- `docs/macos-release.md` for signing, DMG packaging, first-launch instructions, and release evidence.
 
 ## Prerequisites
 
@@ -69,13 +71,14 @@ sql_project() { sqlite3 -header -box "$PROJECT_DB" "$1"; }
 
 1. Mount the DMG and drag `Pnevma.app` to `/Applications`.
 2. Launch Pnevma from `/Applications`.
-3. If Gatekeeper blocks the build, use **right-click → Open** and record that it was required.
-4. Confirm the app does not crash and the main window appears.
-5. Open **Pnevma → About Pnevma** and confirm the version shown is `0.2.0`.
+3. If macOS blocks the build, use **right-click → Open** in Finder and record that it was required.
+4. If Finder `Open` is still not enough, use **System Settings → Privacy & Security → Open Anyway** and record that it was required.
+5. Confirm the app does not crash and the main window appears.
+6. Open **Pnevma → About Pnevma** and confirm the version shown is `0.2.0`.
 
-**Pass:** app launches cleanly, main window renders, About shows `0.2.0`.
+**Pass:** app launches through the documented first-run flow, main window renders, and About shows `0.2.0`.
 
-**Fail:** crash on launch, blank window, or version mismatch.
+**Fail:** launch only works through undocumented steps, the app crashes, the window is blank, or the version is wrong.
 
 ## 2. Project setup and persistence
 

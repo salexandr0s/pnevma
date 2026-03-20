@@ -7,11 +7,17 @@ private final class FocusableTestView: NSView {
     override var acceptsFirstResponder: Bool { true }
 }
 
+private final class CounterBox: @unchecked Sendable {
+    var value = 0
+}
+
 @MainActor
 final class TerminalHostViewTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     func testScreenRectFromGhosttyRectConvertsTopLeftCoordinatesToScreenSpace() {
@@ -231,13 +237,13 @@ final class TerminalHostViewTests: XCTestCase {
 
     func testChromeTransitionCoordinatorOnlyEmitsEndWhenLastReasonCompletes() {
         let center = NotificationCenter.default
-        var endNotificationCount = 0
+        let endNotificationCount = CounterBox()
         let observer = center.addObserver(
             forName: .chromeTransitionDidEnd,
             object: nil,
             queue: .main
         ) { _ in
-            endNotificationCount += 1
+            endNotificationCount.value += 1
         }
         defer {
             center.removeObserver(observer)
@@ -247,22 +253,22 @@ final class TerminalHostViewTests: XCTestCase {
         ChromeTransitionCoordinator.shared.begin(.sidebar)
         ChromeTransitionCoordinator.shared.begin(.rightInspector)
         ChromeTransitionCoordinator.shared.end(.sidebar)
-        XCTAssertEqual(endNotificationCount, 0)
+        XCTAssertEqual(endNotificationCount.value, 0)
 
         ChromeTransitionCoordinator.shared.end(.rightInspector)
-        XCTAssertEqual(endNotificationCount, 1)
+        XCTAssertEqual(endNotificationCount.value, 1)
         XCTAssertFalse(ChromeTransitionCoordinator.shared.isActive)
     }
 
     func testChromeTransitionCoordinatorWaitsForOverlappingTransitionsOfSameReason() {
         let center = NotificationCenter.default
-        var endNotificationCount = 0
+        let endNotificationCount = CounterBox()
         let observer = center.addObserver(
             forName: .chromeTransitionDidEnd,
             object: nil,
             queue: .main
         ) { _ in
-            endNotificationCount += 1
+            endNotificationCount.value += 1
         }
         defer {
             center.removeObserver(observer)
@@ -272,11 +278,11 @@ final class TerminalHostViewTests: XCTestCase {
         ChromeTransitionCoordinator.shared.begin(.sidebar)
         ChromeTransitionCoordinator.shared.begin(.sidebar)
         ChromeTransitionCoordinator.shared.end(.sidebar)
-        XCTAssertEqual(endNotificationCount, 0)
+        XCTAssertEqual(endNotificationCount.value, 0)
         XCTAssertTrue(ChromeTransitionCoordinator.shared.isActive)
 
         ChromeTransitionCoordinator.shared.end(.sidebar)
-        XCTAssertEqual(endNotificationCount, 1)
+        XCTAssertEqual(endNotificationCount.value, 1)
         XCTAssertFalse(ChromeTransitionCoordinator.shared.isActive)
     }
 }

@@ -53,6 +53,8 @@ protocol PaneContent: AnyObject {
 
     /// Whether this pane has a live process that would be killed on close.
     var hasActiveProcess: Bool { get }
+
+    var presentationRole: PanePresentationRole { get }
 }
 
 @MainActor
@@ -87,6 +89,7 @@ extension PaneContent {
     var metadataJSON: String? { nil }
     var shouldPersist: Bool { true }
     var hasActiveProcess: Bool { false }
+    var presentationRole: PanePresentationRole { PanePresentationRole(paneType: paneType) }
 
     func persistedPane() -> PersistedPane {
         PersistedPane(
@@ -251,24 +254,33 @@ enum PaneFactory {
         ))
     }
 
-    static func makeTaskBoard() -> (PaneID, NSView & PaneContent) {
-        paneTuple(TaskBoardPaneView(frame: .zero))
+    static func makeTaskBoard(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(TaskBoardPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makeReplay(sessionID: String? = nil) -> (PaneID, NSView & PaneContent) {
-        paneTuple(ReplayPaneView(frame: .zero, sessionID: sessionID))
+    static func makeReplay(
+        sessionID: String? = nil,
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(ReplayPaneView(frame: .zero, sessionID: sessionID, chromeContext: chromeContext))
     }
 
     static func makeFileBrowser() -> (PaneID, NSView & PaneContent) {
         paneTuple(FileBrowserPaneView(frame: .zero))
     }
 
-    static func makeSshManager() -> (PaneID, NSView & PaneContent) {
-        paneTuple(SshManagerPaneView(frame: .zero))
+    static func makeSshManager(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(SshManagerPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makeWorkflow() -> (PaneID, NSView & PaneContent) {
-        paneTuple(WorkflowPaneView(frame: .zero))
+    static func makeWorkflow(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(WorkflowPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
     static func makeReview(initialTaskID: String? = nil) -> (PaneID, NSView & PaneContent) {
@@ -279,8 +291,10 @@ enum PaneFactory {
         paneTuple(DiffPaneView(frame: .zero, initialTaskID: initialTaskID))
     }
 
-    static func makeAnalytics() -> (PaneID, NSView & PaneContent) {
-        paneTuple(UsagePaneView(frame: .zero))
+    static func makeAnalytics(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(UsagePaneView(frame: .zero, chromeContext: chromeContext))
     }
 
     static func makeResourceMonitor() -> (PaneID, NSView & PaneContent) {
@@ -291,20 +305,28 @@ enum PaneFactory {
         paneTuple(SettingsPaneView(frame: .zero))
     }
 
-    static func makeNotifications() -> (PaneID, NSView & PaneContent) {
-        paneTuple(NotificationsPaneView(frame: .zero))
+    static func makeNotifications(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(NotificationsPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makeDailyBrief() -> (PaneID, NSView & PaneContent) {
-        paneTuple(DailyBriefPaneView(frame: .zero))
+    static func makeDailyBrief(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(DailyBriefPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makeRulesManager() -> (PaneID, NSView & PaneContent) {
-        paneTuple(RulesManagerPaneView(frame: .zero))
+    static func makeRulesManager(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(RulesManagerPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makeSecretsManager() -> (PaneID, NSView & PaneContent) {
-        paneTuple(SecretsManagerPaneView(frame: .zero))
+    static func makeSecretsManager(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(SecretsManagerPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
     static func makeBrowser(url: URL? = nil) -> (PaneID, NSView & PaneContent) {
@@ -317,12 +339,16 @@ enum PaneFactory {
         return paneTuple(BrowserPaneView(frame: .zero, session: session, url: url))
     }
 
-    static func makeHarnessConfig() -> (PaneID, NSView & PaneContent) {
-        paneTuple(HarnessConfigPaneView(frame: .zero))
+    static func makeHarnessConfig(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(HarnessConfigPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makePorts() -> (PaneID, NSView & PaneContent) {
-        paneTuple(PortsPaneView(paneID: PaneID()))
+    static func makePorts(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(PortsPaneView(paneID: PaneID(), chromeContext: chromeContext))
     }
 
     static func make(from persistedPane: PersistedPane) -> (PaneID, NSView & PaneContent) {
@@ -390,30 +416,33 @@ enum PaneFactory {
     }
 
     /// Create a pane by type string.
-    static func make(type paneType: String) -> (PaneID, NSView & PaneContent)? {
+    static func make(
+        type paneType: String,
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent)? {
         guard isPaneTypeAvailable(paneType, in: activeWorkspaceProvider?()) else {
             return nil
         }
         switch paneType {
         case "welcome":       return makeWelcome()
         case "terminal":      return workspaceAwareTerminal()
-        case "taskboard":     return makeTaskBoard()
-        case "replay":        return makeReplay()
+        case "taskboard":     return makeTaskBoard(chromeContext: chromeContext)
+        case "replay":        return makeReplay(chromeContext: chromeContext)
         case "file_browser":  return makeFileBrowser()
-        case "ssh":           return makeSshManager()
-        case "workflow":      return makeWorkflow()
+        case "ssh":           return makeSshManager(chromeContext: chromeContext)
+        case "workflow":      return makeWorkflow(chromeContext: chromeContext)
         case "review":        return makeReview()
         case "diff":          return makeDiff()
-        case "analytics":     return makeAnalytics()
+        case "analytics":     return makeAnalytics(chromeContext: chromeContext)
         case "resource_monitor": return makeResourceMonitor()
         case "settings":      return makeSettings()
-        case "notifications": return makeNotifications()
-        case "daily_brief":   return makeDailyBrief()
-        case "rules":         return makeRulesManager()
-        case "secrets":       return makeSecretsManager()
+        case "notifications": return makeNotifications(chromeContext: chromeContext)
+        case "daily_brief":   return makeDailyBrief(chromeContext: chromeContext)
+        case "rules":         return makeRulesManager(chromeContext: chromeContext)
+        case "secrets":       return makeSecretsManager(chromeContext: chromeContext)
         case "browser":        return makeBrowser()
-        case "harness_config": return makeHarnessConfig()
-        case "ports":          return makePorts()
+        case "harness_config": return makeHarnessConfig(chromeContext: chromeContext)
+        case "ports":          return makePorts(chromeContext: chromeContext)
         default:              return nil
         }
     }
@@ -654,28 +683,20 @@ struct EmptyStateView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary.opacity(0.5))
-            Text(title)
-                .font(.subheadline)
-                .fontWeight(.semibold)
+        ContentUnavailableView {
+            Label(title, systemImage: icon)
+        } description: {
             if let message {
                 Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
             }
+        } actions: {
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -913,12 +934,12 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private var managedSessionCommand: String? {
-        launchMetadata.remoteTarget?.remoteShellCommand
+        nil
     }
 
     private var shellWorkingDirectory: String? {
-        if launchMetadata.remoteTarget != nil {
-            return NSHomeDirectory()
+        if let remoteTarget = launchMetadata.remoteTarget {
+            return remoteTarget.remotePath
         }
         return currentWorkingDirectory ?? NSHomeDirectory()
     }
@@ -1073,20 +1094,19 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             )
             loadTask = Task { @MainActor [weak self] in
                 guard let self else { return }
-                let exists = await sessionBridge.sessionExists(sessionID)
-                guard exists else {
-                    self.currentSessionID = nil
-                    self.notifyPersistedStateChanged()
-                    await self.handleSessionLoadFailure(
-                        SessionBridgeError.staleSession(sessionID)
-                    )
-                    return
-                }
                 do {
                     let binding = try await sessionBridge.binding(for: sessionID)
                     await self.apply(binding: binding, isNewSession: false)
                 } catch {
-                    await self.handleSessionLoadFailure(error)
+                    if PnevmaError.isMissingSession(error) {
+                        self.currentSessionID = nil
+                        self.notifyPersistedStateChanged()
+                        await self.handleSessionLoadFailure(
+                            SessionBridgeError.staleSession(sessionID)
+                        )
+                    } else {
+                        await self.handleSessionLoadFailure(error)
+                    }
                 }
             }
             return
@@ -1114,7 +1134,8 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                     let binding = try await sessionBridge.createSession(
                         name: self.launchMetadata.remoteTarget == nil ? "Terminal" : "Remote Terminal",
                         workingDirectory: self.shellWorkingDirectory,
-                        command: self.managedSessionCommand
+                        command: self.managedSessionCommand,
+                        remoteTarget: self.launchMetadata.remoteTarget
                     )
                     await self.apply(binding: binding, isNewSession: true)
                 } catch {
@@ -1289,15 +1310,20 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private func showArchivedTerminal(_ binding: SessionBindingDescriptor) async {
-        let title = "Session Ended"
-        let message = "This terminal session is no longer live."
-        let detail = "A cleaned transcript snapshot is shown below. Use a recovery action to restart or replace the dead session."
+        let title = binding.isDetachedRecovery ? "Session Detached" : "Session Ended"
+        let message = binding.isDetachedRecovery
+            ? "This terminal can be restored."
+            : "This terminal session is no longer live."
+        let detail = binding.isDetachedRecovery
+            ? "Use Restore Previous Session to reattach or restart the backend, or start a replacement session."
+            : "A cleaned transcript snapshot is shown below. Use Restore Previous Session to reconnect, or start a replacement session."
+        let actions = recoveryActionButtons(preferRestorePrimary: true)
         showState(
             title: title,
             message: message,
             detail: detail,
             scrollback: nil,
-            actions: recoveryActionButtons(),
+            actions: actions,
             isLoading: false
         )
 
@@ -1309,7 +1335,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 message: message,
                 detail: detail,
                 scrollback: scrollback.data,
-                actions: recoveryActionButtons(),
+                actions: actions,
                 isLoading: false
             )
         } catch {
@@ -1318,14 +1344,17 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 message: "Unable to load archived scrollback.",
                 detail: error.localizedDescription,
                 scrollback: nil,
-                actions: recoveryActionButtons(),
+                actions: actions,
                 isLoading: false
             )
         }
     }
 
-    private func recoveryActionButtons() -> [TerminalStateAction] {
+    private func recoveryActionButtons(preferRestorePrimary: Bool = false) -> [TerminalStateAction] {
         guard usesManagedSessions else { return [] }
+        if preferRestorePrimary, let restoreAction = restorePreviousActionButton() {
+            return [restoreAction] + makeFallbackActions()
+        }
         return recoveryOptions.map { option in
             TerminalStateAction(
                 id: option.id,
@@ -1342,7 +1371,12 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private func makeFallbackActions() -> [TerminalStateAction] {
         guard autoStartIfNeeded, usesManagedSessions else { return [] }
         return [
-            TerminalStateAction(id: "new-session", label: "Start New Session", enabled: true) { [weak self] in
+            TerminalStateAction(
+                id: "new-session",
+                label: "Start New Session",
+                enabled: true,
+                isPrimary: false
+            ) { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.currentSessionID = nil
                     self?.notifyPersistedStateChanged()
@@ -1350,6 +1384,29 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 }
             }
         ]
+    }
+
+    private func restorePreviousActionButton() -> TerminalStateAction? {
+        guard let actionID = preferredRestoreActionID() else { return nil }
+        return TerminalStateAction(
+            id: "restore-previous",
+            label: "Restore Previous Session",
+            enabled: true
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.performRecoveryAction(actionID)
+            }
+        }
+    }
+
+    private func preferredRestoreActionID() -> String? {
+        if recoveryOptions.contains(where: { $0.id == "reattach" && $0.enabled }) {
+            return "reattach"
+        }
+        if recoveryOptions.contains(where: { $0.id == "restart" && $0.enabled }) {
+            return "restart"
+        }
+        return nil
     }
 
     private func performRecoveryAction(_ action: String) async {
@@ -1519,6 +1576,7 @@ private struct TerminalStateAction: Identifiable {
     let id: String
     let label: String
     let enabled: Bool
+    var isPrimary: Bool = true
     let perform: () -> Void
 }
 
@@ -1857,10 +1915,17 @@ private struct TerminalStateView: View {
 
     private var stateActionButtons: some View {
         ForEach(actions) { action in
-            Button(action.label, action: action.perform)
-                .buttonStyle(.borderedProminent)
-                .disabled(!action.enabled)
-                .fixedSize()
+            if action.isPrimary {
+                Button(action.label, action: action.perform)
+                    .buttonStyle(BorderedProminentButtonStyle())
+                    .disabled(!action.enabled)
+                    .fixedSize()
+            } else {
+                Button(action.label, action: action.perform)
+                    .buttonStyle(BorderedButtonStyle())
+                    .disabled(!action.enabled)
+                    .fixedSize()
+            }
         }
     }
 

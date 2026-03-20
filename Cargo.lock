@@ -1956,6 +1956,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pnevma-remote-helper"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "pnevma-session"
 version = "0.2.0"
 dependencies = [
@@ -1980,6 +1989,7 @@ dependencies = [
  "security-framework 2.11.1",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",

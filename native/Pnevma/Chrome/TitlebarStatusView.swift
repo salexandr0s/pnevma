@@ -47,7 +47,14 @@ final class TitlebarStatusView: NSView {
         branchButton.bezelStyle = .inline
         branchButton.isBordered = false
         branchButton.font = font
-        branchButton.title = "\u{E0A0} —"
+        branchButton.title = "—"
+        branchButton.image = NSImage(
+            systemSymbolName: "arrow.triangle.branch",
+            accessibilityDescription: "Git branch"
+        )
+        branchButton.imageScaling = .scaleProportionallyDown
+        branchButton.imagePosition = .imageLeading
+        branchButton.imageHugsTitle = true
         branchButton.target = self
         branchButton.action = #selector(branchClicked)
         branchButton.setAccessibilityLabel("Git branch")
@@ -152,6 +159,10 @@ final class TitlebarStatusView: NSView {
     private func applyThemeColors() {
         let color = GhosttyThemeProvider.shared.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.secondary)
         branchButton.contentTintColor = color
+        branchButton.attributedTitle = NSAttributedString(
+            string: branchButton.title,
+            attributes: [.foregroundColor: color]
+        )
         agentsLabel.textColor = color
         sessionsButton.contentTintColor = color
         prPill.contentTintColor = .controlAccentColor
@@ -174,7 +185,8 @@ final class TitlebarStatusView: NSView {
     }
 
     func updateBranch(_ branch: String?) {
-        branchButton.title = branch.map { "\u{E0A0} \($0)" } ?? "\u{E0A0} —"
+        branchButton.title = branch ?? "—"
+        applyThemeColors()
     }
 
     func updateAgents(_ count: Int) {

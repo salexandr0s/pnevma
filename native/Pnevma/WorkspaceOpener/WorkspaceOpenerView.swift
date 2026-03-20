@@ -3,24 +3,45 @@ import SwiftUI
 struct WorkspaceOpenerView: View {
     @Bindable var viewModel: WorkspaceOpenerViewModel
     let commandBus: any CommandCalling
+    let onPreferredSizeChange: (CGSize) -> Void
     let onSubmit: (WorkspaceOpenerViewModel) -> Void
     let onCancel: () -> Void
 
-    @Environment(GhosttyThemeProvider.self) private var theme
+    private var titleSubtitle: String {
+        switch viewModel.selectedTab {
+        case .prompt:
+            return "Start from a prompt, an existing folder, or a remote SSH target."
+        case .issues:
+            return "Open a workspace from a GitHub issue in the selected project."
+        case .pullRequests:
+            return "Open a workspace from a pull request in the selected project."
+        case .branches:
+            return "Open a workspace from a branch in the selected project."
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header: tab bar + project picker
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(titleSubtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 10)
+
+                    WorkspaceOpenerProjectPicker(
+                        selectedPath: $viewModel.selectedProjectPath,
+                        projects: viewModel.availableProjects
+                    )
+                }
+
                 WorkspaceOpenerTabBar(selectedTab: $viewModel.selectedTab)
-                Spacer()
-                WorkspaceOpenerProjectPicker(
-                    selectedPath: $viewModel.selectedProjectPath,
-                    projects: viewModel.availableProjects
-                )
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.sm)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
 
             Divider()
 
@@ -30,14 +51,14 @@ struct WorkspaceOpenerView: View {
                 case .prompt:
                     PromptTabView(viewModel: viewModel)
                 case .issues:
-                    IssuesTabView(viewModel: viewModel)
+                    IssuesTabView(viewModel: viewModel, commandBus: commandBus)
                 case .pullRequests:
-                    PullRequestsTabView(viewModel: viewModel)
+                    PullRequestsTabView(viewModel: viewModel, commandBus: commandBus)
                 case .branches:
                     BranchesTabView(viewModel: viewModel)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, alignment: .top)
 
             // Error message
             if let error = viewModel.errorMessage {
@@ -58,13 +79,22 @@ struct WorkspaceOpenerView: View {
                 Spacer()
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.cancelAction)
-                Button("Create Workspace") { onSubmit(viewModel) }
+                Button(viewModel.submitButtonTitle) { onSubmit(viewModel) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!viewModel.canSubmit || viewModel.isLoading)
             }
-            .padding(DesignTokens.Spacing.md)
+            .padding(.horizontal, DesignTokens.Spacing.md)
+            .padding(.vertical, DesignTokens.Spacing.md)
         }
-        .frame(width: 680, height: 500)
+        .background(ChromeSurfaceStyle.window.color)
+        .frame(
+            minWidth: WorkspaceOpenerPanelLayout.minimumSize.width,
+            minHeight: WorkspaceOpenerPanelLayout.minimumSize.height,
+            alignment: .top
+        )
+        .onChange(of: viewModel.selectedTab) { _, _ in
+            onPreferredSizeChange(viewModel.preferredPanelSize)
+        }
         .onChange(of: viewModel.selectedProjectPath) { _, _ in
             viewModel.onProjectChanged(using: commandBus)
         }

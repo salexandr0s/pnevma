@@ -10,7 +10,7 @@
 
 **Please do not open public issues for security vulnerabilities.**
 
-Use [GitHub's private vulnerability reporting](https://github.com/pnevma/pnevma/security/advisories/new) to report security issues. This ensures the report stays confidential until a fix is available.
+Use [GitHub's private vulnerability reporting](https://github.com/salexandr0s/pnevma/security/advisories/new) to report security issues. This keeps the report confidential until a fix or mitigation is ready.
 
 ### What to include
 
@@ -30,10 +30,12 @@ Use [GitHub's private vulnerability reporting](https://github.com/pnevma/pnevma/
 The following areas are of particular interest:
 
 - Remote access server (HTTP/WebSocket, TLS, authentication)
-- SSH key management and credential storage
+- SSH key management, remote helper packaging, and credential storage
 - FFI bridge between Rust and Swift
 - Session supervisor (tmux/PTY handling)
 - Context pack compiler (file access, secret redaction)
+- Review, merge, and protected-action controls
+- Global and project configuration handling for secrets, auth, and remote policy
 
 ### Out of scope
 
@@ -49,3 +51,5 @@ Pnevma follows these security principles:
 - All remote access requires authentication and TLS
 - SSH keys are managed through the system keychain
 - Rate limiting on all external-facing endpoints
+- Remote terminal input is opt-in rather than enabled by default
+- Worktree isolation protects repository changes, not operating-system privileges

@@ -5,42 +5,37 @@ import SwiftUI
 
 struct PortsView: View {
     @Bindable var viewModel: PortsViewModel
-    @Environment(GhosttyThemeProvider.self) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                Label("Listening Ports", systemImage: "network.badge.shield.half.filled")
-                    .font(.headline)
-                Spacer()
-                if viewModel.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+        NativePaneScaffold(
+            title: "Listening Ports",
+            subtitle: "Detected local services and browser entry points",
+            systemImage: "network.badge.shield.half.filled",
+            role: .utility,
+            inlineHeaderIdentifier: "pane.ports.inlineHeader",
+            inlineHeaderLabel: "Ports inline header"
+        ) {
+            if viewModel.isLoading {
+                ProgressView()
+                    .controlSize(.small)
             }
-            .padding(DesignTokens.Spacing.md)
-
-            Divider()
-
+        } content: {
             if viewModel.visiblePorts.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "network.slash")
-                        .font(.largeTitle)
-                        .foregroundStyle(.tertiary)
-                    Text("No listening ports detected")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyStateView(
+                    icon: "network.slash",
+                    title: "No listening ports detected",
+                    message: "Services that expose ports will appear here."
+                )
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(viewModel.visiblePorts) { port in
-                            PortRow(port: port, viewModel: viewModel)
+                NativeCollectionShell {
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(viewModel.visiblePorts) { port in
+                                PortRow(port: port, viewModel: viewModel)
+                            }
                         }
+                        .padding(DesignTokens.Spacing.sm)
                     }
-                    .padding(DesignTokens.Spacing.sm)
                 }
             }
         }
@@ -126,17 +121,18 @@ final class PortsPaneView: NSView, PaneContent {
     private var hostingView: NSHostingView<AnyView>?
     private var activeBus: (any CommandCalling)?
 
-    init(paneID: PaneID) {
+    init(paneID: PaneID, chromeContext: PaneChromeContext = .standard) {
         self.paneID = paneID
         super.init(frame: .zero)
-        setupUI()
+        setupUI(chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private func setupUI() {
+    private func setupUI(chromeContext: PaneChromeContext) {
         let rootView = PortsView(viewModel: viewModel)
             .environment(GhosttyThemeProvider.shared)
+            .environment(\.paneChromeContext, chromeContext)
         let hosting = NSHostingView(rootView: AnyView(rootView))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hosting)

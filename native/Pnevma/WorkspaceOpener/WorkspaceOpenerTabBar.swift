@@ -13,6 +13,15 @@ struct WorkspaceOpenerTabBar: View {
                 )
             }
         }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 }
 
@@ -23,19 +32,26 @@ private struct OpenerTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: tab.icon)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11, weight: .medium))
                 Text(tab.rawValue)
                     .font(.system(size: 12, weight: .medium))
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .foregroundStyle(isActive ? .primary : .secondary)
             .background(
-                Capsule().fill(isActive ? Color.primary.opacity(0.10) : Color.clear)
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isActive ? Color.primary.opacity(0.10) : Color.clear)
             )
-            .contentShape(Capsule())
+            .overlay {
+                if isActive {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("opener.tab.\(tab.rawValue)")

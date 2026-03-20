@@ -5,6 +5,9 @@ final class HoverTintButton: NSButton {
     private let hoverColor: NSColor
     private var trackingArea: NSTrackingArea?
 
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     init(frame: NSRect, normalColor: NSColor, hoverColor: NSColor) {
         self.normalColor = normalColor
         self.hoverColor = hoverColor

@@ -132,6 +132,7 @@ fn infer_access_level(id: &str) -> AccessLevel {
         // SSH
         "ssh.connect",
         "ssh.disconnect",
+        "ssh.runtime.ensure_helper",
         "ssh.delete_profile",
         // Resource creation/deletion (global scope)
         "workflow.create",
@@ -174,6 +175,7 @@ fn infer_access_level(id: &str) -> AccessLevel {
             | "overview"
             | "summary"
             | "options"
+            | "health"
     ) {
         return AccessLevel::ReadOnly;
     }

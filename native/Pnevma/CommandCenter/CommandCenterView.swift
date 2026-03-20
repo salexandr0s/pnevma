@@ -3,35 +3,30 @@ import Observation
 
 struct CommandCenterView: View {
     @Bindable var store: CommandCenterStore
-    @Environment(GhosttyThemeProvider.self) var theme
-    @AppStorage("sidebarBackgroundOffset") private var sidebarOffset: Double = BackgroundTint.defaultOffset
     @FocusState private var searchFieldFocused: Bool
     @State private var hoveredRunID: String?
     @State private var boardFocusToken = 0
 
-    /// Background derived from the ghostty terminal theme, matching the main sidebar.
     private var sidebarBackground: Color {
-        let bg = theme.backgroundColor
-        let offset = BackgroundTint.clamped(sidebarOffset)
-        if offset == 0 {
-            return Color(nsColor: bg)
-        }
-        let tinted = bg.blended(withFraction: offset, of: .white) ?? bg
-        return Color(nsColor: tinted)
+        ChromeSurfaceStyle.sidebar.color
     }
 
     var body: some View {
         VStack(spacing: 0) {
             commandStrip
-            HSplitView {
-                leftRail
-                centerBoard
-                detailPane
-            }
+            mainSplitContent
         }
         .frame(minWidth: 1180, minHeight: 760)
-        .background(Color(nsColor: theme.backgroundColor))
+        .background(ChromeSurfaceStyle.window.color)
         .background(commandShortcuts)
+    }
+
+    private var mainSplitContent: some View {
+        HSplitView {
+            leftRail
+            centerBoard
+            detailPane
+        }
     }
 
     private var commandStrip: some View {
@@ -132,7 +127,7 @@ struct CommandCenterView: View {
         }
         .background(
             Rectangle()
-                .fill(sidebarBackground)
+                .fill(ChromeSurfaceStyle.toolbar.color)
         )
     }
 
@@ -267,7 +262,7 @@ struct CommandCenterView: View {
             }
         }
         .frame(minWidth: 560, idealWidth: 760)
-        .background(Color(nsColor: theme.backgroundColor))
+        .background(ChromeSurfaceStyle.pane.color)
     }
 
     private var detailPane: some View {
@@ -295,7 +290,7 @@ struct CommandCenterView: View {
             }
         }
         .frame(minWidth: 360, idealWidth: 390, maxWidth: 460)
-        .background(Color(nsColor: theme.backgroundColor))
+        .background(ChromeSurfaceStyle.inspector.color)
     }
 
     private func inspectorHeader(for run: CommandCenterFleetRun) -> some View {

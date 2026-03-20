@@ -205,18 +205,27 @@ private struct TaskBoardHeader: View {
     let activeStatuses: [TaskStatus]
     let isCreateEnabled: Bool
     let onCreate: () -> Void
+    @Environment(\.paneChromeContext) private var paneChromeContext
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Task Board")
-                    .font(.title.weight(.semibold))
-                Text(subtitle)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
+            if paneChromeContext.showsInlinePaneHeader {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Task Board")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-            Spacer()
+                    AccessibilityMarker(
+                        identifier: "pane.taskBoard.inlineHeader",
+                        label: "Task Board inline header"
+                    )
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                }
+                Spacer()
+            }
 
             HStack(spacing: 8) {
                 ForEach(activeStatuses.prefix(3), id: \.self) { status in
@@ -238,21 +247,11 @@ private struct TaskBoardHeader: View {
 
             Button(action: onCreate) {
                 Label("New Task", systemImage: "plus")
-                    .font(.body.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
             .disabled(!isCreateEnabled)
             .opacity(isCreateEnabled ? 1 : 0.55)
-            .background(
-                Capsule()
-                    .fill(Color.accentColor.opacity(0.16))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(Color.accentColor.opacity(0.24), lineWidth: 1)
-            )
             .keyboardShortcut("n", modifiers: .command)
         }
         .padding(.horizontal, 18)
@@ -857,16 +856,14 @@ private struct TaskBoardBackdrop: View {
 
 private struct TaskBoardSurface: View {
     let cornerRadius: CGFloat
-    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Color(nsColor: theme.foregroundColor).opacity(DesignTokens.Opacity.subtle))
+            .fill(ChromeSurfaceStyle.groupedCard.color)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color(nsColor: theme.foregroundColor).opacity(0.05), lineWidth: 1)
+                    .stroke(Color(nsColor: ChromeSurfaceStyle.groupedCard.separatorColor).opacity(0.45), lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.08), radius: 18, y: 10)
     }
 }
 
@@ -876,9 +873,9 @@ final class TaskBoardPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Task Board" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(TaskBoardView())
+        _ = addSwiftUISubview(TaskBoardView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

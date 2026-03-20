@@ -41,61 +41,94 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
     ensure_bounded_text_field(&input.name, "session name", MAX_SESSION_NAME_BYTES)?;
     ensure_safe_path_input(&input.cwd, "session cwd")?;
 
-    let command = resolve_session_command(&input.command, default_shell.as_deref());
-    ensure_bounded_text_field(&command, "session command", MAX_SESSION_COMMAND_BYTES)?;
+    let session_id = if let Some(remote_target) = input.remote_target.clone() {
+        ensure_safe_path_input(&remote_target.remote_path, "remote session cwd")?;
+        let command = if input.command.trim().is_empty() {
+            None
+        } else {
+            Some(input.command.trim().to_string())
+        };
+        if let Some(command) = command.as_deref() {
+            ensure_bounded_text_field(command, "session command", MAX_SESSION_COMMAND_BYTES)?;
+            let base_cmd = command.split_whitespace().next().unwrap_or("");
+            let cmd_name = std::path::Path::new(base_cmd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(base_cmd);
+            if !allowed_commands.iter().any(|c| c == cmd_name) {
+                return Err(format!("command not allowed: {cmd_name}"));
+            }
+        }
 
-    // H2: Validate command against the configured allowlist.
-    let base_cmd = command.split_whitespace().next().unwrap_or("");
-    let cmd_name = std::path::Path::new(base_cmd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(base_cmd);
-    if !allowed_commands.iter().any(|c| c == cmd_name) {
-        return Err(format!("command not allowed: {cmd_name}"));
-    }
-
-    let cwd = if Path::new(&input.cwd).is_relative() {
-        project_path.join(&input.cwd).to_string_lossy().to_string()
+        let profile = ssh_profile_from_remote_target(&remote_target)?;
+        let row = create_remote_managed_session(CreateRemoteManagedSessionInput {
+            db: &db,
+            project_id,
+            name: input.name.clone(),
+            session_type: Some("terminal".to_string()),
+            profile: &profile,
+            connection_id: remote_target.ssh_profile_id,
+            cwd: input.cwd.clone(),
+            command,
+        })
+        .await?;
+        row.id
     } else {
-        input.cwd.clone()
+        let command = resolve_session_command(&input.command, default_shell.as_deref());
+        ensure_bounded_text_field(&command, "session command", MAX_SESSION_COMMAND_BYTES)?;
+
+        let base_cmd = command.split_whitespace().next().unwrap_or("");
+        let cmd_name = std::path::Path::new(base_cmd)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(base_cmd);
+        if !allowed_commands.iter().any(|c| c == cmd_name) {
+            return Err(format!("command not allowed: {cmd_name}"));
+        }
+
+        let cwd = if Path::new(&input.cwd).is_relative() {
+            project_path.join(&input.cwd).to_string_lossy().to_string()
+        } else {
+            input.cwd.clone()
+        };
+
+        let resolved = std::fs::canonicalize(&cwd).map_err(|e| e.to_string())?;
+        let project_canonical = std::fs::canonicalize(&project_path).map_err(|e| e.to_string())?;
+        if !resolved.starts_with(&project_canonical) {
+            return Err("session cwd must be within the project directory".to_string());
+        }
+
+        let session = sessions
+            .spawn_shell(project_id, input.name.clone(), cwd.clone(), command.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let row = session_row_from_meta(&session);
+        db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+
+        append_event(
+            &db,
+            project_id,
+            None,
+            Some(session.id),
+            "session",
+            "SessionSpawned",
+            json!({"name": input.name, "cwd": cwd}),
+        )
+        .await;
+        row.id
     };
-
-    // H2: Require cwd to resolve within the project directory.
-    let resolved = std::fs::canonicalize(&cwd).map_err(|e| e.to_string())?;
-    let project_canonical = std::fs::canonicalize(&project_path).map_err(|e| e.to_string())?;
-    if !resolved.starts_with(&project_canonical) {
-        return Err("session cwd must be within the project directory".to_string());
-    }
-
-    let session = sessions
-        .spawn_shell(project_id, input.name.clone(), cwd.clone(), command.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let row = session_row_from_meta(&session);
-    db.upsert_session(&row).await.map_err(|e| e.to_string())?;
-
-    append_event(
-        &db,
-        project_id,
-        None,
-        Some(session.id),
-        "session",
-        "SessionSpawned",
-        json!({"name": input.name, "cwd": cwd}),
-    )
-    .await;
 
     let elapsed = started.elapsed();
     if elapsed >= std::time::Duration::from_millis(250) {
         tracing::warn!(
-            session_id = %session.id,
+            session_id = %session_id,
             elapsed_ms = elapsed.as_millis() as u64,
             "slow create_session command"
         );
     }
 
-    Ok(row.id)
+    Ok(session_id)
 }
 
 fn recovery_options_for_meta(meta: &SessionMetadata) -> Vec<RecoveryOptionView> {
@@ -124,16 +157,87 @@ fn recovery_options_for_meta(meta: &SessionMetadata) -> Vec<RecoveryOptionView> 
     ]
 }
 
+fn recovery_options_for_row(row: &SessionRow) -> Vec<RecoveryOptionView> {
+    let can_interrupt = matches!(row.status.as_str(), "running" | "waiting");
+    let can_restart = true;
+    let can_reattach = row.status == "waiting";
+    vec![
+        RecoveryOptionView {
+            id: "interrupt".to_string(),
+            label: "Interrupt".to_string(),
+            description: "Send Ctrl+C to the session process.".to_string(),
+            enabled: can_interrupt,
+        },
+        RecoveryOptionView {
+            id: "restart".to_string(),
+            label: "Restart Session".to_string(),
+            description: "Restart backend process and rebind panes.".to_string(),
+            enabled: can_restart,
+        },
+        RecoveryOptionView {
+            id: "reattach".to_string(),
+            label: "Reattach Backend".to_string(),
+            description: "Attach to an existing waiting backend.".to_string(),
+            enabled: can_reattach,
+        },
+    ]
+}
+
 pub async fn get_session_binding(
     session_id: String,
     state: &AppState,
 ) -> Result<SessionBindingView, String> {
-    let sessions = state
-        .with_project("get_session_binding", |ctx| ctx.sessions.clone())
+    let (sessions, db, project_id) = state
+        .with_project("get_session_binding", |ctx| {
+            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+        })
         .await?;
     let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     let Some(meta) = sessions.get(session_uuid).await else {
-        return Err(format!("session not found: {session_id}"));
+        let mut row = db
+            .get_session(&project_id.to_string(), &session_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("session not found: {session_id}"))?;
+        if is_remote_ssh_durable_backend(&row.backend) && remote_session_is_live(&row) {
+            row = match refresh_remote_session_row(state, &db, &row).await {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    mark_remote_session_row_lost(&db, &row, error, "session_binding").await?
+                }
+            };
+        }
+        let recovery_options = recovery_options_for_row(&row);
+        let remote_attach = if is_remote_ssh_durable_backend(&row.backend)
+            && matches!(
+                row.lifecycle_state.as_str(),
+                "attached" | "detached" | "reattaching"
+            ) {
+            let profile = resolve_ssh_profile_for_session_row(state, &db, &row).await?;
+            Some(pnevma_ssh::build_remote_attach_command(
+                &profile,
+                row.remote_session_id.as_deref().unwrap_or(row.id.as_str()),
+            ))
+        } else {
+            None
+        };
+
+        return Ok(SessionBindingView {
+            session_id,
+            backend: row.backend,
+            durability: row.durability,
+            lifecycle_state: row.lifecycle_state,
+            mode: if remote_attach.is_some() {
+                "live_attach".to_string()
+            } else {
+                "archived".to_string()
+            },
+            cwd: row.cwd,
+            launch_command: remote_attach,
+            env: Vec::new(),
+            wait_after_command: false,
+            recovery_options,
+        });
     };
 
     let is_live = matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting);
@@ -158,12 +262,18 @@ pub async fn get_session_binding(
 
     Ok(SessionBindingView {
         session_id,
+        backend: default_session_backend(),
+        durability: default_session_durability(),
+        lifecycle_state: session_lifecycle_state_for_status(&session_status_to_string(
+            &meta.status,
+        )),
         mode: if is_live {
             "live_attach".to_string()
         } else {
             "archived".to_string()
         },
         cwd,
+        launch_command: is_live.then(tmux_attach_launch_command),
         env,
         wait_after_command: false,
         recovery_options,
@@ -177,6 +287,49 @@ pub async fn list_sessions(state: &AppState) -> Result<Vec<SessionRow>, String> 
     db.list_sessions(&project_id.to_string())
         .await
         .map_err(|e| e.to_string())
+}
+
+pub async fn list_live_session_views(state: &AppState) -> Result<Vec<LiveSessionView>, String> {
+    let (db, project_id, sessions) = state
+        .with_project("list_live_session_views", |ctx| {
+            (ctx.db.clone(), ctx.project_id, ctx.sessions.clone())
+        })
+        .await?;
+
+    let mut views = sessions
+        .list()
+        .await
+        .into_iter()
+        .map(|meta| live_session_view_from_meta(&meta))
+        .collect::<Vec<_>>();
+    let mut seen = views
+        .iter()
+        .map(|view| view.id.clone())
+        .collect::<HashSet<_>>();
+
+    for row in db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if !is_remote_ssh_durable_backend(&row.backend)
+            || !matches!(row.status.as_str(), "running" | "waiting")
+        {
+            continue;
+        }
+        let row = match refresh_remote_session_row(state, &db, &row).await {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                mark_remote_session_row_lost(&db, &row, error, "list_live_session_views").await?
+            }
+        };
+        if remote_session_is_live(&row) && seen.insert(row.id.clone()) {
+            views.push(live_session_view_from_row(&row));
+        }
+    }
+
+    views.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    Ok(views)
 }
 
 pub async fn restart_session(session_id: String, state: &AppState) -> Result<String, String> {
@@ -202,6 +355,78 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
         .ok_or_else(|| format!("session not found: {session_id}"))?;
     let prior_session_id = Uuid::parse_str(&prior.id).ok();
 
+    if is_remote_ssh_durable_backend(&prior.backend) {
+        let profile = resolve_ssh_profile_for_session_row(state, &db, &prior).await?;
+        if let Some(remote_session_id) = prior.remote_session_id.clone() {
+            if let Err(error) =
+                pnevma_ssh::terminate_remote_session(&profile, &remote_session_id).await
+            {
+                tracing::warn!(
+                    session_id = %prior.id,
+                    error = %error,
+                    "failed to terminate prior remote durable session during restart"
+                );
+            }
+        }
+
+        prior.status = "complete".to_string();
+        prior.lifecycle_state = SESSION_LIFECYCLE_EXITED.to_string();
+        prior.last_heartbeat = Utc::now();
+        prior.last_error = None;
+        prior.restore_status = Some(SESSION_LIFECYCLE_EXITED.to_string());
+        prior.ended_at = Some(Utc::now().to_rfc3339());
+        db.upsert_session(&prior).await.map_err(|e| e.to_string())?;
+
+        let replacement = create_remote_managed_session(CreateRemoteManagedSessionInput {
+            db: &db,
+            project_id,
+            name: prior.name.clone(),
+            session_type: prior.r#type.clone(),
+            profile: &profile,
+            connection_id: prior
+                .connection_id
+                .clone()
+                .unwrap_or_else(|| profile.id.clone()),
+            cwd: prior.cwd.clone(),
+            command: Some(prior.command.clone()).filter(|value| !value.trim().is_empty()),
+        })
+        .await?;
+
+        let panes = db
+            .list_panes(&project_id.to_string())
+            .await
+            .map_err(|e| e.to_string())?;
+        for mut pane in panes {
+            if pane.session_id.as_deref() != Some(prior.id.as_str()) {
+                continue;
+            }
+            pane.session_id = Some(replacement.id.clone());
+            db.upsert_pane(&pane).await.map_err(|e| e.to_string())?;
+        }
+
+        append_event(
+            &db,
+            project_id,
+            None,
+            Uuid::parse_str(&replacement.id).ok(),
+            "session",
+            "SessionSpawned",
+            json!({"restart_of": prior.id, "cwd": replacement.cwd, "backend": replacement.backend}),
+        )
+        .await;
+
+        let elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::from_millis(250) {
+            tracing::warn!(
+                session_id = %replacement.id,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "slow restart_session command"
+            );
+        }
+
+        return Ok(replacement.id);
+    }
+
     let cwd = if Path::new(&prior.cwd).is_relative() {
         project_path.join(&prior.cwd).to_string_lossy().to_string()
     } else {
@@ -219,8 +444,11 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
         .map_err(|e| e.to_string())?;
 
     prior.status = "complete".to_string();
+    prior.lifecycle_state = "exited".to_string();
     prior.pid = None;
     prior.last_heartbeat = Utc::now();
+    prior.ended_at = Some(Utc::now().to_rfc3339());
+    prior.last_error = None;
     db.upsert_session(&prior).await.map_err(|e| e.to_string())?;
     if let Some(old_id) = prior_session_id {
         match sessions.kill_session_backend(old_id).await {
@@ -295,9 +523,20 @@ pub async fn resize_session(
     rows: u16,
     state: &AppState,
 ) -> Result<(), String> {
-    let sessions = state
-        .with_project("resize_session", |ctx| ctx.sessions.clone())
+    let (sessions, db, project_id) = state
+        .with_project("resize_session", |ctx| {
+            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+        })
         .await?;
+    if let Some(row) = db
+        .get_session(&project_id.to_string(), &session_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if is_remote_ssh_durable_backend(&row.backend) {
+            return Ok(());
+        }
+    }
     let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     sessions
         .resize(session_id, cols, rows)
@@ -310,22 +549,47 @@ pub async fn get_scrollback(
     state: &AppState,
 ) -> Result<ScrollbackSlice, String> {
     let started = Instant::now();
-    let sessions = state
-        .with_project("get_scrollback", |ctx| ctx.sessions.clone())
+    let (sessions, db, project_id) = state
+        .with_project("get_scrollback", |ctx| {
+            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+        })
         .await?;
     let session_id = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
 
     let limit = input.limit.unwrap_or(64 * 1024);
-    let slice = match input.offset {
-        Some(offset) => sessions
-            .read_scrollback(session_id, offset, limit)
+    let local_slice = match input.offset {
+        Some(offset) => sessions.read_scrollback(session_id, offset, limit).await,
+        None => sessions.read_scrollback_tail(session_id, limit).await,
+    };
+    let slice = match local_slice {
+        Ok(slice) => slice,
+        Err(local_error) => {
+            let row = db
+                .get_session(&project_id.to_string(), &input.session_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| local_error.to_string())?;
+            if !is_remote_ssh_durable_backend(&row.backend) {
+                return Err(local_error.to_string());
+            }
+            let profile = resolve_ssh_profile_for_session_row(state, &db, &row).await?;
+            let data = pnevma_ssh::read_remote_scrollback_tail(
+                &profile,
+                row.remote_session_id.as_deref().unwrap_or(row.id.as_str()),
+                limit,
+            )
             .await
-            .map_err(|e| e.to_string()),
-        None => sessions
-            .read_scrollback_tail(session_id, limit)
-            .await
-            .map_err(|e| e.to_string()),
-    }?;
+            .map_err(|e| e.to_string())?;
+            let end_offset = data.len() as u64;
+            ScrollbackSlice {
+                session_id,
+                start_offset: 0,
+                end_offset,
+                total_bytes: end_offset,
+                data,
+            }
+        }
+    };
     let elapsed = started.elapsed();
     if elapsed >= std::time::Duration::from_millis(250) || slice.total_bytes > 512 * 1024 {
         tracing::warn!(
@@ -351,8 +615,12 @@ pub async fn restore_sessions(state: &AppState) -> Result<Vec<SessionRow>, Strin
             )
         })
         .await?;
-    let rows = reconcile_persisted_sessions(&db, project_id, project_path.as_path()).await?;
+    let rows = reconcile_persisted_sessions(&db, project_id, project_path.as_path(), state).await?;
     for row in &rows {
+        if is_remote_ssh_durable_backend(&row.backend) {
+            record_remote_session_restore_outcome(&db, row, "restore_sessions").await;
+            continue;
+        }
         if row.status != "waiting" {
             continue;
         }
@@ -369,6 +637,36 @@ pub async fn reattach_session(session_id: String, state: &AppState) -> Result<()
             (ctx.db.clone(), ctx.project_id, ctx.sessions.clone())
         })
         .await?;
+    if let Some(row) = db
+        .get_session(&project_id.to_string(), &session_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if is_remote_ssh_durable_backend(&row.backend) {
+            let refreshed = match refresh_remote_session_row(state, &db, &row).await {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    mark_remote_session_row_lost(&db, &row, error, "reattach_session").await?
+                }
+            };
+            if !remote_session_is_live(&refreshed) {
+                return Err(refreshed.last_error.clone().unwrap_or_else(|| {
+                    "remote durable session is no longer available".to_string()
+                }));
+            }
+            append_event(
+                &db,
+                project_id,
+                None,
+                Uuid::parse_str(&refreshed.id).ok(),
+                "session",
+                "SessionReattached",
+                json!({"manual": true, "backend": refreshed.backend}),
+            )
+            .await;
+            return Ok(());
+        }
+    }
     let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     sessions
         .attach_existing(session_id)
@@ -772,10 +1070,24 @@ pub async fn get_session_timeline(
         .map(timeline_view_from_event)
         .collect::<Vec<_>>();
 
-    if let Ok(slice) = sessions
+    let scrollback = match sessions
         .read_scrollback_tail(session_uuid, 128 * 1024)
         .await
     {
+        Ok(slice) => Ok(slice),
+        Err(_) => {
+            get_scrollback(
+                ScrollbackInput {
+                    session_id: input.session_id.clone(),
+                    offset: None,
+                    limit: Some(128 * 1024),
+                },
+                state,
+            )
+            .await
+        }
+    };
+    if let Ok(slice) = scrollback {
         if !slice.data.trim().is_empty() {
             timeline.push(TimelineEventView {
                 timestamp: Utc::now(),
@@ -799,14 +1111,21 @@ pub async fn get_session_recovery_options(
     session_id: String,
     state: &AppState,
 ) -> Result<Vec<RecoveryOptionView>, String> {
-    let sessions = state
-        .with_project("get_session_recovery_options", |ctx| ctx.sessions.clone())
+    let (sessions, db, project_id) = state
+        .with_project("get_session_recovery_options", |ctx| {
+            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+        })
         .await?;
     let session_uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let Some(meta) = sessions.get(session_uuid).await else {
-        return Err(format!("session not found: {session_id}"));
-    };
-    Ok(recovery_options_for_meta(&meta))
+    if let Some(meta) = sessions.get(session_uuid).await {
+        return Ok(recovery_options_for_meta(&meta));
+    }
+    let row = db
+        .get_session(&project_id.to_string(), &session_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    Ok(recovery_options_for_row(&row))
 }
 
 pub async fn recover_session(
@@ -826,8 +1145,35 @@ pub async fn recover_session(
         .await?;
     let action = input.action.trim().to_ascii_lowercase();
     let session_uuid = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
+    let persisted_row = db
+        .get_session(&project_id.to_string(), &input.session_id)
+        .await
+        .map_err(|e| e.to_string())?;
     match action.as_str() {
         "interrupt" => {
+            if let Some(row) = persisted_row.as_ref() {
+                if is_remote_ssh_durable_backend(&row.backend) {
+                    let profile = resolve_ssh_profile_for_session_row(state, &db, row).await?;
+                    pnevma_ssh::signal_remote_session(
+                        &profile,
+                        row.remote_session_id.as_deref().unwrap_or(row.id.as_str()),
+                        "INT",
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    append_event(
+                        &db,
+                        project_id,
+                        None,
+                        Some(session_uuid),
+                        "session",
+                        "SessionRecoveryAction",
+                        json!({"action": "interrupt", "backend": row.backend}),
+                    )
+                    .await;
+                    return Ok(json!({"ok": true, "action": "interrupt"}));
+                }
+            }
             sessions
                 .send_input(session_uuid, "\u{3}")
                 .await
@@ -859,6 +1205,38 @@ pub async fn recover_session(
             Ok(json!({"ok": true, "action": "restart", "new_session_id": new_id}))
         }
         "reattach" => {
+            if let Some(row) = persisted_row.as_ref() {
+                if is_remote_ssh_durable_backend(&row.backend) {
+                    let refreshed = match refresh_remote_session_row(state, &db, row).await {
+                        Ok(refreshed) => refreshed,
+                        Err(error) => {
+                            mark_remote_session_row_lost(
+                                &db,
+                                row,
+                                error,
+                                "session_recovery_reattach",
+                            )
+                            .await?
+                        }
+                    };
+                    if !remote_session_is_live(&refreshed) {
+                        return Err(refreshed.last_error.clone().unwrap_or_else(|| {
+                            "remote durable session is no longer available".to_string()
+                        }));
+                    }
+                    append_event(
+                        &db,
+                        project_id,
+                        None,
+                        Some(session_uuid),
+                        "session",
+                        "SessionRecoveryAction",
+                        json!({"action": "reattach", "backend": refreshed.backend, "lifecycle_state": refreshed.lifecycle_state}),
+                    )
+                    .await;
+                    return Ok(json!({"ok": true, "action": "reattach"}));
+                }
+            }
             sessions
                 .attach_existing(session_uuid)
                 .await

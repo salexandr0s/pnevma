@@ -14,9 +14,10 @@ use pnevma_core::config::{
 };
 use pnevma_core::{RemoteSection, TrackerSection};
 use pnevma_db::{AutomationRetryRow, AutomationRunRow, GlobalDb, WorktreeRow};
-use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::ffi::OsString;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -99,6 +100,13 @@ enable_entropy_guard = false
 "#
     );
     std::fs::write(project_root.join("pnevma.toml"), config).expect("write project config");
+}
+
+fn write_fake_executable(path: &Path, body: &str) {
+    fs::write(path, body).expect("write fake executable");
+    let mut permissions = fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("set permissions");
 }
 
 fn make_task(pid: &str, title: &str) -> TaskRow {

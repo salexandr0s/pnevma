@@ -1,0 +1,363 @@
+import AppKit
+import XCTest
+@testable import Pnevma
+
+private let sidebarModeDefaultsKey = "sidebarMode"
+private let sidebarWidthDefaultsKey = "sidebarCustomWidth"
+@MainActor private var savedSidebarModeValue: Any?
+@MainActor private var savedSidebarWidthValue: Any?
+
+@MainActor
+final class AppDelegateSidebarTransitionTests: XCTestCase {
+    nonisolated(unsafe) private var launchedAppDelegate: AppDelegate?
+
+    override func setUp() {
+        super.setUp()
+        syncOnMainActor {
+            _ = NSApplication.shared
+            savedSidebarModeValue = UserDefaults.standard.object(forKey: sidebarModeDefaultsKey)
+            savedSidebarWidthValue = UserDefaults.standard.object(forKey: sidebarWidthDefaultsKey)
+            UserDefaults.standard.set(SidebarMode.expanded.rawValue, forKey: sidebarModeDefaultsKey)
+            UserDefaults.standard.set(DesignTokens.Layout.sidebarWidth, forKey: sidebarWidthDefaultsKey)
+        }
+    }
+
+    override func tearDown() {
+        let launchedAppDelegate = launchedAppDelegate
+        self.launchedAppDelegate = nil
+        syncOnMainActor {
+            launchedAppDelegate?.shutdownForTesting()
+            if let savedSidebarModeValue {
+                UserDefaults.standard.set(savedSidebarModeValue, forKey: sidebarModeDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: sidebarModeDefaultsKey)
+            }
+            if let savedSidebarWidthValue {
+                UserDefaults.standard.set(savedSidebarWidthValue, forKey: sidebarWidthDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: sidebarWidthDefaultsKey)
+            }
+        }
+        super.tearDown()
+    }
+
+    func testSidebarToggleCyclesExpandedCollapsedHiddenAndBackToExpanded() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .expanded,
+                expectedWidth: SidebarPreferences.sidebarWidth,
+                hostHidden: false,
+                expandedHidden: false,
+                railHidden: true
+            )
+
+            toggleSidebar(on: appDelegate)
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .collapsed,
+                expectedWidth: DesignTokens.Layout.sidebarCollapsedWidth,
+                hostHidden: false,
+                expandedHidden: true,
+                railHidden: false
+            )
+
+            toggleSidebar(on: appDelegate)
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .hidden,
+                expectedWidth: 0,
+                hostHidden: true,
+                expandedHidden: true,
+                railHidden: false
+            )
+
+            toggleSidebar(on: appDelegate)
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .expanded,
+                expectedWidth: SidebarPreferences.sidebarWidth,
+                hostHidden: false,
+                expandedHidden: false,
+                railHidden: true
+            )
+
+            toggleSidebar(on: appDelegate)
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .collapsed,
+                expectedWidth: DesignTokens.Layout.sidebarCollapsedWidth,
+                hostHidden: false,
+                expandedHidden: true,
+                railHidden: false
+            )
+
+            toggleSidebar(on: appDelegate)
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .hidden,
+                expectedWidth: 0,
+                hostHidden: true,
+                expandedHidden: true,
+                railHidden: false
+            )
+
+            toggleSidebar(on: appDelegate)
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .expanded,
+                expectedWidth: SidebarPreferences.sidebarWidth,
+                hostHidden: false,
+                expandedHidden: false,
+                railHidden: true
+            )
+        }
+    }
+
+    func testSidebarResizerDragUpdatesExpandedWidthAndExposesSplitterRole() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            waitForSidebar(
+                in: appDelegate,
+                expectedMode: .expanded,
+                expectedWidth: DesignTokens.Layout.sidebarWidth,
+                hostHidden: false,
+                expandedHidden: false,
+                railHidden: true
+            )
+
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+            let resizer = try XCTUnwrap(waitForView(withAccessibilityIdentifier: "sidebar.resize", in: contentView))
+            XCTAssertEqual(resizer.accessibilityRole(), .splitter)
+
+            let initialWidth = try XCTUnwrap(sidebarWidthConstraint(from: appDelegate)?.constant)
+            let startPoint = center(of: resizer, ancestor: contentView)
+            let endPoint = NSPoint(x: startPoint.x + 56, y: startPoint.y)
+            let hit = try XCTUnwrap(contentView.hitTest(startPoint))
+            XCTAssertTrue(hit === resizer || hit.isDescendant(of: resizer))
+
+            try dispatchDrag(in: window, rootView: contentView, start: startPoint, end: endPoint)
+
+            waitUntil {
+                guard let updatedWidth = self.sidebarWidthConstraint(from: appDelegate)?.constant else {
+                    return false
+                }
+                return updatedWidth > initialWidth + 20
+            }
+            let updatedWidth = try XCTUnwrap(sidebarWidthConstraint(from: appDelegate)?.constant)
+            XCTAssertGreaterThan(updatedWidth, initialWidth)
+            XCTAssertEqual(updatedWidth, SidebarPreferences.sidebarWidth, accuracy: 0.5)
+        }
+    }
+
+    private func launchAppDelegate() -> AppDelegate {
+        let appDelegate = AppDelegate()
+        launchedAppDelegate = appDelegate
+        NSApp.delegate = appDelegate
+        appDelegate.applicationDidFinishLaunching(
+            Notification(name: NSApplication.didFinishLaunchingNotification)
+        )
+        return appDelegate
+    }
+
+    private func waitForSidebar(
+        in appDelegate: AppDelegate,
+        expectedMode: SidebarMode,
+        expectedWidth: CGFloat,
+        hostHidden: Bool,
+        expandedHidden: Bool,
+        railHidden: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        waitUntil(file: file, line: line) {
+            guard let currentMode = self.currentSidebarMode(from: appDelegate),
+                  let renderedMode = self.renderedSidebarMode(from: appDelegate),
+                  let widthConstraint = self.sidebarWidthConstraint(from: appDelegate),
+                  let hostView = self.sidebarHostView(from: appDelegate),
+                  let expandedView = self.sidebarContentView(from: appDelegate),
+                  let railView = self.collapsedRailHostView(from: appDelegate) else {
+                return false
+            }
+
+            return currentMode == expectedMode
+                && renderedMode == expectedMode
+                && abs(widthConstraint.constant - expectedWidth) < 0.5
+                && hostView.isHidden == hostHidden
+                && expandedView.isHidden == expandedHidden
+                && railView.isHidden == railHidden
+        }
+    }
+
+    private func toggleSidebar(on appDelegate: AppDelegate) {
+        _ = appDelegate.perform(NSSelectorFromString("toggleSidebar"))
+    }
+
+    private func center(of view: NSView, ancestor: NSView) -> NSPoint {
+        ancestor.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), from: view)
+    }
+
+    private func dispatchDrag(
+        in window: NSWindow,
+        rootView: NSView,
+        start: NSPoint,
+        end: NSPoint
+    ) throws {
+        let startLocation = rootView.convert(start, to: nil)
+        let endLocation = rootView.convert(end, to: nil)
+
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: startLocation,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let dragged = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: endLocation,
+            modifierFlags: [],
+            timestamp: 0.01,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: endLocation,
+            modifierFlags: [],
+            timestamp: 0.02,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 0
+        ))
+
+        let targetView = try XCTUnwrap(rootView.hitTest(start))
+        targetView.mouseDown(with: down)
+        targetView.mouseDragged(with: dragged)
+        targetView.mouseUp(with: up)
+    }
+
+    private func waitForView(
+        withAccessibilityIdentifier identifier: String,
+        in root: NSView,
+        timeout: TimeInterval = 2
+    ) -> NSView? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            root.layoutSubtreeIfNeeded()
+            if let view = findView(withAccessibilityIdentifier: identifier, in: root) {
+                return view
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        } while Date() < deadline
+        return findView(withAccessibilityIdentifier: identifier, in: root)
+    }
+
+    private func findView(withAccessibilityIdentifier identifier: String, in root: NSView) -> NSView? {
+        if root.accessibilityIdentifier() == identifier {
+            return root
+        }
+        for subview in root.subviews {
+            if let match = findView(withAccessibilityIdentifier: identifier, in: subview) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    private func currentSidebarMode(from appDelegate: AppDelegate) -> SidebarMode? {
+        reflectedValue(named: "currentSidebarMode", from: appDelegate)
+    }
+
+    private func renderedSidebarMode(from appDelegate: AppDelegate) -> SidebarMode? {
+        reflectedValue(named: "renderedSidebarMode", from: appDelegate)
+    }
+
+    private func sidebarWidthConstraint(from appDelegate: AppDelegate) -> NSLayoutConstraint? {
+        reflectedValue(named: "sidebarWidthConstraint", from: appDelegate)
+    }
+
+    private func sidebarHostView(from appDelegate: AppDelegate) -> NSView? {
+        reflectedValue(named: "sidebarHostView", from: appDelegate)
+    }
+
+    private func sidebarContentView(from appDelegate: AppDelegate) -> NSView? {
+        reflectedValue(named: "sidebarContentView", from: appDelegate)
+    }
+
+    private func collapsedRailHostView(from appDelegate: AppDelegate) -> NSView? {
+        reflectedValue(named: "collapsedRailHostView", from: appDelegate)
+    }
+
+    private func reflectedValue<T>(named label: String, from instance: Any) -> T? {
+        Mirror(reflecting: instance)
+            .children
+            .first(where: { $0.label == label })?
+            .value as? T
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 3,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: () -> Bool
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(condition(), file: file, line: line)
+    }
+
+    private func withUITestLightweightEnvironment(
+        _ body: () throws -> Void
+    ) throws {
+        let savedUITesting = ProcessInfo.processInfo.environment["PNEVMA_UI_TESTING"]
+        let savedLightweight = ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_LIGHTWEIGHT_MODE"]
+        setenv("PNEVMA_UI_TESTING", "1", 1)
+        setenv("PNEVMA_UI_TEST_LIGHTWEIGHT_MODE", "1", 1)
+        defer {
+            restoreEnvironmentVariable("PNEVMA_UI_TESTING", to: savedUITesting)
+            restoreEnvironmentVariable("PNEVMA_UI_TEST_LIGHTWEIGHT_MODE", to: savedLightweight)
+        }
+        try body()
+    }
+
+    private func restoreEnvironmentVariable(_ name: String, to value: String?) {
+        if let value {
+            setenv(name, value, 1)
+        } else {
+            unsetenv(name)
+        }
+    }
+
+    nonisolated private func syncOnMainActor(_ body: @escaping @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(body)
+            return
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated(body)
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+}

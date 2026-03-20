@@ -63,6 +63,16 @@ rust-build-release:
     {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}} --release
     @echo "Rust staticlib built (release)"
 
+remote-helper-build:
+    @echo "Building remote helper artifacts..."
+    ./scripts/build-remote-helper-artifacts.sh
+    @echo "Remote helper artifacts built"
+
+remote-helper-build-release:
+    @echo "Building remote helper artifacts (release)..."
+    ./scripts/build-remote-helper-artifacts.sh --release
+    @echo "Remote helper artifacts built (release)"
+
 rust-test:
     {{rust_tool}} cargo test --workspace
 
@@ -101,11 +111,19 @@ xcodegen-check: xcodegen
 xcode-build: xcodegen rust-build
     @echo "Building native macOS app..."
     {{native_lock_tool}} xcode-build zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-build.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build'
+    app_path="$PWD/native/build/Debug/Pnevma.app"; \
+      if [ ! -d "$app_path" ]; then app_path="$PWD/native/build/Build/Products/Debug/Pnevma.app"; fi; \
+      test -d "$app_path"; \
+      ./scripts/build-remote-helper-artifacts.sh --bundle-app "$app_path"
     @echo "Native app built"
 
 xcode-build-release: xcodegen rust-build-release
     @echo "Building native macOS app (release)..."
     {{native_lock_tool}} xcode-build-release zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-build-release.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build'
+    app_path="$PWD/native/build/Release/Pnevma.app"; \
+      if [ ! -d "$app_path" ]; then app_path="$PWD/native/build/Build/Products/Release/Pnevma.app"; fi; \
+      test -d "$app_path"; \
+      ./scripts/build-remote-helper-artifacts.sh --release --bundle-app "$app_path"
     @echo "Native app built (release)"
 
 xcode-test: xcodegen rust-build
@@ -175,7 +193,7 @@ workflow-check:
     @if ! command -v shellcheck >/dev/null 2>&1; then \
       echo "ERROR: shellcheck not found. Install with: brew install shellcheck"; exit 1; \
     fi
-    shellcheck scripts/*.sh
+    shellcheck -x scripts/*.sh scripts/fixtures/remote-helper/*.sh
     @if ! command -v actionlint >/dev/null 2>&1; then \
       echo "ERROR: actionlint not found. Install with: brew install actionlint"; exit 1; \
     fi
@@ -190,6 +208,7 @@ ci-local: workflow-check
 # Clean all build artifacts
 clean:
     cargo clean
+    rm -rf artifacts/remote-helper/
     rm -rf native/build/
     @echo "Cleaned"
 

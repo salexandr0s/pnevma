@@ -566,62 +566,83 @@ struct ProviderUsageSettingsTab: View {
     @Bindable var viewModel: ProviderUsageSettingsViewModel
 
     var body: some View {
-        Form {
-            Stepper(
-                "Refresh cadence: \(viewModel.refreshIntervalSeconds)s",
-                value: $viewModel.refreshIntervalSeconds,
-                in: 30...900,
-                step: 30
-            )
+        SettingsDetailPage(section: .usage) {
+            SettingsGroupCard(
+                title: "Refresh & Sync",
+                description: "Control how often provider usage information refreshes and save the settings shown below."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsControlRow(
+                        title: "Refresh cadence",
+                        description: "Choose how frequently provider usage data is refreshed in the background."
+                    ) {
+                        Stepper(
+                            "\(viewModel.refreshIntervalSeconds) s",
+                            value: $viewModel.refreshIntervalSeconds,
+                            in: 30...900,
+                            step: 30
+                        )
+                        .frame(width: 120, alignment: .trailing)
+                    }
 
-            providerSection(
-                title: "Codex",
-                source: $viewModel.codexSource,
-                webExtrasEnabled: $viewModel.codexWebExtrasEnabled,
-                keychainPromptPolicy: $viewModel.codexKeychainPromptPolicy,
-                manualCookieConfigured: viewModel.codexManualCookieConfigured,
-                manualCookieInput: $viewModel.codexManualCookieInput,
-                onStoreCookie: { viewModel.storeCodexManualCookie() },
-                onClearCookie: { viewModel.clearCodexManualCookie() }
-            )
+                    Divider()
 
-            providerSection(
-                title: "Claude",
-                source: $viewModel.claudeSource,
-                webExtrasEnabled: $viewModel.claudeWebExtrasEnabled,
-                keychainPromptPolicy: $viewModel.claudeKeychainPromptPolicy,
-                manualCookieConfigured: viewModel.claudeManualCookieConfigured,
-                manualCookieInput: $viewModel.claudeManualCookieInput,
-                onStoreCookie: { viewModel.storeClaudeManualCookie() },
-                onClearCookie: { viewModel.clearClaudeManualCookie() }
-            )
+                    HStack(spacing: 12) {
+                        Button("Save Settings") {
+                            viewModel.saveGeneralSettings()
+                        }
+                        .disabled(viewModel.isLoading)
 
-            HStack {
-                Button("Save Settings") {
-                    viewModel.saveGeneralSettings()
-                }
-                .disabled(viewModel.isLoading)
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
 
-                if viewModel.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+                        Spacer()
 
-                Spacer()
-
-                if let statusMessage = viewModel.statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        if let statusMessage = viewModel.statusMessage {
+                            Text(statusMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
+
+            SettingsGroupCard(
+                title: "Codex",
+                description: "Configure how Codex usage, dashboard extras, and stored cookies are handled."
+            ) {
+                providerSection(
+                    source: $viewModel.codexSource,
+                    webExtrasEnabled: $viewModel.codexWebExtrasEnabled,
+                    keychainPromptPolicy: $viewModel.codexKeychainPromptPolicy,
+                    manualCookieConfigured: viewModel.codexManualCookieConfigured,
+                    manualCookieInput: $viewModel.codexManualCookieInput,
+                    onStoreCookie: { viewModel.storeCodexManualCookie() },
+                    onClearCookie: { viewModel.clearCodexManualCookie() }
+                )
+            }
+
+            SettingsGroupCard(
+                title: "Claude",
+                description: "Configure how Claude usage, dashboard extras, and stored cookies are handled."
+            ) {
+                providerSection(
+                    source: $viewModel.claudeSource,
+                    webExtrasEnabled: $viewModel.claudeWebExtrasEnabled,
+                    keychainPromptPolicy: $viewModel.claudeKeychainPromptPolicy,
+                    manualCookieConfigured: viewModel.claudeManualCookieConfigured,
+                    manualCookieInput: $viewModel.claudeManualCookieInput,
+                    onStoreCookie: { viewModel.storeClaudeManualCookie() },
+                    onClearCookie: { viewModel.clearClaudeManualCookie() }
+                )
+            }
         }
-        .formStyle(.grouped)
     }
 
     @ViewBuilder
     private func providerSection(
-        title: String,
         source: Binding<String>,
         webExtrasEnabled: Binding<Bool>,
         keychainPromptPolicy: Binding<String>,
@@ -630,32 +651,67 @@ struct ProviderUsageSettingsTab: View {
         onStoreCookie: @escaping () -> Void,
         onClearCookie: @escaping () -> Void
     ) -> some View {
-        Section(title) {
-            Picker("Source", selection: source) {
-                Text("Auto").tag("auto")
-                Text("CLI").tag("cli")
-                Text("OAuth").tag("oauth")
-                Text("Local only").tag("local")
+        VStack(spacing: 12) {
+            SettingsControlRow(
+                title: "Source",
+                description: "Choose where usage information should be sourced from."
+            ) {
+                Picker("", selection: source) {
+                    Text("Auto").tag("auto")
+                    Text("CLI").tag("cli")
+                    Text("OAuth").tag("oauth")
+                    Text("Local only").tag("local")
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 140)
             }
 
-            Picker("Keychain prompts", selection: keychainPromptPolicy) {
-                Text("Only on user action").tag("user_action")
-                Text("Never").tag("never")
-                Text("Always").tag("always")
+            Divider()
+
+            SettingsControlRow(
+                title: "Keychain prompts",
+                description: "Control how aggressively Pnevma should ask to read credentials."
+            ) {
+                Picker("", selection: keychainPromptPolicy) {
+                    Text("Only on user action").tag("user_action")
+                    Text("Never").tag("never")
+                    Text("Always").tag("always")
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 180)
             }
 
-            Toggle("Enable web/dashboard extras", isOn: webExtrasEnabled)
+            Divider()
 
-            SecureField("Manual cookie/header", text: manualCookieInput)
-            HStack {
-                Text(manualCookieConfigured ? "Manual cookie configured" : "No manual cookie stored")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Store") { onStoreCookie() }
-                    .disabled(viewModel.isLoading)
-                Button("Clear") { onClearCookie() }
-                    .disabled(viewModel.isLoading)
+            SettingsControlRow(
+                title: "Enable web/dashboard extras",
+                description: "Allow dashboard-specific fields and provider web extras when available."
+            ) {
+                Toggle("", isOn: webExtrasEnabled)
+                    .labelsHidden()
+            }
+
+            Divider()
+
+            SettingsControlRow(
+                title: "Manual cookie/header",
+                description: manualCookieConfigured ? "A stored manual cookie is currently configured." : "No manual cookie is currently stored.",
+                alignment: .top
+            ) {
+                VStack(alignment: .trailing, spacing: 8) {
+                    SecureField("Manual cookie/header", text: manualCookieInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 260)
+
+                    HStack(spacing: 8) {
+                        Button("Store") { onStoreCookie() }
+                            .disabled(viewModel.isLoading)
+                        Button("Clear") { onClearCookie() }
+                            .disabled(viewModel.isLoading)
+                    }
+                }
             }
         }
     }

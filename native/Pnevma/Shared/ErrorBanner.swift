@@ -7,13 +7,22 @@ struct ErrorBanner: View {
 
     var body: some View {
         if let message {
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.red)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: GhosttyThemeProvider.shared.backgroundColor))
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, DesignTokens.Spacing.md)
+            .padding(.vertical, DesignTokens.Spacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ChromeSurfaceStyle.toolbar.color)
+            .overlay(alignment: .top) {
+                Divider()
+            }
         }
     }
 }

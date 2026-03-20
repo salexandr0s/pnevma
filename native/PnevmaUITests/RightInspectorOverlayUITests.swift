@@ -25,6 +25,7 @@ final class RightInspectorOverlayUITests: PnevmaUITestCase {
             app.typeKey("B", modifierFlags: [.command, .shift])
         }
         changesTab = identifiedElement("right-inspector-tab-changes")
+        let filesTab = identifiedElement("right-inspector-tab-files")
         changesTab.click()
 
         let alphaChange = identifiedElement("right-inspector-change-row-alpha_txt")
@@ -43,9 +44,6 @@ final class RightInspectorOverlayUITests: PnevmaUITestCase {
             "Expected overlay title to remain visible after selecting a second change."
         )
 
-        let reviewTab = identifiedElement("right-inspector-tab-review")
-        reviewTab.click()
-        let filesTab = identifiedElement("right-inspector-tab-files")
         filesTab.click()
 
         let notesFile = identifiedElement("right-inspector-file-row-notes_md")

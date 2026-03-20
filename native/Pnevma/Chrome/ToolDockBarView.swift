@@ -22,7 +22,10 @@ struct ToolDockBarView: View {
 
     private var backgroundColor: Color {
         let base = theme.backgroundColor
-        let offset = BackgroundTint.clamped(toolDockOffset)
+        let offset = min(
+            BackgroundTint.clamped(toolDockOffset) + 0.025,
+            BackgroundTint.range.upperBound
+        )
         if offset == 0 {
             return Color(nsColor: base)
         }
@@ -38,49 +41,81 @@ struct ToolDockBarView: View {
         sidebarTools(for: workspaceManager.activeWorkspace)
     }
 
+    private let dividerHeight = DesignTokens.Layout.dividerWidth
+    private let dockHeight = DesignTokens.Layout.toolDockHeight
+    private let dockButtonWidth: CGFloat = 50
+    private let dockButtonSpacing: CGFloat = 8
+    private let innerHorizontalPadding: CGFloat = 8
+    private let outerHorizontalPadding: CGFloat = 18
+
     var body: some View {
         VStack(spacing: 0) {
             Rectangle()
                 .fill(borderColor)
-                .frame(height: DesignTokens.Layout.dividerWidth)
+                .frame(height: dividerHeight)
 
             GeometryReader { geometry in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 6) {
-                            ForEach(tools) { tool in
-                                ToolDockItemButton(
-                                    tool: tool,
-                                    isActive: dockState.activeToolID == tool.id,
-                                    badgeCount: badgeCount(for: tool),
-                                    onOpenAsTab: { onOpenToolAsTab?(tool.id) },
-                                    onOpenAsPane: { onOpenToolAsPane?(tool.id) }
-                                ) {
-                                    onOpenTool?(tool.id)
-                                }
-                            }
-                        }
-                        Spacer(minLength: 0)
+                if geometry.size.width >= minimumDockContentWidth {
+                    centeredDockContent(minWidth: geometry.size.width)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        centeredDockContent(minWidth: geometry.size.width)
                     }
-                    .padding(.vertical, 6)
-                    .frame(minWidth: geometry.size.width)
+                    .scrollIndicators(.hidden)
                 }
-                .scrollIndicators(.hidden)
             }
-            .frame(height: DesignTokens.Layout.toolDockHeight)
+            .frame(height: dockHeight - dividerHeight)
         }
-        .background(backgroundColor)
+        .frame(height: dockHeight)
+        .background(
+            ZStack {
+                backgroundColor
+                Color.white.opacity(0.016)
+            }
+        )
         .contentShape(Rectangle())
         .onHover { isHovering in
             onHoverChanged?(isHovering)
         }
-        .accessibilityIdentifier("tool-dock.view")
     }
 
     private func badgeCount(for tool: SidebarToolItem) -> Int {
         guard tool.id == "notifications" else { return 0 }
         return dockState.notificationBadgeCount
+    }
+
+    private var minimumDockContentWidth: CGFloat {
+        let buttonCount = CGFloat(tools.count)
+        let totalButtonWidth = buttonCount * dockButtonWidth
+        let totalSpacing = CGFloat(max(tools.count - 1, 0)) * dockButtonSpacing
+        return outerHorizontalPadding * 2
+            + innerHorizontalPadding * 2
+            + totalButtonWidth
+            + totalSpacing
+    }
+
+    @ViewBuilder
+    private func centeredDockContent(minWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: dockButtonSpacing) {
+                ForEach(tools) { tool in
+                    ToolDockItemButton(
+                        tool: tool,
+                        isActive: dockState.activeToolID == tool.id,
+                        badgeCount: badgeCount(for: tool),
+                        onOpenAsTab: { onOpenToolAsTab?(tool.id) },
+                        onOpenAsPane: { onOpenToolAsPane?(tool.id) }
+                    ) {
+                        onOpenTool?(tool.id)
+                    }
+                }
+            }
+            .padding(.horizontal, innerHorizontalPadding)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, outerHorizontalPadding)
+        .frame(minWidth: minWidth, maxHeight: .infinity, alignment: .center)
     }
 }
 
@@ -93,8 +128,6 @@ private struct ToolDockItemButton: View {
     let action: () -> Void
 
     @State private var isHovering = false
-    @State private var showTooltip = false
-    @State private var hoverTask: Task<Void, Never>?
 
     private var iconColor: Color {
         if tool.isStub { return Color.gray.opacity(DesignTokens.TextOpacity.tertiary) }
@@ -104,33 +137,69 @@ private struct ToolDockItemButton: View {
 
     private var backgroundFill: Color {
         if isActive {
-            return Color.primary.opacity(DesignTokens.Opacity.light)
+            return Color.primary.opacity(0.135)
         }
         if isHovering {
-            return Color.primary.opacity(DesignTokens.Opacity.subtle)
+            return Color.primary.opacity(0.075)
         }
         return .clear
     }
 
     private var borderColor: Color {
         if isActive {
-            return Color.primary.opacity(DesignTokens.Opacity.medium)
+            return Color.primary.opacity(0.16)
         }
         if isHovering {
-            return Color.primary.opacity(DesignTokens.Opacity.subtle)
+            return Color.primary.opacity(0.09)
         }
         return .clear
     }
 
+    private var buttonShadowOpacity: CGFloat {
+        isActive ? 0.12 : 0
+    }
+
+    private var highlightStrokeColor: Color {
+        if isActive {
+            return .white.opacity(0.09)
+        }
+        if isHovering {
+            return .white.opacity(0.045)
+        }
+        return .clear
+    }
+
+    private var symbolPointSize: CGFloat {
+        switch tool.id {
+        case "resource_monitor", "ports":
+            return 14
+        case "analytics", "browser", "ssh", "rules":
+            return 15
+        case "workflow", "tasks", "replay", "brief":
+            return 16
+        default:
+            return 17
+        }
+    }
+
+    private var symbolWeight: Font.Weight {
+        switch tool.id {
+        case "terminal", "tasks", "workflow":
+            return .semibold
+        default:
+            return .medium
+        }
+    }
+
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: tool.icon)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(iconColor)
-                        .frame(width: 20, height: 20)
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: tool.icon)
+                    .font(.system(size: symbolPointSize, weight: symbolWeight))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 24, height: 24)
 
+                ZStack(alignment: .topTrailing) {
                     if badgeCount > 0 {
                         Text(badgeText)
                             .font(.system(size: 9, weight: .bold))
@@ -138,64 +207,36 @@ private struct ToolDockItemButton: View {
                             .padding(.horizontal, badgeCount > 9 ? 5 : 4)
                             .padding(.vertical, 1)
                             .background(Capsule().fill(Color.red))
-                            .offset(x: 10, y: -6)
+                            .offset(x: 12, y: -7)
                             .accessibilityLabel("\(badgeCount) unread")
                     }
                 }
-                .frame(height: 20)
-
-                Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(isActive ? DesignTokens.Opacity.medium : 0))
-                    .frame(width: 16, height: 2.5)
-                    .opacity(isActive ? 1 : 0)
             }
-            .frame(width: 36)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 5)
+            .frame(width: 50, height: 40)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .fill(backgroundFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .stroke(borderColor, lineWidth: 1)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(highlightStrokeColor, lineWidth: 1)
+                    .padding(1)
+            )
+            .shadow(color: .black.opacity(buttonShadowOpacity), radius: 6, y: 1)
         }
         .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .background(ToolDockNativeTooltipBridge(text: tool.title))
         .onHover { hovering in
             isHovering = hovering
-            hoverTask?.cancel()
-            if hovering {
-                hoverTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(400))
-                    guard !Task.isCancelled else { return }
-                    showTooltip = true
-                }
-            } else {
-                showTooltip = false
-                hoverTask = nil
-            }
         }
-        .overlay(alignment: .top) {
-            if showTooltip {
-                Text(tool.title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.black.opacity(0.85))
-                    )
-                    .offset(y: -30)
-                    .allowsHitTesting(false)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))
-            }
-        }
-        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: showTooltip)
-        .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: isHovering)
-        .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: isActive)
+        .help(tool.title)
+        .animation(ChromeMotion.animation(for: .hover), value: isHovering)
+        .animation(ChromeMotion.animation(for: .hover), value: isActive)
         .contextMenu {
             if !tool.isStub && tool.id != "settings" {
                 Button {
@@ -211,7 +252,6 @@ private struct ToolDockItemButton: View {
                 }
             }
         }
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(isActive ? "Selected" : "")
         .accessibilityIdentifier("tool-dock.item.\(tool.id)")
@@ -226,5 +266,34 @@ private struct ToolDockItemButton: View {
             return "\(tool.title), \(badgeCount) unread"
         }
         return tool.title
+    }
+}
+
+private struct ToolDockNativeTooltipBridge: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> ToolDockNativeTooltipView {
+        let view = ToolDockNativeTooltipView()
+        view.toolTip = text
+        return view
+    }
+
+    func updateNSView(_ nsView: ToolDockNativeTooltipView, context: Context) {
+        nsView.toolTip = text
+    }
+}
+
+private final class ToolDockNativeTooltipView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }

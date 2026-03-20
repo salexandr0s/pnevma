@@ -9,9 +9,9 @@ final class WorkflowPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Agents" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(WorkflowView())
+        _ = addSwiftUISubview(WorkflowView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

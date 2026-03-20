@@ -611,6 +611,63 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
+    func testPrepareForShutdownClosesOpenProjects() async throws {
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                gitBranch: "branch-a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let bridge = PnevmaBridge()
+        let manager = WorkspaceManager(bridge: bridge, commandBus: bus)
+        defer { manager.shutdown() }
+
+        let projectWorkspace = manager.createWorkspace(name: "A", projectPath: "/tmp/a")
+        try await waitUntil {
+            manager.runtime(for: projectWorkspace.id)?.projectID == "project-a"
+        }
+
+        await manager.prepareForShutdown()
+
+        let closeCount = await bus.closeCount()
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertNil(manager.runtime(for: projectWorkspace.id)?.projectID)
+    }
+
+    func testCreateLocalProjectWorkspaceAppliesLaunchSourceAndInitialTerminalSeed() throws {
+        let manager = WorkspaceManager()
+        defer { manager.shutdown() }
+
+        let workspace = manager.createLocalProjectWorkspace(
+            name: "Issue #12 — Fix opener",
+            projectPath: "/tmp/project",
+            terminalMode: .persistent,
+            launchSource: WorkspaceLaunchSource(
+                kind: "issue",
+                number: 12,
+                title: "Fix opener",
+                url: "https://github.com/acme/widgets/issues/12"
+            ),
+            initialWorkingDirectory: "/tmp/project/.pnevma/worktrees/task-12",
+            initialTaskID: "task-12"
+        )
+
+        let rootPaneID = try XCTUnwrap(workspace.layoutEngine.root?.allPaneIDs.first)
+        let rootPane = try XCTUnwrap(workspace.layoutEngine.persistedPane(for: rootPaneID))
+
+        XCTAssertEqual(workspace.launchSource?.kind, "issue")
+        XCTAssertEqual(workspace.launchSource?.number, 12)
+        XCTAssertEqual(rootPane.type, "terminal")
+        XCTAssertEqual(rootPane.workingDirectory, "/tmp/project/.pnevma/worktrees/task-12")
+        XCTAssertEqual(rootPane.taskID, "task-12")
+    }
+
     func testRemoteWorkspaceResolvesProjectPathAndOpensBackendProject() async throws {
         let mountPath = "/tmp/remote-mounted-project"
         let bus = MockCommandBus(specs: [

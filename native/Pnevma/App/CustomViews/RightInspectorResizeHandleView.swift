@@ -18,7 +18,7 @@ final class RightInspectorResizeHandleView: NSView {
     override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
+        addCursorRect(bounds, cursor: AppCursor.cursor(for: .horizontalResize))
     }
 
     override func updateTrackingAreas() {

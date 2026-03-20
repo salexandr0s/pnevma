@@ -28,12 +28,18 @@ final class AppUpdateCoordinatorTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        defaults.removePersistentDomain(forName: "AppUpdateCoordinatorTests")
+        let suiteName = "AppUpdateCoordinatorTests"
+        MainActor.assumeIsolated {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+        }
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: "AppUpdateCoordinatorTests")
-        AppRuntimeSettings.shared.apply(.defaults)
+        let suiteName = "AppUpdateCoordinatorTests"
+        MainActor.assumeIsolated {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+            AppRuntimeSettings.shared.apply(.defaults)
+        }
         super.tearDown()
     }
 

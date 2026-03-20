@@ -80,7 +80,8 @@ struct BrowserView: View {
         .background(Color.clear)
         .accessibilityIdentifier("pane.browser")
         .onAppear {
-            viewModel.webView.onRequestPanelFocus = { [weak viewModel] in
+            let viewModel = viewModel
+            viewModel.setPanelFocusHandler { [weak viewModel] in
                 viewModel?.showSuggestions = false
             }
         }

@@ -1,4 +1,6 @@
 use super::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
     let mut insertions: Option<i64> = None;
@@ -15,6 +17,1170 @@ fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
 }
 
 const FLEET_MACHINE_ID_KEY: &str = "fleet.machine_id";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerPathInput {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubRepoStatusView {
+    pub state: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub resolved_repo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubPullRequestView {
+    pub number: i64,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhRepoViewJson {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+    #[serde(rename = "defaultBranchRef")]
+    default_branch_ref: Option<GhBranchRefJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPullRequestJson {
+    number: i64,
+    title: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhBranchRefJson {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueDetailJson {
+    number: i64,
+    title: String,
+    state: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhRepositoryUrlJson {
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPullRequestDetailJson {
+    number: i64,
+    title: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    _base_ref_name: String,
+    state: String,
+    url: String,
+    #[serde(rename = "headRepository")]
+    head_repository: Option<GhRepositoryUrlJson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerIssueLaunchInput {
+    pub path: String,
+    pub issue_number: i64,
+    #[serde(default)]
+    pub create_linked_task_worktree: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerPullRequestLaunchInput {
+    pub path: String,
+    pub pr_number: i64,
+    #[serde(default)]
+    pub create_linked_task_worktree: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOpenerBranchLaunchInput {
+    pub path: String,
+    pub branch_name: String,
+    #[serde(default)]
+    pub create_new: bool,
+}
+
+struct WorkspaceOpenerRepoContext {
+    repo_root: PathBuf,
+    repo_spec: String,
+}
+
+struct WorkspaceOpenerManagedProject {
+    repo_root: PathBuf,
+    project_id: Uuid,
+    db: Db,
+    config: ProjectConfig,
+    global_config: GlobalConfig,
+    git: GitService,
+}
+
+fn project_path_from_input(input: &WorkspaceOpenerPathInput) -> Result<PathBuf, String> {
+    ensure_safe_path_input(&input.path, "project path")?;
+    Ok(PathBuf::from(&input.path))
+}
+
+async fn git_repo_root_for_path(path: &Path) -> Result<PathBuf, String> {
+    let output = TokioCommand::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    if !output.status.success() {
+        return Err("Selected folder is not a git repository.".to_string());
+    }
+
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return Err("Could not determine the repository root.".to_string());
+    }
+
+    Ok(PathBuf::from(root))
+}
+
+async fn workspace_opener_auxiliary_worktrees_by_branch(
+    repo_root: &Path,
+) -> Result<HashMap<String, String>, String> {
+    let output = TokioCommand::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git worktree list: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree list failed: {}", stderr.trim()));
+    }
+
+    let canonical_repo_root = tokio::fs::canonicalize(repo_root)
+        .await
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut worktrees_by_branch = HashMap::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let (Some(path), Some(branch)) = (current_path.take(), current_branch.take()) {
+                let path_buf = PathBuf::from(&path);
+                let canonical_path = tokio::fs::canonicalize(&path_buf).await.unwrap_or(path_buf);
+                if canonical_path != canonical_repo_root {
+                    worktrees_by_branch
+                        .insert(branch, canonical_path.to_string_lossy().to_string());
+                }
+            }
+            current_path = None;
+            current_branch = None;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            current_path = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
+            current_branch = Some(rest.to_string());
+        }
+    }
+
+    Ok(worktrees_by_branch)
+}
+
+async fn gh_cli_available() -> bool {
+    let mut command = crate::github_cli::command();
+    command.arg("--version");
+    command
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+async fn gh_auth_ready() -> Result<(), String> {
+    let mut command = crate::github_cli::command();
+    command.args(["auth", "status", "--hostname", "github.com"]);
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err("GitHub CLI is not authenticated.".to_string())
+    } else {
+        Err(stderr)
+    }
+}
+
+fn parse_github_remote_spec(remote_url: &str) -> Option<String> {
+    let trimmed = remote_url.trim().trim_end_matches('/');
+    let suffix = [
+        "git@github.com:",
+        "ssh://git@github.com/",
+        "https://github.com/",
+        "http://github.com/",
+        "git://github.com/",
+    ]
+    .iter()
+    .find_map(|prefix| trimmed.strip_prefix(prefix))?;
+
+    let normalized = suffix.trim_end_matches(".git").trim_matches('/');
+    let mut parts = normalized.split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim();
+
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return None;
+    }
+
+    Some(format!("{owner}/{repo}"))
+}
+
+async fn github_remote_spec_for_path(project_path: &Path) -> Result<Option<String>, String> {
+    let output = TokioCommand::new("git")
+        .args(["remote", "-v"])
+        .current_dir(project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to inspect git remotes: {e}"))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut fallback: Option<String> = None;
+
+    for line in stdout.lines() {
+        let mut fields = line.split_whitespace();
+        let remote_name = fields.next().unwrap_or_default();
+        let remote_url = fields.next().unwrap_or_default();
+        let spec = parse_github_remote_spec(remote_url);
+
+        if remote_name == "origin" && spec.is_some() {
+            return Ok(spec);
+        }
+        if fallback.is_none() {
+            fallback = spec;
+        }
+    }
+
+    Ok(fallback)
+}
+
+async fn gh_repo_view(project_path: &Path, repo_spec: &str) -> Result<GhRepoViewJson, String> {
+    let mut command = crate::github_cli::command();
+    command
+        .args([
+            "repo",
+            "view",
+            repo_spec,
+            "--json",
+            "nameWithOwner,defaultBranchRef",
+        ])
+        .current_dir(project_path);
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Could not resolve the GitHub repository for this folder.".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))
+}
+
+async fn workspace_opener_repo_context_for_input(
+    input: &WorkspaceOpenerPathInput,
+) -> Result<WorkspaceOpenerRepoContext, GitHubRepoStatusView> {
+    let requested_path = match project_path_from_input(input) {
+        Ok(path) => path,
+        Err(message) => {
+            return Err(github_status_view(
+                "error",
+                "Invalid project path.",
+                Some(message),
+                None,
+            ));
+        }
+    };
+
+    let repo_root = match git_repo_root_for_path(&requested_path).await {
+        Ok(root) => root,
+        Err(message) => {
+            return Err(github_status_view(
+                "not_git_repo",
+                "This folder is not a git repository.",
+                Some(message),
+                None,
+            ));
+        }
+    };
+
+    if !gh_cli_available().await {
+        return Err(github_status_view(
+            "missing_gh_cli",
+            "GitHub CLI (`gh`) is not installed.",
+            Some("Install GitHub CLI to browse issues and pull requests.".to_string()),
+            None,
+        ));
+    }
+
+    let Some(repo_spec) = github_remote_spec_for_path(&repo_root)
+        .await
+        .map_err(|detail| {
+            github_status_view("error", "GitHub is unavailable.", Some(detail), None)
+        })?
+    else {
+        return Err(github_status_view(
+            "no_github_remote",
+            "This repository has no GitHub remote.",
+            Some("Add a GitHub remote before browsing issues or pull requests.".to_string()),
+            None,
+        ));
+    };
+
+    if let Err(detail) = gh_auth_ready().await {
+        return Err(github_status_view(
+            "not_authenticated",
+            "GitHub CLI is not authenticated.",
+            Some(detail),
+            Some(repo_spec),
+        ));
+    }
+
+    Ok(WorkspaceOpenerRepoContext {
+        repo_root,
+        repo_spec,
+    })
+}
+
+async fn workspace_opener_repo_context_from_path(
+    path: &str,
+) -> Result<WorkspaceOpenerRepoContext, String> {
+    workspace_opener_repo_context_for_input(&WorkspaceOpenerPathInput {
+        path: path.to_string(),
+    })
+    .await
+    .map_err(|status| status.detail.unwrap_or(status.message))
+}
+
+fn ensure_positive_external_number(value: i64, label: &str) -> Result<(), String> {
+    if value <= 0 {
+        return Err(format!("{label} must be greater than zero"));
+    }
+    Ok(())
+}
+
+async fn workspace_opener_managed_project(
+    repo_root: &Path,
+    state: &AppState,
+) -> Result<WorkspaceOpenerManagedProject, String> {
+    let canonical_root = std::fs::canonicalize(repo_root)
+        .map_err(|e| format!("failed to canonicalize project path: {e}"))?;
+    if !project_is_initialized(&canonical_root) {
+        return Err("workspace_not_initialized".to_string());
+    }
+
+    let config_path = canonical_root.join("pnevma.toml");
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let current_fingerprint = sha256_hex(config_content.as_bytes());
+    let path_str = canonical_root.to_string_lossy().to_string();
+    let global_db = state.global_db()?;
+    let trust = global_db
+        .is_path_trusted(&path_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    match trust {
+        Some(record) if record.fingerprint == current_fingerprint => {}
+        Some(_) => return Err("workspace_config_changed".to_string()),
+        None => return Err("workspace_not_trusted".to_string()),
+    }
+
+    let config = load_project_config(&config_path).map_err(|e| e.to_string())?;
+    let global_config = load_global_config().map_err(|e| e.to_string())?;
+    let db = Db::open(&canonical_root).await.map_err(|e| e.to_string())?;
+    let existing = db
+        .find_project_by_path(&path_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    let project_id = existing
+        .as_ref()
+        .and_then(|project| Uuid::parse_str(&project.id).ok())
+        .unwrap_or_else(Uuid::new_v4);
+
+    db.upsert_project(
+        &project_id.to_string(),
+        &config.project.name,
+        &path_str,
+        Some(&config.project.brief),
+        Some(config_path.to_string_lossy().as_ref()),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(WorkspaceOpenerManagedProject {
+        repo_root: canonical_root.clone(),
+        project_id,
+        db,
+        config,
+        global_config,
+        git: GitService::new(canonical_root),
+    })
+}
+
+fn workspace_launch_source(
+    kind: &str,
+    number: i64,
+    title: &str,
+    url: &str,
+) -> WorkspaceLaunchSourceView {
+    WorkspaceLaunchSourceView {
+        kind: kind.to_string(),
+        number,
+        title: title.to_string(),
+        url: url.to_string(),
+    }
+}
+
+fn workspace_opener_workspace_name(prefix: &str, number: i64, title: &str) -> String {
+    format!("{prefix} #{number} — {title}")
+}
+
+fn workspace_opener_task_title(prefix: &str, number: i64, title: &str) -> String {
+    format!("{prefix} #{number}: {title}")
+}
+
+fn workspace_opener_task_goal(prefix: &str, number: i64, title: &str) -> String {
+    format!("Track {prefix} #{number}: {title}")
+}
+
+fn workspace_opener_branch_launch_source(branch_name: &str) -> WorkspaceLaunchSourceView {
+    workspace_launch_source("branch", 0, branch_name, "")
+}
+
+async fn workspace_opener_validated_branch_name(
+    repo_root: &Path,
+    raw_branch_name: &str,
+) -> Result<String, String> {
+    ensure_bounded_text_field(raw_branch_name, "branch name", 255)?;
+    let branch_name = raw_branch_name.trim().to_string();
+    let output = TokioCommand::new("git")
+        .args(["check-ref-format", "--branch", &branch_name])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to validate branch name: {e}"))?;
+
+    if output.status.success() {
+        Ok(branch_name)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("Branch name is invalid.".to_string())
+        } else {
+            Err(format!("Branch name is invalid: {stderr}"))
+        }
+    }
+}
+
+async fn workspace_opener_existing_launch_result(
+    project: &WorkspaceOpenerManagedProject,
+    external_kind: &str,
+    external_id: &str,
+    workspace_name: &str,
+    launch_source: &WorkspaceLaunchSourceView,
+) -> Result<Option<WorkspaceOpenerLaunchResult>, String> {
+    let Some(source_row) = project
+        .db
+        .get_task_external_source(&project.project_id.to_string(), external_kind, external_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let Some(task_row) = project
+        .db
+        .get_task(&source_row.task_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let Some(worktree_id) = task_row.worktree_id.as_ref() else {
+        return Ok(None);
+    };
+
+    let worktree_row = project
+        .db
+        .list_worktrees(&project.project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|row| row.id == *worktree_id);
+
+    let Some(worktree_row) = worktree_row else {
+        return Ok(None);
+    };
+
+    if !Path::new(&worktree_row.path).exists() {
+        return Ok(None);
+    }
+
+    Ok(Some(WorkspaceOpenerLaunchResult {
+        project_path: project.repo_root.to_string_lossy().to_string(),
+        workspace_name: workspace_name.to_string(),
+        launch_source: launch_source.clone(),
+        working_directory: Some(worktree_row.path),
+        task_id: Some(task_row.id),
+        branch: Some(worktree_row.branch),
+    }))
+}
+
+struct WorkspaceOpenerExternalSourceSpec {
+    task_title: String,
+    task_goal: String,
+    external_kind: &'static str,
+    external_id: String,
+    identifier: String,
+    url: String,
+    state: String,
+}
+
+async fn workspace_opener_create_task_with_external_source(
+    project: &WorkspaceOpenerManagedProject,
+    spec: WorkspaceOpenerExternalSourceSpec,
+    app_state: &AppState,
+) -> Result<pnevma_db::TaskExternalSourceRow, String> {
+    let task_id = Uuid::new_v4();
+    let now = Utc::now();
+    let task_title_for_source = spec.task_title.clone();
+    let external_id_for_event = spec.external_id.clone();
+    let task = TaskContract {
+        id: task_id,
+        title: spec.task_title.clone(),
+        goal: spec.task_goal,
+        scope: Vec::new(),
+        out_of_scope: Vec::new(),
+        dependencies: Vec::new(),
+        acceptance_criteria: Vec::new(),
+        constraints: Vec::new(),
+        priority: Priority::P2,
+        status: TaskStatus::Planned,
+        assigned_session: None,
+        branch: None,
+        worktree: None,
+        prompt_pack: None,
+        handoff_summary: None,
+        auto_dispatch: false,
+        agent_profile_override: None,
+        execution_mode: None,
+        timeout_minutes: None,
+        max_retries: None,
+        loop_iteration: 0,
+        loop_context_json: None,
+        external_source: None,
+        created_at: now,
+        updated_at: now,
+    };
+    task.validate_new().map_err(|e| e.to_string())?;
+
+    let row = task_contract_to_row(&task, &project.project_id.to_string())?;
+    project
+        .db
+        .create_task(&row)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    append_event(
+        &project.db,
+        project.project_id,
+        Some(task_id),
+        None,
+        "workspace_opener",
+        "TaskCreated",
+        json!({"title": row.title, "source": spec.external_kind, "external_id": external_id_for_event}),
+    )
+    .await;
+    append_telemetry_event(
+        &project.db,
+        project.project_id,
+        &project.global_config,
+        "workspace_opener.task_create",
+        json!({"task_id": row.id, "source": spec.external_kind, "external_id": external_id_for_event}),
+    )
+    .await;
+    emit_enriched_task_event(&app_state.emitter, &project.db, &row.id).await;
+
+    let external_source = pnevma_db::TaskExternalSourceRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: project.project_id.to_string(),
+        task_id: row.id.clone(),
+        kind: spec.external_kind.to_string(),
+        external_id: spec.external_id,
+        identifier: spec.identifier,
+        url: spec.url,
+        state: spec.state,
+        synced_at: now,
+        title: Some(task_title_for_source),
+        description: None,
+        labels_json: Some("[]".to_string()),
+    };
+    project
+        .db
+        .upsert_task_external_source(&external_source)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    append_event(
+        &project.db,
+        project.project_id,
+        Some(task_id),
+        None,
+        "workspace_opener",
+        "TaskExternalSourceLinked",
+        json!({"kind": external_source.kind, "external_id": external_source.external_id}),
+    )
+    .await;
+
+    Ok(external_source)
+}
+
+async fn workspace_opener_attach_worktree_to_task(
+    project: &WorkspaceOpenerManagedProject,
+    task_id: Uuid,
+    start_point: &str,
+    slug_source: &str,
+    state: &AppState,
+) -> Result<(String, String), String> {
+    let slug = slugify_with_fallback(slug_source, "task");
+    let lease = project
+        .git
+        .create_worktree_from_start_point(task_id, start_point, &slug)
+        .await
+        .map_err(|e| e.to_string())?;
+    let canonical_worktree = tokio::fs::canonicalize(&lease.path)
+        .await
+        .map_err(|e| format!("worktree path unavailable: {e}"))?;
+    let canonical_worktree_str = canonical_worktree.to_string_lossy().to_string();
+    let worktree_row = pnevma_db::WorktreeRow {
+        id: lease.id.to_string(),
+        project_id: project.project_id.to_string(),
+        task_id: task_id.to_string(),
+        path: canonical_worktree_str.clone(),
+        branch: lease.branch.clone(),
+        lease_status: "Active".to_string(),
+        lease_started: lease.started_at,
+        last_active: lease.last_active,
+    };
+    project
+        .db
+        .upsert_worktree(&worktree_row)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut task_row = project
+        .db
+        .get_task(&task_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task not found: {task_id}"))?;
+    task_row.branch = Some(lease.branch.clone());
+    task_row.worktree_id = Some(worktree_row.id.clone());
+    task_row.updated_at = Utc::now();
+    project
+        .db
+        .update_task(&task_row)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    append_event(
+        &project.db,
+        project.project_id,
+        Some(task_id),
+        None,
+        "workspace_opener",
+        "WorktreeCreated",
+        json!({"branch": lease.branch, "path": canonical_worktree_str}),
+    )
+    .await;
+    append_telemetry_event(
+        &project.db,
+        project.project_id,
+        &project.global_config,
+        "workspace_opener.worktree_create",
+        json!({"task_id": task_id.to_string(), "branch": task_row.branch}),
+    )
+    .await;
+    emit_enriched_task_event(&state.emitter, &project.db, &task_row.id).await;
+
+    Ok((canonical_worktree_str, task_row.branch.unwrap_or_default()))
+}
+
+fn github_status_view(
+    state: &str,
+    message: impl Into<String>,
+    detail: Option<String>,
+    resolved_repo: Option<String>,
+) -> GitHubRepoStatusView {
+    GitHubRepoStatusView {
+        state: state.to_string(),
+        message: message.into(),
+        detail,
+        resolved_repo,
+    }
+}
+
+pub async fn github_status_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<GitHubRepoStatusView, String> {
+    let context = match workspace_opener_repo_context_for_input(&input).await {
+        Ok(context) => context,
+        Err(status) => return Ok(status),
+    };
+
+    match gh_repo_view(&context.repo_root, &context.repo_spec).await {
+        Ok(repo) => Ok(github_status_view(
+            "ready",
+            "GitHub is connected for this repository.",
+            None,
+            Some(repo.name_with_owner),
+        )),
+        Err(detail) => Ok(github_status_view(
+            "error",
+            "Could not access the GitHub repository for this folder.",
+            Some(detail),
+            Some(context.repo_spec),
+        )),
+    }
+}
+
+pub async fn github_connect_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<GitHubRepoStatusView, String> {
+    github_status_for_path(input).await
+}
+
+pub async fn list_branches_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<Vec<WorkspaceOpenerBranchView>, String> {
+    let requested_path = project_path_from_input(&input)?;
+    let project_path = git_repo_root_for_path(&requested_path).await?;
+    let worktrees_by_branch = workspace_opener_auxiliary_worktrees_by_branch(&project_path).await?;
+    let output = TokioCommand::new("git")
+        .args([
+            "branch",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+        ])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err("git branch failed".to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(|branch| WorkspaceOpenerBranchView {
+            name: branch.to_string(),
+            has_worktree: worktrees_by_branch.contains_key(branch),
+            worktree_path: worktrees_by_branch.get(branch).cloned(),
+        })
+        .collect())
+}
+
+pub async fn create_workspace_from_branch(
+    input: WorkspaceOpenerBranchLaunchInput,
+) -> Result<WorkspaceOpenerLaunchResult, String> {
+    ensure_safe_path_input(&input.path, "project path")?;
+
+    let requested_path = PathBuf::from(&input.path);
+    let repo_root = git_repo_root_for_path(&requested_path).await?;
+    let branch_name =
+        workspace_opener_validated_branch_name(&repo_root, &input.branch_name).await?;
+    let launch_source = workspace_opener_branch_launch_source(&branch_name);
+    let worktrees_by_branch = workspace_opener_auxiliary_worktrees_by_branch(&repo_root).await?;
+
+    if let Some(worktree_path) = worktrees_by_branch.get(&branch_name) {
+        return Ok(WorkspaceOpenerLaunchResult {
+            project_path: repo_root.to_string_lossy().to_string(),
+            workspace_name: branch_name.clone(),
+            launch_source,
+            working_directory: Some(worktree_path.clone()),
+            task_id: None,
+            branch: Some(branch_name),
+        });
+    }
+
+    let git_args = if input.create_new {
+        vec!["checkout", "-b", branch_name.as_str()]
+    } else {
+        vec!["checkout", branch_name.as_str()]
+    };
+    let output = TokioCommand::new("git")
+        .args(&git_args)
+        .current_dir(&repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git checkout: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let action = if input.create_new {
+            "create branch"
+        } else {
+            "checkout branch"
+        };
+        let message = if stderr.is_empty() {
+            format!("Could not {action}.")
+        } else {
+            format!("Could not {action}: {stderr}")
+        };
+        return Err(message);
+    }
+
+    Ok(WorkspaceOpenerLaunchResult {
+        project_path: repo_root.to_string_lossy().to_string(),
+        workspace_name: branch_name.clone(),
+        launch_source,
+        working_directory: None,
+        task_id: None,
+        branch: Some(branch_name),
+    })
+}
+
+pub async fn list_github_issues_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<Vec<GitHubIssueView>, String> {
+    let context = workspace_opener_repo_context_from_path(&input.path).await?;
+    let mut command = crate::github_cli::command();
+    command
+        .args([
+            "issue",
+            "list",
+            "-R",
+            &context.repo_spec,
+            "--json",
+            "number,title,state,labels,author",
+            "--limit",
+            "50",
+        ])
+        .current_dir(&context.repo_root);
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh issue list failed: {stderr}"));
+    }
+
+    let items: Vec<GhIssueJson> =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| GitHubIssueView {
+            number: item.number,
+            title: item.title,
+            state: item.state,
+            labels: item.labels.into_iter().map(|label| label.name).collect(),
+            author: item.author.login,
+        })
+        .collect())
+}
+
+pub async fn list_github_pull_requests_for_path(
+    input: WorkspaceOpenerPathInput,
+) -> Result<Vec<GitHubPullRequestView>, String> {
+    let context = workspace_opener_repo_context_from_path(&input.path).await?;
+    let mut command = crate::github_cli::command();
+    command
+        .args([
+            "pr",
+            "list",
+            "-R",
+            &context.repo_spec,
+            "--json",
+            "number,title,headRefName,baseRefName,state",
+            "--limit",
+            "50",
+        ])
+        .current_dir(&context.repo_root);
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr list failed: {stderr}"));
+    }
+
+    let items: Vec<GhPullRequestJson> =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse error: {e}"))?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| GitHubPullRequestView {
+            number: item.number,
+            title: item.title,
+            source_branch: item.head_ref_name,
+            target_branch: item.base_ref_name,
+            status: item.state,
+        })
+        .collect())
+}
+
+pub async fn create_workspace_from_issue(
+    input: WorkspaceOpenerIssueLaunchInput,
+    state: &AppState,
+) -> Result<WorkspaceOpenerLaunchResult, String> {
+    ensure_safe_path_input(&input.path, "project path")?;
+    ensure_positive_external_number(input.issue_number, "issue number")?;
+
+    let repo_context = workspace_opener_repo_context_from_path(&input.path).await?;
+    let issue_number = input.issue_number.to_string();
+    let mut issue_command = crate::github_cli::command();
+    issue_command
+        .args([
+            "issue",
+            "view",
+            &issue_number,
+            "-R",
+            &repo_context.repo_spec,
+            "--json",
+            "number,title,state,url",
+        ])
+        .current_dir(&repo_context.repo_root);
+    let issue_output = issue_command
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+    if !issue_output.status.success() {
+        let stderr = String::from_utf8_lossy(&issue_output.stderr);
+        return Err(format!("gh issue view failed: {stderr}"));
+    }
+    let issue: GhIssueDetailJson =
+        serde_json::from_slice(&issue_output.stdout).map_err(|e| format!("parse error: {e}"))?;
+
+    let workspace_name = workspace_opener_workspace_name("Issue", issue.number, &issue.title);
+    let launch_source = workspace_launch_source("issue", issue.number, &issue.title, &issue.url);
+    if !input.create_linked_task_worktree {
+        return Ok(WorkspaceOpenerLaunchResult {
+            project_path: repo_context.repo_root.to_string_lossy().to_string(),
+            workspace_name,
+            launch_source,
+            working_directory: None,
+            task_id: None,
+            branch: None,
+        });
+    }
+
+    let project = workspace_opener_managed_project(&repo_context.repo_root, state).await?;
+    if let Some(existing) = workspace_opener_existing_launch_result(
+        &project,
+        "github_issue",
+        &issue.number.to_string(),
+        &workspace_name,
+        &launch_source,
+    )
+    .await?
+    {
+        return Ok(existing);
+    }
+
+    let repo = gh_repo_view(&repo_context.repo_root, &repo_context.repo_spec).await?;
+    let start_point = project.config.branches.target.trim().to_string();
+    let start_point = if start_point.is_empty() {
+        repo.default_branch_ref
+            .as_ref()
+            .map(|branch| branch.name.clone())
+            .unwrap_or_else(|| "main".to_string())
+    } else {
+        start_point
+    };
+
+    let external_source = workspace_opener_create_task_with_external_source(
+        &project,
+        WorkspaceOpenerExternalSourceSpec {
+            task_title: workspace_opener_task_title("Issue", issue.number, &issue.title),
+            task_goal: workspace_opener_task_goal("issue", issue.number, &issue.title),
+            external_kind: "github_issue",
+            external_id: issue.number.to_string(),
+            identifier: format!("#{}", issue.number),
+            url: issue.url.clone(),
+            state: issue.state,
+        },
+        state,
+    )
+    .await?;
+    let task_id =
+        Uuid::parse_str(&external_source.task_id).map_err(|e| format!("invalid task id: {e}"))?;
+    let (working_directory, branch) = workspace_opener_attach_worktree_to_task(
+        &project,
+        task_id,
+        &start_point,
+        &issue.title,
+        state,
+    )
+    .await?;
+
+    Ok(WorkspaceOpenerLaunchResult {
+        project_path: project.repo_root.to_string_lossy().to_string(),
+        workspace_name,
+        launch_source,
+        working_directory: Some(working_directory),
+        task_id: Some(task_id.to_string()),
+        branch: Some(branch),
+    })
+}
+
+pub async fn create_workspace_from_pull_request(
+    input: WorkspaceOpenerPullRequestLaunchInput,
+    state: &AppState,
+) -> Result<WorkspaceOpenerLaunchResult, String> {
+    ensure_safe_path_input(&input.path, "project path")?;
+    ensure_positive_external_number(input.pr_number, "pull request number")?;
+
+    let repo_context = workspace_opener_repo_context_from_path(&input.path).await?;
+    let pr_number = input.pr_number.to_string();
+    let mut pr_command = crate::github_cli::command();
+    pr_command
+        .args([
+            "pr",
+            "view",
+            &pr_number,
+            "-R",
+            &repo_context.repo_spec,
+            "--json",
+            "number,title,headRefName,baseRefName,state,url,headRepository",
+        ])
+        .current_dir(&repo_context.repo_root);
+    let pr_output = pr_command
+        .output()
+        .await
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+    if !pr_output.status.success() {
+        let stderr = String::from_utf8_lossy(&pr_output.stderr);
+        return Err(format!("gh pr view failed: {stderr}"));
+    }
+    let pr: GhPullRequestDetailJson =
+        serde_json::from_slice(&pr_output.stdout).map_err(|e| format!("parse error: {e}"))?;
+
+    let workspace_name = workspace_opener_workspace_name("PR", pr.number, &pr.title);
+    let launch_source = workspace_launch_source("pull_request", pr.number, &pr.title, &pr.url);
+    if !input.create_linked_task_worktree {
+        return Ok(WorkspaceOpenerLaunchResult {
+            project_path: repo_context.repo_root.to_string_lossy().to_string(),
+            workspace_name,
+            launch_source,
+            working_directory: None,
+            task_id: None,
+            branch: None,
+        });
+    }
+
+    let project = workspace_opener_managed_project(&repo_context.repo_root, state).await?;
+    if let Some(existing) = workspace_opener_existing_launch_result(
+        &project,
+        "github_pull_request",
+        &pr.number.to_string(),
+        &workspace_name,
+        &launch_source,
+    )
+    .await?
+    {
+        return Ok(existing);
+    }
+
+    let external_source = workspace_opener_create_task_with_external_source(
+        &project,
+        WorkspaceOpenerExternalSourceSpec {
+            task_title: workspace_opener_task_title("PR", pr.number, &pr.title),
+            task_goal: workspace_opener_task_goal("pull request", pr.number, &pr.title),
+            external_kind: "github_pull_request",
+            external_id: pr.number.to_string(),
+            identifier: format!("#{}", pr.number),
+            url: pr.url.clone(),
+            state: pr.state.clone(),
+        },
+        state,
+    )
+    .await?;
+    let task_id =
+        Uuid::parse_str(&external_source.task_id).map_err(|e| format!("invalid task id: {e}"))?;
+
+    let head_repository = pr
+        .head_repository
+        .and_then(|repo| repo.url)
+        .filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| "Pull request head repository is unavailable.".to_string())?;
+
+    let fetch_output = TokioCommand::new("git")
+        .args([
+            "fetch",
+            "--no-tags",
+            "--depth=1",
+            &head_repository,
+            &pr.head_ref_name,
+        ])
+        .current_dir(&repo_context.repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git fetch: {e}"))?;
+    if !fetch_output.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch_output.stderr);
+        return Err(format!("git fetch failed: {stderr}"));
+    }
+
+    let (working_directory, branch) =
+        workspace_opener_attach_worktree_to_task(&project, task_id, "FETCH_HEAD", &pr.title, state)
+            .await?;
+
+    Ok(WorkspaceOpenerLaunchResult {
+        project_path: project.repo_root.to_string_lossy().to_string(),
+        workspace_name,
+        launch_source,
+        working_directory: Some(working_directory),
+        task_id: Some(task_id.to_string()),
+        branch: Some(branch),
+    })
+}
 
 async fn fleet_machine_id() -> Result<String, String> {
     let global_db = pnevma_db::GlobalDb::open()
@@ -156,9 +1322,9 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
         .unwrap_or((None, None));
 
     let (linked_pr_number, linked_pr_url, ci_status) = if let Some(ref branch) = git_branch {
-        let pr_result = tokio::time::timeout(
-            std::time::Duration::from_millis(3000),
-            TokioCommand::new("gh")
+        let pr_result = tokio::time::timeout(std::time::Duration::from_millis(3000), {
+            let mut command = crate::github_cli::command();
+            command
                 .args([
                     "pr",
                     "list",
@@ -169,9 +1335,9 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
                     "--limit",
                     "1",
                 ])
-                .current_dir(&project_path)
-                .output(),
-        )
+                .current_dir(&project_path);
+            command.output()
+        })
         .await
         .ok()
         .and_then(|r| r.ok())
@@ -1563,7 +2729,8 @@ pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView
         .with_project("resolve_pr_url", |ctx| ctx.project_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
-    let output = TokioCommand::new("gh")
+    let mut command = crate::github_cli::command();
+    command
         .args([
             "pr",
             "view",
@@ -1571,10 +2738,8 @@ pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView
             "--json",
             "number,title,headRefName,baseRefName,url",
         ])
-        .current_dir(&project_path)
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+        .current_dir(&project_path);
+    let output = command.output().await.map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
@@ -1610,12 +2775,11 @@ pub async fn resolve_issue_url(url: &str, state: &AppState) -> Result<IssueResol
         .with_project("resolve_issue_url", |ctx| ctx.project_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
-    let output = TokioCommand::new("gh")
+    let mut command = crate::github_cli::command();
+    command
         .args(["issue", "view", url, "--json", "number,title,url"])
-        .current_dir(&project_path)
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+        .current_dir(&project_path);
+    let output = command.output().await.map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
@@ -1721,13 +2885,13 @@ pub async fn check_summary(state: &AppState) -> Result<CheckSummaryView, String>
         .with_project("check_summary", |ctx| ctx.project_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
-    let output = tokio::time::timeout(
-        std::time::Duration::from_millis(5000),
-        TokioCommand::new("gh")
+    let output = tokio::time::timeout(std::time::Duration::from_millis(5000), {
+        let mut command = crate::github_cli::command();
+        command
             .args(["pr", "checks", "--json", "name,state,conclusion"])
-            .current_dir(&project_path)
-            .output(),
-    )
+            .current_dir(&project_path);
+        command.output()
+    })
     .await
     .map_err(|_| "timeout".to_string())?
     .map_err(|e| e.to_string())?;
@@ -1766,18 +2930,18 @@ pub async fn merge_queue_readiness(state: &AppState) -> Result<MergeReadinessVie
         .with_project("merge_queue_readiness", |ctx| ctx.project_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
-    let output = tokio::time::timeout(
-        std::time::Duration::from_millis(5000),
-        TokioCommand::new("gh")
+    let output = tokio::time::timeout(std::time::Duration::from_millis(5000), {
+        let mut command = crate::github_cli::command();
+        command
             .args([
                 "pr",
                 "view",
                 "--json",
                 "mergeStateStatus,statusCheckRollup,reviewDecision",
             ])
-            .current_dir(&project_path)
-            .output(),
-    )
+            .current_dir(&project_path);
+        command.output()
+    })
     .await
     .map_err(|_| "timeout".to_string())?
     .map_err(|e| e.to_string())?;
@@ -1964,7 +3128,8 @@ pub async fn list_github_issues(state: &AppState) -> Result<Vec<GitHubIssueView>
         .with_project("list_github_issues", |ctx| ctx.project_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
-    let output = TokioCommand::new("gh")
+    let mut command = crate::github_cli::command();
+    command
         .args([
             "issue",
             "list",
@@ -1973,7 +3138,8 @@ pub async fn list_github_issues(state: &AppState) -> Result<Vec<GitHubIssueView>
             "--limit",
             "50",
         ])
-        .current_dir(&project_path)
+        .current_dir(&project_path);
+    let output = command
         .output()
         .await
         .map_err(|e| format!("failed to run gh: {e}"))?;

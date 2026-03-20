@@ -67,7 +67,9 @@ struct ToolsSectionHeader: View {
 
     var body: some View {
         Button(action: {
-            withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.15))) { isExpanded.toggle() }
+            withAnimation(ChromeMotion.animation(for: .disclosure)) {
+                isExpanded.toggle()
+            }
         }) {
             HStack {
                 Text("TOOLS")
@@ -149,6 +151,28 @@ enum SidebarPreferences {
         set {
             let clamped = min(max(newValue, DesignTokens.Layout.sidebarMinWidth), DesignTokens.Layout.sidebarMaxWidth)
             defaults.set(clamped, forKey: "sidebarCustomWidth")
+        }
+    }
+}
+
+enum SidebarCollapsedWorkspaceIndicator: Equatable {
+    case icon(String)
+    case text(String)
+}
+
+enum SidebarWorkspacePresentation {
+    @MainActor
+    static func shouldShowTerminalSectionHeader(for workspaces: [Workspace]) -> Bool {
+        workspaces.count > 1
+    }
+
+    @MainActor
+    static func collapsedIndicator(for workspace: Workspace) -> SidebarCollapsedWorkspaceIndicator {
+        switch workspace.kind {
+        case .terminal:
+            return .icon("terminal")
+        case .project:
+            return .text(String(workspace.name.prefix(1)).uppercased())
         }
     }
 }

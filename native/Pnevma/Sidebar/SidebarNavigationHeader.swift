@@ -19,7 +19,7 @@ enum SidebarNavigationMode: String, CaseIterable {
 
 struct SidebarNavigationHeader: View {
     @Binding var mode: SidebarNavigationMode
-    var onAddWorkspace: (() -> Void)?
+    var onAddWorkspace: ((WorkspaceOpenerLaunchContext) -> Void)?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -47,7 +47,7 @@ struct SidebarNavigationHeader: View {
     // MARK: - New Workspace Button
 
     private var newWorkspaceButton: some View {
-        NewWorkspaceButton(action: { onAddWorkspace?() })
+        NewWorkspaceButton(action: { onAddWorkspace?(.generic) })
     }
 }
 
@@ -102,12 +102,9 @@ private struct NewWorkspaceButton: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                Spacer()
-
-                Text("\u{2318}N")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary.opacity(0.5))
+                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(

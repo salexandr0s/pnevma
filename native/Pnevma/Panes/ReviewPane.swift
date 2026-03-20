@@ -13,15 +13,24 @@ struct ReviewView: View {
     }
 
     var body: some View {
-        Group {
+        NativePaneScaffold(
+            title: "Review Queue",
+            subtitle: "Pending tasks, acceptance checks, and approval state",
+            systemImage: "checkmark.seal",
+            role: .inspectorDriven
+        ) {
             if let statusMessage = viewModel.statusMessage {
                 EmptyStateView(
                     icon: "checkmark.seal",
                     title: statusMessage
                 )
             } else {
-                HSplitView {
+                NativeSplitScaffold(
+                    sidebarMinWidth: 200,
+                    sidebarIdealWidth: 280
+                ) {
                     taskListPanel
+                } detail: {
                     detailPanel
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

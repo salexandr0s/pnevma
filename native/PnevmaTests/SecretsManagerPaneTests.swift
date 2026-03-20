@@ -75,7 +75,9 @@ private actor SecretsManagerCommandBus: CommandCalling {
 final class SecretsManagerPaneTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        _ = NSApplication.shared
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+        }
     }
 
     private func waitUntil(

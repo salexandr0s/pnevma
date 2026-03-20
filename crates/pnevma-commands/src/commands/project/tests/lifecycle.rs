@@ -83,6 +83,100 @@ async fn trust_and_open_project_expand_home_relative_paths() {
 }
 
 #[tokio::test]
+async fn open_project_restores_remote_durable_rows_and_records_restore_log() {
+    let temp = tempdir().expect("temp root");
+    let _env = super::sessions::RemoteSshTestEnv::new(temp.path()).await;
+    let project_root = temp.path().join("restore-remote-project");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback"))
+        .expect("create scaffold dirs");
+    write_test_project_config(&project_root, &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+    let opened_project_id = open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("open project");
+    let project_id = Uuid::parse_str(&opened_project_id).expect("project id");
+
+    let (db, current_project_id) = state
+        .with_project("tests.remote_restore.seed", |ctx| {
+            (ctx.db.clone(), ctx.project_id)
+        })
+        .await
+        .expect("current project");
+    assert_eq!(current_project_id, project_id);
+    super::sessions::upsert_test_project_ssh_profile(&db, project_id, "ssh-profile-1", "Builder")
+        .await;
+
+    let created = create_remote_managed_session(CreateRemoteManagedSessionInput {
+        db: &db,
+        project_id,
+        name: "ssh-Builder".to_string(),
+        session_type: Some("ssh".to_string()),
+        profile: &super::sessions::test_remote_profile("ssh-profile-1", "Builder"),
+        connection_id: "ssh-profile-1".to_string(),
+        cwd: "~".to_string(),
+        command: None,
+    })
+    .await
+    .expect("create remote managed session");
+
+    close_project(&state).await.expect("close project");
+    open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("reopen project");
+
+    let reopened_db = state
+        .with_project("tests.remote_restore.db", |ctx| ctx.db.clone())
+        .await
+        .expect("project db");
+    let row = reopened_db
+        .get_session(&project_id.to_string(), &created.id)
+        .await
+        .expect("load reopened session")
+        .expect("session row should exist");
+    assert_eq!(row.backend, "remote_ssh_durable");
+    assert_eq!(row.status, "waiting");
+    assert_eq!(row.lifecycle_state, "detached");
+    assert_eq!(row.remote_session_id, created.remote_session_id);
+    assert_eq!(row.controller_id, created.controller_id);
+
+    let binding = get_session_binding(created.id.clone(), &state)
+        .await
+        .expect("remote session binding");
+    assert_eq!(binding.mode, "live_attach");
+    assert_eq!(binding.lifecycle_state, "detached");
+    assert!(binding
+        .launch_command
+        .as_deref()
+        .is_some_and(|command| command.contains("fake-ssh.sh")));
+
+    let restore_log = reopened_db
+        .list_session_restore_log(&created.id)
+        .await
+        .expect("list restore log");
+    assert!(restore_log.iter().any(|entry| {
+        entry.action == "project_open"
+            && entry.outcome == "detached"
+            && entry.error_message.is_none()
+    }));
+}
+
+#[tokio::test]
 async fn open_project_invalid_redaction_does_not_replace_live_runtime_config() {
     let _guard = redaction_config_lock().lock().await;
     let home = tempdir().expect("temp home");
@@ -296,6 +390,71 @@ async fn close_project_terminates_running_session_helpers_and_persists_complete_
 }
 
 #[tokio::test]
+async fn close_project_detaches_remote_durable_rows_without_completing_them() {
+    let project_root = tempdir().expect("temp project");
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "remote-shutdown-test",
+        &project_root.path().to_string_lossy(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let now = Utc::now();
+    let session_id = Uuid::new_v4().to_string();
+    db.upsert_session(&SessionRow {
+        id: session_id.clone(),
+        project_id: project_id.to_string(),
+        name: "remote-shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "remote_ssh_durable".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "attached".to_string(),
+        status: "running".to_string(),
+        pid: Some(4242),
+        cwd: "/srv/project".to_string(),
+        command: "".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: Some("ssh-profile-1".to_string()),
+        remote_session_id: Some(session_id.clone()),
+        controller_id: Some("remote-helper-v1".to_string()),
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: None,
+        last_error: None,
+        restore_status: Some("attached".to_string()),
+        exit_code: None,
+        ended_at: None,
+    })
+    .await
+    .expect("persist remote session");
+
+    let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+    let state =
+        make_state_with_project(project_id, project_root.path(), db.clone(), sessions).await;
+
+    close_project(&state).await.expect("close project");
+
+    let row = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .expect("list sessions")
+        .into_iter()
+        .find(|row| row.id == session_id)
+        .expect("remote row");
+    assert_eq!(row.backend, "remote_ssh_durable");
+    assert_eq!(row.status, "waiting");
+    assert_eq!(row.lifecycle_state, "detached");
+    assert!(row.detached_at.is_some());
+}
+
+#[tokio::test]
 async fn cleanup_project_data_prunes_old_files_and_updates_rows() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project_root = temp.path();
@@ -387,14 +546,23 @@ async fn cleanup_project_data_prunes_old_files_and_updates_rows() {
         project_id: project_id.clone(),
         name: "shell".to_string(),
         r#type: Some("terminal".to_string()),
+        backend: "tmux_compat".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "exited".to_string(),
         status: "complete".to_string(),
         pid: None,
         cwd: project_root.to_string_lossy().to_string(),
         command: "zsh".to_string(),
         branch: None,
         worktree_id: None,
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
         started_at: old,
         last_heartbeat: old,
+        last_output_at: Some(old),
+        detached_at: Some(old),
+        last_error: None,
         restore_status: None,
         exit_code: None,
         ended_at: None,

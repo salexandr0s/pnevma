@@ -15,13 +15,30 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
         XCTAssertFalse(app.buttons["tool-dock.item.tasks"].exists)
     }
 
-    func testSettingsWindowOpensFromTitlebarButton() {
-        identifiedElement("titlebar.settings").click()
+    func testSettingsWindowOpensFromSidebarFooterButton() {
+        identifiedElement("sidebar.settings").click()
 
-        let settingsWindow = app.windows["Settings"]
-        requireExists(settingsWindow)
-        requireExists(settingsWindow.staticTexts["Auto-save workspace on quit"])
-        requireExists(settingsWindow.staticTexts["Auto-hide bottom tool bar"])
+        requireExists(identifiedElement("settings.root"))
+        requireExists(app.staticTexts["Auto-save workspace on quit"])
+        requireExists(app.staticTexts["Auto-hide bottom tool bar"])
+    }
+
+    func testGhosttySettingsDoesNotResizeSettingsWindow() {
+        identifiedElement("sidebar.settings").click()
+
+        requireExists(identifiedElement("settings.root"))
+        let initialWindow = requireExists(app.windows.element(boundBy: max(0, app.windows.count - 1)))
+        let initialFrame = initialWindow.frame
+
+        identifiedElement("settings.sidebar.ghostty").click()
+
+        requireExists(app.staticTexts["Embedded terminal rendering, config-backed Ghostty options, and terminal keybindings."])
+
+        let updatedWindow = requireExists(app.windows.element(boundBy: max(0, app.windows.count - 1)))
+        let updatedFrame = updatedWindow.frame
+
+        XCTAssertEqual(initialFrame.width, updatedFrame.width, accuracy: 1)
+        XCTAssertEqual(initialFrame.height, updatedFrame.height, accuracy: 1)
     }
 
     func testOpenWorkspaceDialogShowsVisibleActionsImmediately() {
@@ -31,5 +48,43 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
         requireExists(app.buttons["Local Folder"])
         requireExists(app.buttons["Remote SSH"])
         requireExists(app.buttons["Cancel"])
+    }
+
+    func testWorkspaceTabBarButtonsRemainClickable() {
+        app.typeKey("t", modifierFlags: .command)
+
+        let tabBar = requireExists(app.tabGroups["Tab bar"])
+        let addButton = requireHittable(app.buttons["New tab"])
+        let closeButtons = app.buttons.matching(identifier: "Close tab")
+
+        XCTAssertGreaterThanOrEqual(closeButtons.count, 2)
+
+        addButton.click()
+        waitForCount(closeButtons, count: 3)
+
+        let closeButton = requireHittable(closeButtons.element(boundBy: 0))
+        closeButton.click()
+        waitForCount(closeButtons, count: 2)
+
+        XCTAssertTrue(tabBar.exists)
+    }
+
+    func testToolDockSwapReplacesDrawerContent() {
+        toolDockItem("browser").click()
+
+        requireExists(identifiedElement("bottom.drawer.content.browser"))
+        requireExists(identifiedElement("bottom.drawer.close"))
+        requireExists(identifiedElement("bottom.drawer.openAsTab"))
+        let drawerState = requireExists(identifiedElement("bottom.drawer.state"))
+        waitForLabel(drawerState, toContain: "browser")
+
+        toolDockItem("analytics").click()
+        waitForLabel(drawerState, toContain: "analytics")
+        requireExists(identifiedElement("bottom.drawer.close"))
+
+        toolDockItem("notifications").click()
+        waitForLabel(drawerState, toContain: "notifications")
+        requireExists(identifiedElement("bottom.drawer.close"))
+        requireExists(identifiedElement("bottom.drawer.openAsTab"))
     }
 }

@@ -5,7 +5,7 @@
 <h1 align="center">Pnevma</h1>
 
 <p align="center">
-  A native macOS workspace for running and supervising CLI coding agents on real software projects.
+  A native macOS workspace for supervising CLI coding agents on real software projects.
 </p>
 
 <p align="center">
@@ -22,71 +22,54 @@
 
 ---
 
-Pnevma gives you one place to create tasks, launch agents such as Claude Code and Codex in managed terminal sessions, review what they changed, and decide when that work is ready to merge.
+Pnevma gives you one place to open a repository, supervise CLI coding agents in real terminals, review what they changed, and decide when that work is ready to merge.
 
-## Status
+> Status: Pnevma currently targets Apple Silicon Macs on macOS 14+. Source builds are supported today. The first public `arm64` DMG for `v0.2.0` is planned to be Developer ID signed but not notarized, so first launch on a clean Mac may require Finder `Open` or System Settings `Open Anyway`.
 
-Pnevma is actively shipping and evolving. The native app, Rust backend, Ghostty terminal integration, remote access server, and release tooling are already in the repository. Current work spans release quality, maintainability improvements, and product refinement for a polished macOS release.
+## Why Pnevma
 
-Current development target:
+Pnevma is built for developers who want agent speed without giving up control of the repository.
 
-- Apple Silicon
-- macOS 14+
-- Build from source
+- Real terminals, not simulated sandboxes. Agents run in managed Ghostty-backed sessions with scrollback, replay, and restore behavior.
+- One task, one branch, one worktree. Parallel agent work stays isolated and reviewable.
+- Review is part of the product. Diff inspection, review packs, checks, and merge queue mechanics are built into the workflow.
+- Native macOS UI, Rust-owned workflow logic. The desktop app stays thin while the backend owns orchestration, persistence, and safety rules.
+- Durable operator state. Tasks, sessions, events, and artifacts are persisted so the app can recover context instead of treating every run as ephemeral.
 
-## What Pnevma Is
+## Current Product Surface
 
-Pnevma is designed for developers who want the speed of coding agents without losing control of their repository. Instead of juggling raw terminals, ad hoc branches, and manual review steps, Pnevma wraps agent execution in a structured desktop workflow:
+Pnevma already exposes the core operator surfaces needed to run day-to-day agent work:
 
-- one task maps to one git worktree
-- each task runs in a managed terminal session
-- task, session, and review state are persisted
-- diffs and merge decisions stay inside a consistent review flow
-- workflow logic lives in the Rust backend, not in UI-side scripts
+- Workspace Opener for starting from a prompt, an existing folder, GitHub issues, pull requests, branches, or a remote SSH target
+- Workspace and project overview data for GitHub state, automation state, sessions, and operator context
+- Task Board for dispatch, triage, and status tracking
+- Managed terminal supervision with embedded [Ghostty](https://ghostty.org), replay, and restore across relaunch
+- Review, diff, and merge queue flows for deciding what ships
+- SSH manager with key handling, profiles, Tailscale discovery, and remote durable session support
+- Command Center, tool drawer, notifications, daily brief, analytics, ports, rules, secrets, and settings surfaces for broader supervision
 
-## Features
+## How The Loop Works
 
-- Native macOS app built with Swift/AppKit and backed by a Rust workspace
-- Embedded [Ghostty](https://ghostty.org) terminal for managed local terminal sessions
-- Persistent sessions with scrollback, replay, and restore support
-- Task orchestration with status tracking, dispatch controls, and event history
-- Provider-neutral agent adapters with built-in support for Claude Code and Codex
-- One-task-one-worktree isolation to keep parallel agent work separated
-- Review flow with diffs, checks, review packs, and merge queue mechanics
-- Context compiler that assembles repository instructions, diffs, rules, and scoped files before dispatch
-- Project configuration in `pnevma.toml` and global configuration in `~/.config/pnevma/config.toml`
-- Optional local control socket for automation and scripting
-- Optional remote HTTP/WebSocket access with TLS, token auth, rate limits, and CORS guardrails
-- SSH manager with key handling, profiles, and Tailscale device discovery
-- Secret redaction across logs, scrollback, context packs, and review artifacts
+1. Open a repository and initialize `pnevma.toml` if needed.
+2. Create or import work, then let Pnevma create a dedicated worktree for that task.
+3. Launch an agent such as Claude Code or Codex in a managed terminal session.
+4. Let the Rust backend track task state, session state, artifacts, and events in SQLite plus the append-only event log.
+5. Inspect output, diffs, review packs, and checks in the native UI.
+6. Approve, reject, queue, or merge the work when it meets the bar.
 
-## How It Works
+The important boundary is unchanged: Pnevma isolates agent work by git worktree, not by OS sandbox. Agents still run with the current user's filesystem and network access.
 
-1. Open a repository in Pnevma and initialize its `pnevma.toml` configuration.
-2. Create a task with a description, rules, and acceptance criteria.
-3. Pnevma creates a dedicated git worktree for that task.
-4. The selected agent is launched in a managed terminal session.
-5. The Rust backend tracks task state, session state, events, and artifacts in SQLite and the event log.
-6. You monitor progress in the app, inspect the resulting diff and review materials, then approve, reject, or merge the work.
+## Architecture At A Glance
 
-The important boundary is that Pnevma isolates agent work by git worktree, not by OS sandbox. Agents still run with the current user's filesystem and network access.
+Pnevma is a native Swift/AppKit application backed by a Rust workspace.
 
-## Architecture
-
-Pnevma is a native macOS application with a thin Swift/AppKit frontend and a Rust backend that owns workflow state.
-
-- `native/`: the macOS app and pane-based user interface
-- `crates/pnevma-bridge`: the C FFI bridge compiled into `libpnevma_bridge.a`
-- Rust workspace crates: task orchestration, session supervision, git/worktree management, agent adapters, context compilation, database access, SSH utilities, command routing, remote access, and redaction
-- `SQLite + event log`: persisted task, session, review, and audit data
+- `native/`: pane-based macOS UI, workspace chrome, terminal host views, and operator tools
+- `crates/pnevma-bridge`: C FFI bridge compiled into `libpnevma_bridge.a`
+- Rust workspace crates: task orchestration, session supervision, git/worktree management, agent adapters, context compilation, database access, SSH and remote helper management, tracking, remote access, and redaction
+- `SQLite + event log`: durable task, session, review, notification, and audit state
 - [`Ghostty`](https://ghostty.org): embedded terminal runtime compiled as an xcframework
 
-High-level flow:
-
-1. The Swift app calls into the Rust backend through the FFI bridge.
-2. The backend manages tasks, sessions, worktrees, persistence, and review state.
-3. The backend sends updates back to the UI through registered callbacks.
-4. The UI renders current state across terminals, task views, review panes, and supporting tools.
+The Swift app renders state and invokes commands. The Rust backend owns workflow logic, persistence, automation, remote access, and safety-sensitive behavior.
 
 ## Build From Source
 
@@ -96,11 +79,11 @@ High-level flow:
 - Zig matching `.zig-version`
 - `just`
 - XcodeGen
-- Xcode 15+
+- Xcode 26+ with the macOS SDK
 - Git
 - At least one supported agent CLI on `PATH` (`claude-code` or `codex`)
 
-### Setup
+### Quickstart
 
 ```bash
 git clone https://github.com/salexandr0s/pnevma.git
@@ -117,72 +100,46 @@ For interactive development:
 open native/Pnevma.xcodeproj
 ```
 
+## Installing The First Public DMG
+
+The first public `v0.2.0` DMG is expected to be signed but not notarized yet.
+
+That means macOS may block the first launch on a clean machine even though the app is signed. The intended install flow is:
+
+1. Mount the DMG and drag `Pnevma.app` into `/Applications`.
+2. In Finder, open `/Applications`, right-click `Pnevma.app`, and choose `Open`.
+3. Confirm the `Open` dialog.
+4. If macOS still blocks the app, open **System Settings → Privacy & Security** and use **Open Anyway**, then launch again.
+
+Subsequent launches should work normally after that first approval.
+
 ## Configuration
 
-Project-level configuration lives in `pnevma.toml`:
+Project configuration lives in `pnevma.toml`. Typical controls include the default provider, concurrency, worktree naming, retention, automation, remote access, redaction, and issue-tracker integration.
 
-```toml
-[project]
-name = "my-project"
-brief = "Short project description"
-
-[agents]
-default_provider = "claude-code"
-max_concurrent = 4
-
-[agents.claude-code]
-model = "sonnet"
-token_budget = 24000
-timeout_minutes = 30
-
-[branches]
-target = "main"
-naming = "task/{{id}}-{{slug}}"
-```
-
-See the [`pnevma.toml` reference](docs/pnevma-toml-reference.md) for the full
-configuration schema.
-
-## Development
-
-Common commands:
-
-```bash
-just check
-just test
-just xcode-build
-just xcode-test
-just release
-```
-
-`just check` runs Rust formatting, `clippy`, tests, dependency audit, and migration checksum verification. `just ghostty-smoke` is the required terminal runtime smoke gate.
+See the [`pnevma.toml` reference](docs/pnevma-toml-reference.md) for the current schema.
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md) for the current set of
-developer, operator, and release guides.
+Start with the [documentation index](docs/README.md), then use these entry points:
 
-- [Getting Started](docs/getting-started.md): bootstrap, local setup, and first
-  project flow
-- [Architecture Overview](docs/architecture-overview.md): backend boundaries,
-  FFI flow, and persistence model
-- [`pnevma.toml` Reference](docs/pnevma-toml-reference.md): project
-  configuration schema
-- [Security Deployment Guide](docs/security-deployment.md): remote access and
-  credential handling
-- [macOS Release Runbook](docs/macos-release.md): signing, notarization, and
-  release steps
-- [Release Readiness](docs/release-readiness.md): release quality gates
-  and validation checks
-- [Implementation Status](docs/implementation-status.md): current repo status
-  and priorities
+- [Product Tour](docs/product-tour.md): a guided walk through the current operator surfaces
+- [Getting Started](docs/getting-started.md): bootstrap, local setup, and first workspace flow
+- [Architecture Overview](docs/architecture-overview.md): system boundaries and runtime paths
+- [`pnevma.toml` Reference](docs/pnevma-toml-reference.md): project and global configuration
+- [Security Deployment Guide](docs/security-deployment.md): remote access posture and credential handling
+- [Remote Access Guide](docs/remote-access.md): TLS, auth, CORS, and runtime controls for the remote API surface
+- [macOS Release Runbook](docs/macos-release.md): signing, DMG packaging, first-launch instructions, and release evidence
+- [Implementation Status](docs/implementation-status.md): current repo status and priorities
 
-## Security Model
+## Security And Operating Model
 
 - Worktrees isolate repository changes, not operating-system privileges
-- Agents run with the current user account's filesystem and network permissions
+- Agents run with the current user's filesystem and network permissions
 - Remote access is optional and disabled unless configured
+- Remote session input is opt-in
 - Sensitive output paths are protected by redaction middleware
+- The first public `v0.2.0` DMG is expected to be signed but not notarized, with documented first-launch bypass instructions for clean Macs
 
 ## Acknowledgments
 

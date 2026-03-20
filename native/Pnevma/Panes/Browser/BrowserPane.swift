@@ -54,9 +54,10 @@ final class BrowserPaneView: NSView, PaneContent {
     }
 
     func deactivate() {
-        session.viewModel.webView.allowsFirstResponderAcquisition = false
+        guard let webView = session.viewModel.existingWebView else { return }
+        webView.allowsFirstResponderAcquisition = false
         Task { @MainActor [weak self] in
-            self?.session.viewModel.webView.allowsFirstResponderAcquisition = true
+            self?.session.viewModel.existingWebView?.allowsFirstResponderAcquisition = true
         }
     }
 

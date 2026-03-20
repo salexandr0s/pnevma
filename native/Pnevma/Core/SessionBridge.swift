@@ -15,13 +15,20 @@ struct SessionRecoveryOption: Decodable, Equatable, Identifiable {
 
 struct SessionBindingDescriptor: Decodable, Equatable {
     let sessionID: String
+    let backend: String?
+    let durability: String?
+    let lifecycleState: String?
     let mode: String
     let cwd: String
+    let launchCommand: String?
     let env: [SessionBindingEnvVar]
     let waitAfterCommand: Bool
     let recoveryOptions: [SessionRecoveryOption]
 
     var isLiveAttach: Bool { mode == "live_attach" }
+    var isDetachedRecovery: Bool {
+        matchesLifecycle("detached") || matchesLifecycle("reattaching")
+    }
 
     private static let tmuxPath: String = {
         for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
@@ -33,11 +40,23 @@ struct SessionBindingDescriptor: Decodable, Equatable {
         return "tmux"
     }()
 
+    private func matchesLifecycle(_ value: String) -> Bool {
+        lifecycleState?.caseInsensitiveCompare(value) == .orderedSame
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     func makeLaunchConfiguration() -> TerminalSurfaceLaunchConfiguration {
         let tmux = Self.tmuxPath
+        let command = launchCommand.flatMap { command in
+            let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } ?? "\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; \(tmux) set -t \"$PNEVMA_TMUX_TARGET\" allow-passthrough all 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\""
         return TerminalSurfaceLaunchConfiguration(
             workingDirectory: cwd,
-            command: "/bin/sh -lc '\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; \(tmux) set -t \"$PNEVMA_TMUX_TARGET\" allow-passthrough all 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\"'",
+            command: "/bin/sh -lc \(shellQuote(command))",
             env: env.map { TerminalSurfaceEnvironmentVariable(key: $0.key, value: $0.value) },
             waitAfterCommand: waitAfterCommand,
             initialInput: nil
@@ -63,6 +82,29 @@ private struct SessionCreateParams: Encodable {
     let name: String
     let cwd: String
     let command: String
+    let remoteTarget: SessionCreateRemoteTargetParams?
+}
+
+private struct SessionCreateRemoteTargetParams: Encodable, Equatable {
+    let sshProfileID: String
+    let sshProfileName: String
+    let host: String
+    let port: Int
+    let user: String
+    let identityFile: String?
+    let proxyJump: String?
+    let remotePath: String
+
+    init(_ target: WorkspaceRemoteTarget) {
+        sshProfileID = target.sshProfileID
+        sshProfileName = target.sshProfileName
+        host = target.host
+        port = target.port
+        user = target.user
+        identityFile = target.identityFile
+        proxyJump = target.proxyJump
+        remotePath = target.remotePath
+    }
 }
 
 private struct SessionCreateResponse: Decodable {
@@ -109,13 +151,13 @@ protocol SessionBridging: Sendable {
     func createSession(
         name: String,
         workingDirectory requestedWorkingDirectory: String?,
-        command requestedCommand: String?
+        command requestedCommand: String?,
+        remoteTarget: WorkspaceRemoteTarget?
     ) async throws -> SessionBindingDescriptor
     func binding(for sessionID: String) async throws -> SessionBindingDescriptor
     func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice
     func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult
     func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async
-    func sessionExists(_ sessionID: String) async -> Bool
 }
 
 extension SessionBridging {
@@ -143,7 +185,8 @@ final class SessionBridge: SessionBridging {
     func createSession(
         name: String = "Terminal",
         workingDirectory requestedWorkingDirectory: String?,
-        command requestedCommand: String? = nil
+        command requestedCommand: String? = nil,
+        remoteTarget: WorkspaceRemoteTarget? = nil
     ) async throws -> SessionBindingDescriptor {
         let cwd = requestedWorkingDirectory ?? activeWorkspacePath()
         guard let cwd else {
@@ -155,7 +198,8 @@ final class SessionBridge: SessionBridging {
             params: SessionCreateParams(
                 name: name,
                 cwd: cwd,
-                command: requestedCommand ?? defaultShell ?? ""
+                command: requestedCommand ?? (remoteTarget == nil ? defaultShell ?? "" : ""),
+                remoteTarget: remoteTarget.map(SessionCreateRemoteTargetParams.init)
             )
         )
         return response.binding
@@ -199,17 +243,6 @@ final class SessionBridge: SessionBridging {
         }
     }
 
-    func sessionExists(_ sessionID: String) async -> Bool {
-        do {
-            let _: SessionBindingDescriptor = try await commandBus.call(
-                method: "session.binding",
-                params: SessionBindingParams(sessionID: sessionID)
-            )
-            return true
-        } catch {
-            return false
-        }
-    }
 }
 
 actor ActiveSessionBridge: SessionBridging {
@@ -222,7 +255,8 @@ actor ActiveSessionBridge: SessionBridging {
     func createSession(
         name: String,
         workingDirectory requestedWorkingDirectory: String?,
-        command requestedCommand: String?
+        command requestedCommand: String?,
+        remoteTarget: WorkspaceRemoteTarget?
     ) async throws -> SessionBindingDescriptor {
         guard let current else {
             throw SessionBridgeError.missingProjectPath
@@ -230,7 +264,8 @@ actor ActiveSessionBridge: SessionBridging {
         return try await current.createSession(
             name: name,
             workingDirectory: requestedWorkingDirectory,
-            command: requestedCommand
+            command: requestedCommand,
+            remoteTarget: remoteTarget
         )
     }
 
@@ -259,8 +294,4 @@ actor ActiveSessionBridge: SessionBridging {
         await current?.sendResize(sessionID: sessionID, columns: columns, rows: rows)
     }
 
-    func sessionExists(_ sessionID: String) async -> Bool {
-        guard let current else { return false }
-        return await current.sessionExists(sessionID)
-    }
 }

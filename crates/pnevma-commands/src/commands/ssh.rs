@@ -61,6 +61,31 @@ pub struct GenerateSshKeyInput {
     pub comment: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshRuntimeHealthView {
+    pub profile_id: String,
+    pub version: String,
+    pub protocol_version: String,
+    pub helper_kind: String,
+    pub helper_path: String,
+    pub state_root: String,
+    pub controller_id: String,
+    pub healthy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_triple: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
+    pub protocol_compatible: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_dependencies: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_kind: Option<String>,
+}
+
 fn ssh_profile_row_to_view(row: SshProfileRow) -> SshProfileView {
     let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
     SshProfileView {
@@ -233,6 +258,75 @@ async fn delete_legacy_project_tailscale_profiles(state: &AppState, ids: &[Strin
     }
 }
 
+async fn find_reusable_remote_ssh_session(
+    state: &AppState,
+    db: &Db,
+    profile_id: &str,
+) -> Result<Option<SessionRow>, String> {
+    let project_id = state
+        .with_project("find_reusable_remote_ssh_session", |ctx| ctx.project_id)
+        .await?;
+    let mut rows = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    rows.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+
+    for row in rows {
+        if !is_remote_ssh_durable_backend(&row.backend)
+            || row.r#type.as_deref() != Some("ssh")
+            || row.connection_id.as_deref() != Some(profile_id)
+            || !remote_session_is_live(&row)
+        {
+            continue;
+        }
+
+        let refreshed = match refresh_remote_session_row(state, db, &row).await {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                mark_remote_session_row_lost(db, &row, error, "ssh_connect_reuse").await?
+            }
+        };
+        if remote_session_is_live(&refreshed) {
+            return Ok(Some(refreshed));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn ensure_remote_ssh_pane(
+    db: &Db,
+    project_id: Uuid,
+    session_id: &str,
+    profile: &pnevma_ssh::SshProfile,
+) -> Result<(), String> {
+    let panes = db
+        .list_panes(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    if panes
+        .iter()
+        .any(|pane| pane.r#type == "terminal" && pane.session_id.as_deref() == Some(session_id))
+    {
+        return Ok(());
+    }
+
+    let pane_row = PaneRow {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.to_string(),
+        session_id: Some(session_id.to_string()),
+        r#type: "terminal".to_string(),
+        position: "root".to_string(),
+        label: profile.name.clone(),
+        metadata_json: Some(remote_launch_metadata_json(
+            &remote_target_from_ssh_profile(profile, "~"),
+        )?),
+    };
+    db.upsert_pane(&pane_row).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub async fn list_ssh_profiles(state: &AppState) -> Result<Vec<SshProfileView>, String> {
     let global_views: Vec<SshProfileView> = state
         .global_db()?
@@ -271,12 +365,12 @@ pub async fn upsert_ssh_profile(
     )
     .map_err(|e| e.to_string())?;
     let row = ssh_profile_input_to_global_row(input);
-    state
+    let stored = state
         .global_db()?
         .upsert_global_ssh_profile(&row)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(row.id)
+    Ok(stored.id)
 }
 
 pub async fn delete_ssh_profile(id: String, state: &AppState) -> Result<(), String> {
@@ -295,12 +389,12 @@ pub async fn import_ssh_config(state: &AppState) -> Result<Vec<SshProfileView>, 
     let mut views = Vec::new();
     for profile in &profiles {
         let row = ssh_profile_to_global_row(profile);
-        state
+        let stored = state
             .global_db()?
             .upsert_global_ssh_profile(&row)
             .await
             .map_err(|e| e.to_string())?;
-        views.push(global_ssh_profile_row_to_view(row));
+        views.push(global_ssh_profile_row_to_view(stored));
     }
     Ok(views)
 }
@@ -313,98 +407,161 @@ pub async fn discover_tailscale(_state: &AppState) -> Result<Vec<TailscaleDevice
 }
 
 pub async fn connect_ssh(profile_id: String, state: &AppState) -> Result<String, String> {
-    let current = state.current.lock().await;
-    let ctx = current
-        .as_ref()
-        .ok_or_else(|| "no open project".to_string())?;
-    let row = match state
-        .global_db()?
-        .get_global_ssh_profile(&profile_id)
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        Some(row) => row,
-        None => {
-            let project_row = ctx
-                .db
-                .get_ssh_profile(&profile_id)
-                .await
-                .map_err(|e| e.to_string())?;
-            GlobalSshProfileRow {
-                id: project_row.id,
-                name: project_row.name,
-                host: project_row.host,
-                port: project_row.port,
-                user: project_row.user,
-                identity_file: project_row.identity_file,
-                proxy_jump: project_row.proxy_jump,
-                tags_json: project_row.tags_json,
-                source: project_row.source,
-                created_at: project_row.created_at,
-                updated_at: project_row.updated_at,
-            }
-        }
-    };
+    let (db, project_id) = state
+        .with_project("connect_ssh", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
+    let ssh_profile = resolve_ssh_profile_by_id(state, Some(&db), &profile_id)
+        .await?
+        .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
 
-    let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
-    let ssh_profile = pnevma_ssh::SshProfile {
-        id: row.id.clone(),
-        name: row.name.clone(),
-        host: row.host.clone(),
-        port: row.port as u16,
-        user: row.user.clone(),
-        identity_file: row.identity_file.clone(),
-        proxy_jump: row.proxy_jump.clone(),
-        tags,
-        source: row.source.clone(),
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-    };
-
-    let ssh_args = pnevma_ssh::build_ssh_command(&ssh_profile);
-    let command = ssh_args
-        .iter()
-        .map(|a| pnevma_ssh::shell_escape_arg(a))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let session = ctx
-        .sessions
-        .spawn_shell(
-            ctx.project_id,
-            format!("ssh-{}", row.name),
-            ".".to_string(),
-            command,
+    if let Some(existing) = find_reusable_remote_ssh_session(state, &db, &profile_id).await? {
+        ensure_remote_ssh_pane(&db, project_id, &existing.id, &ssh_profile).await?;
+        append_event(
+            &db,
+            project_id,
+            None,
+            Uuid::parse_str(&existing.id).ok(),
+            "session",
+            "SessionReattached",
+            json!({
+                "backend": existing.backend,
+                "action": "ssh_connect_reuse",
+                "connection_id": profile_id,
+                "remote_session_id": existing.remote_session_id,
+                "controller_id": existing.controller_id,
+            }),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await;
+        return Ok(existing.id);
+    }
 
-    let mut session_row = session_row_from_meta(&session);
-    session_row.r#type = Some("ssh".to_string());
-    ctx.db
-        .upsert_session(&session_row)
-        .await
-        .map_err(|e| e.to_string())?;
+    let row = create_remote_managed_session(CreateRemoteManagedSessionInput {
+        db: &db,
+        project_id,
+        name: format!("ssh-{}", ssh_profile.name),
+        session_type: Some("ssh".to_string()),
+        profile: &ssh_profile,
+        connection_id: profile_id.clone(),
+        cwd: "~".to_string(),
+        command: None,
+    })
+    .await?;
+    ensure_remote_ssh_pane(&db, project_id, &row.id, &ssh_profile).await?;
 
-    let pane_row = PaneRow {
-        id: Uuid::new_v4().to_string(),
-        project_id: ctx.project_id.to_string(),
-        session_id: Some(session.id.to_string()),
-        r#type: "terminal".to_string(),
-        position: "root".to_string(),
-        label: row.name.clone(),
-        metadata_json: None,
-    };
-    ctx.db
-        .upsert_pane(&pane_row)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(session.id.to_string())
+    Ok(row.id)
 }
 
-pub async fn disconnect_ssh(_profile_id: String, _state: &AppState) -> Result<(), String> {
+pub async fn disconnect_ssh(profile_id: String, state: &AppState) -> Result<(), String> {
+    let (db, project_id) = state
+        .with_project("disconnect_ssh", |ctx| (ctx.db.clone(), ctx.project_id))
+        .await?;
+    let profile = resolve_ssh_profile_by_id(state, Some(&db), &profile_id)
+        .await?
+        .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
+    let rows = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    for mut row in rows {
+        if !is_remote_ssh_durable_backend(&row.backend)
+            || row.connection_id.as_deref() != Some(profile_id.as_str())
+            || !matches!(row.status.as_str(), "running" | "waiting")
+        {
+            continue;
+        }
+        if let Some(remote_session_id) = row.remote_session_id.clone() {
+            if let Err(error) =
+                pnevma_ssh::terminate_remote_session(&profile, &remote_session_id).await
+            {
+                tracing::warn!(session_id = %row.id, error = %error, "failed to terminate remote SSH session during disconnect");
+            }
+        }
+        row.status = "complete".to_string();
+        row.lifecycle_state = SESSION_LIFECYCLE_EXITED.to_string();
+        row.pid = None;
+        row.last_heartbeat = Utc::now();
+        row.last_error = None;
+        row.restore_status = Some(SESSION_LIFECYCLE_EXITED.to_string());
+        row.ended_at = Some(Utc::now().to_rfc3339());
+        db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+        append_event(
+            &db,
+            project_id,
+            None,
+            Uuid::parse_str(&row.id).ok(),
+            "session",
+            "SessionStateChanged",
+            json!({"backend": row.backend, "action": "disconnect_ssh", "to_status": row.status, "to_lifecycle_state": row.lifecycle_state}),
+        )
+        .await;
+    }
     Ok(())
+}
+
+pub async fn ensure_ssh_runtime_helper(
+    profile_id: String,
+    state: &AppState,
+) -> Result<SshRuntimeHealthView, String> {
+    let project_db = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| ctx.db.clone())
+    };
+    let profile = resolve_ssh_profile_by_id(state, project_db.as_ref(), &profile_id)
+        .await?
+        .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
+    let ensured = pnevma_ssh::ensure_remote_helper(&profile)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(SshRuntimeHealthView {
+        profile_id,
+        version: ensured.health.version,
+        protocol_version: ensured.health.protocol_version,
+        helper_kind: ensured.health.helper_kind,
+        helper_path: ensured.health.helper_path,
+        state_root: ensured.health.state_root,
+        controller_id: ensured.health.controller_id,
+        healthy: ensured.health.healthy,
+        target_triple: ensured.health.target_triple,
+        artifact_source: ensured.health.artifact_source,
+        artifact_sha256: ensured.health.artifact_sha256,
+        protocol_compatible: ensured.health.protocol_compatible,
+        missing_dependencies: ensured.health.missing_dependencies,
+        installed: Some(ensured.installed),
+        install_kind: Some(ensured.install_kind.as_str().to_string()),
+    })
+}
+
+pub async fn ssh_runtime_health(
+    profile_id: String,
+    state: &AppState,
+) -> Result<SshRuntimeHealthView, String> {
+    let project_db = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| ctx.db.clone())
+    };
+    let profile = resolve_ssh_profile_by_id(state, project_db.as_ref(), &profile_id)
+        .await?
+        .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
+    let health = pnevma_ssh::remote_helper_health(&profile)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(SshRuntimeHealthView {
+        profile_id,
+        version: health.version,
+        protocol_version: health.protocol_version,
+        helper_kind: health.helper_kind,
+        helper_path: health.helper_path,
+        state_root: health.state_root,
+        controller_id: health.controller_id,
+        healthy: health.healthy,
+        target_triple: health.target_triple,
+        artifact_source: health.artifact_source,
+        artifact_sha256: health.artifact_sha256,
+        protocol_compatible: health.protocol_compatible,
+        missing_dependencies: health.missing_dependencies,
+        installed: None,
+        install_kind: None,
+    })
 }
 
 pub async fn list_ssh_keys(state: &AppState) -> Result<Vec<SshKeyInfoView>, String> {

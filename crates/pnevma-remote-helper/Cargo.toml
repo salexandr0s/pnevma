@@ -1,0 +1,10 @@
+[package]
+name = "pnevma-remote-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

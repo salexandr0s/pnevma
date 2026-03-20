@@ -21,71 +21,63 @@ struct WorkflowView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 12) {
-                Text(topLevel.rawValue)
-                    .font(.headline)
-
-                Spacer()
-
-                // Scope selector
-                HStack(spacing: 6) {
-                    Text("Scope")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize()
-                    Picker("Scope", selection: $scope) {
-                        ForEach(OrchestrationScope.allCases, id: \.self) { s in
-                            Text(s.rawValue).tag(s)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 150)
-                }
-
-                // Top-level toggle: Agents / Workflows
-                Picker("", selection: $topLevel) {
-                    ForEach(TopLevel.allCases, id: \.self) { t in
-                        Text(t.rawValue).tag(t)
+        NativePaneScaffold(
+            title: "Workflow & Agents",
+            subtitle: "Reusable definitions, active orchestration, and agent registry",
+            systemImage: "arrow.triangle.branch",
+            role: .manager,
+            inlineHeaderIdentifier: "pane.workflow.inlineHeader",
+            inlineHeaderLabel: "Workflow inline header"
+        ) {
+            HStack(spacing: 6) {
+                Text("Scope")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                Picker("Scope", selection: $scope) {
+                    ForEach(OrchestrationScope.allCases, id: \.self) { s in
+                        Text(s.rawValue).tag(s)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 180)
+                .frame(width: 150)
+            }
 
-                // Sub-tabs for Workflows
-                if topLevel == .workflows {
-                    Picker("", selection: $workflowTab) {
-                        ForEach(WorkflowTab.allCases, id: \.self) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 240)
-                }
-
-                // Plus button
-                if topLevel == .agents {
-                    Button(action: { agentViewModel.startCreating() }) {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .keyboardShortcut("n", modifiers: .command)
-                } else if workflowTab == .library {
-                    Button(action: { workflowTab = .builder; viewModel.resetBuilder() }) {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .keyboardShortcut("n", modifiers: .command)
+            Picker("", selection: $topLevel) {
+                ForEach(TopLevel.allCases, id: \.self) { t in
+                    Text(t.rawValue).tag(t)
                 }
             }
-            .padding(12)
-            Divider()
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 180)
 
-            // Content
+            if topLevel == .workflows {
+                Picker("", selection: $workflowTab) {
+                    ForEach(WorkflowTab.allCases, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 240)
+            }
+
+            if topLevel == .agents {
+                Button(action: { agentViewModel.startCreating() }) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("n", modifiers: .command)
+            } else if workflowTab == .library {
+                Button(action: { workflowTab = .builder; viewModel.resetBuilder() }) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("n", modifiers: .command)
+            }
+        } content: {
             if topLevel == .agents {
                 AgentsSection(viewModel: agentViewModel)
             } else {
