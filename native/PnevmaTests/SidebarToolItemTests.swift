@@ -32,4 +32,31 @@ final class SidebarToolItemTests: XCTestCase {
         XCTAssertEqual(sidebarToolDefinition(id: "brief")?.paneType, "daily_brief")
         XCTAssertNil(sidebarToolDefinition(paneType: "merge_queue"), "merge_queue moved to right inspector")
     }
+
+    func testSingleTerminalWorkspaceDoesNotNeedSectionHeader() {
+        let terminal = Workspace(name: "Terminal", kind: .terminal)
+
+        XCTAssertFalse(SidebarWorkspacePresentation.shouldShowTerminalSectionHeader(for: [terminal]))
+    }
+
+    func testMultipleTerminalWorkspacesStillShowSectionHeader() {
+        let primary = Workspace(name: "Terminal", kind: .terminal)
+        let secondary = Workspace(name: "Scratch", kind: .terminal)
+
+        XCTAssertTrue(SidebarWorkspacePresentation.shouldShowTerminalSectionHeader(for: [primary, secondary]))
+    }
+
+    func testCollapsedRailUsesTerminalIconAndProjectInitial() {
+        let terminal = Workspace(name: "Terminal", kind: .terminal)
+        let project = Workspace(name: "Project Atlas", projectPath: "/tmp/project-atlas")
+
+        XCTAssertEqual(
+            SidebarWorkspacePresentation.collapsedIndicator(for: terminal),
+            .icon("terminal")
+        )
+        XCTAssertEqual(
+            SidebarWorkspacePresentation.collapsedIndicator(for: project),
+            .text("P")
+        )
+    }
 }

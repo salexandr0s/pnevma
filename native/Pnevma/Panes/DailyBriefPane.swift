@@ -145,23 +145,22 @@ struct DailyBriefView: View {
     @State private var viewModel = DailyBriefViewModel()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Daily Brief")
-                    .font(.headline)
-                Spacer()
-                Button { viewModel.load() } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("r", modifiers: .command)
-                .accessibilityLabel("Refresh daily brief")
+        NativePaneScaffold(
+            title: "Daily Brief",
+            subtitle: "A compact summary of recent work, cost, and follow-up",
+            systemImage: "calendar.badge.clock",
+            role: .monitor,
+            inlineHeaderIdentifier: "pane.dailyBrief.inlineHeader",
+            inlineHeaderLabel: "Daily Brief inline header"
+        ) {
+            Button { viewModel.load() } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption)
             }
-            .padding(12)
-
-            Divider()
-
+            .buttonStyle(.plain)
+            .keyboardShortcut("r", modifiers: .command)
+            .accessibilityLabel("Refresh daily brief")
+        } content: {
             Group {
                 if let statusMessage = viewModel.statusMessage {
                     VStack(spacing: 8) {
@@ -328,9 +327,9 @@ final class DailyBriefPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Daily Brief" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(DailyBriefView())
+        _ = addSwiftUISubview(DailyBriefView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

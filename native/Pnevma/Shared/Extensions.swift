@@ -1,6 +1,53 @@
 import Cocoa
 import SwiftUI
 
+enum PaneChromeContext: Equatable {
+    case standard
+    case drawer
+
+    var showsInlinePaneHeader: Bool {
+        self == .standard
+    }
+}
+
+private struct PaneChromeContextKey: EnvironmentKey {
+    static let defaultValue: PaneChromeContext = .standard
+}
+
+extension EnvironmentValues {
+    var paneChromeContext: PaneChromeContext {
+        get { self[PaneChromeContextKey.self] }
+        set { self[PaneChromeContextKey.self] = newValue }
+    }
+}
+
+struct AccessibilityMarker: NSViewRepresentable {
+    let identifier: String
+    let label: String
+
+    func makeNSView(context: Context) -> AccessibilityMarkerView {
+        let view = AccessibilityMarkerView(frame: .zero)
+        view.markerIdentifier = identifier
+        view.markerLabel = label
+        return view
+    }
+
+    func updateNSView(_ nsView: AccessibilityMarkerView, context: Context) {
+        nsView.markerIdentifier = identifier
+        nsView.markerLabel = label
+    }
+}
+
+final class AccessibilityMarkerView: NSView {
+    var markerIdentifier: String = ""
+    var markerLabel: String = ""
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    override func accessibilityIdentifier() -> String { markerIdentifier }
+    override func accessibilityLabel() -> String? { markerLabel }
+}
+
 // MARK: - JSONValue (arbitrary backend JSON)
 
 /// Lightweight recursive JSON value type for fields whose schema is not fully known at
@@ -149,8 +196,13 @@ extension NSView {
     /// Embed a SwiftUI view inside this NSView using NSHostingView.
     /// Automatically injects the shared theme provider into the SwiftUI environment.
     @discardableResult
-    func addSwiftUISubview<Content: View>(_ view: Content) -> NSHostingView<some View> {
-        let themed = view.environment(GhosttyThemeProvider.shared)
+    func addSwiftUISubview<Content: View>(
+        _ view: Content,
+        chromeContext: PaneChromeContext = .standard
+    ) -> NSHostingView<some View> {
+        let themed = view
+            .environment(GhosttyThemeProvider.shared)
+            .environment(\.paneChromeContext, chromeContext)
         let host = NSHostingView(rootView: themed)
         host.translatesAutoresizingMaskIntoConstraints = false
         addSubview(host)

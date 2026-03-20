@@ -60,6 +60,9 @@ enum DesignTokens {
         static let paneMinWidth: CGFloat = 200
         static let paneMinHeight: CGFloat = 100
         static let treeIndent: CGFloat = 14
+        static let paneToolbarHeight: CGFloat = 40
+        static let groupedCornerRadius: CGFloat = 12
+        static let utilityShelfCornerRadius: CGFloat = 0
     }
 
     // MARK: - Opacity

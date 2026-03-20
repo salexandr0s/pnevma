@@ -8,19 +8,18 @@ struct SshManagerView: View {
     @State private var viewModel = SshManagerViewModel()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("SSH Connections")
-                    .font(.headline)
-                Spacer()
-                Button("Add Profile") { viewModel.showAddSheet = true }
-                    .buttonStyle(.bordered)
-                    .keyboardShortcut("n", modifiers: .command)
-            }
-            .padding(12)
-
-            Divider()
-
+        NativePaneScaffold(
+            title: "SSH Connections",
+            subtitle: "Profiles, discovery, and remote workspace entry points",
+            systemImage: "network",
+            role: .manager,
+            inlineHeaderIdentifier: "pane.ssh.inlineHeader",
+            inlineHeaderLabel: "SSH inline header"
+        ) {
+            Button("Add Profile") { viewModel.showAddSheet = true }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("n", modifiers: .command)
+        } content: {
             if viewModel.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -32,28 +31,29 @@ struct SshManagerView: View {
                     action: { viewModel.showAddSheet = true }
                 )
             } else {
-                List {
-                    // SSH Profiles
-                    Section("Profiles") {
-                        ForEach(viewModel.profiles) { profile in
-                            SshProfileRow(profile: profile,
-                                          onConnect: { viewModel.connect(profile) },
-                                          onDisconnect: { viewModel.disconnect(profile) })
-                                .accessibilityElement(children: .combine)
+                NativeCollectionShell {
+                    List {
+                        Section("Profiles") {
+                            ForEach(viewModel.profiles) { profile in
+                                SshProfileRow(profile: profile,
+                                              onConnect: { viewModel.connect(profile) },
+                                              onDisconnect: { viewModel.disconnect(profile) })
+                                    .accessibilityElement(children: .combine)
+                            }
                         }
-                    }
 
-                    // Tailscale discovery
-                    if !viewModel.tailscaleDevices.isEmpty {
-                        Section("Tailscale Network") {
-                            ForEach(viewModel.tailscaleDevices) { device in
-                                TailscaleRow(device: device,
-                                             onOpenWorkspace: { viewModel.openWorkspace(device) })
+                        if !viewModel.tailscaleDevices.isEmpty {
+                            Section("Tailscale Network") {
+                                ForEach(viewModel.tailscaleDevices) { device in
+                                    TailscaleRow(device: device,
+                                                 onOpenWorkspace: { viewModel.openWorkspace(device) })
+                                }
                             }
                         }
                     }
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.sidebar)
             }
         }
         .overlay(alignment: .bottom) { ErrorBanner(message: viewModel.actionError) }
@@ -184,9 +184,9 @@ final class SshManagerPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "SSH" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(SshManagerView())
+        _ = addSwiftUISubview(SshManagerView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

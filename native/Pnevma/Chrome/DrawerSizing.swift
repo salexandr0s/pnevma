@@ -5,6 +5,8 @@ enum DrawerSizing {
     static let verticalInset: CGFloat = 24
     static let defaultHeightRatio: CGFloat = 0.45
     static let keyboardStep: CGFloat = 72
+    static let resizeHandleHeight: CGFloat = 18
+    static let resizeHandleTopPadding: CGFloat = 8
 
     private static let storageKey = "drawerHeight"
 

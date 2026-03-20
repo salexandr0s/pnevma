@@ -12,15 +12,27 @@ struct DiffView: View {
     }
 
     var body: some View {
-        Group {
+        NativePaneScaffold(
+            title: "Diff Review",
+            subtitle: "Changed files and rendered hunks for the selected task",
+            systemImage: "doc.text.magnifyingglass",
+            role: .document,
+            inlineHeaderIdentifier: "pane.diff.inlineHeader",
+            inlineHeaderLabel: "Diff inline header"
+        ) {
             if let message = viewModel.statusMessage {
                 EmptyStateView(
                     icon: "doc.text.magnifyingglass",
                     title: message
                 )
             } else {
-                HSplitView {
+                NativeSplitScaffold(
+                    sidebarMinWidth: 180,
+                    sidebarIdealWidth: 240,
+                    sidebarMaxWidth: 280
+                ) {
                     taskAndFileSidebar
+                } detail: {
                     diffContent
                 }
             }

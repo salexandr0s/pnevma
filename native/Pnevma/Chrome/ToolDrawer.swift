@@ -101,7 +101,6 @@ private struct BottomDrawerFramePreferenceKey: PreferenceKey {
 // MARK: - Overlay view
 
 struct BottomDrawerOverlayView: View {
-    @Environment(GhosttyThemeProvider.self) private var theme
     @Bindable var chromeState: BottomDrawerChromeState
     @Bindable var contentModel: BottomDrawerContentModel
     let onClose: () -> Void
@@ -121,17 +120,10 @@ struct BottomDrawerOverlayView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let overlayRect = resolvedOverlayHitRect(in: geometry.size)
             ZStack(alignment: .bottom) {
                 if hasActiveContent {
                     drawerCard(in: geometry.size)
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear.preference(
-                                    key: BottomDrawerFramePreferenceKey.self,
-                                    value: proxy.frame(in: .named("bottomDrawerOverlaySpace"))
-                                )
-                            }
-                        )
                         .offset(y: chromeState.isPresented ? 0 : ChromeMotion.drawerHiddenOffset(for: geometry.size.height))
                         .opacity(chromeState.isPresented ? 1 : 0)
                         .allowsHitTesting(chromeState.isPresented)
@@ -139,8 +131,13 @@ struct BottomDrawerOverlayView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .animation(transitionAnimation, value: chromeState.isPresented)
+            .background(
+                Color.clear.preference(
+                    key: BottomDrawerFramePreferenceKey.self,
+                    value: overlayRect
+                )
+            )
         }
-        .coordinateSpace(name: "bottomDrawerOverlaySpace")
         .allowsHitTesting(chromeState.isPresented)
         .onPreferenceChange(BottomDrawerFramePreferenceKey.self) { rect in
             let resolvedRect = chromeState.isPresented ? rect : .zero
@@ -171,95 +168,88 @@ struct BottomDrawerOverlayView: View {
         return contentModel.activeToolTitle ?? "Tool"
     }
 
-    private var drawerSubtitle: String? {
-        contentModel.activeBrowserSession?.currentURL?.host(percentEncoded: false)
-    }
-
     @ViewBuilder
     private func drawerCard(in size: CGSize) -> some View {
         let effectiveHeight = resolvedDrawerHeight(for: size.height)
         let maxDrawerHeight = DrawerSizing.maxHeight(for: size.height)
-        let cardBackgroundColor = Color(nsColor: theme.backgroundColor)
 
         VStack(spacing: 0) {
-            DrawerResizeHandle(
-                currentHeight: effectiveHeight,
-                availableHeight: size.height,
-                onHeightChanged: { newHeight in
-                    if let session = contentModel.activeBrowserSession {
-                        session.setDrawerHeight(newHeight)
-                    } else {
-                        contentModel.drawerHeight = newHeight
-                        DrawerSizing.setStoredHeight(newHeight)
-                    }
-                    isMaximized = false
-                }
-            )
-            .padding(.top, 8)
-
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(drawerTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .accessibilityIdentifier("bottom.drawer.title")
-
-                    AccessibilityProbe(
-                        identifier: "bottom.drawer.state",
-                        label: contentModel.activeToolID ?? "empty"
-                    )
-                        .frame(width: 1, height: 1)
-                        .allowsHitTesting(false)
-
-                    if let drawerSubtitle {
-                        Text(drawerSubtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer()
-
-                Button(action: {
-                    if isMaximized {
-                        let restored = heightBeforeMaximize ?? effectiveHeight
-                        applyDrawerHeight(restored)
+            VStack(spacing: 0) {
+                DrawerResizeHandle(
+                    currentHeight: effectiveHeight,
+                    availableHeight: size.height,
+                    onHeightChanged: { newHeight in
+                        if let session = contentModel.activeBrowserSession {
+                            session.setDrawerHeight(newHeight)
+                        } else {
+                            contentModel.drawerHeight = newHeight
+                            DrawerSizing.setStoredHeight(newHeight)
+                        }
                         isMaximized = false
-                    } else {
-                        heightBeforeMaximize = effectiveHeight
-                        applyDrawerHeight(maxDrawerHeight)
-                        isMaximized = true
                     }
-                }) {
-                    Image(systemName: isMaximized ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 28, height: 28)
+                )
+                .frame(height: DrawerSizing.resizeHandleHeight)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, DrawerSizing.resizeHandleTopPadding)
+
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(drawerTitle)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .accessibilityIdentifier("bottom.drawer.title")
+
+                        AccessibilityProbe(
+                            identifier: "bottom.drawer.state",
+                            label: contentModel.activeToolID ?? "empty"
+                        )
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false)
+                    }
+
+                    Spacer()
+
+                    Button(action: {
+                        if isMaximized {
+                            let restored = heightBeforeMaximize ?? effectiveHeight
+                            applyDrawerHeight(restored)
+                            isMaximized = false
+                        } else {
+                            heightBeforeMaximize = effectiveHeight
+                            applyDrawerHeight(maxDrawerHeight)
+                            isMaximized = true
+                        }
+                    }) {
+                        Image(systemName: isMaximized ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isMaximized ? "Restore drawer" : "Maximize drawer")
+
+                    Button("Open as Tab", action: onOpenAsTab)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("bottom.drawer.openAsTab")
+
+                    Button("Pin as Pane", action: onPinToPane)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("bottom.drawer.pinAsPane")
+
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close drawer")
+                    .accessibilityIdentifier("bottom.drawer.close")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isMaximized ? "Restore drawer" : "Maximize drawer")
-
-                Button("Open as Tab", action: onOpenAsTab)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("bottom.drawer.openAsTab")
-
-                Button("Pin as Pane", action: onPinToPane)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("bottom.drawer.pinAsPane")
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close drawer")
-                .accessibilityIdentifier("bottom.drawer.close")
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 10)
+            .background(ChromeSurfaceStyle.utilityShelfToolbar.color)
 
             Divider()
 
@@ -284,27 +274,11 @@ struct BottomDrawerOverlayView: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: effectiveHeight)
-        .background(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 16,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: 16,
-                style: .continuous
-            )
-            .fill(cardBackgroundColor)
-        )
-        .overlay(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 16,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: 16,
-                style: .continuous
-            )
-            .strokeBorder(Color.primary.opacity(0.08))
-        )
-        .shadow(color: Color.black.opacity(0.18), radius: 12, y: -4)
+        .contentShape(Rectangle())
+        .background(ChromeSurfaceStyle.utilityShelf.color)
+        .overlay(alignment: .top) {
+            Divider()
+        }
     }
 
     private func resolvedDrawerHeight(for availableHeight: CGFloat) -> CGFloat {
@@ -327,6 +301,18 @@ struct BottomDrawerOverlayView: View {
             DrawerSizing.setStoredHeight(height)
         }
     }
+
+    private func resolvedOverlayHitRect(in size: CGSize) -> CGRect {
+        guard chromeState.isPresented, hasActiveContent else { return .zero }
+
+        let height = resolvedDrawerHeight(for: size.height)
+        return CGRect(
+            x: 0,
+            y: max(0, size.height - height),
+            width: size.width,
+            height: height
+        )
+    }
 }
 
 typealias ToolDrawerOverlayView = BottomDrawerOverlayView
@@ -335,22 +321,17 @@ typealias ToolDrawerOverlayView = BottomDrawerOverlayView
 
 final class BottomDrawerOverlayBlockerView: NSView {
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
     var capturesPointerEvents = false
     var overlayHitRect: CGRect = .zero
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard capturesPointerEvents else { return nil }
-
-        let localPoint: NSPoint
-        if bounds.contains(point) {
-            localPoint = point
-        } else if let superview, frame.contains(point) {
-            localPoint = convert(point, from: superview)
-        } else {
-            return nil
-        }
-
-        guard overlayHitRect.contains(localPoint) else { return nil }
+        let localPoint = convert(point, from: superview)
+        let hitRect = bounds.intersection(overlayHitRect)
+        guard !hitRect.isEmpty, hitRect.contains(localPoint) else { return nil }
         return self
     }
 }
@@ -358,21 +339,29 @@ final class BottomDrawerOverlayBlockerView: NSView {
 final class BottomDrawerOverlayHostingView<Content: View>: FirstMouseHostingView<Content> {
     var capturesPointerEvents = false
     var overlayHitRect: CGRect = .zero
+    var onBoundsChanged: (() -> Void)?
+
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+        isFlipped = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        onBoundsChanged?()
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard capturesPointerEvents else { return nil }
-
-        let localPoint: NSPoint
-        if bounds.contains(point) {
-            localPoint = point
-        } else if let superview, frame.contains(point) {
-            localPoint = convert(point, from: superview)
-        } else {
-            return nil
-        }
-
-        guard overlayHitRect.contains(localPoint) else { return nil }
-        return super.hitTest(localPoint)
+        let localPoint = convert(point, from: superview)
+        let hitRect = bounds.intersection(overlayHitRect)
+        guard !hitRect.isEmpty, hitRect.contains(localPoint) else { return nil }
+        return super.hitTest(point) ?? self
     }
 }
 

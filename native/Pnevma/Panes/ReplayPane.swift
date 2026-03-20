@@ -67,83 +67,83 @@ struct ReplayView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("Session Replay")
-                    .font(.headline)
-
-                Spacer()
-
-                Button(action: { viewModel.stepBackward() }) {
-                    Image(systemName: "backward.frame.fill")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Step backward")
-
-                Button(action: { viewModel.togglePlayback() }) {
-                    Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
-
-                Button(action: { viewModel.stepForward() }) {
-                    Image(systemName: "forward.frame.fill")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Step forward")
-
-                Picker("Speed", selection: $viewModel.playbackSpeed) {
-                    Text("0.5x").tag(0.5)
-                    Text("1x").tag(1.0)
-                    Text("2x").tag(2.0)
-                    Text("4x").tag(4.0)
-                }
-                .frame(width: 100)
-                .accessibilityLabel("Playback speed")
+        NativePaneScaffold(
+            title: "Session Replay",
+            subtitle: "Scrub recorded terminal output with playback controls",
+            systemImage: "play.rectangle",
+            role: .utility,
+            inlineHeaderIdentifier: "pane.replay.inlineHeader",
+            inlineHeaderLabel: "Session Replay inline header"
+        ) {
+            Button(action: { viewModel.stepBackward() }) {
+                Image(systemName: "backward.frame.fill")
             }
-            .padding(12)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Step backward")
 
-            Divider()
+            Button(action: { viewModel.togglePlayback() }) {
+                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
-            ZStack {
-                Color.clear
+            Button(action: { viewModel.stepForward() }) {
+                Image(systemName: "forward.frame.fill")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Step forward")
 
-                if let content = viewModel.currentFrame {
-                    ScrollView {
-                        Text(content)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+            Picker("Speed", selection: $viewModel.playbackSpeed) {
+                Text("0.5x").tag(0.5)
+                Text("1x").tag(1.0)
+                Text("2x").tag(2.0)
+                Text("4x").tag(4.0)
+            }
+            .frame(width: 100)
+            .accessibilityLabel("Playback speed")
+        } content: {
+            VStack(spacing: 0) {
+                ZStack {
+                    Color.clear
+
+                    if let content = viewModel.currentFrame {
+                        ScrollView {
+                            Text(content)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(DesignTokens.Spacing.md)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        EmptyStateView(
+                            icon: "play.rectangle",
+                            title: viewModel.emptyStateMessage
+                        )
                     }
-                } else {
-                    EmptyStateView(
-                        icon: "play.rectangle",
-                        title: viewModel.emptyStateMessage
-                    )
                 }
-            }
 
-            Divider()
+                Divider()
 
-            HStack(spacing: 8) {
-                Text(viewModel.currentTimeLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 60)
+                HStack(spacing: 8) {
+                    Text(viewModel.currentTimeLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 60)
 
-                Slider(value: $viewModel.progress, in: 0...1) { editing in
-                    if !editing { viewModel.seekToProgress() }
+                    Slider(value: $viewModel.progress, in: 0...1) { editing in
+                        if !editing { viewModel.seekToProgress() }
+                    }
+                    .accessibilityLabel("Replay progress")
+
+                    Text(viewModel.totalTimeLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 60)
                 }
-                .accessibilityLabel("Replay progress")
-
-                Text(viewModel.totalTimeLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 60)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ChromeSurfaceStyle.toolbar.color)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
         .task { await viewModel.activate() }
         .accessibilityIdentifier("pane.replay")
@@ -406,10 +406,14 @@ final class ReplayPaneView: NSView, PaneContent {
     let sessionID: String?
     var title: String { "Replay" }
 
-    init(frame: NSRect, sessionID: String? = nil) {
+    init(
+        frame: NSRect,
+        sessionID: String? = nil,
+        chromeContext: PaneChromeContext = .standard
+    ) {
         self.sessionID = sessionID
         super.init(frame: frame)
-        _ = addSwiftUISubview(ReplayView(sessionID: sessionID))
+        _ = addSwiftUISubview(ReplayView(sessionID: sessionID), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

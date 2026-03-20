@@ -86,29 +86,21 @@ final class ThemedRightInspectorBackingView: NSView {
     override var isOpaque: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        let offset = RightInspectorPreferences.backgroundOffset
-        if offset == 0 {
-            bg.setFill()
-        } else {
-            bg.blended(withFraction: offset, of: .white)?.setFill() ?? bg.setFill()
-        }
+        let resolved = ChromeSurfaceStyle.inspector.resolvedColor(
+            themeColor: GhosttyThemeProvider.shared.backgroundColor,
+            tintAmount: RightInspectorPreferences.backgroundOffset
+        )
+        resolved.setFill()
         bounds.fill()
     }
 
     private func updateBackgroundColor() {
-        let theme = GhosttyThemeProvider.shared
-        let bg = theme.backgroundColor
-        let offset = RightInspectorPreferences.backgroundOffset
-        let resolved: NSColor
-        if offset == 0 {
-            resolved = bg
-        } else {
-            resolved = bg.blended(withFraction: offset, of: .white) ?? bg
-        }
+        let resolved = ChromeSurfaceStyle.inspector.resolvedColor(
+            themeColor: GhosttyThemeProvider.shared.backgroundColor,
+            tintAmount: RightInspectorPreferences.backgroundOffset
+        )
         layer?.backgroundColor = resolved.cgColor
-        let separatorColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
+        let separatorColor = ChromeSurfaceStyle.inspector.separatorColor.cgColor
         leftSeparator.layer?.backgroundColor = separatorColor
         if showsTopSeparator {
             topSeparator.layer?.backgroundColor = separatorColor

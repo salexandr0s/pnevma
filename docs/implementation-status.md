@@ -9,13 +9,14 @@ The current focus is shipping a polished macOS release while continuing product 
 Current release target:
 
 - version: `v0.2.0`
-- artifact: notarized, stapled `arm64` macOS `.dmg`
-- evidence: SBOM, entitlement output, effective entitlements, `codesign`, `spctl`, notarization logs, stapling logs, checksum, and packaged launch smoke output
+- artifact: Developer ID signed `arm64` macOS `.dmg` for the first public cut, with notarization deferred
+- evidence: SBOM, entitlement output, effective entitlements, `codesign` output, checksum, packaged launch smoke output, clean-machine install notes, and verified first-launch instructions
 
 Primary remaining release work:
 
 - resolve `disable-library-validation` entitlement story (remove or retain with signed-build evidence)
 - keep native and release-rehearsal lanes green and stable
+- validate and document the Finder `Open` / `Open Anyway` first-launch path on a clean machine
 - execute manual smoke and security tests against the candidate DMG artifact
 - assemble final release evidence bundle and complete sign-off
 
@@ -26,7 +27,7 @@ Primary remaining release work:
 - remote HTTP/WebSocket server with request size limits, token auth, revocation, rate limiting, and Tailscale guard rails
 - CI security gates including `cargo audit`, `cargo deny`, secret scanning, and pinned GitHub Actions
 - release preflight, entitlement checks, signing/notarization scripts, and rehearsal workflows
-- documented `v0.2.0` release identity, DMG artifact target, and GitHub notarization secret contract
+- documented `v0.2.0` release identity, DMG artifact target, and first-launch install guidance for the signed-only initial DMG
 - backend-backed global app settings in `~/.config/pnevma/config.toml`
 
 ## Source of Truth

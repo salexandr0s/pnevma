@@ -123,6 +123,9 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             waitUntil {
                 self.openerPanel(from: appDelegate)?.isVisible == true
             }
+
+            XCTAssertNil(window.appearance)
+            XCTAssertNil(self.openerPanel(from: appDelegate)?.appearance)
         }
     }
 
@@ -199,6 +202,143 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
                     && appDelegate.toolDrawerContentModelForTesting.activeToolID == "analytics"
                     && appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType == "analytics"
             }
+        }
+    }
+
+    func testToolDrawerHidesPaneInlineHeaders() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+
+            appDelegate.openToolInDrawerForTesting("notifications")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "notifications"
+            }
+            XCTAssertNil(
+                waitForView(
+                    withAccessibilityIdentifier: "pane.notifications.inlineHeader",
+                    in: contentView,
+                    timeout: 0.1
+                )
+            )
+
+            appDelegate.openToolInDrawerForTesting("ssh")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "ssh"
+            }
+            XCTAssertNil(
+                waitForView(
+                    withAccessibilityIdentifier: "pane.ssh.inlineHeader",
+                    in: contentView,
+                    timeout: 0.1
+                )
+            )
+        }
+    }
+
+    func testToolDrawerVisibleRectInterceptsHitsBeforeContentArea() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+            let contentArea = try XCTUnwrap(findSubview(ofType: ContentAreaView.self, in: contentView))
+
+            appDelegate.openToolInDrawerForTesting("analytics")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "analytics"
+            }
+
+            let drawerRect = expectedDrawerRect(
+                in: contentArea,
+                storedHeight: appDelegate.toolDrawerContentModelForTesting.drawerHeight
+            )
+            let drawerPoint = contentView.convert(
+                NSPoint(x: drawerRect.midX, y: drawerRect.midY),
+                from: contentArea
+            )
+            let hit = try XCTUnwrap(contentView.hitTest(drawerPoint))
+
+            XCTAssertFalse(
+                hit === contentArea || hit.isDescendant(of: contentArea),
+                "drawer hit leaked into content area: hit=\(hit) point=\(NSStringFromPoint(drawerPoint)) drawerRect=\(NSStringFromRect(drawerRect)) contentArea=\(NSStringFromRect(contentArea.frame))"
+            )
+
+            let contentAreaPoint = contentView.convert(
+                NSPoint(x: contentArea.bounds.midX, y: 40),
+                from: contentArea
+            )
+            let contentHit = try XCTUnwrap(contentView.hitTest(contentAreaPoint))
+            XCTAssertTrue(
+                contentHit === contentArea || contentHit.isDescendant(of: contentArea),
+                "drawer host unexpectedly blocked content area above the drawer: hit=\(contentHit) point=\(NSStringFromPoint(contentAreaPoint)) drawerRect=\(NSStringFromRect(drawerRect))"
+            )
+        }
+    }
+
+    func testToolDrawerResizeHandleReceivesPointDispatchedDrag() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+            let contentArea = try XCTUnwrap(findSubview(ofType: ContentAreaView.self, in: contentView))
+
+            appDelegate.openToolInDrawerForTesting("analytics")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "analytics"
+            }
+
+            let initialRect = expectedDrawerRect(
+                in: contentArea,
+                storedHeight: appDelegate.toolDrawerContentModelForTesting.drawerHeight
+            )
+            let initialHeight = DrawerSizing.resolvedHeight(
+                storedHeight: appDelegate.toolDrawerContentModelForTesting.drawerHeight,
+                availableHeight: contentArea.bounds.height
+            )
+            let resizeHandle = try XCTUnwrap(
+                waitForView(withAccessibilityIdentifier: "bottom.drawer.resize", in: contentView)
+            )
+            XCTAssertEqual(
+                resizeHandle.frame.height,
+                DrawerSizing.resizeHandleHeight,
+                accuracy: 0.5
+            )
+            let startPoint = center(of: resizeHandle, ancestor: contentView)
+            let endPoint = contentView.convert(
+                NSPoint(x: initialRect.midX, y: max(0, initialRect.minY - 60)),
+                from: contentArea
+            )
+            let startHit = try XCTUnwrap(contentView.hitTest(startPoint))
+            XCTAssertTrue(
+                startHit === resizeHandle || startHit.isDescendant(of: resizeHandle),
+                "resize handle hit=\(startHit) point=\(NSStringFromPoint(startPoint)) handle=\(NSStringFromRect(resizeHandle.frame))"
+            )
+
+            try dispatchDrag(in: window, rootView: contentView, start: startPoint, end: endPoint)
+
+            waitUntil {
+                let updatedHeight = appDelegate.toolDrawerContentModelForTesting.drawerHeight ?? 0
+                return updatedHeight > initialHeight + 20
+            }
+            let updatedHeight = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.drawerHeight)
+            XCTAssertGreaterThan(updatedHeight, initialHeight)
+            contentView.layoutSubtreeIfNeeded()
+            XCTAssertEqual(
+                resizeHandle.frame.height,
+                DrawerSizing.resizeHandleHeight,
+                accuracy: 0.5
+            )
         }
     }
 
@@ -336,6 +476,59 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
         try dispatchClick(in: window, rootView: rootView, point: point, clickCount: 2)
     }
 
+    private func dispatchDrag(
+        in window: NSWindow,
+        rootView: NSView,
+        start: NSPoint,
+        end: NSPoint
+    ) throws {
+        let startLocation = rootView.convert(start, to: nil)
+        let endLocation = rootView.convert(end, to: nil)
+
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: startLocation,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+        window.sendEvent(down)
+
+        let dragged = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: endLocation,
+            modifierFlags: [],
+            timestamp: 0.01,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 1
+        ))
+        window.sendEvent(dragged)
+
+        let up = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: endLocation,
+            modifierFlags: [],
+            timestamp: 0.02,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 0
+        ))
+
+        let targetView = try XCTUnwrap(rootView.hitTest(start))
+        targetView.mouseDown(with: down)
+        targetView.mouseDragged(with: dragged)
+        targetView.mouseUp(with: up)
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 2,
         file: StaticString = #filePath,
@@ -467,6 +660,20 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             y: toolDockView.bounds.midY
         )
         return ancestor.convert(localPoint, from: toolDockView)
+    }
+
+    private func expectedDrawerRect(in contentArea: ContentAreaView, storedHeight: CGFloat?) -> CGRect {
+        let availableHeight = contentArea.bounds.height
+        let height = DrawerSizing.resolvedHeight(
+            storedHeight: storedHeight,
+            availableHeight: availableHeight
+        )
+        return CGRect(
+            x: 0,
+            y: max(0, availableHeight - height),
+            width: contentArea.bounds.width,
+            height: height
+        )
     }
 
 }

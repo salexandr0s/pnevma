@@ -38,20 +38,19 @@ struct RulesManagerView: View {
     @State private var ruleToDelete: String? = nil
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Rules & Conventions")
-                    .font(.headline)
-                Spacer()
-                Button("Add Rule") { viewModel.showAddSheet = true }
-                    .buttonStyle(.bordered)
-                    .disabled(!viewModel.isProjectOpen)
-                    .keyboardShortcut("n", modifiers: .command)
-            }
-            .padding(12)
-
-            Divider()
-
+        NativePaneScaffold(
+            title: "Rules & Conventions",
+            subtitle: "Shared project guidance for agents and automation",
+            systemImage: "list.bullet.clipboard",
+            role: .manager,
+            inlineHeaderIdentifier: "pane.rules.inlineHeader",
+            inlineHeaderLabel: "Rules inline header"
+        ) {
+            Button("Add Rule") { viewModel.showAddSheet = true }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.isProjectOpen)
+                .keyboardShortcut("n", modifiers: .command)
+        } content: {
             if let waitingMessage = viewModel.projectStatusMessage {
                 VStack(spacing: 8) {
                     ProgressView()
@@ -73,20 +72,23 @@ struct RulesManagerView: View {
                     message: "Add rules to guide agent behavior"
                 )
             } else {
-                List {
-                    ForEach(viewModel.rules) { rule in
-                        RuleRow(
-                            rule: rule,
-                            onToggle: { viewModel.toggleRule(rule: rule) },
-                            onDelete: {
-                                ruleToDelete = rule.id
-                                showDeleteAlert = true
-                            }
-                        )
-                        .accessibilityElement(children: .combine)
+                NativeCollectionShell {
+                    List {
+                        ForEach(viewModel.rules) { rule in
+                            RuleRow(
+                                rule: rule,
+                                onToggle: { viewModel.toggleRule(rule: rule) },
+                                onDelete: {
+                                    ruleToDelete = rule.id
+                                    showDeleteAlert = true
+                                }
+                            )
+                            .accessibilityElement(children: .combine)
+                        }
                     }
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.plain)
             }
         }
         .overlay(alignment: .bottom) {
@@ -420,9 +422,9 @@ final class RulesManagerPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Rules" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(RulesManagerView())
+        _ = addSwiftUISubview(RulesManagerView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

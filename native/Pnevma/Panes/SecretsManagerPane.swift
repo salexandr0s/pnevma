@@ -224,109 +224,108 @@ struct SecretsManagerView: View {
     var body: some View {
         let presentation = SecretsListPresentation(secrets: viewModel.secrets)
 
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Secrets")
-                        .font(.headline)
-                    Text("Project environment variables for agents and tools")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                SecretsHeaderActions(
-                    layout: headerLayout,
-                    isProjectOpen: viewModel.isProjectOpen,
-                    isLoading: viewModel.isLoading,
-                    onImport: { viewModel.importSecretsFromPanel() },
-                    onExport: { viewModel.exportTemplate() },
-                    onAdd: { viewModel.presentAddSheet() }
-                )
-            }
-            .padding(12)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .preference(key: SecretsHeaderWidthPreferenceKey.self, value: proxy.size.width)
-                }
+        NativePaneScaffold(
+            title: "Secrets",
+            subtitle: "Project and global environment values for tools and agents",
+            systemImage: "key",
+            role: .manager,
+            inlineHeaderIdentifier: "pane.secrets.inlineHeader",
+            inlineHeaderLabel: "Secrets inline header"
+        ) {
+            SecretsHeaderActions(
+                layout: headerLayout,
+                isProjectOpen: viewModel.isProjectOpen,
+                isLoading: viewModel.isLoading,
+                onImport: { viewModel.importSecretsFromPanel() },
+                onExport: { viewModel.exportTemplate() },
+                onAdd: { viewModel.presentAddSheet() }
             )
-
-            Divider()
-
-            if let waitingMessage = viewModel.projectStatusMessage {
-                VStack(spacing: 8) {
-                    ProgressView()
-                    Text(waitingMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !viewModel.isProjectOpen {
-                EmptyStateView(
-                    icon: "key.slash",
-                    title: "No project open",
-                    message: "Open a project to manage project and global secrets"
-                )
-            } else if viewModel.secrets.isEmpty {
-                EmptyStateView(
-                    icon: "key",
-                    title: "No secrets configured",
-                    message: "Add keychain-backed or .env.local-backed secrets for this project or across projects",
-                    actionTitle: "Add Secret",
-                    action: { viewModel.presentAddSheet() }
-                )
-            } else {
-                List {
-                    if presentation.hasShadowedGlobals {
-                        Section {
-                            Text("Project secrets override global secrets with the same name.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.vertical, 2)
-                        }
+        } content: {
+            Group {
+                if let waitingMessage = viewModel.projectStatusMessage {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text(waitingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-
-                    if !presentation.projectSecrets.isEmpty {
-                        Section {
-                            ForEach(presentation.projectSecrets) { secret in
-                                SecretRow(
-                                    secret: secret,
-                                    onEdit: { viewModel.presentEditSheet(secret) },
-                                    onDelete: {
-                                        pendingDeleteSecret = secret
-                                        showingDeleteAlert = true
-                                    }
-                                )
-                                .accessibilityElement(children: .contain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !viewModel.isProjectOpen {
+                    EmptyStateView(
+                        icon: "key.slash",
+                        title: "No project open",
+                        message: "Open a project to manage project and global secrets"
+                    )
+                } else if viewModel.secrets.isEmpty {
+                    EmptyStateView(
+                        icon: "key",
+                        title: "No secrets configured",
+                        message: "Add keychain-backed or .env.local-backed secrets for this project or across projects",
+                        actionTitle: "Add Secret",
+                        action: { viewModel.presentAddSheet() }
+                    )
+                } else {
+                    NativeCollectionShell {
+                        List {
+                            if presentation.hasShadowedGlobals {
+                                Section {
+                                    Text("Project secrets override global secrets with the same name.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.vertical, 2)
+                                }
                             }
-                        } header: {
-                            Text(SecretsSectionKind.project.title)
-                                .accessibilityIdentifier(SecretsSectionKind.project.accessibilityIdentifier)
-                        }
-                    }
 
-                    if !presentation.globalSecrets.isEmpty {
-                        Section {
-                            ForEach(presentation.globalSecrets) { secret in
-                                SecretRow(
-                                    secret: secret,
-                                    onEdit: { viewModel.presentEditSheet(secret) },
-                                    onDelete: {
-                                        pendingDeleteSecret = secret
-                                        showingDeleteAlert = true
+                            if !presentation.projectSecrets.isEmpty {
+                                Section {
+                                    ForEach(presentation.projectSecrets) { secret in
+                                        SecretRow(
+                                            secret: secret,
+                                            onEdit: { viewModel.presentEditSheet(secret) },
+                                            onDelete: {
+                                                pendingDeleteSecret = secret
+                                                showingDeleteAlert = true
+                                            }
+                                        )
+                                        .accessibilityElement(children: .contain)
                                     }
-                                )
-                                .accessibilityElement(children: .contain)
+                                } header: {
+                                    Text(SecretsSectionKind.project.title)
+                                        .accessibilityIdentifier(SecretsSectionKind.project.accessibilityIdentifier)
+                                }
                             }
-                        } header: {
-                            Text(SecretsSectionKind.global.title)
-                                .accessibilityIdentifier(SecretsSectionKind.global.accessibilityIdentifier)
+
+                            if !presentation.globalSecrets.isEmpty {
+                                Section {
+                                    ForEach(presentation.globalSecrets) { secret in
+                                        SecretRow(
+                                            secret: secret,
+                                            onEdit: { viewModel.presentEditSheet(secret) },
+                                            onDelete: {
+                                                pendingDeleteSecret = secret
+                                                showingDeleteAlert = true
+                                            }
+                                        )
+                                        .accessibilityElement(children: .contain)
+                                    }
+                                } header: {
+                                    Text(SecretsSectionKind.global.title)
+                                        .accessibilityIdentifier(SecretsSectionKind.global.accessibilityIdentifier)
+                                }
+                            }
                         }
+                        .listStyle(.inset)
+                        .scrollContentBackground(.hidden)
                     }
                 }
-                .listStyle(.plain)
             }
         }
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: SecretsHeaderWidthPreferenceKey.self, value: proxy.size.width)
+            }
+        )
         .overlay(alignment: .bottom) {
             ErrorBanner(message: viewModel.actionError)
         }
@@ -843,9 +842,9 @@ final class SecretsManagerPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Secrets" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(SecretsManagerView())
+        _ = addSwiftUISubview(SecretsManagerView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

@@ -197,8 +197,7 @@ struct RightInspectorView: View {
     }
 
     private var inspectorSectionTabs: some View {
-        HStack(spacing: 0) {
-            // 2 primary tabs
+        HStack(spacing: DesignTokens.Spacing.xs) {
             ForEach(RightInspectorSection.tabBarCases, id: \.self) { section in
                 Button {
                     sectionBinding.wrappedValue = section
@@ -210,25 +209,18 @@ struct RightInspectorView: View {
                             .font(.system(size: 11, weight: .medium))
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .foregroundStyle(
-                        sectionBinding.wrappedValue == section
-                            ? .primary
-                            : Color.secondary.opacity(0.7)
-                    )
+                    .padding(.vertical, 6)
                     .background(
-                        sectionBinding.wrappedValue == section
-                            ? Color.primary.opacity(0.06) : Color.clear
+                        Capsule(style: .continuous)
+                            .fill(sectionBinding.wrappedValue == section ? ChromeSurfaceStyle.pane.selectionColor : Color.clear)
                     )
                 }
-                .contentShape(Rectangle())
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("right-inspector-tab-\(section.rawValue)")
             }
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Close button
             Button {
                 onClose()
             } label: {
@@ -242,7 +234,9 @@ struct RightInspectorView: View {
             .help("Close inspector")
             .padding(.trailing, 4)
         }
-        .padding(.leading, DesignTokens.Spacing.xs)
+        .padding(.horizontal, DesignTokens.Spacing.sm)
+        .padding(.vertical, DesignTokens.Spacing.xs)
+        .background(ChromeSurfaceStyle.toolbar.color)
     }
 }
 
@@ -1621,7 +1615,6 @@ private struct SelectableDiffDocumentView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
 
         let textView = DiffDocumentTextView()
-        textView.appearance = NSAppearance(named: .darkAqua)
         textView.drawsBackground = false
         textView.isEditable = false
         textView.isSelectable = true

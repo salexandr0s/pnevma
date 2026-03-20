@@ -56,7 +56,7 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     private var windowObservers: [NSObjectProtocol] = []
     private var actionObservers: [NSObjectProtocol] = []
     private var lastReportedGridSize: (columns: UInt16, rows: UInt16)?
-    private var currentCursor: NSCursor = .iBeam
+    private var currentCursor: NSCursor = AppCursor.cursor(for: .text)
     private let closeCoordinator = TerminalCloseCoordinator()
     nonisolated(unsafe) private var chromeTransitionObserver: NSObjectProtocol?
     private var pendingSurfaceLayout: PendingSurfaceLayout?
@@ -681,7 +681,7 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
                 guard let self, self.matchesSurfaceAddr(surfaceAddr) else { return }
                 guard let rawValue else { return }
                 let shape = ghostty_action_mouse_shape_e(rawValue)
-                self.currentCursor = Self.nsCursor(for: shape)
+                self.currentCursor = AppCursor.cursor(forGhosttyShape: shape)
                 self.window?.invalidateCursorRects(for: self)
             }
         }
@@ -711,35 +711,6 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
         return true
         #endif
     }
-
-    #if canImport(GhosttyKit)
-    private static func nsCursor(for shape: ghostty_action_mouse_shape_e) -> NSCursor {
-        switch shape {
-        case GHOSTTY_MOUSE_SHAPE_TEXT:
-            return .iBeam
-        case GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT:
-            return .iBeamCursorForVerticalLayout
-        case GHOSTTY_MOUSE_SHAPE_POINTER:
-            return .pointingHand
-        case GHOSTTY_MOUSE_SHAPE_CROSSHAIR:
-            return .crosshair
-        case GHOSTTY_MOUSE_SHAPE_GRAB, GHOSTTY_MOUSE_SHAPE_GRABBING:
-            return .closedHand
-        case GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED, GHOSTTY_MOUSE_SHAPE_NO_DROP:
-            return .operationNotAllowed
-        case GHOSTTY_MOUSE_SHAPE_N_RESIZE, GHOSTTY_MOUSE_SHAPE_S_RESIZE,
-             GHOSTTY_MOUSE_SHAPE_NS_RESIZE, GHOSTTY_MOUSE_SHAPE_ROW_RESIZE:
-            return .resizeUpDown
-        case GHOSTTY_MOUSE_SHAPE_E_RESIZE, GHOSTTY_MOUSE_SHAPE_W_RESIZE,
-             GHOSTTY_MOUSE_SHAPE_EW_RESIZE, GHOSTTY_MOUSE_SHAPE_COL_RESIZE:
-            return .resizeLeftRight
-        case GHOSTTY_MOUSE_SHAPE_CONTEXT_MENU:
-            return .contextualMenu
-        default:
-            return .arrow
-        }
-    }
-    #endif
 
     private func forwardMousePosition(_ event: NSEvent) {
         #if canImport(GhosttyKit)

@@ -155,6 +155,28 @@ enum SidebarPreferences {
     }
 }
 
+enum SidebarCollapsedWorkspaceIndicator: Equatable {
+    case icon(String)
+    case text(String)
+}
+
+enum SidebarWorkspacePresentation {
+    @MainActor
+    static func shouldShowTerminalSectionHeader(for workspaces: [Workspace]) -> Bool {
+        workspaces.count > 1
+    }
+
+    @MainActor
+    static func collapsedIndicator(for workspace: Workspace) -> SidebarCollapsedWorkspaceIndicator {
+        switch workspace.kind {
+        case .terminal:
+            return .icon("terminal")
+        case .project:
+            return .text(String(workspace.name.prefix(1)).uppercased())
+        }
+    }
+}
+
 // MARK: - ToolDockPreferences
 
 enum ToolDockPreferences {

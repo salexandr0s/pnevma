@@ -293,13 +293,11 @@ struct SettingsAppHeaderCard: View {
             Spacer()
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
-        )
+        .background(ChromeSurfaceStyle.groupedCard.color)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color(nsColor: ChromeSurfaceStyle.groupedCard.separatorColor).opacity(0.45), lineWidth: 1)
         )
     }
 }

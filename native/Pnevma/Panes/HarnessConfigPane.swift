@@ -127,80 +127,78 @@ struct HarnessConfigView: View {
     @State private var isReaderMode = false
 
     var body: some View {
-        HSplitView {
-            // Sidebar
-            VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent Harness")
-                        .font(.headline)
-                    Text("Configuration files for AI agents and tools")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Divider()
-
-                List(selection: $viewModel.selectedKey) {
-                    ForEach(viewModel.activeCategories, id: \.self) { category in
-                        let categoryEntries = viewModel.entries(for: category)
-                        Section {
-                            ForEach(categoryEntries) { entry in
-                                HarnessConfigRow(entry: entry)
-                                    .tag(entry.key)
+        NativePaneScaffold(
+            title: "Harness Config",
+            subtitle: "Agent, hook, MCP, and workspace configuration files",
+            systemImage: "slider.horizontal.3",
+            role: .document,
+            inlineHeaderIdentifier: "pane.harnessConfig.inlineHeader",
+            inlineHeaderLabel: "Harness Config inline header"
+        ) {
+            NativeSplitScaffold(
+                sidebarMinWidth: 220,
+                sidebarIdealWidth: 280,
+                sidebarMaxWidth: 320
+            ) {
+                NativeCollectionShell {
+                    List(selection: $viewModel.selectedKey) {
+                        ForEach(viewModel.activeCategories, id: \.self) { category in
+                            let categoryEntries = viewModel.entries(for: category)
+                            Section {
+                                ForEach(categoryEntries) { entry in
+                                    HarnessConfigRow(entry: entry)
+                                        .tag(entry.key)
+                                }
+                            } header: {
+                                HarnessCategoryHeader(
+                                    category: category,
+                                    count: categoryEntries.count
+                                )
                             }
-                        } header: {
-                            HarnessCategoryHeader(
-                                category: category,
-                                count: categoryEntries.count
-                            )
                         }
                     }
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.sidebar)
-            }
-            .frame(minWidth: 200, idealWidth: 250, maxWidth: 300)
-
-            // Editor area
-            VStack(spacing: 0) {
-                if let selectedKey = viewModel.selectedKey,
-                   let entry = viewModel.allEntries.first(where: { $0.key == selectedKey }) {
-                    HarnessConfigEditorHeader(
-                        entry: entry,
-                        isSaving: viewModel.isSaving,
-                        hasChanges: viewModel.hasUnsavedChanges,
-                        isReaderMode: $isReaderMode,
-                        onSave: { viewModel.save() }
-                    )
-
-                    Divider()
-
-                    if viewModel.isLoading {
-                        ProgressView("Loading...")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if !entry.exists {
-                        EmptyStateView(
-                            icon: "doc.badge.plus",
-                            title: "File does not exist",
-                            message: entry.path
+            } detail: {
+                VStack(spacing: 0) {
+                    if let selectedKey = viewModel.selectedKey,
+                       let entry = viewModel.allEntries.first(where: { $0.key == selectedKey }) {
+                        HarnessConfigEditorHeader(
+                            entry: entry,
+                            isSaving: viewModel.isSaving,
+                            hasChanges: viewModel.hasUnsavedChanges,
+                            isReaderMode: $isReaderMode,
+                            onSave: { viewModel.save() }
                         )
-                    } else if isReaderMode && entry.format == "markdown" {
-                        MarkdownReaderView(content: viewModel.editorContent)
+
+                        Divider()
+
+                        if viewModel.isLoading {
+                            ProgressView("Loading...")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if !entry.exists {
+                            EmptyStateView(
+                                icon: "doc.badge.plus",
+                                title: "File does not exist",
+                                message: entry.path
+                            )
+                        } else if isReaderMode && entry.format == "markdown" {
+                            MarkdownReaderView(content: viewModel.editorContent)
+                        } else {
+                            HarnessConfigEditor(
+                                content: $viewModel.editorContent,
+                                format: entry.format,
+                                validationError: viewModel.validationError
+                            )
+                        }
                     } else {
-                        HarnessConfigEditor(
-                            content: $viewModel.editorContent,
-                            format: entry.format,
-                            validationError: viewModel.validationError
+                        EmptyStateView(
+                            icon: "doc.text",
+                            title: "Select a config file",
+                            message: "Choose a harness configuration file from the sidebar to view or edit it"
                         )
                     }
-                } else {
-                    EmptyStateView(
-                        icon: "doc.text",
-                        title: "Select a config file",
-                        message: "Choose a harness configuration file from the sidebar to view or edit it"
-                    )
                 }
             }
         }
@@ -507,9 +505,9 @@ final class HarnessConfigPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Harness Config" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(HarnessConfigView())
+        _ = addSwiftUISubview(HarnessConfigView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError() }

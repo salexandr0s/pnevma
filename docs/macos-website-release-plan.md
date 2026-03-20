@@ -1,5 +1,7 @@
 # macOS Website Release Plan
 
+> Note for the first public `v0.2.0` DMG: the immediate release may ship as a Developer ID signed artifact without notarization while Apple processing remains blocked or too slow. In that case users will need the documented Finder `Open` or `Open Anyway` flow from [`macos-release.md`](./macos-release.md). This document remains the target plan for the fully notarized website release path.
+
 This document is the execution plan for shipping Pnevma as a downloadable macOS app from the Pnevma website using Apple's supported distribution path: `Developer ID` signing, hardened runtime, notarization, stapling, and normal Gatekeeper launch.
 
 It is intentionally narrower than the broader product roadmap. This plan is about one thing: getting from the current native app state to a public website release that installs cleanly on a user's Mac without bypass instructions.

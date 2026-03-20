@@ -1,7 +1,7 @@
 @preconcurrency import ObjectiveC
 import Cocoa
 
-/// A subtle 1pt separator line that follows the ghostty split divider color.
+/// A subtle 1pt separator line that follows the system chrome separator color.
 final class ThemedSeparatorView: NSView {
     enum Axis { case horizontal, vertical }
     private let axis: Axis
@@ -30,7 +30,6 @@ final class ThemedSeparatorView: NSView {
     }
 
     private func updateColor() {
-        let theme = GhosttyThemeProvider.shared
-        layer?.backgroundColor = (theme.splitDividerColor ?? NSColor.separatorColor).cgColor
+        layer?.backgroundColor = ChromeSurfaceStyle.toolbar.separatorColor.cgColor
     }
 }

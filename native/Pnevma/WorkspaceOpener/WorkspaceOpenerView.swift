@@ -86,24 +86,13 @@ struct WorkspaceOpenerView: View {
             .padding(.horizontal, DesignTokens.Spacing.md)
             .padding(.vertical, DesignTokens.Spacing.md)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .fixedSize(horizontal: false, vertical: viewModel.selectedTab == .prompt)
-        .onChange(of: viewModel.promptText) { _, _ in
-            onPreferredSizeChange(viewModel.preferredPanelSize)
-        }
+        .background(ChromeSurfaceStyle.window.color)
+        .frame(
+            minWidth: WorkspaceOpenerPanelLayout.minimumSize.width,
+            minHeight: WorkspaceOpenerPanelLayout.minimumSize.height,
+            alignment: .top
+        )
         .onChange(of: viewModel.selectedTab) { _, _ in
-            onPreferredSizeChange(viewModel.preferredPanelSize)
-        }
-        .onChange(of: viewModel.showAdvancedOptions) { _, _ in
-            onPreferredSizeChange(viewModel.preferredPanelSize)
-        }
-        .onChange(of: viewModel.sshEnabled) { _, _ in
-            onPreferredSizeChange(viewModel.preferredPanelSize)
-        }
-        .onChange(of: viewModel.errorMessage) { _, _ in
-            onPreferredSizeChange(viewModel.preferredPanelSize)
-        }
-        .onChange(of: viewModel.isCreatingNewBranch) { _, _ in
             onPreferredSizeChange(viewModel.preferredPanelSize)
         }
         .onChange(of: viewModel.selectedProjectPath) { _, _ in

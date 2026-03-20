@@ -1,64 +1,103 @@
 # Architecture Overview
 
-Pnevma is a native macOS application (Swift/AppKit) backed by a Rust workspace. The Rust crates compile to a static library via `pnevma-bridge`, which the Swift app links directly through a C FFI layer. All workflow logic lives in Rust; the Swift layer is a thin view renderer.
+Pnevma is a native macOS application built with Swift/AppKit and backed by a Rust workspace. The Swift app is the view and interaction layer. The Rust backend owns workflow logic, persistence, automation, remote access, SSH/session behavior, and safety-sensitive rules.
 
-## High-level flow
+The bridge between them is `pnevma-bridge`, which compiles to `libpnevma_bridge.a` and exposes a C ABI consumed by the app.
 
-1. Swift app calls Rust functions through the C FFI bridge (`libpnevma_bridge.a`).
-2. Rust backend mutates project/session/task state and persists to SQLite/event log.
-3. Rust backend invokes registered Swift callbacks to push state updates (task*updated, session*\*, project_refreshed).
-4. Swift app refreshes panes from callback payloads.
+## System Shape
 
-Optional external automation uses the same backend through a local Unix socket (`pnevma ctl`).
+At a high level, the product is made of four layers:
 
-## Crate boundaries
+1. **Native macOS UI** in `native/` for panes, chrome, workspace management, and operator interactions.
+2. **FFI bridge** in `crates/pnevma-bridge` for Swift-to-Rust calls and callback delivery.
+3. **Rust workflow services** for tasks, sessions, worktrees, review, automation, tracking, remote access, SSH, and redaction.
+4. **Persistence and artifacts** in SQLite, the append-only event log, and filesystem outputs such as review packs and scrollback.
 
-- `pnevma-core`: task model, state transitions, orchestration, config parsing.
-- `pnevma-session`: PTY/tmux session supervision, health, scrollback persistence.
-- `pnevma-agents`: provider adapters and dispatch pool.
-- `pnevma-git`: worktrees, leases, merge queue mechanics.
-- `pnevma-context`: context compiler and manifests.
-- `pnevma-db`: SQLx migrations/query layer.
-- `pnevma-ssh`: SSH key management, profile builder, Tailscale discovery.
-- `pnevma-commands`: RPC command router — maps string command IDs to backend handlers.
-- `pnevma-remote`: HTTP/WS remote access server with TLS, auth, rate limiting, and CORS.
-- `pnevma-bridge`: FFI entry point — exposes a C ABI, compiles to `libpnevma_bridge.a` linked by the Swift app.
+## Primary Runtime Paths
 
-## Build pipeline
+### Local operator path
 
-The build is three sequential stages:
+1. The Swift app invokes backend commands through the FFI bridge.
+2. `pnevma-commands` routes those calls into the relevant Rust subsystem.
+3. The backend mutates task, session, project, and review state.
+4. Updated state is persisted and pushed back to Swift through registered callbacks.
 
+This is the core path behind the task board, terminal panes, review surfaces, settings, and most day-to-day operator workflows.
+
+### Remote durable SSH path
+
+Remote durable SSH sessions follow a separate execution path:
+
+1. The app or command layer invokes SSH/session commands through the same backend.
+2. `pnevma-ssh` manages profiles, key handling, Tailscale discovery, and remote helper lifecycle.
+3. A packaged `pnevma-remote-helper` binary is installed or reused on the remote host.
+4. The helper owns remote session attach, reattach, health, and compatibility behavior while Pnevma persists the local control state.
+
+This is the path behind the current packaged remote helper validation and durable reconnect or relaunch documentation.
+
+### External control paths
+
+Two optional control surfaces reuse the same backend command model:
+
+- a local Unix socket control plane (`pnevma ctl`)
+- an HTTPS and WebSocket remote server with TLS, auth, rate limits, and CORS controls
+
+They do not create a separate workflow engine. They expose the existing one.
+
+## Workspace Crates
+
+- `pnevma-core`: task model, orchestration, config parsing, workflow state
+- `pnevma-redaction`: secret detection and redaction utilities
+- `pnevma-session`: local session supervision, health, replay, scrollback
+- `pnevma-agents`: provider adapters and dispatch behavior
+- `pnevma-git`: worktrees, leases, merge queue mechanics
+- `pnevma-context`: context compilation and manifests
+- `pnevma-db`: schema, migrations, and query layer
+- `pnevma-ssh`: SSH profiles, Tailscale discovery, remote durable session support
+- `pnevma-remote-helper`: packaged helper binary for supported remote targets
+- `pnevma-remote`: HTTPS and WebSocket remote access server
+- `pnevma-commands`: command router and backend-facing application surface
+- `pnevma-tracker`: issue tracker integration support
+- `pnevma-bridge`: FFI entry point for the macOS app
+
+## State Ownership
+
+- Rust owns authoritative workflow state and all persistent writes.
+- Swift does not mutate authoritative state directly.
+- Cross-pane synchronization happens through backend callbacks and explicit reloads from Rust-owned state.
+- Safety-sensitive behavior such as worktree isolation, session control, redaction, and remote policy stays out of UI-only code.
+
+## Persistence
+
+- **SQLite** stores project, task, session, pane, review, notification, telemetry, and related records.
+- **Append-only event log** preserves audit and replay history.
+- **Filesystem artifacts** hold review packs, scrollback, knowledge captures, telemetry exports, and related outputs.
+
+This persistence model is what lets Pnevma recover state across relaunch instead of treating every session as disposable.
+
+## Build Pipeline
+
+The shipping native build is a three-stage pipeline:
+
+```text
+Stage 1 (Zig):   vendor/ghostty        -> GhosttyKit.xcframework
+Stage 2 (Cargo): crates/pnevma-bridge  -> libpnevma_bridge.a
+Stage 3 (Xcode): native/               -> Pnevma.app
 ```
-Stage 1 (Zig):   vendor/ghostty  →  Ghostty.xcframework
-Stage 2 (Cargo): pnevma-bridge   →  libpnevma_bridge.a
-Stage 3 (Xcode): native/         →  Pnevma.app
-```
 
-The Xcode project is generated from `native/project.yml` using XcodeGen (`just xcodegen`). Both the Ghostty xcframework and the Rust staticlib are referenced as local framework/library targets in the generated project.
+The Xcode project is generated from `native/project.yml` with XcodeGen. The generated project links the local Ghostty xcframework and Rust static library into the native app target.
 
-## State ownership rules
+## Design Boundaries
 
-- Rust backend owns all workflow state and writes.
-- Swift app never mutates authoritative state directly; all mutations go through the FFI bridge.
-- Cross-pane synchronization happens through Rust callbacks registered at app startup.
-
-## Persistence model
-
-- SQLite: project/task/session/pane/check/review/telemetry/feedback records.
-- Append-only event log: audit/replay timeline.
-- Filesystem artifacts: review packs, scrollback, knowledge captures, telemetry exports.
-
-## Security/reliability controls
-
-- One-task-one-worktree invariant.
-- Merge queue serialization and pre-merge checks.
-- Secret redaction on output paths (events/scrollback/review/context).
-- Control socket permissions (`0600`) and optional password mode.
-- Remote server TLS with self-signed cert; fingerprint logged at startup.
-- Rate limiting and CORS on all remote HTTP/WS endpoints.
+- One task maps to one git worktree.
+- Review and merge controls stay explicit.
+- Secret redaction applies across logs, scrollback, context, and review artifacts.
+- Remote access is optional and guarded by TLS, auth, rate limits, and policy controls.
+- Worktrees are the isolation boundary for repository changes, not a replacement for OS sandboxing.
 
 ## See also
 
+- [Product Tour](./product-tour.md)
 - [Getting Started](./getting-started.md)
 - [`pnevma.toml` Reference](./pnevma-toml-reference.md)
 - [Security Deployment Guide](./security-deployment.md)

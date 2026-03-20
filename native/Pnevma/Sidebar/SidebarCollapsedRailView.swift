@@ -77,16 +77,27 @@ struct SidebarCollapsedRailView: View {
             }
             return isActive ? Color(nsColor: GhosttyThemeProvider.shared.foregroundColor) : .secondary.opacity(0.3)
         }()
-        let initial = workspace.name.prefix(1).uppercased()
+        let indicator = SidebarWorkspacePresentation.collapsedIndicator(for: workspace)
 
         return Button { onSelectWorkspace(workspace.id) } label: {
             ZStack {
                 Circle()
                     .fill(indicatorColor.opacity(isActive ? 0.2 : 0.1))
                     .frame(width: 32, height: 32)
-                Text(initial)
-                    .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(isActive ? Color(nsColor: GhosttyThemeProvider.shared.foregroundColor) : .secondary)
+                switch indicator {
+                case let .icon(systemName):
+                    Image(systemName: systemName)
+                        .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(
+                            isActive ? Color(nsColor: GhosttyThemeProvider.shared.foregroundColor) : .secondary
+                        )
+                case let .text(label):
+                    Text(label)
+                        .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(
+                            isActive ? Color(nsColor: GhosttyThemeProvider.shared.foregroundColor) : .secondary
+                        )
+                }
             }
         }
         .buttonStyle(.plain)

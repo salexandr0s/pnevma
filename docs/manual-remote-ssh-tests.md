@@ -7,7 +7,7 @@ This document complements:
 - `scripts/run-packaged-remote-helper-smoke.sh` for packaged-app remote helper validation
 - `scripts/run-packaged-remote-durable-lifecycle-smoke.sh` and [`manual-remote-durable-lifecycle-tests.md`](./manual-remote-durable-lifecycle-tests.md) for packaged remote durable reconnect, relaunch, and reattach validation
 - `scripts/seed-remote-helper-fixture.sh` for deterministic upgrade fixture setup
-- `docs/macos-release.md` for signing, notarization, stapling, and release evidence
+- `docs/macos-release.md` for signing, DMG packaging, first-launch instructions, and release evidence
 
 ## Supported Remote Matrix
 

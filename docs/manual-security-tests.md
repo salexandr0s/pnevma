@@ -196,31 +196,38 @@ Verify that recognizable provider credentials are redacted before persistence an
 
 ---
 
-## G6: Sign / Notarize / Staple Pipeline
+## G6: Signed Release Artifact Validation
 
-**Reference**: `scripts/release-macos-sign.sh`, `scripts/release-macos-notarize.sh`, `scripts/release-macos-staple-verify.sh`
+**Reference**: `scripts/release-macos-sign.sh`, `scripts/release-macos-package-dmg.sh`, `docs/macos-release.md`
 
 **Procedure**:
 
 ```bash
-# 1. Sign
+# 1. Sign app
 APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-sign.sh
 
-# 2. Notarize
-APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-notarize.sh
+# 2. Package DMG
+APP_PATH=/path/to/Pnevma.app DMG_PATH=/path/to/Pnevma.dmg \
+  bash scripts/release-macos-package-dmg.sh
 
-# 3. Staple and verify
-APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-staple-verify.sh
+# 3. Sign DMG
+TARGET_PATH=/path/to/Pnevma.dmg bash scripts/release-macos-sign.sh
 
-# 4. Verify Gatekeeper passes
-spctl --assess --type exec /path/to/Pnevma.app && echo "PASS" || echo "FAIL"
-
-# 5. Verify codesign
+# 4. Verify codesign
 codesign --verify --deep --strict /path/to/Pnevma.app && echo "PASS" || echo "FAIL"
+codesign --verify --verbose=2 /path/to/Pnevma.dmg && echo "PASS" || echo "FAIL"
+
+# 5. Optional informational Gatekeeper output
+spctl --assess --type open --context context:primary-signature --verbose=4 /path/to/Pnevma.dmg || true
 ```
 
-**Pass**: All three scripts exit 0; `spctl` and `codesign` report no errors.
-**Fail**: Any script exits non-zero, or Gatekeeper rejects the bundle.
+For the first public signed-only DMG, notarization and stapling are intentionally
+deferred. `spctl` output is still useful to capture, but the release criterion
+for this cut is the documented Finder `Open` or `Open Anyway` flow on a clean
+machine rather than Gatekeeper acceptance.
+
+**Pass**: signing and packaging succeed, `codesign` verifies both artifacts, and the documented first-launch flow works on a clean machine.
+**Fail**: any signing or packaging step exits non-zero, `codesign` fails, or the app only launches through undocumented bypass steps.
 
 ---
 

@@ -7,7 +7,7 @@ This document complements:
 - `scripts/run-packaged-remote-durable-lifecycle-smoke.sh` for packaged-app or DMG lifecycle validation
 - `scripts/run-packaged-remote-helper-smoke.sh` and [`manual-remote-ssh-tests.md`](./manual-remote-ssh-tests.md) for packaged helper install and upgrade validation
 - [`manual-smoke-tests.md`](./manual-smoke-tests.md) for the clean-machine DMG install flow
-- [`macos-release.md`](./macos-release.md) for signing, notarization, stapling, and release evidence
+- [`macos-release.md`](./macos-release.md) for signing, DMG packaging, first-launch instructions, and release evidence
 
 ## Scope
 
@@ -168,7 +168,7 @@ Run one clean-machine validation on a fresh macOS user account or second Mac aga
 
 1. Mount the candidate DMG.
 2. Drag `Pnevma.app` into `/Applications`.
-3. Launch from `/Applications` and record whether Gatekeeper required any bypass.
+3. Launch from `/Applications` using the documented Finder `Open` or `Open Anyway` flow if macOS blocks first launch, and record which path was required.
 4. Open a real workspace.
 5. Connect to `savorgserver`.
 6. Confirm a `remote_ssh_durable` session exists.

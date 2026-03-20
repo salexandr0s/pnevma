@@ -60,6 +60,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarTopToTitlebar: NSLayoutConstraint?
     private var sidebarTopToToolbarSep: NSLayoutConstraint?
     private var sidebarWidthConstraint: NSLayoutConstraint?
+    private var sidebarResizerView: NSView?
     private var rightInspectorHostView: NSView?
     private var rightInspectorFooterView: NSView?
     private var rightInspectorWidthConstraint: NSLayoutConstraint?
@@ -168,7 +169,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.appearance = NSAppearance(named: .darkAqua)
         initializeRuntime()
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -616,6 +616,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         toolDockHostView = nil
         sidebarHostView = nil
         sidebarContentView = nil
+        sidebarResizerView = nil
         rightInspectorHostView = nil
         rightInspectorFooterView = nil
         rightInspectorResizerView = nil
@@ -720,7 +721,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.title = ""
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
-        win.appearance = NSAppearance(named: .darkAqua)
         // Tab bar — added as a content-level view below the titlebar, not a toolbar item
         let tabBar = TabBarView()
         tabBar.onSelectTab = { [weak self] index in self?.switchToTab(index) }
@@ -822,6 +822,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         self.sidebarHostView = sidebarBacking
         self.sidebarContentView = sidebarHost
+
+        let sidebarResizer = SidebarResizeHandleView()
+        sidebarResizer.onResize = { [weak self] delta in
+            self?.adjustSidebarWidth(by: delta)
+        }
+        sidebarResizer.isHidden = currentSidebarMode != .expanded
+        sidebarResizer.alphaValue = currentSidebarMode == .expanded ? 1 : 0
+        self.sidebarResizerView = sidebarResizer
 
         // Collapsed sidebar rail — icon-only mode
         let collapsedRailView = SidebarCollapsedRailView(
@@ -959,6 +967,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: AnyView(toolDrawerOverlay.environment(GhosttyThemeProvider.shared))
         )
         toolDrawerHost.capturesPointerEvents = false
+        toolDrawerHost.onBoundsChanged = { [weak self] in
+            self?.syncToolDrawerPointerCapture()
+        }
         self.toolDrawerOverlayHostView = toolDrawerHost
 
         // Titlebar fill: themed background behind the transparent titlebar
@@ -1086,7 +1097,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         agentStrip.setAccessibilityIdentifier("agentStrip.host")
         self.agentStripHostView = agentStrip
 
-        for view in [sidebarBacking, tabBar, agentStrip, contentArea, toolDock, toolbarSep,
+        for view in [sidebarBacking, tabBar, agentStrip, contentArea, sidebarResizer, toolDock, toolbarSep,
                       rightInspectorBacking, rightInspectorFooter, rightInspectorResizer,
                       sidebarToggleBtn, notificationsBtn, usageBtn, resourceMonitorBtn, addWorkspaceBtn,
                       templateBtn, titlebarStatus,
@@ -1213,6 +1224,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             contentMinWidth,
 
             sidebarBacking.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+            sidebarResizer.leadingAnchor.constraint(
+                equalTo: sidebarBacking.trailingAnchor,
+                constant: -DesignTokens.Layout.dividerHoverWidth
+            ),
+            sidebarResizer.trailingAnchor.constraint(
+                equalTo: sidebarBacking.trailingAnchor,
+                constant: DesignTokens.Layout.dividerHoverWidth
+            ),
+            sidebarResizer.topAnchor.constraint(equalTo: toolbarSep.bottomAnchor),
+            sidebarResizer.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+
             rightInspectorBacking.bottomAnchor.constraint(equalTo: toolDock.topAnchor),
             rightInspectorFooter.leadingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
             rightInspectorFooter.trailingAnchor.constraint(equalTo: rightInspectorBacking.trailingAnchor),
@@ -1987,6 +2009,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebarHostView?.alphaValue = 1
             setSidebarContentVisibility(for: mode)
         }
+        syncSidebarResizerPresentation(for: mode)
+    }
+
+    private func syncSidebarResizerPresentation(for mode: SidebarMode) {
+        let shouldShow = mode == .expanded
+        sidebarResizerView?.isHidden = !shouldShow
+        sidebarResizerView?.alphaValue = shouldShow ? 1 : 0
     }
 
     private func setSidebarContentVisibility(for mode: SidebarMode) {
@@ -2215,6 +2244,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarTransitionGeneration &+= 1
         let transitionGeneration = sidebarTransitionGeneration
         isSidebarVisible = toMode != .hidden
+        syncSidebarResizerPresentation(for: toMode)
 
         let signpost = PerformanceDiagnostics.shared.beginInterval("sidebar.toggle")
         ChromeTransitionCoordinator.shared.begin(.sidebar)
@@ -2558,6 +2588,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         persistence?.markDirty()
     }
 
+    private func adjustSidebarWidth(by delta: CGFloat) {
+        guard currentSidebarMode == .expanded else { return }
+
+        let width = min(
+            max(SidebarPreferences.sidebarWidth + delta, DesignTokens.Layout.sidebarMinWidth),
+            DesignTokens.Layout.sidebarMaxWidth
+        )
+        SidebarPreferences.sidebarWidth = width
+        sidebarWidthConstraint?.constant = width
+        updateWindowMinWidth()
+        persistence?.markDirty()
+    }
+
     private func updateWindowMinWidth() {
         let basePaneMinWidth: CGFloat = 800 - DesignTokens.Layout.sidebarWidth
         let leftWidth: CGFloat = switch currentSidebarMode {
@@ -2630,7 +2673,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.appearance = NSAppearance(named: .darkAqua)
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.level = .floating
@@ -2845,7 +2887,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.title = "New Workspace"
         panel.titleVisibility = .visible
         panel.titlebarAppearsTransparent = false
-        panel.appearance = NSAppearance(named: .darkAqua)
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.level = .modalPanel
@@ -3653,7 +3694,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         win.title = ""
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
-        win.appearance = NSAppearance(named: .darkAqua)
         win.toolbarStyle = .unifiedCompact
         win.isMovableByWindowBackground = true
         win.minSize = NSSize(width: 840, height: 560)
@@ -3721,6 +3761,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.persistence?.markDirty()
             },
             onDrawerHeightChanged: { [weak self] _ in
+                self?.syncToolDrawerPointerCapture()
                 self?.persistence?.markDirty()
             }
         )
@@ -3915,6 +3956,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 toolDrawerPreviousFirstResponder = window?.firstResponder as? NSResponder
                 toolDrawerChromeState.isPresented = true
+                syncToolDrawerPointerCapture()
                 toolDockState.activeToolID = toolID
                 refreshToolDockAutoHide(animated: true)
                 if toolID == "browser" {
@@ -3949,6 +3991,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         browserSession: session
                     )
                 }
+                syncToolDrawerPointerCapture()
             } else {
                 replaceToolDrawerContent(
                     toolID: toolID,
@@ -3956,6 +3999,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     browserSession: session
                 )
                 toolDrawerChromeState.isPresented = true
+                syncToolDrawerPointerCapture()
                 refreshToolDockAutoHide(animated: true)
             }
             toolDockState.activeToolID = toolID
@@ -3965,7 +4009,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create a fresh pane for the new tool
         guard PaneFactory.isPaneTypeAvailable(tool.paneType, in: workspace),
-              let (paneID, paneView) = PaneFactory.make(type: tool.paneType) else { return }
+              let (paneID, paneView) = PaneFactory.make(type: tool.paneType, chromeContext: .drawer) else { return }
         preserveToolDrawerHeightForCurrentContentIfNeeded()
         discardCurrentToolDrawerPaneView()
 
@@ -3982,6 +4026,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 // Keep current drawer height — don't reset on tool switch
             }
+            syncToolDrawerPointerCapture()
         } else {
             replaceToolDrawerContent(
                 toolID: toolID,
@@ -3991,6 +4036,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             toolDrawerContentModel.drawerHeight = DrawerSizing.storedHeight()
             toolDrawerChromeState.isPresented = true
+            syncToolDrawerPointerCapture()
             refreshToolDockAutoHide(animated: true)
         }
         toolDockState.activeToolID = toolID
@@ -4014,6 +4060,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             toolDrawerChromeState.isPresented = false
             toolDrawerChromeState.drawerHitRect = .zero
         }
+        syncToolDrawerPointerCapture()
         refreshToolDockAutoHide(animated: true)
         scheduleToolDrawerCleanupAfterClose()
     }
@@ -4052,6 +4099,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
         cancelPendingToolDrawerCleanup()
         toolDrawerChromeState.isPresented = false
+        syncToolDrawerPointerCapture()
         toolDockState.activeToolID = nil
         clearToolDrawerContent()
         refreshToolDockAutoHide(animated: true)
@@ -4064,12 +4112,55 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let toolID = toolDrawerContentModel.activeToolID else { return }
         cancelPendingToolDrawerCleanup()
         toolDrawerChromeState.isPresented = false
+        syncToolDrawerPointerCapture()
         toolDockState.activeToolID = nil
         clearToolDrawerContent()
         refreshToolDockAutoHide(animated: true)
         Task { @MainActor [weak self] in
             self?.openToolAsTab(toolID)
         }
+    }
+
+    private func syncToolDrawerPointerCapture() {
+        let isVisible = toolDrawerChromeState.isPresented
+        toolDrawerOverlayBlockerView?.capturesPointerEvents = isVisible
+        toolDrawerOverlayHostView?.capturesPointerEvents = isVisible
+        let hitRect = resolvedToolDrawerOverlayHitRect()
+        toolDrawerChromeState.drawerHitRect = hitRect
+        toolDrawerOverlayBlockerView?.overlayHitRect = hitRect
+        toolDrawerOverlayHostView?.overlayHitRect = hitRect
+    }
+
+    private func resolvedToolDrawerOverlayHitRect() -> CGRect {
+        guard toolDrawerChromeState.isPresented else { return .zero }
+        guard toolDrawerContentModel.activePaneView != nil || toolDrawerContentModel.activeBrowserSession != nil else {
+            return .zero
+        }
+
+        let bounds = toolDrawerOverlayHostView?.bounds
+            ?? contentAreaView?.bounds
+            ?? .zero
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+
+        let drawerHeight: CGFloat
+        if let session = toolDrawerContentModel.activeBrowserSession {
+            drawerHeight = session.resolvedDrawerHeight(for: bounds.height)
+        } else {
+            drawerHeight = DrawerSizing.resolvedHeight(
+                storedHeight: toolDrawerContentModel.drawerHeight,
+                availableHeight: bounds.height
+            )
+        }
+
+        let resolvedHeight = min(max(0, drawerHeight), bounds.height)
+        guard resolvedHeight > 0 else { return .zero }
+
+        return CGRect(
+            x: bounds.minX,
+            y: max(bounds.minY, bounds.maxY - resolvedHeight),
+            width: bounds.width,
+            height: resolvedHeight
+        )
     }
 
     private func copyBrowserSelectionWithSource() async {
@@ -5022,6 +5113,7 @@ extension AppDelegate {
 extension AppDelegate: NSWindowDelegate {
     public func windowDidResize(_ notification: Notification) {
         contentAreaView?.needsLayout = true
+        syncToolDrawerPointerCapture()
     }
 
     public func windowDidEnterFullScreen(_ notification: Notification) {

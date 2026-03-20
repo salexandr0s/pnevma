@@ -62,11 +62,16 @@ struct SidebarView: View {
                 // Terminal section (always first)
                 let terminals = workspaceManager.terminalWorkspaces
                 if !terminals.isEmpty {
-                    SidebarSectionHeader(
-                        title: "Terminal",
-                        isCollapsible: false
-                    )
-                    .padding(.top, 8)
+                    if SidebarWorkspacePresentation.shouldShowTerminalSectionHeader(for: terminals) {
+                        SidebarSectionHeader(
+                            title: "Terminal",
+                            isCollapsible: false
+                        )
+                        .padding(.top, 8)
+                    } else {
+                        Color.clear
+                            .frame(height: 8)
+                    }
 
                     ForEach(terminals) { workspace in
                         workspaceRow(workspace)
