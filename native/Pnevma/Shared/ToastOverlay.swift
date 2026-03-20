@@ -92,47 +92,64 @@ struct ToastOverlayView: View {
     var manager: ToastManager
 
     var body: some View {
-        VStack {
-            Spacer()
+        ZStack(alignment: .bottom) {
             if let toast = manager.currentToast {
-                Button(action: { manager.dismiss() }) {
-                    HStack(spacing: 8) {
-                        if let icon = toast.icon {
-                            Image(systemName: icon)
-                                .foregroundStyle(iconColor(toast.style))
-                        }
-                        Text(toast.text)
-                            .font(.body.weight(.medium))
-                            .lineLimit(2)
-
-                        if let action = toast.action {
-                            Divider()
-                                .frame(height: 16)
-                            Button(action.title) {
-                                action.callback()
-                                manager.dismiss()
-                            }
-                            .buttonStyle(.plain)
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(.ultraThinMaterial)
-                            .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Dismiss notification")
+                toastCard(for: toast)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                .padding(.horizontal, DesignTokens.Spacing.lg)
                 .padding(.bottom, DesignTokens.Layout.toolDockHeight + 12)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .animation(.easeInOut(duration: DesignTokens.Motion.normal), value: manager.currentToast?.id)
         .transaction { $0.disablesAnimations = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    }
+
+    private func toastCard(for toast: ToastMessage) -> some View {
+        HStack(spacing: 10) {
+            if let icon = toast.icon {
+                Image(systemName: icon)
+                    .foregroundStyle(iconColor(toast.style))
+            }
+
+            Text(toast.text)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let action = toast.action {
+                Divider()
+                    .frame(height: 18)
+
+                Button(action.title) {
+                    action.callback()
+                    manager.dismiss()
+                }
+                .buttonStyle(.plain)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            }
+        }
+        .frame(maxWidth: 520, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.regularMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(borderColor(toast.style), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onTapGesture {
+            manager.dismiss()
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Notification")
     }
 
     private func iconColor(_ style: ToastMessage.ToastStyle) -> Color {
@@ -140,6 +157,14 @@ struct ToastOverlayView: View {
         case .success: return .green
         case .error: return .red
         case .info: return .accentColor
+        }
+    }
+
+    private func borderColor(_ style: ToastMessage.ToastStyle) -> Color {
+        switch style {
+        case .success: return .green.opacity(0.28)
+        case .error: return .red.opacity(0.28)
+        case .info: return Color.accentColor.opacity(0.28)
         }
     }
 }

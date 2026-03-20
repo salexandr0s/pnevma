@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Extracted run card for reuse in CommandCenterView and AgentStrip context menu.
+/// Extracted run card for reuse across command center surfaces.
 struct CommandCenterRunCard: View {
     let runID: String
     let taskTitle: String?

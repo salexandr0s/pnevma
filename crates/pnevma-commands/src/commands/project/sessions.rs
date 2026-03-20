@@ -76,12 +76,12 @@ async fn read_scrollback_file_slice(
 
 pub async fn create_session(input: SessionInput, state: &AppState) -> Result<String, String> {
     let started = Instant::now();
-    let (db, project_id, project_path, default_shell, allowed_commands, sessions) = state
+    let (db, project_id, checkout_path, default_shell, allowed_commands, sessions) = state
         .with_project("create_session", |ctx| {
             (
                 ctx.db.clone(),
                 ctx.project_id,
-                ctx.project_path.clone(),
+                ctx.checkout_path.clone(),
                 ctx.global_config.default_shell.clone(),
                 ctx.config.automation.allowed_commands.clone(),
                 ctx.sessions.clone(),
@@ -138,13 +138,13 @@ pub async fn create_session(input: SessionInput, state: &AppState) -> Result<Str
         }
 
         let cwd = if Path::new(&input.cwd).is_relative() {
-            project_path.join(&input.cwd).to_string_lossy().to_string()
+            checkout_path.join(&input.cwd).to_string_lossy().to_string()
         } else {
             input.cwd.clone()
         };
 
         let resolved = std::fs::canonicalize(&cwd).map_err(|e| e.to_string())?;
-        let project_canonical = std::fs::canonicalize(&project_path).map_err(|e| e.to_string())?;
+        let project_canonical = std::fs::canonicalize(&checkout_path).map_err(|e| e.to_string())?;
         if !resolved.starts_with(&project_canonical) {
             return Err("session cwd must be within the project directory".to_string());
         }
@@ -385,12 +385,12 @@ pub async fn list_live_session_views(state: &AppState) -> Result<Vec<LiveSession
 
 pub async fn restart_session(session_id: String, state: &AppState) -> Result<String, String> {
     let started = Instant::now();
-    let (db, project_id, project_path, sessions) = state
+    let (db, project_id, checkout_path, sessions) = state
         .with_project("restart_session", |ctx| {
             (
                 ctx.db.clone(),
                 ctx.project_id,
-                ctx.project_path.clone(),
+                ctx.checkout_path.clone(),
                 ctx.sessions.clone(),
             )
         })
@@ -479,7 +479,7 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
     }
 
     let cwd = if Path::new(&prior.cwd).is_relative() {
-        project_path.join(&prior.cwd).to_string_lossy().to_string()
+        checkout_path.join(&prior.cwd).to_string_lossy().to_string()
     } else {
         prior.cwd.clone()
     };

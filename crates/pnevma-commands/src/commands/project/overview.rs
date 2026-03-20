@@ -486,6 +486,70 @@ fn workspace_opener_branch_launch_source(branch_name: &str) -> WorkspaceLaunchSo
     workspace_launch_source("branch", 0, branch_name, "")
 }
 
+fn workspace_opener_branch_path_slug(branch_name: &str) -> String {
+    let mut slug = branch_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "branch".to_string()
+    } else {
+        trimmed.chars().take(64).collect()
+    }
+}
+
+fn workspace_opener_managed_branch_worktree_path(repo_root: &Path, branch_name: &str) -> PathBuf {
+    let slug = workspace_opener_branch_path_slug(branch_name);
+    let hash = sha256_hex(branch_name.as_bytes());
+    repo_root
+        .join(".pnevma")
+        .join("workspaces")
+        .join("branches")
+        .join(format!("{slug}-{}", &hash[..8]))
+}
+
+fn workspace_opener_configured_target_branch(repo_root: &Path) -> Option<String> {
+    let config_path = repo_root.join("pnevma.toml");
+    if !config_path.exists() {
+        return None;
+    }
+    load_project_config(&config_path)
+        .ok()
+        .map(|config| config.branches.target.trim().to_string())
+        .filter(|branch| !branch.is_empty())
+}
+
+async fn workspace_opener_target_branch(repo_root: &Path) -> Result<String, String> {
+    if let Some(branch) = workspace_opener_configured_target_branch(repo_root) {
+        return Ok(branch);
+    }
+
+    let output = TokioCommand::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("failed to detect target branch: {e}"))?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Ok(branch);
+        }
+    }
+
+    Ok("main".to_string())
+}
+
 async fn workspace_opener_validated_branch_name(
     repo_root: &Path,
     raw_branch_name: &str,
@@ -558,6 +622,7 @@ async fn workspace_opener_existing_launch_result(
 
     Ok(Some(WorkspaceOpenerLaunchResult {
         project_path: project.repo_root.to_string_lossy().to_string(),
+        checkout_path: worktree_row.path.clone(),
         workspace_name: workspace_name.to_string(),
         launch_source: launch_source.clone(),
         working_directory: Some(worktree_row.path),
@@ -833,11 +898,30 @@ pub async fn create_workspace_from_branch(
     let branch_name =
         workspace_opener_validated_branch_name(&repo_root, &input.branch_name).await?;
     let launch_source = workspace_opener_branch_launch_source(&branch_name);
+    let target_branch = workspace_opener_target_branch(&repo_root).await?;
     let worktrees_by_branch = workspace_opener_auxiliary_worktrees_by_branch(&repo_root).await?;
+
+    if input.create_new && branch_name == target_branch {
+        return Err("Target branch is reserved for the base workspace.".to_string());
+    }
+
+    if branch_name == target_branch {
+        let repo_root_str = repo_root.to_string_lossy().to_string();
+        return Ok(WorkspaceOpenerLaunchResult {
+            project_path: repo_root_str.clone(),
+            checkout_path: repo_root_str.clone(),
+            workspace_name: branch_name.clone(),
+            launch_source,
+            working_directory: None,
+            task_id: None,
+            branch: Some(branch_name),
+        });
+    }
 
     if let Some(worktree_path) = worktrees_by_branch.get(&branch_name) {
         return Ok(WorkspaceOpenerLaunchResult {
             project_path: repo_root.to_string_lossy().to_string(),
+            checkout_path: worktree_path.clone(),
             workspace_name: branch_name.clone(),
             launch_source,
             working_directory: Some(worktree_path.clone()),
@@ -846,24 +930,44 @@ pub async fn create_workspace_from_branch(
         });
     }
 
+    let worktree_path = workspace_opener_managed_branch_worktree_path(&repo_root, &branch_name);
+    if let Some(parent) = worktree_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("failed to prepare branch worktree directory: {e}"))?;
+    }
+
+    let worktree_path_string = worktree_path.to_string_lossy().to_string();
     let git_args = if input.create_new {
-        vec!["checkout", "-b", branch_name.as_str()]
+        vec![
+            "worktree".to_string(),
+            "add".to_string(),
+            "-b".to_string(),
+            branch_name.clone(),
+            worktree_path_string.clone(),
+            target_branch,
+        ]
     } else {
-        vec!["checkout", branch_name.as_str()]
+        vec![
+            "worktree".to_string(),
+            "add".to_string(),
+            worktree_path_string.clone(),
+            branch_name.clone(),
+        ]
     };
     let output = TokioCommand::new("git")
-        .args(&git_args)
+        .args(git_args)
         .current_dir(&repo_root)
         .output()
         .await
-        .map_err(|e| format!("failed to run git checkout: {e}"))?;
+        .map_err(|e| format!("failed to run git worktree add: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let action = if input.create_new {
             "create branch"
         } else {
-            "checkout branch"
+            "open branch worktree"
         };
         let message = if stderr.is_empty() {
             format!("Could not {action}.")
@@ -873,11 +977,17 @@ pub async fn create_workspace_from_branch(
         return Err(message);
     }
 
+    let canonical_worktree = tokio::fs::canonicalize(&worktree_path)
+        .await
+        .map_err(|e| format!("worktree path unavailable after create: {e}"))?;
+    let canonical_worktree_str = canonical_worktree.to_string_lossy().to_string();
+
     Ok(WorkspaceOpenerLaunchResult {
         project_path: repo_root.to_string_lossy().to_string(),
+        checkout_path: canonical_worktree_str.clone(),
         workspace_name: branch_name.clone(),
         launch_source,
-        working_directory: None,
+        working_directory: Some(canonical_worktree_str),
         task_id: None,
         branch: Some(branch_name),
     })
@@ -1002,8 +1112,10 @@ pub async fn create_workspace_from_issue(
     let workspace_name = workspace_opener_workspace_name("Issue", issue.number, &issue.title);
     let launch_source = workspace_launch_source("issue", issue.number, &issue.title, &issue.url);
     if !input.create_linked_task_worktree {
+        let repo_root = repo_context.repo_root.to_string_lossy().to_string();
         return Ok(WorkspaceOpenerLaunchResult {
-            project_path: repo_context.repo_root.to_string_lossy().to_string(),
+            project_path: repo_root.clone(),
+            checkout_path: repo_root,
             workspace_name,
             launch_source,
             working_directory: None,
@@ -1063,6 +1175,7 @@ pub async fn create_workspace_from_issue(
 
     Ok(WorkspaceOpenerLaunchResult {
         project_path: project.repo_root.to_string_lossy().to_string(),
+        checkout_path: working_directory.clone(),
         workspace_name,
         launch_source,
         working_directory: Some(working_directory),
@@ -1106,8 +1219,10 @@ pub async fn create_workspace_from_pull_request(
     let workspace_name = workspace_opener_workspace_name("PR", pr.number, &pr.title);
     let launch_source = workspace_launch_source("pull_request", pr.number, &pr.title, &pr.url);
     if !input.create_linked_task_worktree {
+        let repo_root = repo_context.repo_root.to_string_lossy().to_string();
         return Ok(WorkspaceOpenerLaunchResult {
-            project_path: repo_context.repo_root.to_string_lossy().to_string(),
+            project_path: repo_root.clone(),
+            checkout_path: repo_root,
             workspace_name,
             launch_source,
             working_directory: None,
@@ -1175,6 +1290,7 @@ pub async fn create_workspace_from_pull_request(
 
     Ok(WorkspaceOpenerLaunchResult {
         project_path: project.repo_root.to_string_lossy().to_string(),
+        checkout_path: working_directory.clone(),
         workspace_name,
         launch_source,
         working_directory: Some(working_directory),
@@ -1215,13 +1331,14 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
     // Extract everything we need from the lock scope first, then release
     // the lock before calling coord.snapshot() — snapshot() also acquires
     // state.current, and Tokio mutexes are not reentrant.
-    let (db, project_id, project_name, project_path, coordinator) = state
+    let (db, project_id, project_name, project_root_path, checkout_path, coordinator) = state
         .with_project("project_status", |ctx| {
             (
                 ctx.db.clone(),
                 ctx.project_id,
                 ctx.config.project.name.clone(),
-                ctx.project_path.to_string_lossy().to_string(),
+                ctx.project_root_path.to_string_lossy().to_string(),
+                ctx.checkout_path.to_string_lossy().to_string(),
                 ctx.coordinator.clone(),
             )
         })
@@ -1247,7 +1364,8 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
     Ok(ProjectStatusView {
         project_id: project_id.to_string(),
         project_name,
-        project_path,
+        project_path: project_root_path,
+        checkout_path,
         sessions: sessions.len(),
         tasks: tasks.len(),
         worktrees: worktrees.len(),
@@ -1256,9 +1374,15 @@ pub async fn project_status(state: &AppState) -> Result<ProjectStatusView, Strin
 }
 
 pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, String> {
-    let (db, project_id, project_path) = state
+    let (db, project_id, project_root_path, checkout_path, target_branch) = state
         .with_project("project_summary", |ctx| {
-            (ctx.db.clone(), ctx.project_id, ctx.project_path.clone())
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_root_path.clone(),
+                ctx.checkout_path.clone(),
+                ctx.config.branches.target.trim().to_string(),
+            )
         })
         .await?;
 
@@ -1293,7 +1417,7 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
         .arg("rev-parse")
         .arg("--abbrev-ref")
         .arg("HEAD")
-        .current_dir(&project_path)
+        .current_dir(&checkout_path)
         .output()
         .await
         .ok()
@@ -1304,7 +1428,7 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
 
     let git_dirty = TokioCommand::new("git")
         .args(["status", "--porcelain"])
-        .current_dir(&project_path)
+        .current_dir(&checkout_path)
         .output()
         .await
         .ok()
@@ -1313,7 +1437,7 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
 
     let (diff_insertions, diff_deletions) = TokioCommand::new("git")
         .args(["diff", "--shortstat"])
-        .current_dir(&project_path)
+        .current_dir(&checkout_path)
         .output()
         .await
         .ok()
@@ -1336,7 +1460,7 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
                     "--limit",
                     "1",
                 ])
-                .current_dir(&project_path);
+                .current_dir(&checkout_path);
             command.output()
         })
         .await
@@ -1379,6 +1503,20 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
         (None, None, None)
     };
 
+    let attention_reason = if checkout_path == project_root_path
+        && !target_branch.is_empty()
+        && git_branch
+            .as_deref()
+            .is_some_and(|branch| branch != target_branch)
+    {
+        Some(format!(
+            "Base workspace drifted from target branch {}.",
+            target_branch
+        ))
+    } else {
+        None
+    };
+
     Ok(ProjectSummaryView {
         project_id: project_id.to_string(),
         git_branch,
@@ -1399,7 +1537,7 @@ pub async fn project_summary(state: &AppState) -> Result<ProjectSummaryView, Str
         linked_pr_number,
         linked_pr_url,
         ci_status,
-        attention_reason: None,
+        attention_reason,
         git_dirty,
     })
 }
@@ -2727,7 +2865,7 @@ pub async fn automation_status(state: &AppState) -> Result<AutomationStatusView,
 }
 pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView, String> {
     let project_path = state
-        .with_project("resolve_pr_url", |ctx| ctx.project_path.clone())
+        .with_project("resolve_pr_url", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let mut command = crate::github_cli::command();
@@ -2773,7 +2911,7 @@ pub async fn resolve_pr_url(url: &str, state: &AppState) -> Result<PRResolveView
 
 pub async fn resolve_issue_url(url: &str, state: &AppState) -> Result<IssueResolveView, String> {
     let project_path = state
-        .with_project("resolve_issue_url", |ctx| ctx.project_path.clone())
+        .with_project("resolve_issue_url", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let mut command = crate::github_cli::command();
@@ -2803,7 +2941,7 @@ pub async fn resolve_issue_url(url: &str, state: &AppState) -> Result<IssueResol
 
 pub async fn list_project_files_flat(state: &AppState) -> Result<Vec<String>, String> {
     let project_path = state
-        .with_project("list_project_files_flat", |ctx| ctx.project_path.clone())
+        .with_project("list_project_files_flat", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("git")
@@ -2825,7 +2963,7 @@ pub async fn list_project_files_flat(state: &AppState) -> Result<Vec<String>, St
 
 pub async fn list_branches(state: &AppState) -> Result<Vec<String>, String> {
     let project_path = state
-        .with_project("list_branches", |ctx| ctx.project_path.clone())
+        .with_project("list_branches", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("git")
@@ -2849,9 +2987,27 @@ pub async fn list_branches(state: &AppState) -> Result<Vec<String>, String> {
     Ok(branches)
 }
 
+pub async fn checkout_branch(branch: &str, state: &AppState) -> Result<bool, String> {
+    let project_path = active_project_path(state, "checkout branch").await?;
+    let repo_root = git_repo_root_for_path(&project_path).await?;
+    let branch_name = workspace_opener_validated_branch_name(&repo_root, branch).await?;
+    let output = TokioCommand::new("git")
+        .args(["checkout", branch_name.as_str()])
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git checkout: {e}"))?;
+
+    if !output.status.success() {
+        return Err(git_failure_message(&output, "git checkout failed"));
+    }
+
+    Ok(true)
+}
+
 pub async fn changes_summary(state: &AppState) -> Result<Vec<FileChangeView>, String> {
     let project_path = state
-        .with_project("changes_summary", |ctx| ctx.project_path.clone())
+        .with_project("changes_summary", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let output = TokioCommand::new("git")
@@ -2883,7 +3039,7 @@ pub async fn changes_summary(state: &AppState) -> Result<Vec<FileChangeView>, St
 
 pub async fn check_summary(state: &AppState) -> Result<CheckSummaryView, String> {
     let project_path = state
-        .with_project("check_summary", |ctx| ctx.project_path.clone())
+        .with_project("check_summary", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let output = tokio::time::timeout(std::time::Duration::from_millis(5000), {
@@ -2928,7 +3084,7 @@ pub async fn check_summary(state: &AppState) -> Result<CheckSummaryView, String>
 
 pub async fn merge_queue_readiness(state: &AppState) -> Result<MergeReadinessView, String> {
     let project_path = state
-        .with_project("merge_queue_readiness", |ctx| ctx.project_path.clone())
+        .with_project("merge_queue_readiness", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let output = tokio::time::timeout(std::time::Duration::from_millis(5000), {
@@ -3002,7 +3158,7 @@ fn git_failure_message(output: &Output, fallback: &str) -> String {
 
 async fn active_project_path(state: &AppState, operation: &'static str) -> Result<PathBuf, String> {
     state
-        .with_project(operation, |ctx| ctx.project_path.clone())
+        .with_project(operation, |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())
 }
@@ -3170,7 +3326,7 @@ struct GhAuthorJson {
 
 pub async fn list_github_issues(state: &AppState) -> Result<Vec<GitHubIssueView>, String> {
     let project_path = state
-        .with_project("list_github_issues", |ctx| ctx.project_path.clone())
+        .with_project("list_github_issues", |ctx| ctx.checkout_path.clone())
         .await
         .map_err(|_| "no open project".to_string())?;
     let mut command = crate::github_cli::command();

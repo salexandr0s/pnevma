@@ -74,7 +74,7 @@ impl From<PullRequestRow> for PrView {
 // ── Command functions ───────────────────────────────────────────────────────
 
 pub async fn pr_create(input: PrCreateInput, state: &AppState) -> Result<PrView, String> {
-    let (db, project_id, project_path) = {
+    let (db, project_id, checkout_path) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
@@ -82,7 +82,7 @@ pub async fn pr_create(input: PrCreateInput, state: &AppState) -> Result<PrView,
         (
             ctx.db.clone(),
             ctx.project_id.to_string(),
-            ctx.project_path.clone(),
+            ctx.checkout_path.clone(),
         )
     };
 
@@ -97,7 +97,8 @@ pub async fn pr_create(input: PrCreateInput, state: &AppState) -> Result<PrView,
     let body = input.body.as_deref().unwrap_or("");
 
     let pr_info =
-        crate::pr_service::PrService::create(&project_path, &input.title, body, head, base).await?;
+        crate::pr_service::PrService::create(&checkout_path, &input.title, body, head, base)
+            .await?;
 
     let now = chrono::Utc::now().to_rfc3339();
     let row = PullRequestRow {
@@ -183,12 +184,12 @@ pub async fn pr_get(input: PrGetInput, state: &AppState) -> Result<Option<PrView
 }
 
 pub async fn pr_merge(input: PrMergeInput, state: &AppState) -> Result<PrView, String> {
-    let (db, project_path) = {
+    let (db, checkout_path) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
             .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_path.clone())
+        (ctx.db.clone(), ctx.checkout_path.clone())
     };
 
     let row = db
@@ -198,7 +199,7 @@ pub async fn pr_merge(input: PrMergeInput, state: &AppState) -> Result<PrView, S
         .ok_or_else(|| "PR not found".to_string())?;
 
     let method = input.method.as_deref().unwrap_or("merge");
-    crate::pr_service::PrService::merge(&project_path, row.number, method).await?;
+    crate::pr_service::PrService::merge(&checkout_path, row.number, method).await?;
 
     let now = chrono::Utc::now().to_rfc3339();
     db.update_pull_request_status(&input.id, "merged", Some(&now))
@@ -215,12 +216,12 @@ pub async fn pr_merge(input: PrMergeInput, state: &AppState) -> Result<PrView, S
 }
 
 pub async fn pr_close(input: PrCloseInput, state: &AppState) -> Result<PrView, String> {
-    let (db, project_path) = {
+    let (db, checkout_path) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
             .ok_or_else(|| "no open project".to_string())?;
-        (ctx.db.clone(), ctx.project_path.clone())
+        (ctx.db.clone(), ctx.checkout_path.clone())
     };
 
     let row = db
@@ -229,7 +230,7 @@ pub async fn pr_close(input: PrCloseInput, state: &AppState) -> Result<PrView, S
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "PR not found".to_string())?;
 
-    crate::pr_service::PrService::close(&project_path, row.number).await?;
+    crate::pr_service::PrService::close(&checkout_path, row.number).await?;
 
     db.update_pull_request_status(&input.id, "closed", None)
         .await

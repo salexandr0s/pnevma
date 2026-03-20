@@ -112,6 +112,7 @@ struct WorkspaceOpenerBranchLaunchParams: Encodable, Sendable {
 
 struct WorkspaceOpenerLaunchResult: Decodable, Sendable {
     let projectPath: String
+    let checkoutPath: String
     let workspaceName: String
     let launchSource: WorkspaceLaunchSource
     let workingDirectory: String?

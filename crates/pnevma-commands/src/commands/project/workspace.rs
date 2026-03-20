@@ -205,12 +205,12 @@ pub async fn search_project(
         return Ok(Vec::new());
     }
 
-    let (db, project_id, project_path, sessions) = state
+    let (db, project_id, checkout_path, sessions) = state
         .with_project("search_project", |ctx| {
             (
                 ctx.db.clone(),
                 ctx.project_id,
-                ctx.project_path.clone(),
+                ctx.checkout_path.clone(),
                 ctx.sessions.clone(),
             )
         })
@@ -225,7 +225,7 @@ pub async fn search_project(
     }
 
     let commit_log = git_output(
-        &project_path,
+        &checkout_path,
         &["log", "--pretty=format:%H%x1f%ct%x1f%s", "-n", "300"],
     )
     .await
@@ -636,7 +636,7 @@ pub async fn list_project_files(
     let (project_path, query) = state
         .with_project("list_project_files", |ctx| {
             (
-                ctx.project_path.clone(),
+                ctx.checkout_path.clone(),
                 input
                     .as_ref()
                     .and_then(|v| v.query.clone())
@@ -694,7 +694,7 @@ pub async fn list_project_files(
 
 pub async fn list_workspace_changes(state: &AppState) -> Result<Vec<ProjectFileView>, String> {
     let project_path = state
-        .with_project("list_workspace_changes", |ctx| ctx.project_path.clone())
+        .with_project("list_workspace_changes", |ctx| ctx.checkout_path.clone())
         .await?;
 
     let porcelain = git_output(&project_path, &["status", "--porcelain", "-z", "-uall"]).await?;
@@ -745,7 +745,7 @@ pub async fn get_workspace_change_diff(
     state: &AppState,
 ) -> Result<Option<DiffFileView>, String> {
     let project_path = state
-        .with_project("get_workspace_change_diff", |ctx| ctx.project_path.clone())
+        .with_project("get_workspace_change_diff", |ctx| ctx.checkout_path.clone())
         .await?;
 
     let rel = input.path.trim().trim_start_matches('/');
@@ -869,7 +869,7 @@ pub async fn list_project_file_tree(
     let (project_path, query, limit, requested_path, recursive) = state
         .with_project("list_project_file_tree", |ctx| {
             (
-                ctx.project_path.clone(),
+                ctx.checkout_path.clone(),
                 input
                     .as_ref()
                     .and_then(|value| value.query.clone())
@@ -925,7 +925,7 @@ pub async fn open_file_target(
     state: &AppState,
 ) -> Result<FileOpenResultView, String> {
     let project_path = state
-        .with_project("open_file_target", |ctx| ctx.project_path.clone())
+        .with_project("open_file_target", |ctx| ctx.checkout_path.clone())
         .await?;
     let rel = input.path.trim().trim_start_matches('/');
     ensure_safe_path_input(rel, "file path")?;
@@ -1042,7 +1042,7 @@ pub async fn write_file_target(
     state: &AppState,
 ) -> Result<FileWriteResultView, String> {
     let project_path = state
-        .with_project("write_file_target", |ctx| ctx.project_path.clone())
+        .with_project("write_file_target", |ctx| ctx.checkout_path.clone())
         .await?;
     let rel = input.path.trim().trim_start_matches('/');
     ensure_safe_path_input(rel, "file path")?;

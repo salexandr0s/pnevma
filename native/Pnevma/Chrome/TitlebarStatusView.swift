@@ -255,8 +255,9 @@ final class TitlebarStatusView: NSView {
         layer?.borderColor = theme.foregroundColor.withAlphaComponent(0.09).cgColor
 
         let secondaryColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.secondary)
-        applyButtonTitle(branchButton, color: secondaryColor)
-        applyButtonTitle(sessionsButton, color: secondaryColor)
+        let disabledColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
+        applyButtonTitle(branchButton, color: branchButton.isEnabled ? secondaryColor : disabledColor)
+        applyButtonTitle(sessionsButton, color: sessionsButton.isEnabled ? secondaryColor : disabledColor)
         agentsLabel.textColor = secondaryColor
         separator1.wantsLayer = true
         separator1.layer?.backgroundColor = theme.foregroundColor.withAlphaComponent(0.10).cgColor
@@ -313,6 +314,16 @@ final class TitlebarStatusView: NSView {
 
     func updateSessions(_ count: Int) {
         sessionsButton.title = "\(count) session\(count == 1 ? "" : "s")"
+        applyThemeColors()
+    }
+
+    func updateBranchEnabled(_ enabled: Bool) {
+        branchButton.isEnabled = enabled
+        applyThemeColors()
+    }
+
+    func updateSessionsEnabled(_ enabled: Bool) {
+        sessionsButton.isEnabled = enabled
         applyThemeColors()
     }
 

@@ -244,7 +244,9 @@ impl TestHarness {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let ctx = ProjectContext {
             project_id,
+            project_root_path: project_root.clone(),
             project_path: project_root.clone(),
+            checkout_path: project_root.clone(),
             config: make_project_config(),
             global_config: GlobalConfig {
                 default_provider: Some("claude-code".to_string()),

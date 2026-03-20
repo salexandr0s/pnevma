@@ -51,6 +51,51 @@ private struct ToolbarGitPushResult: Decodable, Sendable {
 }
 
 @MainActor
+protocol TitlebarGitActionWorkspaceManaging: AnyObject {
+    var activeWorkspaceID: UUID? { get }
+    func ensureWorkspaceReady(
+        _ workspaceID: UUID,
+        timeoutNanoseconds: UInt64
+    ) async throws -> (workspace: Workspace, runtime: WorkspaceRuntime?)
+}
+
+extension WorkspaceManager: TitlebarGitActionWorkspaceManaging {}
+
+@MainActor
+func resolveTitlebarGitActionCommandBus(
+    workspaceManager: any TitlebarGitActionWorkspaceManaging,
+    timeoutNanoseconds: UInt64 = 5_000_000_000
+) async throws -> any CommandCalling {
+    guard let workspaceID = workspaceManager.activeWorkspaceID else {
+        throw WorkspaceActionError.workspaceUnavailable
+    }
+
+    let readiness = try await workspaceManager.ensureWorkspaceReady(
+        workspaceID,
+        timeoutNanoseconds: timeoutNanoseconds
+    )
+    guard let runtime = readiness.runtime else {
+        throw WorkspaceActionError.runtimeNotReady
+    }
+    return runtime.commandBus
+}
+
+struct TitlebarStatusControlAvailability: Equatable {
+    let branchEnabled: Bool
+    let sessionsEnabled: Bool
+}
+
+func resolveTitlebarStatusControlAvailability(
+    hasProject: Bool,
+    hasSessionStore: Bool
+) -> TitlebarStatusControlAvailability {
+    TitlebarStatusControlAvailability(
+        branchEnabled: hasProject,
+        sessionsEnabled: hasSessionStore
+    )
+}
+
+@MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Properties
@@ -86,21 +131,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var contentLeadingConstraint: NSLayoutConstraint?
     private var contentMinWidthConstraint: NSLayoutConstraint?
     private var tabBarLeadingConstraint: NSLayoutConstraint?
-    private var agentStripTopToTabBar: NSLayoutConstraint?
-    private var agentStripTopToTitlebar: NSLayoutConstraint?
+    private var contentTopToTabBar: NSLayoutConstraint?
+    private var contentTopToTitlebar: NSLayoutConstraint?
     private var titlebarFillBottomConstraint: NSLayoutConstraint?
     private var titlebarFillMinHeightConstraint: NSLayoutConstraint?
     private var titlebarOpenBtn: CapsuleButton?
     private var titlebarCommitBtn: CapsuleButton?
-    private var titlebarPushBtn: CapsuleButton?
     private var titlebarTemplateBtn: NSButton?
     private var sidebarToggleLeadingConstraint: NSLayoutConstraint?
     private var sidebarToggleBtn: NSView?
     private var titlebarWorkspaceObservationGeneration: UInt64 = 0
     private var commandPalette: CommandPalette?
-    private let agentStripState = AgentStripState()
-    private var agentStripHostView: NSView?
-    private var agentStripHeightConstraint: NSLayoutConstraint?
     private var persistence: SessionPersistence?
     private var isSidebarVisible = true
     private var currentSidebarMode: SidebarMode = SidebarPreferences.sidebarMode
@@ -440,7 +481,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.observeActiveWorkspaceForTitlebar()
             self?.refreshTitlebarChromeState()
             self?.updateNotificationBadge()
-            self?.refreshAgentStrip()
         }
         workspaceManager?.onNotificationCountChanged = { [weak self] _ in
             self?.updateNotificationBadge()
@@ -635,10 +675,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         uiTestReadinessView = nil
         titlebarOpenBtn = nil
         titlebarCommitBtn = nil
-        titlebarPushBtn = nil
         titlebarTemplateBtn = nil
         sidebarToggleBtn = nil
-        agentStripHostView = nil
         collapsedRailHostView = nil
         toolDockTriggerView = nil
         smokeHostView = nil
@@ -646,15 +684,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         contentLeadingConstraint = nil
         contentMinWidthConstraint = nil
         tabBarLeadingConstraint = nil
-        agentStripTopToTabBar = nil
-        agentStripTopToTitlebar = nil
+        contentTopToTabBar = nil
+        contentTopToTitlebar = nil
         titlebarFillBottomConstraint = nil
         titlebarFillMinHeightConstraint = nil
         sidebarWidthConstraint = nil
         rightInspectorWidthConstraint = nil
         toolDockHeightConstraint = nil
         sidebarToggleLeadingConstraint = nil
-        agentStripHeightConstraint = nil
 
         toolDrawerPreviousFirstResponder = nil
         commandPalette = nil
@@ -1073,39 +1110,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         commitBtn.setAccessibilityIdentifier("titlebar.commit")
         self.titlebarCommitBtn = commitBtn
 
-        let pushBtn = CapsuleButton(icon: "arrow.up.circle", label: "Push")
-        pushBtn.target = self
-        pushBtn.action = #selector(titlebarPushAction)
-        pushBtn.setAccessibilityIdentifier("titlebar.push")
-        self.titlebarPushBtn = pushBtn
-
         let leadingTitlebarGroup = TitlebarControlGroupView(
             arrangedSubviews: [sidebarToggleBtn, templateBtn],
             separatorAfterIndices: [0]
         )
         let primaryActionGroup = TitlebarControlGroupView(
-            arrangedSubviews: [openBtn, commitBtn, pushBtn],
-            separatorAfterIndices: [0, 1]
+            arrangedSubviews: [openBtn, commitBtn],
+            separatorAfterIndices: [0]
         )
         let utilityActionGroup = TitlebarControlGroupView(
             arrangedSubviews: [resourceMonitorBtn, usageBtn, notificationsBtn, addWorkspaceBtn],
             separatorAfterIndices: [2]
         )
 
-        // Agent strip — horizontal bar of agent chips above content area
-        let agentStripView = AgentStripView(
-            state: agentStripState,
-            selectedSessionID: nil as String?,
-            onSelectSession: { _ in
-                // Session selection is visual only; terminal focus is managed by pane layout
-            }
-        ).environment(GhosttyThemeProvider.shared)
-        let agentStrip = NSHostingView(rootView: AnyView(agentStripView))
-        agentStrip.sizingOptions = []
-        agentStrip.setAccessibilityIdentifier("agentStrip.host")
-        self.agentStripHostView = agentStrip
-
-        for view in [sidebarBacking, tabBar, agentStrip, contentArea, sidebarResizer, toolDock,
+        for view in [sidebarBacking, tabBar, contentArea, sidebarResizer, toolDock,
                       rightInspectorBacking, rightInspectorFooter, rightInspectorResizer,
                       leadingTitlebarGroup, utilityActionGroup, titlebarStatus,
                       primaryActionGroup] as [NSView] {
@@ -1133,7 +1151,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowContent.addSubview(toolDock, positioned: .above, relativeTo: toolDrawerBlocker)
         windowContent.addSubview(toolDock, positioned: .above, relativeTo: toolDrawerHost)
         windowContent.addSubview(tabBar, positioned: .above, relativeTo: toolDrawerHost)
-        windowContent.addSubview(agentStrip, positioned: .above, relativeTo: toolDrawerHost)
 
         let sidebarWidth = DesignTokens.Layout.sidebarWidth
         let toolDockHeight = DesignTokens.Layout.toolDockHeight
@@ -1147,25 +1164,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let tblc = tabBar.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor)
         let toolDockHeightConstraint = toolDock.heightAnchor.constraint(equalToConstant: toolDockHeight)
 
-        // Agent strip height — 0 initially (no active sessions), expanded when sessions exist
-        let agentStripHeight = agentStrip.heightAnchor.constraint(equalToConstant: 0)
-        self.agentStripHeightConstraint = agentStripHeight
-
-        // Agent strip top: switches between below-tab-bar and directly below the titlebar fill.
-        // Content area always sits below the agent strip.
-        let stripTopToTab = agentStrip.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
-        let stripTopToTitlebar = agentStrip.topAnchor.constraint(equalTo: titlebarFill.bottomAnchor)
-        // Tab bar starts hidden (single tab), so agent strip goes directly below the titlebar fill
-        stripTopToTab.isActive = false
-        stripTopToTitlebar.isActive = true
+        // Content area top: switches between below-tab-bar and directly below the titlebar fill.
+        let contentTopToTabConstraint = contentArea.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
+        let contentTopToTitlebarConstraint = contentArea.topAnchor.constraint(equalTo: titlebarFill.bottomAnchor)
+        // Tab bar starts hidden (single tab), so content starts directly below the titlebar fill.
+        contentTopToTabConstraint.isActive = false
+        contentTopToTitlebarConstraint.isActive = true
 
         sidebarWidthConstraint = swc
         rightInspectorWidthConstraint = rightInspectorWidth
         contentLeadingConstraint = clc
         tabBarLeadingConstraint = tblc
         self.toolDockHeightConstraint = toolDockHeightConstraint
-        agentStripTopToTabBar = stripTopToTab
-        agentStripTopToTitlebar = stripTopToTitlebar
+        contentTopToTabBar = contentTopToTabConstraint
+        contentTopToTitlebar = contentTopToTitlebarConstraint
 
         // Titlebar fill bottom tracks the safe area in windowed mode but
         // gets a minimum height in fullscreen so buttons don't get clipped.
@@ -1213,14 +1225,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             tabBar.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
             tabBar.topAnchor.constraint(equalTo: titlebarFill.bottomAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: tabBarHeight),
-
-            // Agent strip: between tab bar / titlebar fill and content area
-            agentStrip.leadingAnchor.constraint(equalTo: sidebarBacking.trailingAnchor),
-            agentStrip.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
-            agentStripHeight,
-
-            // Content area always sits below agent strip
-            contentArea.topAnchor.constraint(equalTo: agentStrip.bottomAnchor),
 
             clc,
             contentArea.trailingAnchor.constraint(equalTo: rightInspectorBacking.leadingAnchor),
@@ -1803,11 +1807,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard visible != currentlyVisible else { return }
         tabBarView?.isHidden = !visible
         if visible {
-            agentStripTopToTitlebar?.isActive = false
-            agentStripTopToTabBar?.isActive = true
+            contentTopToTitlebar?.isActive = false
+            contentTopToTabBar?.isActive = true
         } else {
-            agentStripTopToTabBar?.isActive = false
-            agentStripTopToTitlebar?.isActive = true
+            contentTopToTabBar?.isActive = false
+            contentTopToTitlebar?.isActive = true
         }
         window?.contentView?.needsLayout = true
     }
@@ -2355,14 +2359,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showBranchPicker() {
         guard let workspace = workspaceManager?.activeWorkspace,
-              workspace.projectPath != nil,
-              let bus = commandBus else { return }
+              workspace.projectPath != nil else { return }
 
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                guard let workspaceManager = self.workspaceManager else {
+                    throw WorkspaceActionError.workspaceUnavailable
+                }
+                let bus = try await resolveTitlebarGitActionCommandBus(
+                    workspaceManager: workspaceManager
+                )
                 let branches: [String] = try await bus.call(method: "git.list_branches")
-                let currentBranch = workspace.gitBranch
+                let currentBranch = self.workspaceManager?.activeWorkspace?.gitBranch
 
                 let popover = NSPopover()
                 self.configureToolbarAttachmentPopover(
@@ -2398,63 +2407,47 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func switchBranch(_ branch: String) {
-        guard let bus = commandBus else { return }
-        struct CheckoutParams: Encodable { let branch: String }
         Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
-                let _: Bool = try await bus.call(
-                    method: "git.checkout",
-                    params: CheckoutParams(branch: branch)
+                guard let workspaceManager = self.workspaceManager else {
+                    throw WorkspaceActionError.workspaceUnavailable
+                }
+                let bus = try await resolveTitlebarGitActionCommandBus(
+                    workspaceManager: workspaceManager
                 )
-                self?.workspaceManager?.activeWorkspace?.gitBranch = branch
-                self?.titlebarStatusView?.updateBranch(branch)
-                ToastManager.shared.show("Switched to \(branch)", icon: "arrow.triangle.branch", style: .success)
+                guard let projectPath = workspaceManager.activeWorkspace?.projectPath else {
+                    throw WorkspaceActionError.workspaceUnavailable
+                }
+                let launch = try await self.createWorkspaceFromBranch(
+                    path: projectPath,
+                    branchName: branch,
+                    createNew: false,
+                    commandBus: bus
+                )
+                let resolvedBranch = launch.branch ?? branch
+                guard self.openLocalWorkspace(
+                    path: launch.projectPath,
+                    checkoutPath: launch.checkoutPath,
+                    terminalMode: workspaceManager.activeWorkspace?.terminalMode ?? .persistent,
+                    workspaceName: launch.workspaceName,
+                    launchSource: launch.launchSource,
+                    workingDirectory: launch.workingDirectory,
+                    taskID: launch.taskID
+                ) != nil else {
+                    throw WorkspaceActionError.workspaceUnavailable
+                }
+                ToastManager.shared.show(
+                    "Switched to \(resolvedBranch)",
+                    icon: "arrow.triangle.branch",
+                    style: .success
+                )
             } catch {
                 ToastManager.shared.show(
-                    "Checkout failed: \(error.localizedDescription)",
+                    "Switch failed: \(error.localizedDescription)",
                     icon: "exclamationmark.triangle",
                     style: .error
                 )
-            }
-        }
-    }
-
-    private func refreshAgentStrip() {
-        guard let sessionStore, let commandCenterStore else { return }
-
-        let dateFormatter = ISO8601DateFormatter()
-        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        let sessions = sessionStore.sessions.compactMap { session -> LiveSessionEntry? in
-            let started = dateFormatter.date(from: session.startedAt) ?? Date()
-            let lastActivity = dateFormatter.date(from: session.lastHeartbeat) ?? started
-            return LiveSessionEntry(
-                id: session.id,
-                name: session.name,
-                status: session.status,
-                startedAt: started,
-                lastActivityAt: lastActivity
-            )
-        }
-
-        let runs = commandCenterStore.workspaceSnapshots.flatMap(\.runs).map { fleetRun in
-            CommandCenterRunEntry(
-                sessionID: fleetRun.run.sessionID,
-                taskTitle: fleetRun.run.taskTitle,
-                provider: fleetRun.run.provider,
-                model: fleetRun.run.model,
-                costUSD: fleetRun.run.costUsd,
-                attentionReason: fleetRun.run.attentionReason
-            )
-        }
-        agentStripState.update(from: sessions, runs: runs)
-
-        let targetHeight: CGFloat = agentStripState.hasEntries ? DesignTokens.Layout.agentStripHeight : 0
-        if agentStripHeightConstraint?.constant != targetHeight {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = DesignTokens.Motion.fast
-                ctx.allowsImplicitAnimation = true
-                agentStripHeightConstraint?.animator().constant = targetHeight
             }
         }
     }
@@ -2487,15 +2480,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshTitlebarChromeState() {
         let workspace = workspaceManager?.activeWorkspace
         let hasProject = workspace?.projectPath != nil
+        let controlAvailability = resolveTitlebarStatusControlAvailability(
+            hasProject: hasProject,
+            hasSessionStore: sessionStore != nil
+        )
 
         titlebarStatusView?.updateBranch(workspace?.gitBranch)
         titlebarStatusView?.updateAgents(workspace?.activeAgents ?? 0)
         titlebarStatusView?.updatePR(number: workspace?.linkedPRNumber, url: workspace?.linkedPRURL)
         titlebarStatusView?.updateAttentionDot(visible: workspace?.attentionReason != nil)
+        titlebarStatusView?.updateBranchEnabled(controlAvailability.branchEnabled)
+        titlebarStatusView?.updateSessionsEnabled(controlAvailability.sessionsEnabled)
 
         titlebarOpenBtn?.isEnabled = hasProject
         titlebarCommitBtn?.isEnabled = hasProject
-        titlebarPushBtn?.isEnabled = hasProject
     }
 
     private func openLinkedPRInBrowser() {
@@ -3081,6 +3079,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     guard self.openLocalWorkspace(
                         path: launch.projectPath,
+                        checkoutPath: launch.checkoutPath,
                         terminalMode: terminalMode,
                         workspaceName: launch.workspaceName,
                         launchSource: launch.launchSource,
@@ -3112,6 +3111,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     guard self.openLocalWorkspace(
                         path: launch.projectPath,
+                        checkoutPath: launch.checkoutPath,
                         terminalMode: terminalMode,
                         workspaceName: launch.workspaceName,
                         launchSource: launch.launchSource,
@@ -3146,6 +3146,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     guard self.openLocalWorkspace(
                         path: launch.projectPath,
+                        checkoutPath: launch.checkoutPath,
                         terminalMode: terminalMode,
                         workspaceName: launch.workspaceName,
                         launchSource: launch.launchSource,
@@ -3636,6 +3637,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func openLocalWorkspace(
         path: String,
+        checkoutPath: String? = nil,
         terminalMode: WorkspaceTerminalMode,
         workspaceName: String? = nil,
         launchSource: WorkspaceLaunchSource? = nil,
@@ -3658,6 +3660,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let workspace = workspaceManager.createLocalProjectWorkspace(
             name: name,
             projectPath: path,
+            checkoutPath: checkoutPath,
             terminalMode: terminalMode,
             launchSource: launchSource,
             initialWorkingDirectory: workingDirectory,
@@ -3760,13 +3763,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if let existing = browserSessions[workspace.id] {
             existing.updateRestoredURL(workspace.browserLastURL.flatMap(URL.init(string:)))
             existing.updateRestoredDrawerHeight(DrawerSizing.storedHeight().map(Double.init))
-            existing.updateWorkspaceProjectPath(workspace.projectPath)
+            existing.updateWorkspaceProjectPath(workspace.activeProjectPath)
             return existing
         }
 
         let session = BrowserWorkspaceSession(
             workspaceID: workspace.id,
-            workspaceProjectPath: workspace.projectPath,
+            workspaceProjectPath: workspace.activeProjectPath,
             restoredURL: workspace.browserLastURL.flatMap(URL.init(string:)),
             restoredDrawerHeight: DrawerSizing.storedHeight().map(Double.init),
             onURLChanged: { [weak self, weak workspace] url in
@@ -4205,7 +4208,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let saved = try await session.savePageAsMarkdown()
             let message: String
             if let workspace = workspaceManager?.activeWorkspace,
-               let projectPath = workspace.projectPath {
+               let projectPath = workspace.activeProjectPath {
                 let projectURL = URL(fileURLWithPath: projectPath, isDirectory: true)
                 message = saved.outputURL.path.replacing(projectURL.path + "/", with: "")
             } else {
@@ -4815,7 +4818,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
             return
         }
-        guard let titlebarStatusView, let sessionStore else { return }
+        guard let titlebarStatusView,
+              let sessionStore else { return }
 
         let popover = NSPopover()
         configureToolbarAttachmentPopover(
@@ -5055,7 +5059,7 @@ extension AppDelegate {
     // MARK: - Titlebar Action Handlers (Open, Commit, Push)
 
     @objc func titlebarOpenAction() {
-        guard let path = workspaceManager?.activeWorkspace?.projectPath,
+        guard let path = workspaceManager?.activeWorkspace?.activeProjectPath,
               let openButton = titlebarOpenBtn else { return }
         let menu = OpenInMenuController.buildMenu(for: path, target: nil, primaryAction: nil)
         guard menu.items.isEmpty == false else { return }
@@ -5153,30 +5157,78 @@ extension AppDelegate {
 
     @objc func titlebarCommitAction() {
         guard workspaceManager?.activeWorkspace?.projectPath != nil,
-              let commitBtn = titlebarCommitBtn else { return }
-        let popover = NSPopover()
-        configureToolbarAttachmentPopover(
-            popover,
-            contentSize: NSSize(width: 340, height: 220)
-        ) {
-            CommitPopoverView(
-                branch: workspaceManager?.activeWorkspace?.gitBranch,
-                onCommit: { [weak self] message in
-                    popover.performClose(nil)
-                    self?.runGitCommit(message: message)
-                },
-                onCancel: { popover.performClose(nil) }
+              let message = promptForCommitMessage() else { return }
+        runGitCommit(message: message)
+    }
+
+    private func promptForCommitMessage() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Commit Changes"
+        alert.informativeText = "Write a commit message for the active project."
+
+        let promptWidth: CGFloat = 360
+        let commitField = NSTextField(string: "")
+        commitField.placeholderString = "Summarize your changes"
+        commitField.frame.size.width = promptWidth
+        commitField.setAccessibilityIdentifier("git.commit.message")
+
+        var accessoryViews: [NSView] = []
+        if let branch = workspaceManager?.activeWorkspace?.gitBranch,
+           branch.isEmpty == false {
+            accessoryViews.append(
+                makeCommitBranchSummaryView(
+                    branch: branch,
+                    width: promptWidth
+                )
             )
         }
-        popover.show(
-            relativeTo: commitBtn.toolbarAttachmentAnchorRect(
-                widthRatio: 0.52,
-                minWidth: 38,
-                maxWidth: 62
-            ),
-            of: commitBtn,
-            preferredEdge: .minY
+        accessoryViews.append(commitField)
+
+        alert.accessoryView = makeAlertAccessoryStack(
+            width: promptWidth,
+            views: accessoryViews
         )
+        alert.addButton(withTitle: "Commit")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let message = commitField.stringValue.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard message.isEmpty == false else {
+            ToastManager.shared.show(
+                "Commit message is required",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return nil
+        }
+
+        return message
+    }
+
+    private func makeCommitBranchSummaryView(branch: String, width: CGFloat) -> NSView {
+        let branchIcon = NSImageView()
+        branchIcon.image = NSImage(
+            systemSymbolName: "arrow.triangle.branch",
+            accessibilityDescription: "Branch"
+        )?.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        branchIcon.contentTintColor = .secondaryLabelColor
+        branchIcon.setContentHuggingPriority(.required, for: .horizontal)
+        branchIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let branchLabel = NSTextField(labelWithString: branch)
+        branchLabel.font = .preferredFont(forTextStyle: .headline)
+        branchLabel.lineBreakMode = .byTruncatingMiddle
+        branchLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let branchRow = NSStackView(views: [branchIcon, branchLabel])
+        branchRow.orientation = .horizontal
+        branchRow.alignment = .centerY
+        branchRow.spacing = DesignTokens.Spacing.sm
+
+        return makeAlertCard(width: width, views: [branchRow])
     }
 
     @objc private func titlebarOpenLinkedPullRequestAction() {
@@ -5184,12 +5236,30 @@ extension AppDelegate {
     }
 
     @objc func titlebarPushAction() {
-        guard workspaceManager?.activeWorkspace?.projectPath != nil,
-              let bus = commandBus else { return }
+        guard workspaceManager?.activeWorkspace?.projectPath != nil else { return }
+        ToastManager.shared.show(
+            "Pushing changes…",
+            icon: "icloud.and.arrow.up",
+            style: .info
+        )
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.handleTitlebarPush(using: bus)
+            do {
+                guard let workspaceManager = self.workspaceManager else {
+                    throw WorkspaceActionError.workspaceUnavailable
+                }
+                let bus = try await resolveTitlebarGitActionCommandBus(
+                    workspaceManager: workspaceManager
+                )
+                await self.handleTitlebarPush(using: bus)
+            } catch {
+                ToastManager.shared.show(
+                    "Push failed: \(error.localizedDescription)",
+                    icon: "exclamationmark.triangle",
+                    style: .error
+                )
+            }
         }
     }
 
@@ -5203,21 +5273,23 @@ extension AppDelegate {
             guard let self else { return }
 
             do {
-                let launch: WorkspaceOpenerLaunchResult = try await bus.call(
-                    method: "workspace_opener.create_from_branch",
-                    params: WorkspaceOpenerBranchLaunchParams(
-                        path: path,
-                        branchName: branchName,
-                        createNew: true
-                    )
+                let launch = try await self.createWorkspaceFromBranch(
+                    path: path,
+                    branchName: branchName,
+                    createNew: true,
+                    commandBus: bus
                 )
 
                 let resolvedBranch = launch.branch ?? branchName
-                self.workspaceManager?.activeWorkspace?.gitBranch = resolvedBranch
-                self.titlebarStatusView?.updateBranch(resolvedBranch)
-                if let workspace = self.workspaceManager?.activeWorkspace {
-                    self.workspaceManager?.refreshMetadata(for: workspace)
-                }
+                _ = self.openLocalWorkspace(
+                    path: launch.projectPath,
+                    checkoutPath: launch.checkoutPath,
+                    terminalMode: self.workspaceManager?.activeWorkspace?.terminalMode ?? .persistent,
+                    workspaceName: launch.workspaceName,
+                    launchSource: launch.launchSource,
+                    workingDirectory: launch.workingDirectory,
+                    taskID: launch.taskID
+                )
                 ToastManager.shared.show(
                     "Created \(resolvedBranch)",
                     icon: "arrow.triangle.branch",
@@ -5391,12 +5463,30 @@ extension AppDelegate {
     }
 
     private func runGitCommit(message: String) {
-        guard workspaceManager?.activeWorkspace?.projectPath != nil,
-              let bus = commandBus else { return }
+        guard workspaceManager?.activeWorkspace?.projectPath != nil else { return }
+        ToastManager.shared.show(
+            "Committing changes…",
+            icon: "point.3.connected.trianglepath.dotted",
+            style: .info
+        )
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.handleTitlebarCommit(message: message, using: bus)
+            do {
+                guard let workspaceManager = self.workspaceManager else {
+                    throw WorkspaceActionError.workspaceUnavailable
+                }
+                let bus = try await resolveTitlebarGitActionCommandBus(
+                    workspaceManager: workspaceManager
+                )
+                await self.handleTitlebarCommit(message: message, using: bus)
+            } catch {
+                ToastManager.shared.show(
+                    "Commit failed: \(error.localizedDescription)",
+                    icon: "exclamationmark.triangle",
+                    style: .error
+                )
+            }
         }
     }
 

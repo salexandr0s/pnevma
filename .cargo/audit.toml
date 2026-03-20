@@ -3,4 +3,18 @@
 # This advisory enters the dependency tree via sqlx-mysql (a sqlx optional feature).
 # Pnevma uses SQLite only (sqlx is compiled with the `sqlite` feature, never `mysql`).
 # The rsa crate is never reachable at runtime in any Pnevma binary.
-ignore = ["RUSTSEC-2023-0071"]
+ignore = [
+    "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0044: aws-lc-sys X.509 Name Constraints Bypass via Wildcard/Unicode CN.
+    # Transitive via rustls. Pnevma is a desktop app that does not validate X.509 name constraints.
+    "RUSTSEC-2026-0044",
+    # RUSTSEC-2026-0048: aws-lc-sys CRL Distribution Point Scope Check Logic Error.
+    # Transitive via rustls. Pnevma does not perform CRL validation.
+    "RUSTSEC-2026-0048",
+    # RUSTSEC-2025-0067: libyml unsoundness (unmaintained).
+    # Transitive via serde_yml. No untrusted YAML is parsed.
+    "RUSTSEC-2025-0067",
+    # RUSTSEC-2025-0068: serde_yml unsoundness (unmaintained).
+    # Transitive via pnevma-core. No untrusted YAML is parsed.
+    "RUSTSEC-2025-0068",
+]

@@ -835,29 +835,29 @@ fn canonical_string(path: &Path) -> String {
 }
 
 #[tokio::test]
-async fn create_workspace_from_branch_checks_out_existing_branch() {
+async fn create_workspace_from_branch_returns_base_workspace_for_target_branch() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("repo");
     init_workspace_opener_repo(&project_root);
-    run_git(&project_root, &["branch", "feature/existing"]);
 
     let result = create_workspace_from_branch(WorkspaceOpenerBranchLaunchInput {
         path: project_root.to_string_lossy().to_string(),
-        branch_name: "feature/existing".to_string(),
+        branch_name: "main".to_string(),
         create_new: false,
     })
     .await
     .expect("create branch workspace");
 
     assert_eq!(result.project_path, canonical_string(&project_root));
-    assert_eq!(result.workspace_name, "feature/existing");
-    assert_eq!(result.branch.as_deref(), Some("feature/existing"));
+    assert_eq!(result.checkout_path, canonical_string(&project_root));
+    assert_eq!(result.workspace_name, "main");
+    assert_eq!(result.branch.as_deref(), Some("main"));
     assert!(result.working_directory.is_none());
-    assert_eq!(current_branch(&project_root), "feature/existing");
+    assert_eq!(current_branch(&project_root), "main");
 }
 
 #[tokio::test]
-async fn create_workspace_from_branch_creates_and_checks_out_new_branch() {
+async fn create_workspace_from_branch_creates_managed_worktree_for_new_branch() {
     let temp = tempdir().expect("tempdir");
     let project_root = temp.path().join("repo");
     init_workspace_opener_repo(&project_root);
@@ -870,9 +870,25 @@ async fn create_workspace_from_branch_creates_and_checks_out_new_branch() {
     .await
     .expect("create new branch workspace");
 
+    assert_eq!(result.project_path, canonical_string(&project_root));
     assert_eq!(result.branch.as_deref(), Some("feature/new-workspace"));
-    assert!(result.working_directory.is_none());
-    assert_eq!(current_branch(&project_root), "feature/new-workspace");
+    let checkout_path = PathBuf::from(&result.checkout_path);
+    let expected_prefix = format!(
+        "{}/.pnevma/workspaces/branches/",
+        canonical_string(&project_root)
+    );
+    assert!(checkout_path.exists(), "managed worktree should exist");
+    assert!(
+        result.checkout_path.starts_with(&expected_prefix),
+        "managed worktree should live under .pnevma/workspaces/branches: {}",
+        result.checkout_path
+    );
+    assert_eq!(
+        result.working_directory.as_deref(),
+        Some(result.checkout_path.as_str())
+    );
+    assert_eq!(current_branch(&project_root), "main");
+    assert_eq!(current_branch(&checkout_path), "feature/new-workspace");
 }
 
 #[tokio::test]
@@ -901,13 +917,174 @@ async fn create_workspace_from_branch_reuses_existing_worktree_without_checkout(
     .await
     .expect("reuse branch worktree");
 
+    assert_eq!(result.project_path, canonical_string(&project_root));
     assert_eq!(result.branch.as_deref(), Some("feature/worktree"));
     let expected_worktree_path = canonical_string(&worktree_path);
+    assert_eq!(result.checkout_path, expected_worktree_path);
     assert_eq!(
         result.working_directory.as_deref(),
         Some(expected_worktree_path.as_str())
     );
     assert_eq!(current_branch(&project_root), "main");
+}
+
+#[tokio::test]
+async fn checkout_branch_switches_active_project_branch() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/switch"]);
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-checkout-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let result = checkout_branch("feature/switch", &state)
+        .await
+        .expect("checkout result");
+    assert!(result);
+    assert_eq!(current_branch(&project_root), "feature/switch");
+}
+
+#[tokio::test]
+async fn project_status_reports_project_root_and_checkout_path() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/status"]);
+
+    let worktree_path = project_root.join(".pnevma/workspaces/branches/feature-status");
+    run_git(
+        &project_root,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_string_lossy().as_ref(),
+            "feature/status",
+        ],
+    );
+    let canonical_worktree_path =
+        std::fs::canonicalize(&worktree_path).expect("canonical worktree");
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-status-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project_checkout(
+        project_id,
+        &project_root,
+        &canonical_worktree_path,
+        db,
+        sessions,
+    )
+    .await;
+
+    let status = project_status(&state).await.expect("project status");
+
+    assert_eq!(status.project_path, project_root.to_string_lossy());
+    assert_eq!(status.checkout_path, canonical_string(&worktree_path));
+}
+
+#[tokio::test]
+async fn project_summary_uses_checkout_path_for_git_state() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/summary"]);
+
+    let worktree_path = project_root.join(".pnevma/workspaces/branches/feature-summary");
+    run_git(
+        &project_root,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_string_lossy().as_ref(),
+            "feature/summary",
+        ],
+    );
+    let canonical_worktree_path =
+        std::fs::canonicalize(&worktree_path).expect("canonical worktree");
+    std::fs::write(worktree_path.join("README.md"), "summary worktree change\n")
+        .expect("write worktree change");
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-summary-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project_checkout(
+        project_id,
+        &project_root,
+        &canonical_worktree_path,
+        db,
+        sessions,
+    )
+    .await;
+
+    let summary = project_summary(&state).await.expect("project summary");
+
+    assert_eq!(summary.git_branch.as_deref(), Some("feature/summary"));
+    assert_eq!(summary.git_dirty, Some(true));
+    assert!(summary.attention_reason.is_none());
+}
+
+#[tokio::test]
+async fn project_summary_flags_base_workspace_drift_from_target_branch() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    run_git(&project_root, &["checkout", "-b", "feature/drift"]);
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-drift-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let summary = project_summary(&state).await.expect("project summary");
+
+    assert_eq!(summary.git_branch.as_deref(), Some("feature/drift"));
+    assert_eq!(
+        summary.attention_reason.as_deref(),
+        Some("Base workspace drifted from target branch main.")
+    );
 }
 
 #[tokio::test]
@@ -945,6 +1122,67 @@ async fn commit_stages_and_commits_workspace_changes() {
     assert_eq!(
         git_stdout(&project_root, &["log", "-1", "--pretty=%s"]),
         "Add feature file"
+    );
+}
+
+#[tokio::test]
+async fn commit_uses_checkout_path_for_worktree_bound_workspace() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    run_git(&project_root, &["branch", "feature/commit"]);
+
+    let worktree_path = project_root.join(".pnevma/workspaces/branches/feature-commit");
+    run_git(
+        &project_root,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_string_lossy().as_ref(),
+            "feature/commit",
+        ],
+    );
+    let canonical_worktree_path =
+        std::fs::canonicalize(&worktree_path).expect("canonical worktree");
+    std::fs::write(worktree_path.join("feature.txt"), "branch-only change\n")
+        .expect("write worktree file");
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-worktree-commit-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project_checkout(
+        project_id,
+        &project_root,
+        &canonical_worktree_path,
+        db,
+        sessions,
+    )
+    .await;
+
+    let result = commit("Commit branch file", &state)
+        .await
+        .expect("commit result");
+
+    assert!(result.success);
+    assert_eq!(current_branch(&project_root), "main");
+    assert_eq!(current_branch(&worktree_path), "feature/commit");
+    assert_eq!(
+        git_stdout(&worktree_path, &["log", "-1", "--pretty=%s"]),
+        "Commit branch file"
+    );
+    assert_eq!(
+        git_stdout(&project_root, &["log", "-1", "--pretty=%s"]),
+        "initial"
     );
 }
 
@@ -1288,6 +1526,7 @@ async fn create_workspace_from_issue_without_linked_task_returns_repo_launch_res
         .to_string_lossy()
         .to_string();
     assert_eq!(result.project_path, expected_project_path);
+    assert_eq!(result.checkout_path, result.project_path);
     assert_eq!(result.workspace_name, "Issue #123 — Fix opener");
     assert_eq!(result.launch_source.kind, "issue");
     assert_eq!(result.launch_source.number, 123);
@@ -1338,6 +1577,8 @@ async fn create_workspace_from_issue_with_linked_task_creates_task_and_worktree(
     let working_directory = result.working_directory.clone().expect("working dir");
     let branch = result.branch.clone().expect("branch");
 
+    assert_eq!(result.project_path, canonical_string(&project_root));
+    assert_eq!(result.checkout_path, working_directory);
     assert!(Path::new(&working_directory).exists());
     assert!(branch.starts_with("pnevma/"));
 
@@ -1420,6 +1661,8 @@ async fn create_workspace_from_pull_request_with_linked_task_fetches_fork_head()
 
     let task_id = result.task_id.expect("task id");
     let working_directory = result.working_directory.expect("working directory");
+    assert_eq!(result.project_path, canonical_string(&project_root));
+    assert_eq!(result.checkout_path, working_directory);
     assert!(Path::new(&working_directory).exists());
 
     let fetched_head = Command::new("git")

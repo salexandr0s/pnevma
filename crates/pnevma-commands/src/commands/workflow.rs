@@ -860,7 +860,9 @@ mod tests {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let ctx = ProjectContext {
             project_id,
+            project_root_path: tmp_path.clone(),
             project_path: tmp_path.clone(),
+            checkout_path: tmp_path.clone(),
             config: make_project_config(),
             global_config: GlobalConfig::default(),
             db: db.clone(),

@@ -479,7 +479,7 @@ final class CommandCenterStore {
                     CommandCenterWorkspaceSnapshot(
                         id: workspace.id,
                         workspaceName: workspace.name,
-                        workspacePath: snapshot.projectPath,
+                        workspacePath: displayPath,
                         snapshot: snapshot,
                         errorMessage: nil
                     )
@@ -558,11 +558,11 @@ final class CommandCenterStore {
     }
 
     private func workspaceDisplayPath(for workspace: Workspace) -> String {
+        if let activePath = workspace.activeProjectPath, !activePath.isEmpty {
+            return activePath
+        }
         if let projectPath = workspace.projectPath, !projectPath.isEmpty {
             return projectPath
-        }
-        if let displayPath = workspace.displayPath, !displayPath.isEmpty {
-            return displayPath
         }
         return workspace.name
     }

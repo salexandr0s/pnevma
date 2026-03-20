@@ -220,6 +220,16 @@ async fn make_state_with_project(
     db: Db,
     sessions: SessionSupervisor,
 ) -> AppState {
+    make_state_with_project_checkout(project_id, project_root, project_root, db, sessions).await
+}
+
+async fn make_state_with_project_checkout(
+    project_id: Uuid,
+    project_root: &Path,
+    checkout_path: &Path,
+    db: Db,
+    sessions: SessionSupervisor,
+) -> AppState {
     let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
     let state = AppState::new(emitter);
     let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
@@ -228,7 +238,9 @@ async fn make_state_with_project(
             "tests.make_state_with_project",
             ProjectContext {
                 project_id,
+                project_root_path: project_root.to_path_buf(),
                 project_path: project_root.to_path_buf(),
+                checkout_path: checkout_path.to_path_buf(),
                 config: make_project_config(),
                 global_config: GlobalConfig::default(),
                 db,

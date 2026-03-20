@@ -40,6 +40,41 @@ private actor TitlebarGitActionCommandBus: CommandCalling {
     }
 }
 
+private final class ResolvedTitlebarGitActionCommandBus: CommandCalling, @unchecked Sendable {
+    func call<T: Decodable & Sendable>(
+        method: String,
+        params: (any Encodable & Sendable)?
+    ) async throws -> T {
+        throw NSError(domain: "ResolvedTitlebarGitActionCommandBus", code: 1)
+    }
+}
+
+@MainActor
+private final class TitlebarGitActionWorkspaceManagerStub: TitlebarGitActionWorkspaceManaging {
+    private let readinessResult: Result<(workspace: Workspace, runtime: WorkspaceRuntime?), Error>
+
+    let activeWorkspaceID: UUID?
+    private(set) var requestedWorkspaceID: UUID?
+    private(set) var requestedTimeoutNanoseconds: UInt64?
+
+    init(
+        activeWorkspaceID: UUID?,
+        readinessResult: Result<(workspace: Workspace, runtime: WorkspaceRuntime?), Error>
+    ) {
+        self.activeWorkspaceID = activeWorkspaceID
+        self.readinessResult = readinessResult
+    }
+
+    func ensureWorkspaceReady(
+        _ workspaceID: UUID,
+        timeoutNanoseconds: UInt64
+    ) async throws -> (workspace: Workspace, runtime: WorkspaceRuntime?) {
+        requestedWorkspaceID = workspaceID
+        requestedTimeoutNanoseconds = timeoutNanoseconds
+        return try readinessResult.get()
+    }
+}
+
 @MainActor
 final class NativeChromeTests: XCTestCase {
     func testPanePresentationRoleMapsPrimaryPaneFamilies() {
@@ -156,6 +191,76 @@ final class NativeChromeTests: XCTestCase {
         XCTAssertEqual(
             button.interactionSegment(at: NSPoint(x: 8, y: button.bounds.midY)),
             .primary
+        )
+    }
+
+    func testResolveTitlebarGitActionCommandBusUsesReadyWorkspaceRuntimeBus() async throws {
+        let bus = ResolvedTitlebarGitActionCommandBus()
+        let workspace = Workspace(name: "Repo", projectPath: "/tmp/repo")
+        let runtime = WorkspaceRuntime(workspaceID: workspace.id, commandBus: bus)
+        let manager = TitlebarGitActionWorkspaceManagerStub(
+            activeWorkspaceID: workspace.id,
+            readinessResult: .success((workspace: workspace, runtime: runtime))
+        )
+
+        let resolved = try await resolveTitlebarGitActionCommandBus(
+            workspaceManager: manager,
+            timeoutNanoseconds: 123
+        )
+
+        XCTAssertTrue((resolved as AnyObject) === (bus as AnyObject))
+        XCTAssertEqual(manager.requestedWorkspaceID, workspace.id)
+        XCTAssertEqual(manager.requestedTimeoutNanoseconds, 123)
+    }
+
+    func testResolveTitlebarGitActionCommandBusRejectsMissingWorkspace() async {
+        let manager = TitlebarGitActionWorkspaceManagerStub(
+            activeWorkspaceID: nil,
+            readinessResult: .failure(WorkspaceActionError.workspaceUnavailable)
+        )
+
+        do {
+            _ = try await resolveTitlebarGitActionCommandBus(workspaceManager: manager)
+            XCTFail("Expected missing workspace to throw")
+        } catch let error as WorkspaceActionError {
+            guard case .workspaceUnavailable = error else {
+                return XCTFail("Unexpected workspace action error: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testResolveTitlebarGitActionCommandBusRejectsRuntimeWithoutProjectBus() async {
+        let workspace = Workspace(name: "Terminal")
+        let manager = TitlebarGitActionWorkspaceManagerStub(
+            activeWorkspaceID: workspace.id,
+            readinessResult: .success((workspace: workspace, runtime: nil))
+        )
+
+        do {
+            _ = try await resolveTitlebarGitActionCommandBus(workspaceManager: manager)
+            XCTFail("Expected missing runtime to throw")
+        } catch let error as WorkspaceActionError {
+            guard case .runtimeNotReady = error else {
+                return XCTFail("Unexpected workspace action error: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testResolveTitlebarStatusControlAvailabilityAllowsSessionsWithoutProjectRuntime() {
+        XCTAssertEqual(
+            resolveTitlebarStatusControlAvailability(hasProject: false, hasSessionStore: true),
+            TitlebarStatusControlAvailability(branchEnabled: false, sessionsEnabled: true)
+        )
+    }
+
+    func testResolveTitlebarStatusControlAvailabilityAllowsBranchWhenProjectExists() {
+        XCTAssertEqual(
+            resolveTitlebarStatusControlAvailability(hasProject: true, hasSessionStore: false),
+            TitlebarStatusControlAvailability(branchEnabled: true, sessionsEnabled: false)
         )
     }
 

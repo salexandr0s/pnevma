@@ -30,11 +30,12 @@ final class WorkspaceRuntime {
     @ObservationIgnored
     private lazy var sessionBridgeStorage: any SessionBridging = {
         providedSessionBridge ?? SessionBridge(commandBus: commandBus) { [weak self] in
-            self?.projectPath
+            self?.checkoutPath ?? self?.projectPath
         }
     }()
 
     private(set) var projectPath: String?
+    private(set) var checkoutPath: String?
     private(set) var state: State = .closed
 
     var sessionBridge: any SessionBridging { sessionBridgeStorage }
@@ -76,17 +77,20 @@ final class WorkspaceRuntime {
         return nil
     }
 
-    func updateProjectPath(_ projectPath: String?) {
+    func updateProjectPaths(projectPath: String?, checkoutPath: String?) {
         self.projectPath = projectPath
+        self.checkoutPath = checkoutPath
     }
 
-    func markOpening(generation: UInt64, projectPath: String?) {
+    func markOpening(generation: UInt64, projectPath: String?, checkoutPath: String?) {
         self.projectPath = projectPath
+        self.checkoutPath = checkoutPath
         state = .opening(generation: generation)
     }
 
-    func markOpen(projectID: String, projectPath: String) {
+    func markOpen(projectID: String, projectPath: String, checkoutPath: String) {
         self.projectPath = projectPath
+        self.checkoutPath = checkoutPath
         state = .open(projectID: projectID)
     }
 

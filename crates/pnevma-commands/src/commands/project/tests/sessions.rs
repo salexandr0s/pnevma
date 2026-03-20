@@ -126,7 +126,9 @@ async fn get_session_binding_reports_live_and_archived_modes() {
             "tests.get_session_binding.state",
             ProjectContext {
                 project_id,
+                project_root_path: project_root.clone(),
                 project_path: project_root.clone(),
+                checkout_path: project_root.clone(),
                 config: make_project_config(),
                 global_config: GlobalConfig::default(),
                 db,

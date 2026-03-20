@@ -17,15 +17,38 @@ private actor MockCommandBus: CommandCalling {
     struct ProjectSpec {
         let projectID: String
         let projectPath: String
+        let checkoutPath: String
         let gitBranch: String
         let activeTasks: Int
         let activeAgents: Int
         let costToday: Double
         let unreadNotifications: Int
         let openDelayNanos: UInt64
+
+        init(
+            projectID: String,
+            projectPath: String,
+            checkoutPath: String? = nil,
+            gitBranch: String,
+            activeTasks: Int,
+            activeAgents: Int,
+            costToday: Double,
+            unreadNotifications: Int,
+            openDelayNanos: UInt64
+        ) {
+            self.projectID = projectID
+            self.projectPath = projectPath
+            self.checkoutPath = checkoutPath ?? projectPath
+            self.gitBranch = gitBranch
+            self.activeTasks = activeTasks
+            self.activeAgents = activeAgents
+            self.costToday = costToday
+            self.unreadNotifications = unreadNotifications
+            self.openDelayNanos = openDelayNanos
+        }
     }
 
-    private let specsByPath: [String: ProjectSpec]
+    private let specsByBinding: [String: ProjectSpec]
     private let specsByID: [String: ProjectSpec]
     private var currentProjectIDValue: String?
     private var openPathHistory: [String] = []
@@ -33,13 +56,13 @@ private actor MockCommandBus: CommandCalling {
     private var closeModesValue: [String] = []
 
     init(specs: [ProjectSpec]) {
-        var byPath: [String: ProjectSpec] = [:]
+        var byBinding: [String: ProjectSpec] = [:]
         var byID: [String: ProjectSpec] = [:]
         for spec in specs {
-            byPath[spec.projectPath] = spec
+            byBinding[Self.bindingKey(projectPath: spec.projectPath, checkoutPath: spec.checkoutPath)] = spec
             byID[spec.projectID] = spec
         }
-        specsByPath = byPath
+        specsByBinding = byBinding
         specsByID = byID
     }
 
@@ -47,8 +70,11 @@ private actor MockCommandBus: CommandCalling {
         switch method {
         case "project.open":
             let json = try encodeParams(params)
-            guard let path = json["path"] as? String,
-                  let spec = specsByPath[path] else {
+            guard let path = json["path"] as? String else {
+                throw NSError(domain: "MockCommandBus", code: 1)
+            }
+            let checkoutPath = (json["checkout_path"] as? String) ?? path
+            guard let spec = specsByBinding[Self.bindingKey(projectPath: path, checkoutPath: checkoutPath)] else {
                 throw NSError(domain: "MockCommandBus", code: 1)
             }
             openPathHistory.append(path)
@@ -60,6 +86,7 @@ private actor MockCommandBus: CommandCalling {
                     projectID: spec.projectID,
                     projectName: path,
                     projectPath: spec.projectPath,
+                    checkoutPath: spec.checkoutPath,
                     sessions: 0,
                     tasks: spec.activeTasks,
                     worktrees: 0
@@ -116,9 +143,15 @@ private actor MockCommandBus: CommandCalling {
         closeModesValue
     }
 
+    private static func bindingKey(projectPath: String, checkoutPath: String) -> String {
+        "\(projectPath)|\(checkoutPath)"
+    }
+
     private func encodeParams(_ params: Encodable?) throws -> [String: Any] {
         guard let params else { return [:] }
-        let data = try JSONEncoder().encode(AnyEncodable(params))
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(AnyEncodable(params))
         return (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 }
@@ -172,6 +205,7 @@ private actor RecoveringProjectOpenCommandBus: CommandCalling {
                     projectID: spec.projectID,
                     projectName: spec.projectPath,
                     projectPath: spec.projectPath,
+                    checkoutPath: spec.checkoutPath,
                     sessions: 0,
                     tasks: spec.activeTasks,
                     worktrees: 0
@@ -627,6 +661,102 @@ final class WorkspaceManagerTests: XCTestCase {
         XCTAssertEqual(secondWorkspaceOpenCount, 1)
     }
 
+    func testCreateLocalProjectWorkspaceReusesExistingRootAndCheckoutBinding() async throws {
+        let checkoutPath = "/tmp/a/.pnevma/workspaces/branches/feature-a"
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-a",
+                projectPath: "/tmp/a",
+                checkoutPath: checkoutPath,
+                gitBranch: "feature/a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let manager = WorkspaceManager(bridge: PnevmaBridge(), commandBus: bus)
+        defer { manager.shutdown() }
+
+        let firstWorkspace = manager.createLocalProjectWorkspace(
+            name: "Feature A",
+            projectPath: "/tmp/a",
+            checkoutPath: checkoutPath,
+            terminalMode: .persistent
+        )
+        let reusedWorkspace = manager.createLocalProjectWorkspace(
+            name: "Feature A Again",
+            projectPath: "/tmp/a",
+            checkoutPath: checkoutPath,
+            terminalMode: .persistent
+        )
+
+        try await waitUntil {
+            manager.runtime(for: firstWorkspace.id)?.projectID == "project-a"
+                && manager.activeWorkspaceID == firstWorkspace.id
+        }
+
+        XCTAssertEqual(firstWorkspace.id, reusedWorkspace.id)
+        XCTAssertEqual(firstWorkspace.checkoutPath, checkoutPath)
+        XCTAssertEqual(firstWorkspace.localBindingRole, .worktree)
+        XCTAssertEqual(manager.workspaces.filter { $0.projectPath == "/tmp/a" }.count, 1)
+        let openCount = await bus.openCount(for: "/tmp/a")
+        XCTAssertEqual(openCount, 1)
+    }
+
+    func testCreateLocalProjectWorkspaceKeepsDistinctCheckoutBindingsSeparate() async throws {
+        let featureCheckoutPath = "/tmp/a/.pnevma/workspaces/branches/feature-a"
+        let bus = MockCommandBus(specs: [
+            .init(
+                projectID: "project-base",
+                projectPath: "/tmp/a",
+                checkoutPath: "/tmp/a",
+                gitBranch: "main",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            ),
+            .init(
+                projectID: "project-feature",
+                projectPath: "/tmp/a",
+                checkoutPath: featureCheckoutPath,
+                gitBranch: "feature/a",
+                activeTasks: 1,
+                activeAgents: 1,
+                costToday: 1.0,
+                unreadNotifications: 0,
+                openDelayNanos: 10_000_000
+            )
+        ])
+        let manager = WorkspaceManager(bridge: PnevmaBridge(), commandBus: bus)
+        defer { manager.shutdown() }
+
+        let baseWorkspace = manager.createLocalProjectWorkspace(
+            name: "Base",
+            projectPath: "/tmp/a",
+            terminalMode: .persistent
+        )
+        let featureWorkspace = manager.createLocalProjectWorkspace(
+            name: "Feature A",
+            projectPath: "/tmp/a",
+            checkoutPath: featureCheckoutPath,
+            terminalMode: .persistent
+        )
+
+        try await waitUntil {
+            manager.runtime(for: baseWorkspace.id)?.projectID == "project-base"
+                && manager.runtime(for: featureWorkspace.id)?.projectID == "project-feature"
+        }
+
+        XCTAssertNotEqual(baseWorkspace.id, featureWorkspace.id)
+        XCTAssertEqual(baseWorkspace.localBindingRole, .base)
+        XCTAssertEqual(featureWorkspace.localBindingRole, .worktree)
+        XCTAssertEqual(manager.workspaces.filter { $0.projectPath == "/tmp/a" }.count, 2)
+    }
+
     func testPrepareForShutdownClosesOpenProjects() async throws {
         let bus = MockCommandBus(specs: [
             .init(
@@ -818,7 +948,7 @@ final class WorkspaceManagerTests: XCTestCase {
             BridgeEvent(
                 name: "project_opened",
                 payloadJSON: """
-                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspace.id, generation: opening.generation))"}
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","checkout_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspace.id, generation: opening.generation))"}
                 """
             )
         )
@@ -870,7 +1000,7 @@ final class WorkspaceManagerTests: XCTestCase {
             BridgeEvent(
                 name: "project_opened",
                 payloadJSON: """
-                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspaceB.id, generation: opening.generation))"}
+                {"project_id":"project-a","project_name":"A","project_path":"/tmp/a","checkout_path":"/tmp/a","client_activation_token":"\(WorkspaceManager.clientActivationToken(workspaceID: workspaceB.id, generation: opening.generation))"}
                 """
             )
         )

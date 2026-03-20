@@ -170,15 +170,19 @@ final class WorkspaceManager {
         kind: WorkspaceKind,
         location: WorkspaceLocation = .local,
         projectPath: String? = nil,
+        checkoutPath: String? = nil,
         terminalMode: WorkspaceTerminalMode,
+        localBindingRole: WorkspaceLocalBindingRole? = nil,
         remoteTarget: WorkspaceRemoteTarget? = nil
     ) -> Workspace {
         let workspace = Workspace(
             name: name,
             projectPath: projectPath,
+            checkoutPath: checkoutPath,
             kind: kind,
             location: location,
             terminalMode: terminalMode,
+            localBindingRole: localBindingRole,
             remoteTarget: remoteTarget
         )
         ensurePlaceholderPaneIfNeeded(for: workspace)
@@ -198,6 +202,7 @@ final class WorkspaceManager {
             kind: projectPath == nil ? .terminal : .project,
             location: .local,
             projectPath: projectPath,
+            checkoutPath: projectPath,
             terminalMode: projectPath == nil ? .nonPersistent : .persistent
         )
     }
@@ -218,17 +223,36 @@ final class WorkspaceManager {
     func createLocalProjectWorkspace(
         name: String,
         projectPath: String,
+        checkoutPath: String? = nil,
         terminalMode: WorkspaceTerminalMode,
         launchSource: WorkspaceLaunchSource? = nil,
         initialWorkingDirectory: String? = nil,
         initialTaskID: String? = nil
     ) -> Workspace {
+        let standardizedProjectPath = Self.standardizeLocalProjectPath(projectPath) ?? projectPath
+        let standardizedCheckoutPath =
+            Self.standardizeLocalProjectPath(checkoutPath) ?? standardizedProjectPath
+        let bindingRole: WorkspaceLocalBindingRole =
+            standardizedCheckoutPath == standardizedProjectPath ? .base : .worktree
+
+        if let existing = existingLocalWorkspace(
+            projectPath: standardizedProjectPath,
+            checkoutPath: standardizedCheckoutPath
+        ) {
+            existing.launchSource = launchSource ?? existing.launchSource
+            existing.localBindingRole = bindingRole
+            activateWorkspace(id: existing.id)
+            return existing
+        }
+
         let workspace = createWorkspace(
             name: name,
             kind: .project,
             location: .local,
-            projectPath: projectPath,
-            terminalMode: terminalMode
+            projectPath: standardizedProjectPath,
+            checkoutPath: standardizedCheckoutPath,
+            terminalMode: terminalMode,
+            localBindingRole: bindingRole
         )
         resetMetadata(for: workspace)
         workspace.launchSource = launchSource
@@ -241,7 +265,7 @@ final class WorkspaceManager {
             )
         )
         Log.workspace.info(
-            "Created local project workspace \(workspace.id, privacy: .public) for \(projectPath, privacy: .public)"
+            "Created local project workspace \(workspace.id, privacy: .public) for \(standardizedProjectPath, privacy: .public) @ \(standardizedCheckoutPath, privacy: .public)"
         )
         return workspace
     }
@@ -483,7 +507,11 @@ final class WorkspaceManager {
 
         runtimeOpenTasks[workspace.id]?.cancel()
         let generation = issueGeneration(for: workspace.id)
-        runtime.markOpening(generation: generation, projectPath: workspace.projectPath)
+        runtime.markOpening(
+            generation: generation,
+            projectPath: workspace.projectPath,
+            checkoutPath: workspace.checkoutPath ?? workspace.projectPath
+        )
         if activeWorkspaceID == workspace.id {
             activationHub.update(.opening(workspaceID: workspace.id, generation: generation))
         }
@@ -525,12 +553,21 @@ final class WorkspaceManager {
             guard let path = try await projectPathResolver.resolveProjectPath(for: workspace) else {
                 throw WorkspaceProjectTransportError.projectPathUnavailable
             }
+            let checkoutPath = workspace.location == .local
+                ? (Self.standardizeLocalProjectPath(workspace.checkoutPath) ?? path)
+                : path
             guard workspaceGenerations[workspace.id] == generation else { return }
             workspace.projectPath = path
-            runtime.markOpening(generation: generation, projectPath: path)
+            workspace.checkoutPath = checkoutPath
+            runtime.markOpening(
+                generation: generation,
+                projectPath: path,
+                checkoutPath: checkoutPath
+            )
 
             let response = try await openOrTrust(
                 path: path,
+                checkoutPath: checkoutPath,
                 workspaceName: workspace.name,
                 activationToken: Self.clientActivationToken(
                     workspaceID: workspace.id,
@@ -545,9 +582,18 @@ final class WorkspaceManager {
             }
 
             liveWorkspace.projectPath = response.status.projectPath
+            liveWorkspace.checkoutPath = response.status.checkoutPath
+            if liveWorkspace.location == .local && liveWorkspace.kind == .project {
+                liveWorkspace.localBindingRole =
+                    response.status.checkoutPath == response.status.projectPath ? .base : .worktree
+            }
             liveWorkspace.activationFailureMessage = nil
             workspaceProjectIDs[workspace.id] = response.projectID
-            runtime.markOpen(projectID: response.projectID, projectPath: response.status.projectPath)
+            runtime.markOpen(
+                projectID: response.projectID,
+                projectPath: response.status.projectPath,
+                checkoutPath: response.status.checkoutPath
+            )
 
             if activeWorkspaceID == workspace.id {
                 activationHub.update(
@@ -606,6 +652,7 @@ final class WorkspaceManager {
 
     private func openOrTrust(
         path: String,
+        checkoutPath: String,
         workspaceName: String,
         activationToken: String,
         commandBus: any CommandCalling,
@@ -617,6 +664,7 @@ final class WorkspaceManager {
                 method: "project.open",
                 params: OpenProjectParams(
                     path: path,
+                    checkoutPath: checkoutPath == path ? nil : checkoutPath,
                     clientActivationToken: activationToken
                 )
             )
@@ -633,6 +681,7 @@ final class WorkspaceManager {
                 )
                 return try await openOrTrust(
                     path: path,
+                    checkoutPath: checkoutPath,
                     workspaceName: workspaceName,
                     activationToken: activationToken,
                     commandBus: commandBus,
@@ -650,11 +699,13 @@ final class WorkspaceManager {
                 method: "project.trust",
                 params: OpenProjectParams(
                     path: path,
+                    checkoutPath: nil,
                     clientActivationToken: nil
                 )
             )
             return try await openOrTrust(
                 path: path,
+                checkoutPath: checkoutPath,
                 workspaceName: workspaceName,
                 activationToken: activationToken,
                 commandBus: commandBus,
@@ -723,18 +774,39 @@ final class WorkspaceManager {
             return
         }
 
-        if let expectedPath = workspace.projectPath,
-           !expectedPath.isEmpty,
-           payload.projectPath != expectedPath {
+        let expectedProjectPath = workspace.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedCheckoutPath =
+            (workspace.checkoutPath ?? workspace.projectPath)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let expectedProjectPath,
+           !expectedProjectPath.isEmpty,
+           payload.projectPath != expectedProjectPath {
             Log.workspace.debug(
-                "Ignoring mismatched project_opened for workspace \(workspace.id, privacy: .public); expected path \(expectedPath, privacy: .public), got \(payload.projectPath, privacy: .public)"
+                "Ignoring mismatched project_opened for workspace \(workspace.id, privacy: .public); expected root \(expectedProjectPath, privacy: .public), got \(payload.projectPath, privacy: .public)"
+            )
+            return
+        }
+        if let expectedCheckoutPath,
+           !expectedCheckoutPath.isEmpty,
+           payload.checkoutPath != expectedCheckoutPath {
+            Log.workspace.debug(
+                "Ignoring mismatched project_opened for workspace \(workspace.id, privacy: .public); expected checkout \(expectedCheckoutPath, privacy: .public), got \(payload.checkoutPath, privacy: .public)"
             )
             return
         }
 
         workspace.projectPath = payload.projectPath
+        workspace.checkoutPath = payload.checkoutPath
+        if workspace.location == .local && workspace.kind == .project {
+            workspace.localBindingRole =
+                payload.checkoutPath == payload.projectPath ? .base : .worktree
+        }
         workspaceProjectIDs[workspace.id] = payload.projectID
-        runtime.markOpen(projectID: payload.projectID, projectPath: payload.projectPath)
+        runtime.markOpen(
+            projectID: payload.projectID,
+            projectPath: payload.projectPath,
+            checkoutPath: payload.checkoutPath
+        )
 
         if activeWorkspaceID == workspace.id {
             activationHub.update(
@@ -892,6 +964,22 @@ final class WorkspaceManager {
         workspace.costToday = 0
         workspace.unreadNotifications = 0
         workspace.gitDirty = false
+    }
+
+    private func existingLocalWorkspace(projectPath: String, checkoutPath: String) -> Workspace? {
+        workspaces.first { workspace in
+            guard workspace.kind == .project, workspace.location == .local else { return false }
+            let existingProjectPath = Self.standardizeLocalProjectPath(workspace.projectPath)
+            let existingCheckoutPath =
+                Self.standardizeLocalProjectPath(workspace.checkoutPath) ?? existingProjectPath
+            return existingProjectPath == projectPath && existingCheckoutPath == checkoutPath
+        }
+    }
+
+    fileprivate static func standardizeLocalProjectPath(_ path: String?) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        let expanded = NSString(string: path).expandingTildeInPath
+        return NSString(string: expanded).standardizingPath
     }
 
     private func insertWorkspace(_ workspace: Workspace) {
@@ -1342,6 +1430,7 @@ private struct ShellCommandResult {
 private struct EmptyParams: Encodable {}
 private struct OpenProjectParams: Encodable {
     let path: String
+    let checkoutPath: String?
     let clientActivationToken: String?
 }
 
@@ -1354,6 +1443,7 @@ private struct InitializeProjectScaffoldParams: Encodable {
 private struct ProjectOpenedEventPayload: Decodable {
     let projectID: String
     let projectPath: String
+    let checkoutPath: String
     let clientActivationToken: String?
 }
 
@@ -1378,6 +1468,7 @@ struct ProjectStatusResponse: Decodable {
     let projectID: String
     let projectName: String
     let projectPath: String
+    let checkoutPath: String
     let sessions: Int
     let tasks: Int
     let worktrees: Int

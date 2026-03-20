@@ -53,6 +53,26 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(pane?.workingDirectory, "/tmp/project")
     }
 
+    func testEnsureActiveTabHasDisplayableRootPaneUsesCheckoutPathWhenPresent() {
+        let workspace = Workspace(
+            name: "Test",
+            projectPath: "/tmp/project",
+            checkoutPath: "/tmp/project/.pnevma/workspaces/branches/feature-1234abcd"
+        )
+        _ = workspace.addTab(title: "Second")
+
+        _ = workspace.ensureActiveTabHasDisplayableRootPane()
+
+        let rootPaneID = workspace.layoutEngine.root?.allPaneIDs.first
+        let pane = rootPaneID.flatMap { workspace.layoutEngine.persistedPane(for: $0) }
+        XCTAssertEqual(pane?.type, "terminal")
+        XCTAssertEqual(
+            pane?.workingDirectory,
+            "/tmp/project/.pnevma/workspaces/branches/feature-1234abcd"
+        )
+        XCTAssertEqual(workspace.localBindingRole, .worktree)
+    }
+
     func testEnsureActiveTabHasDisplayableRootPaneUpgradesWelcomePaneForTerminalWorkspace() {
         let workspace = Workspace(name: "Test")
         let rootPaneID = workspace.layoutEngine.root!.allPaneIDs.first!
@@ -361,6 +381,29 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(restoredPane?.workingDirectory, "/tmp/test")
     }
 
+    func testSnapshotRoundTripPreservesCheckoutPathAndBindingRole() {
+        let workspace = Workspace(
+            name: "Feature",
+            projectPath: "/tmp/project",
+            checkoutPath: "/tmp/project/.pnevma/workspaces/branches/feature-1234abcd",
+            kind: .project,
+            location: .local,
+            terminalMode: .persistent,
+            localBindingRole: .worktree
+        )
+
+        let snapshot = workspace.snapshot()
+        let restored = Workspace(snapshot: snapshot)
+
+        XCTAssertEqual(restored.projectPath, "/tmp/project")
+        XCTAssertEqual(
+            restored.checkoutPath,
+            "/tmp/project/.pnevma/workspaces/branches/feature-1234abcd"
+        )
+        XCTAssertEqual(restored.localBindingRole, .worktree)
+        XCTAssertEqual(restored.defaultWorkingDirectory, restored.checkoutPath)
+    }
+
     func testLegacySnapshotWithoutTabsRestoresAsSingleTab() {
         // Simulate a legacy snapshot (pre-tabs): layoutData present, no tabSnapshots
         let engine = PaneLayoutEngine(rootPaneID: UUID())
@@ -370,9 +413,11 @@ final class WorkspaceTabTests: XCTestCase {
             id: UUID(),
             name: "Legacy",
             projectPath: "/tmp/legacy",
+            checkoutPath: nil,
             kind: nil,
             location: nil,
             terminalMode: nil,
+            localBindingRole: nil,
             remoteTarget: nil,
             tabSnapshots: nil,
             activeTabIndex: nil,
@@ -389,6 +434,8 @@ final class WorkspaceTabTests: XCTestCase {
         XCTAssertEqual(restored.activeTabIndex, 0)
         XCTAssertEqual(restored.name, "Legacy")
         XCTAssertEqual(restored.rightInspectorSection, .files)
+        XCTAssertEqual(restored.checkoutPath, "/tmp/legacy")
+        XCTAssertEqual(restored.localBindingRole, .base)
     }
 
     func testDrawerSizingClampsStoredHeightIntoVisibleRange() {

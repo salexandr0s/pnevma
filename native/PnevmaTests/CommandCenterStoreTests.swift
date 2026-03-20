@@ -17,22 +17,30 @@ private actor CommandCenterMockBus: CommandCalling {
     struct ProjectSpec {
         let projectID: String
         let projectPath: String
+        let checkoutPath: String
         let openDelayNanos: UInt64
+
+        init(projectID: String, projectPath: String, checkoutPath: String? = nil, openDelayNanos: UInt64) {
+            self.projectID = projectID
+            self.projectPath = projectPath
+            self.checkoutPath = checkoutPath ?? projectPath
+            self.openDelayNanos = openDelayNanos
+        }
     }
 
-    private let specsByPath: [String: ProjectSpec]
+    private let specsByBinding: [String: ProjectSpec]
     private let specsByID: [String: ProjectSpec]
     private var currentProjectIDValue: String?
     private var openPathHistory: [String] = []
 
     init(specs: [ProjectSpec]) {
-        var byPath: [String: ProjectSpec] = [:]
+        var byBinding: [String: ProjectSpec] = [:]
         var byID: [String: ProjectSpec] = [:]
         for spec in specs {
-            byPath[spec.projectPath] = spec
+            byBinding[Self.bindingKey(projectPath: spec.projectPath, checkoutPath: spec.checkoutPath)] = spec
             byID[spec.projectID] = spec
         }
-        specsByPath = byPath
+        specsByBinding = byBinding
         specsByID = byID
     }
 
@@ -40,8 +48,11 @@ private actor CommandCenterMockBus: CommandCalling {
         switch method {
         case "project.open":
             let json = try encodeParams(params)
-            guard let path = json["path"] as? String,
-                  let spec = specsByPath[path] else {
+            guard let path = json["path"] as? String else {
+                throw NSError(domain: "CommandCenterMockBus", code: 1)
+            }
+            let checkoutPath = (json["checkout_path"] as? String) ?? path
+            guard let spec = specsByBinding[Self.bindingKey(projectPath: path, checkoutPath: checkoutPath)] else {
                 throw NSError(domain: "CommandCenterMockBus", code: 1)
             }
             openPathHistory.append(path)
@@ -53,6 +64,7 @@ private actor CommandCenterMockBus: CommandCalling {
                     projectID: spec.projectID,
                     projectName: path,
                     projectPath: spec.projectPath,
+                    checkoutPath: spec.checkoutPath,
                     sessions: 0,
                     tasks: 0,
                     worktrees: 0
@@ -114,9 +126,15 @@ private actor CommandCenterMockBus: CommandCalling {
         openPathHistory.filter { $0 == path }.count
     }
 
+    private static func bindingKey(projectPath: String, checkoutPath: String) -> String {
+        "\(projectPath)|\(checkoutPath)"
+    }
+
     private func encodeParams(_ params: Encodable?) throws -> [String: Any] {
         guard let params else { return [:] }
-        let data = try JSONEncoder().encode(AnyEncodableCommandCenter(params))
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(AnyEncodableCommandCenter(params))
         return (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 }

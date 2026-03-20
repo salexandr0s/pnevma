@@ -834,12 +834,18 @@ pub async fn route_method(
         "project.open" => {
             let path = parse_string_param(params, "path")
                 .map_err(|e| ("invalid_params".to_string(), e))?;
+            let checkout_path = parse_optional_string_param(params, "checkout_path");
             let client_activation_token =
                 parse_optional_string_param(params, "client_activation_token");
-            let project_id =
-                commands::open_project(path, client_activation_token, &state.emitter, state)
-                    .await
-                    .map_err(|e| ("internal_error".to_string(), e))?;
+            let project_id = commands::open_project(
+                path,
+                checkout_path,
+                client_activation_token,
+                &state.emitter,
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?;
             let status = commands::project_status(state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
@@ -1014,6 +1020,16 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "git.checkout" => {
+            let branch = parse_string_param(params, "branch")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::checkout_branch(&branch, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "workspace.changes_summary" => serde_json::to_value(
             commands::changes_summary(state)
                 .await
@@ -3112,6 +3128,16 @@ mod tests {
         let err = route_method(&state, "workspace.files.tree", &json!({}))
             .await
             .expect_err("missing project should still route to the file tree handler");
+        assert_eq!(err.0, "internal_error");
+        assert_eq!(err.1, "no open project");
+    }
+
+    #[tokio::test]
+    async fn git_checkout_route_is_registered() {
+        let state = AppState::new(Arc::new(NullEmitter));
+        let err = route_method(&state, "git.checkout", &json!({ "branch": "main" }))
+            .await
+            .expect_err("missing project should still route to the git.checkout handler");
         assert_eq!(err.0, "internal_error");
         assert_eq!(err.1, "no open project");
     }

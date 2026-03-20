@@ -374,6 +374,7 @@ async fn load_effective_global_config(state: &AppState) -> Result<GlobalConfig, 
 
 pub async fn open_project(
     path: String,
+    checkout_path: Option<String>,
     client_activation_token: Option<String>,
     emitter: &Arc<dyn EventEmitter>,
     state: &AppState,
@@ -385,6 +386,37 @@ pub async fn open_project(
         return Err("workspace_not_initialized".to_string());
     }
     let config_path = path_buf.join("pnevma.toml");
+    let checkout_buf = if let Some(raw_checkout_path) = checkout_path.as_deref() {
+        let normalized_checkout_path = normalize_scaffold_path(raw_checkout_path)?;
+        if !normalized_checkout_path.exists() {
+            return Err(format!(
+                "checkout unavailable: {}",
+                normalized_checkout_path.to_string_lossy()
+            ));
+        }
+        let canonical_checkout = std::fs::canonicalize(&normalized_checkout_path)
+            .map_err(|e| format!("checkout unavailable: {e}"))?;
+        let checkout_root = TokioCommand::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&canonical_checkout)
+            .output()
+            .await
+            .map_err(|e| format!("failed to resolve checkout root: {e}"))?;
+        if !checkout_root.status.success() {
+            return Err(
+                "checkout path must point to a git checkout for the selected project".to_string(),
+            );
+        }
+        let checkout_root = PathBuf::from(String::from_utf8_lossy(&checkout_root.stdout).trim());
+        let canonical_checkout_root = std::fs::canonicalize(&checkout_root)
+            .map_err(|e| format!("failed to canonicalize checkout root: {e}"))?;
+        if canonical_checkout_root != path_buf {
+            return Err("checkout path must belong to the selected project root".to_string());
+        }
+        canonical_checkout
+    } else {
+        path_buf.clone()
+    };
 
     // --- Workspace trust gate ---
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
@@ -553,7 +585,9 @@ pub async fn open_project(
 
     let ctx = ProjectContext {
         project_id,
+        project_root_path: path_buf.clone(),
         project_path: path_buf.clone(),
+        checkout_path: checkout_buf.clone(),
         config: cfg.clone(),
         global_config: global_cfg.clone(),
         db: db.clone(),
@@ -649,6 +683,7 @@ pub async fn open_project(
             "project_id": project_id.to_string(),
             "project_name": cfg.project.name,
             "project_path": path_str,
+            "checkout_path": checkout_buf.to_string_lossy().to_string(),
             "client_activation_token": client_activation_token,
         }),
     );
@@ -673,7 +708,7 @@ pub async fn close_project_with_mode(
     };
     let ProjectContext {
         project_id,
-        project_path,
+        project_root_path,
         db,
         sessions,
         coordinator,
@@ -699,7 +734,7 @@ pub async fn close_project_with_mode(
         coordinator.shutdown_active_runs().await;
     }
     abort_project_runtime(state).await;
-    shutdown_project_sessions(&db, &sessions, project_id, &project_path, close_mode).await;
+    shutdown_project_sessions(&db, &sessions, project_id, &project_root_path, close_mode).await;
 
     clear_project_redaction_secrets(project_id);
     pnevma_redaction::reset_runtime_redaction_config();

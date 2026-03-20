@@ -146,6 +146,7 @@ final class CommandBusTests: XCTestCase {
             "project_id": "project-123",
             "project_name": "Pnevma",
             "project_path": "/tmp/pnevma",
+            "checkout_path": "/tmp/pnevma",
             "sessions": 1,
             "tasks": 2,
             "worktrees": 3

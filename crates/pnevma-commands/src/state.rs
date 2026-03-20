@@ -26,7 +26,11 @@ pub struct RecentProject {
 
 pub struct ProjectContext {
     pub project_id: Uuid,
+    pub project_root_path: PathBuf,
+    /// Canonical project root used for shared DB/trust/session storage.
     pub project_path: PathBuf,
+    /// Active local checkout/worktree path for git and file surfaces.
+    pub checkout_path: PathBuf,
     pub config: ProjectConfig,
     pub global_config: GlobalConfig,
     pub db: Db,

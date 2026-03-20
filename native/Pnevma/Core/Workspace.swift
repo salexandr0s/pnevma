@@ -11,6 +11,11 @@ enum WorkspaceLocation: String, Codable {
     case remote
 }
 
+enum WorkspaceLocalBindingRole: String, Codable {
+    case base
+    case worktree
+}
+
 enum WorkspaceTerminalMode: String, Codable {
     case persistent
     case nonPersistent
@@ -263,6 +268,8 @@ final class Workspace: Identifiable {
     nonisolated let id: UUID
     var name: String
     var projectPath: String?
+    var checkoutPath: String?
+    var localBindingRole: WorkspaceLocalBindingRole?
     let kind: WorkspaceKind
     let location: WorkspaceLocation
     let terminalMode: WorkspaceTerminalMode
@@ -303,9 +310,11 @@ final class Workspace: Identifiable {
         id: UUID = UUID(),
         name: String,
         projectPath: String? = nil,
+        checkoutPath: String? = nil,
         kind: WorkspaceKind = .terminal,
         location: WorkspaceLocation = .local,
         terminalMode: WorkspaceTerminalMode = .persistent,
+        localBindingRole: WorkspaceLocalBindingRole? = nil,
         remoteTarget: WorkspaceRemoteTarget? = nil,
         layoutEngine: PaneLayoutEngine? = nil,
         rootPaneID: PaneID = PaneID()
@@ -317,10 +326,15 @@ final class Workspace: Identifiable {
             return kind
         }()
         let resolvedLocation: WorkspaceLocation = remoteTarget == nil ? location : .remote
+        let resolvedCheckoutPath = checkoutPath ?? projectPath
 
         self.id = id
         self.name = name
         self.projectPath = projectPath
+        self.checkoutPath = resolvedCheckoutPath
+        self.localBindingRole = resolvedLocation == .local && resolvedKind == .project
+            ? (localBindingRole ?? (resolvedCheckoutPath == projectPath ? .base : .worktree))
+            : nil
         self.kind = resolvedKind
         self.location = resolvedLocation
         if resolvedKind == .terminal && projectPath == nil && remoteTarget == nil && terminalMode == .persistent {
@@ -344,16 +358,23 @@ final class Workspace: Identifiable {
         id: UUID,
         name: String,
         projectPath: String?,
+        checkoutPath: String?,
         kind: WorkspaceKind,
         location: WorkspaceLocation,
         terminalMode: WorkspaceTerminalMode,
+        localBindingRole: WorkspaceLocalBindingRole?,
         remoteTarget: WorkspaceRemoteTarget?,
         tabs: [WorkspaceTab],
         activeTabIndex: Int
     ) {
+        let resolvedCheckoutPath = checkoutPath ?? projectPath
         self.id = id
         self.name = name
         self.projectPath = projectPath
+        self.checkoutPath = resolvedCheckoutPath
+        self.localBindingRole = location == .local && kind == .project
+            ? (localBindingRole ?? (resolvedCheckoutPath == projectPath ? .base : .worktree))
+            : nil
         self.kind = kind
         self.location = location
         if kind == .terminal && projectPath == nil && remoteTarget == nil && terminalMode == .persistent {
@@ -390,6 +411,15 @@ final class Workspace: Identifiable {
             ?? remoteTarget?.remotePath
     }
 
+    var activeProjectPath: String? {
+        switch location {
+        case .local:
+            return checkoutPath ?? projectPath
+        case .remote:
+            return projectPath ?? remoteTarget?.remotePath
+        }
+    }
+
     var isPermanent: Bool {
         kind == .terminal
     }
@@ -397,7 +427,7 @@ final class Workspace: Identifiable {
     var displayPath: String? {
         switch location {
         case .local:
-            return projectPath
+            return activeProjectPath
         case .remote:
             return remoteTarget?.remotePath
         }
@@ -418,7 +448,7 @@ final class Workspace: Identifiable {
     var defaultWorkingDirectory: String? {
         switch location {
         case .local:
-            return projectPath ?? NSHomeDirectory()
+            return activeProjectPath ?? NSHomeDirectory()
         case .remote:
             return nil
         }
@@ -573,9 +603,11 @@ extension Workspace {
         let id: UUID
         let name: String
         let projectPath: String?
+        let checkoutPath: String?
         let kind: WorkspaceKind?
         let location: WorkspaceLocation?
         let terminalMode: WorkspaceTerminalMode?
+        let localBindingRole: WorkspaceLocalBindingRole?
         let remoteTarget: WorkspaceRemoteTarget?
         // New: per-tab serialization
         var tabSnapshots: [WorkspaceTab.Snapshot]?
@@ -595,9 +627,11 @@ extension Workspace {
             id: id,
             name: name,
             projectPath: projectPath,
+            checkoutPath: checkoutPath,
             kind: kind,
             location: location,
             terminalMode: terminalMode,
+            localBindingRole: localBindingRole,
             remoteTarget: remoteTarget,
             tabSnapshots: tabs.map { $0.snapshot() },
             activeTabIndex: activeTabIndex,
@@ -632,9 +666,11 @@ extension Workspace {
                 id: snapshot.id,
                 name: snapshot.name,
                 projectPath: snapshot.projectPath,
+                checkoutPath: snapshot.checkoutPath ?? snapshot.projectPath,
                 kind: resolvedKind,
                 location: resolvedLocation,
                 terminalMode: resolvedTerminalMode,
+                localBindingRole: snapshot.localBindingRole,
                 remoteTarget: snapshot.remoteTarget,
                 tabs: restoredTabs,
                 activeTabIndex: snapshot.activeTabIndex ?? 0
@@ -646,9 +682,11 @@ extension Workspace {
                 id: snapshot.id,
                 name: snapshot.name,
                 projectPath: snapshot.projectPath,
+                checkoutPath: snapshot.checkoutPath ?? snapshot.projectPath,
                 kind: resolvedKind,
                 location: resolvedLocation,
                 terminalMode: resolvedTerminalMode,
+                localBindingRole: snapshot.localBindingRole,
                 remoteTarget: snapshot.remoteTarget,
                 layoutEngine: restoredLayout
             )

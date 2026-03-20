@@ -385,6 +385,7 @@ pub struct ProjectStatusView {
     pub project_id: String,
     pub project_name: String,
     pub project_path: String,
+    pub checkout_path: String,
     pub sessions: usize,
     pub tasks: usize,
     pub worktrees: usize,
@@ -455,6 +456,7 @@ pub struct WorkspaceOpenerBranchView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceOpenerLaunchResult {
     pub project_path: String,
+    pub checkout_path: String,
     pub workspace_name: String,
     pub launch_source: WorkspaceLaunchSourceView,
     pub working_directory: Option<String>,

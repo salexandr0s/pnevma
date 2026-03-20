@@ -20,6 +20,7 @@ async fn open_project_returns_workspace_not_initialized_for_existing_repo_withou
     let err = open_project(
         project_root.path().to_string_lossy().to_string(),
         None,
+        None,
         &emitter,
         &state,
     )
@@ -41,6 +42,7 @@ async fn open_project_returns_workspace_not_initialized_when_support_dir_is_miss
 
     let err = open_project(
         project_root.path().to_string_lossy().to_string(),
+        None,
         None,
         &emitter,
         &state,
@@ -68,7 +70,7 @@ async fn trust_and_open_project_expand_home_relative_paths() {
     trust_workspace(input_path.clone(), &state)
         .await
         .expect("trust workspace");
-    let project_id = open_project(input_path.clone(), None, &emitter, &state)
+    let project_id = open_project(input_path.clone(), None, None, &emitter, &state)
         .await
         .expect("open project");
 
@@ -93,6 +95,42 @@ async fn trust_and_open_project_expand_home_relative_paths() {
 }
 
 #[tokio::test]
+async fn open_project_reports_checkout_unavailable_when_saved_checkout_is_missing() {
+    let home = tempdir().expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+    let project_root = tempdir().expect("temp project");
+    std::fs::create_dir_all(project_root.path().join(".pnevma/data"))
+        .expect("create scaffold dirs");
+    write_test_project_config(project_root.path(), &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+
+    trust_workspace(project_root.path().to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+
+    let missing_checkout = project_root
+        .path()
+        .join(".pnevma/workspaces/branches/missing");
+    let err = open_project(
+        project_root.path().to_string_lossy().to_string(),
+        Some(missing_checkout.to_string_lossy().to_string()),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect_err("missing checkout should fail open");
+
+    assert!(
+        err.contains("checkout unavailable"),
+        "expected checkout unavailable error, got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn open_project_restores_remote_durable_rows_and_records_restore_log() {
     let temp = tempdir().expect("temp root");
     let _env = super::sessions::RemoteSshTestEnv::new(temp.path()).await;
@@ -109,6 +147,7 @@ async fn open_project_restores_remote_durable_rows_and_records_restore_log() {
     let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
     let opened_project_id = open_project(
         project_root.to_string_lossy().to_string(),
+        None,
         None,
         &emitter,
         &state,
@@ -143,6 +182,7 @@ async fn open_project_restores_remote_durable_rows_and_records_restore_log() {
     close_project(&state).await.expect("close project");
     open_project(
         project_root.to_string_lossy().to_string(),
+        None,
         None,
         &emitter,
         &state,
@@ -213,6 +253,7 @@ async fn open_project_invalid_redaction_does_not_replace_live_runtime_config() {
     let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
     let err = open_project(
         project_root.path().to_string_lossy().to_string(),
+        None,
         None,
         &emitter,
         &state,
@@ -488,6 +529,7 @@ async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdow
     let opened_project_id = open_project(
         project_root.to_string_lossy().to_string(),
         None,
+        None,
         &emitter,
         &state,
     )
@@ -546,6 +588,7 @@ async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdow
         .expect("close project for app shutdown");
     open_project(
         project_root.to_string_lossy().to_string(),
+        None,
         None,
         &emitter,
         &state,

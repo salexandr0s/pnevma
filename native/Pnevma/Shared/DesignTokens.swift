@@ -44,7 +44,6 @@ enum DesignTokens {
         static let sidebarCollapsedWidth: CGFloat = 52
         static let sidebarMinWidth: CGFloat = 180
         static let sidebarMaxWidth: CGFloat = 380
-        static let agentStripHeight: CGFloat = 32
         static let statusDotSize: CGFloat = 8
         static let rightInspectorDefaultWidth: CGFloat = 340
         static let rightInspectorMinWidth: CGFloat = 280
