@@ -30,6 +30,7 @@ private actor MockCommandBus: CommandCalling {
     private var currentProjectIDValue: String?
     private var openPathHistory: [String] = []
     private var closeCountValue = 0
+    private var closeModesValue: [String] = []
 
     init(specs: [ProjectSpec]) {
         var byPath: [String: ProjectSpec] = [:]
@@ -85,7 +86,9 @@ private actor MockCommandBus: CommandCalling {
                 attentionReason: nil
             ) as! T
         case "project.close":
+            let json = try encodeParams(params)
             closeCountValue += 1
+            closeModesValue.append((json["mode"] as? String) ?? "workspace_close")
             currentProjectIDValue = nil
             return OkResponse(ok: true) as! T
         default:
@@ -107,6 +110,10 @@ private actor MockCommandBus: CommandCalling {
 
     func closeCount() -> Int {
         closeCountValue
+    }
+
+    func closeModes() -> [String] {
+        closeModesValue
     }
 
     private func encodeParams(_ params: Encodable?) throws -> [String: Any] {
@@ -434,10 +441,19 @@ final class WorkspaceManagerTests: XCTestCase {
                 && manager.runtime(for: workspaceA.id) == nil
                 && manager.runtime(for: workspaceB.id)?.projectID == "project-b"
         }
+        try await waitUntil {
+            let closeCount = await bus.closeCount()
+            let closeModes = await bus.closeModes()
+            return closeCount == 1 && closeModes == ["workspace_close"]
+        }
 
+        let closeCount = await bus.closeCount()
+        let closeModes = await bus.closeModes()
         XCTAssertEqual(manager.activeWorkspaceID, workspaceB.id)
         XCTAssertNil(manager.runtime(for: workspaceA.id))
         XCTAssertEqual(manager.runtime(for: workspaceB.id)?.projectID, "project-b")
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(closeModes, ["workspace_close"])
     }
 
     func testSwitchingToTerminalKeepsProjectRuntimeOpenAndShowsTerminalPane() async throws {
@@ -636,7 +652,9 @@ final class WorkspaceManagerTests: XCTestCase {
         await manager.prepareForShutdown()
 
         let closeCount = await bus.closeCount()
+        let closeModes = await bus.closeModes()
         XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(closeModes, ["app_shutdown"])
         XCTAssertNil(manager.runtime(for: projectWorkspace.id)?.projectID)
     }
 
@@ -1053,7 +1071,7 @@ final class WorkspaceManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             PaneFactory.availablePaneTypes(for: workspace),
-            Set(["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"])
+            Set(["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "resource_monitor", "harness_config"])
         )
         XCTAssertEqual(
             activationHub.currentState,

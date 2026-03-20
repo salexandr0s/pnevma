@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Output;
 
 fn parse_shortstat(stat: &str) -> (Option<i64>, Option<i64>) {
     let mut insertions: Option<i64> = None;
@@ -2985,26 +2986,57 @@ pub async fn merge_queue_readiness(state: &AppState) -> Result<MergeReadinessVie
     })
 }
 
-pub async fn commit_and_push(message: &str, state: &AppState) -> Result<CommitAndPushView, String> {
-    let project_path = state
-        .with_project("commit_and_push", |ctx| ctx.project_path.clone())
+fn git_failure_message(output: &Output, fallback: &str) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+
+    fallback.to_string()
+}
+
+async fn active_project_path(state: &AppState, operation: &'static str) -> Result<PathBuf, String> {
+    state
+        .with_project(operation, |ctx| ctx.project_path.clone())
         .await
-        .map_err(|_| "no open project".to_string())?;
-    // Stage all changes
+        .map_err(|_| "no open project".to_string())
+}
+
+async fn stage_all_changes(project_path: &Path) -> Result<(), String> {
     let add_out = TokioCommand::new("git")
         .args(["add", "-A"])
-        .current_dir(&project_path)
+        .current_dir(project_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
-    if !add_out.status.success() {
-        return Ok(CommitAndPushView {
-            success: false,
-            commit_sha: None,
-            push_error: Some("git add failed".to_string()),
-        });
+    if add_out.status.success() {
+        Ok(())
+    } else {
+        Err(git_failure_message(&add_out, "git add failed"))
     }
-    // Commit
+}
+
+async fn read_head_sha(project_path: &Path) -> Option<String> {
+    TokioCommand::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(project_path)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|sha| sha.trim().to_string())
+}
+
+pub async fn commit(message: &str, state: &AppState) -> Result<GitCommitView, String> {
+    let project_path = active_project_path(state, "commit").await?;
+    stage_all_changes(&project_path).await?;
+
     let commit_out = TokioCommand::new("git")
         .args(["commit", "-m", message])
         .current_dir(&project_path)
@@ -3012,38 +3044,51 @@ pub async fn commit_and_push(message: &str, state: &AppState) -> Result<CommitAn
         .await
         .map_err(|e| e.to_string())?;
     if !commit_out.status.success() {
-        return Ok(CommitAndPushView {
+        return Ok(GitCommitView {
             success: false,
             commit_sha: None,
-            push_error: Some(String::from_utf8_lossy(&commit_out.stderr).to_string()),
+            error_message: Some(git_failure_message(&commit_out, "git commit failed")),
         });
     }
-    // Get sha
-    let sha = TokioCommand::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(&project_path)
-        .output()
-        .await
-        .ok()
-        .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .map(|s| s.trim().to_string());
-    // Push
+
+    Ok(GitCommitView {
+        success: true,
+        commit_sha: read_head_sha(&project_path).await,
+        error_message: None,
+    })
+}
+
+pub async fn push(state: &AppState) -> Result<GitPushView, String> {
+    let project_path = active_project_path(state, "push").await?;
     let push_out = TokioCommand::new("git")
         .args(["push"])
         .current_dir(&project_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
-    let push_error = if push_out.status.success() {
-        None
-    } else {
-        Some(String::from_utf8_lossy(&push_out.stderr).to_string())
-    };
+
+    Ok(GitPushView {
+        success: push_out.status.success(),
+        error_message: (!push_out.status.success())
+            .then(|| git_failure_message(&push_out, "git push failed")),
+    })
+}
+
+pub async fn commit_and_push(message: &str, state: &AppState) -> Result<CommitAndPushView, String> {
+    let commit_result = commit(message, state).await?;
+    if !commit_result.success {
+        return Ok(CommitAndPushView {
+            success: false,
+            commit_sha: None,
+            push_error: commit_result.error_message,
+        });
+    }
+
+    let push_result = push(state).await?;
     Ok(CommitAndPushView {
-        success: push_error.is_none(),
-        commit_sha: sha,
-        push_error,
+        success: push_result.success,
+        commit_sha: commit_result.commit_sha,
+        push_error: push_result.error_message,
     })
 }
 

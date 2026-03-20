@@ -4,37 +4,26 @@ struct SessionManagerView: View {
     var store: SessionStore
     var onNewSession: (() -> Void)?
     @State private var showKillAllAlert = false
-    @Environment(GhosttyThemeProvider.self) var theme
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Sessions")
-                    .font(.headline)
-                Spacer()
-
+        ToolbarAttachmentScaffold(title: "Sessions") {
+            HStack(spacing: DesignTokens.Spacing.sm) {
                 Text("\(store.activeCount) active")
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Button {
+                Button("New") {
                     onNewSession?()
-                } label: {
-                    Text("New")
-                        .font(.caption)
                 }
                 .buttonStyle(.plain)
                 .disabled(onNewSession == nil || !store.hasActiveProject)
                 .accessibilityLabel("New session")
 
-                Button {
+                Button("Kill All") {
                     showKillAllAlert = true
-                } label: {
-                    Text("Kill All")
-                        .font(.caption)
-                        .foregroundStyle(.red)
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(.red)
                 .disabled(store.activeCount == 0)
                 .accessibilityLabel("Kill all sessions")
 
@@ -42,56 +31,49 @@ struct SessionManagerView: View {
                     store.refresh()
                 } label: {
                     Label("Refresh Sessions", systemImage: "arrow.clockwise")
-                        .font(.caption)
                         .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh sessions")
             }
-            .padding(12)
-
-            Divider()
-
+        } content: {
             Group {
                 switch store.availability {
                 case .loading(let message) where store.sessions.isEmpty:
-                    SessionManagerEmptyState(
-                        icon: "hourglass",
-                        title: message
-                    )
+                    EmptyStateView(icon: "hourglass", title: message)
                 case .failed(let message) where store.sessions.isEmpty:
-                    SessionManagerEmptyState(
+                    EmptyStateView(
                         icon: "exclamationmark.triangle",
                         title: message,
                         actionTitle: "Retry",
                         action: { store.refresh() }
                     )
                 case .noProject(let message):
-                    SessionManagerEmptyState(
-                        icon: "folder.badge.questionmark",
-                        title: message
-                    )
+                    EmptyStateView(icon: "folder.badge.questionmark", title: message)
                 default:
                     if store.sessions.isEmpty {
-                        ContentUnavailableView(
-                            "No Sessions",
-                            systemImage: "terminal",
-                            description: Text("No active terminal sessions")
+                        EmptyStateView(
+                            icon: "terminal",
+                            title: "No Sessions",
+                            message: "No active terminal sessions"
                         )
                     } else {
-                        List {
-                            ForEach(store.sessions) { session in
-                                SessionRow(session: session) {
-                                    store.kill(sessionID: session.id)
+                        NativeCollectionShell(surface: .pane) {
+                            List {
+                                ForEach(store.sessions) { session in
+                                    SessionRow(session: session) {
+                                        store.kill(sessionID: session.id)
+                                    }
                                 }
                             }
+                            .listStyle(.plain)
+                            .scrollContentBackground(.hidden)
                         }
-                        .listStyle(.plain)
                     }
                 }
             }
         }
-        .frame(width: 380, height: 320)
+        .frame(width: 400, height: 320)
         .overlay(alignment: .bottom) { ErrorBanner(message: store.actionError) }
         .alert("Kill All Sessions?", isPresented: $showKillAllAlert) {
             Button("Cancel", role: .cancel) {}
@@ -100,44 +82,6 @@ struct SessionManagerView: View {
             Text("This will terminate all active sessions.")
         }
         .task { await store.activate() }
-    }
-}
-
-private struct SessionManagerEmptyState: View {
-    let icon: String
-    let title: String
-    let actionTitle: String?
-    let action: (() -> Void)?
-
-    init(
-        icon: String,
-        title: String,
-        actionTitle: String? = nil,
-        action: (() -> Void)? = nil
-    ) {
-        self.icon = icon
-        self.title = title
-        self.actionTitle = actionTitle
-        self.action = action
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 }
 

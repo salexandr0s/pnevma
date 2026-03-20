@@ -19,6 +19,40 @@ const MAX_SESSION_COMMAND_BYTES: usize = 2048;
 const MAX_SESSION_INPUT_BYTES: usize = 16 * 1024;
 const MAX_PATH_INPUT_BYTES: usize = 4096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectCloseMode {
+    WorkspaceClose,
+    AppShutdown,
+}
+
+impl ProjectCloseMode {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "workspace_close" => Ok(Self::WorkspaceClose),
+            "app_shutdown" => Ok(Self::AppShutdown),
+            other => Err(format!("unsupported project close mode: {other}")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkspaceClose => "workspace_close",
+            Self::AppShutdown => "app_shutdown",
+        }
+    }
+
+    fn preserves_local_sessions(self) -> bool {
+        matches!(self, Self::AppShutdown)
+    }
+
+    fn session_close_reason(self) -> &'static str {
+        match self {
+            Self::WorkspaceClose => "project_close",
+            Self::AppShutdown => "app_shutdown",
+        }
+    }
+}
+
 fn ensure_bounded_text_field(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{label} must not be empty"));
@@ -157,21 +191,24 @@ async fn shutdown_project_sessions(
     sessions: &SessionSupervisor,
     project_id: Uuid,
     project_path: &Path,
+    close_mode: ProjectCloseMode,
 ) {
-    for meta in sessions.list().await {
-        if !matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting) {
-            continue;
-        }
-        if let Some(pid) = meta.pid {
-            terminate_helper_pid(i64::from(pid)).await;
-        }
-        match sessions.kill_session_backend(meta.id).await {
-            Ok(_) => {
-                let _ = sessions.mark_exit(meta.id, None).await;
+    if !close_mode.preserves_local_sessions() {
+        for meta in sessions.list().await {
+            if !matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting) {
+                continue;
             }
-            Err(error) => {
-                tracing::debug!(session_id = %meta.id, %error, "live session shutdown fell back to direct tmux cleanup");
-                let _ = kill_tmux_session_for_row(project_path, &meta.id.to_string()).await;
+            if let Some(pid) = meta.pid {
+                terminate_helper_pid(i64::from(pid)).await;
+            }
+            match sessions.kill_session_backend(meta.id).await {
+                Ok(_) => {
+                    let _ = sessions.mark_exit(meta.id, None).await;
+                }
+                Err(error) => {
+                    tracing::debug!(session_id = %meta.id, %error, "live session shutdown fell back to direct tmux cleanup");
+                    let _ = kill_tmux_session_for_row(project_path, &meta.id.to_string()).await;
+                }
             }
         }
     }
@@ -207,7 +244,37 @@ async fn shutdown_project_sessions(
                     Some(session_id),
                     "session",
                     "SessionDetached",
-                    json!({"backend": row.backend, "reason": "project_close"}),
+                    json!({"backend": row.backend, "reason": close_mode.session_close_reason()}),
+                )
+                .await;
+            }
+            continue;
+        }
+
+        if close_mode.preserves_local_sessions() {
+            if let Some(pid) = row.pid {
+                terminate_helper_pid(pid).await;
+            }
+            row.status = "waiting".to_string();
+            row.lifecycle_state = SESSION_LIFECYCLE_DETACHED.to_string();
+            row.pid = None;
+            row.last_heartbeat = Utc::now();
+            row.detached_at = Some(Utc::now());
+            row.ended_at = None;
+            row.exit_code = None;
+            row.last_error = None;
+            row.restore_status = Some(SESSION_LIFECYCLE_DETACHED.to_string());
+            if let Err(error) = db.upsert_session(&row).await {
+                tracing::warn!(session_id = %row.id, %error, "failed to persist detached local session row during app shutdown");
+            } else if let Ok(session_id) = Uuid::parse_str(&row.id) {
+                append_event(
+                    db,
+                    project_id,
+                    None,
+                    Some(session_id),
+                    "session",
+                    "SessionDetached",
+                    json!({"backend": row.backend, "reason": close_mode.session_close_reason()}),
                 )
                 .await;
             }
@@ -243,24 +310,26 @@ async fn shutdown_project_sessions(
         }
     }
 
-    terminate_project_owned_helpers(project_path).await;
+    if !close_mode.preserves_local_sessions() {
+        terminate_project_owned_helpers(project_path).await;
 
-    if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
-        for mut row in rows {
-            if !matches!(row.status.as_str(), "running" | "waiting") {
-                continue;
-            }
-            if is_remote_ssh_durable_backend(&row.backend) {
-                continue;
-            }
-            row.status = "complete".to_string();
-            row.lifecycle_state = "exited".to_string();
-            row.pid = None;
-            row.last_heartbeat = Utc::now();
-            row.ended_at = Some(Utc::now().to_rfc3339());
-            row.last_error = None;
-            if let Err(error) = db.upsert_session(&row).await {
-                tracing::warn!(session_id = %row.id, %error, "failed to finalize lingering session row after helper sweep");
+        if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
+            for mut row in rows {
+                if !matches!(row.status.as_str(), "running" | "waiting") {
+                    continue;
+                }
+                if is_remote_ssh_durable_backend(&row.backend) {
+                    continue;
+                }
+                row.status = "complete".to_string();
+                row.lifecycle_state = "exited".to_string();
+                row.pid = None;
+                row.last_heartbeat = Utc::now();
+                row.ended_at = Some(Utc::now().to_rfc3339());
+                row.last_error = None;
+                if let Err(error) = db.upsert_session(&row).await {
+                    tracing::warn!(session_id = %row.id, %error, "failed to finalize lingering session row after helper sweep");
+                }
             }
         }
     }
@@ -588,6 +657,13 @@ pub async fn open_project(
 }
 
 pub async fn close_project(state: &AppState) -> Result<(), String> {
+    close_project_with_mode(ProjectCloseMode::WorkspaceClose, state).await
+}
+
+pub async fn close_project_with_mode(
+    close_mode: ProjectCloseMode,
+    state: &AppState,
+) -> Result<(), String> {
     let Some(ctx) = state
         .take_current_project("close_project.take_current")
         .await
@@ -612,7 +688,7 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
         None,
         "system",
         "ProjectClosed",
-        json!({}),
+        json!({"mode": close_mode.as_str()}),
     )
     .await;
 
@@ -623,7 +699,7 @@ pub async fn close_project(state: &AppState) -> Result<(), String> {
         coordinator.shutdown_active_runs().await;
     }
     abort_project_runtime(state).await;
-    shutdown_project_sessions(&db, &sessions, project_id, &project_path).await;
+    shutdown_project_sessions(&db, &sessions, project_id, &project_path, close_mode).await;
 
     clear_project_redaction_secrets(project_id);
     pnevma_redaction::reset_runtime_redaction_config();

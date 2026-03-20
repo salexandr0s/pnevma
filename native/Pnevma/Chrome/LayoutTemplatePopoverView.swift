@@ -13,109 +13,108 @@ struct LayoutTemplatePopoverView: View {
     @FocusState private var nameFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Layout Templates")
-                .font(.headline)
-
-            // Template list
-            if !templates.isEmpty {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(templates) { template in
-                            Button(action: { onSelect(template) }) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(template.name)
-                                            .font(.body)
-                                        Text(panesSummary(template))
-                                            .font(.caption2)
-                                            .foregroundStyle(.tertiary)
-                                    }
-
-                                    Spacer()
-
-                                    if hoveredID == template.id {
-                                        Button(role: .destructive) {
-                                            onDelete(template)
-                                        } label: {
-                                            Image(systemName: "trash")
-                                                .font(.caption)
+        ToolbarAttachmentScaffold(title: "Layout Templates") {
+            Group {
+                if !templates.isEmpty {
+                    ScrollView {
+                        VStack(spacing: DesignTokens.Spacing.xs) {
+                            ForEach(templates) { template in
+                                Button(action: { onSelect(template) }) {
+                                    HStack(spacing: DesignTokens.Spacing.sm) {
+                                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                                            Text(template.name)
+                                                .lineLimit(1)
+                                            Text(panesSummary(template))
+                                                .font(.subheadline)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(2)
                                         }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(.secondary)
+
+                                        Spacer()
+
+                                        if hoveredID == template.id {
+                                            Button(role: .destructive) {
+                                                onDelete(template)
+                                            } label: {
+                                                Label("Delete Template", systemImage: "trash")
+                                                    .labelStyle(.iconOnly)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .foregroundStyle(.secondary)
+                                        }
                                     }
+                                    .padding(.horizontal, DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
+                                    .padding(.vertical, DesignTokens.Spacing.sm)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(hoveredID == template.id ? ChromeSurfaceStyle.groupedCard.selectionColor : Color.clear)
+                                    )
+                                    .contentShape(Rectangle())
                                 }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(hoveredID == template.id ? Color.accentColor.opacity(0.1) : Color.clear)
-                                )
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Select template: \(template.name)")
-                            .onHover { isHovering in
-                                hoveredID = isHovering ? template.id : nil
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Select template: \(template.name)")
+                                .onHover { isHovering in
+                                    hoveredID = isHovering ? template.id : nil
+                                }
                             }
                         }
+                        .padding(DesignTokens.Spacing.md)
                     }
+                } else if !isSaving {
+                    EmptyStateView(
+                        icon: "square.3.layers.3d",
+                        title: "No Saved Templates",
+                        message: "Save the current layout to reuse it later."
+                    )
                 }
-                .frame(maxHeight: 200)
-            } else if !isSaving {
-                Text("No saved templates yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 8)
             }
-
-            Divider()
-
-            // Save section
+        } footer: {
             if isSaving {
-                TextField("Template name", text: $templateName)
-                    .textFieldStyle(.plain)
-                    .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
-                    .focused($nameFocused)
-                    .onSubmit {
-                        let name = templateName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !name.isEmpty { onSave(name) }
-                    }
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
+                    TextField("Template name", text: $templateName)
+                        .textFieldStyle(.plain)
+                        .padding(DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(ChromeSurfaceStyle.groupedCard.color)
+                        )
+                        .focused($nameFocused)
+                        .onSubmit {
+                            saveIfPossible()
+                        }
 
-                HStack {
-                    Spacer()
-                    Button("Cancel") {
-                        isSaving = false
-                        templateName = ""
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    HStack(spacing: DesignTokens.Spacing.sm) {
+                        Spacer()
 
-                    Button("Save") {
-                        let name = templateName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !name.isEmpty { onSave(name) }
+                        Button("Cancel") {
+                            isSaving = false
+                            templateName = ""
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+
+                        Button("Save") {
+                            saveIfPossible()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(trimmedTemplateName.isEmpty)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } else {
-                Button {
-                    isSaving = true
-                    Task { @MainActor in nameFocused = true }
-                } label: {
-                    Label("Save Current Layout", systemImage: "plus.circle")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
+                HStack {
+                    Button {
+                        isSaving = true
+                        Task { @MainActor in nameFocused = true }
+                    } label: {
+                        Label("Save Current Layout", systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    Spacer()
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
-        .frame(width: 300)
+        .frame(width: 320)
     }
 
     private func panesSummary(_ template: LayoutTemplate) -> String {
@@ -127,5 +126,14 @@ struct LayoutTemplatePopoverView: View {
             .sorted { $0.key < $1.key }
             .map { "\($0.value)x \($0.key)" }
             .joined(separator: ", ")
+    }
+
+    private var trimmedTemplateName: String {
+        templateName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func saveIfPossible() {
+        guard trimmedTemplateName.isEmpty == false else { return }
+        onSave(trimmedTemplateName)
     }
 }

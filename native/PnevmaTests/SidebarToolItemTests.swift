@@ -13,7 +13,7 @@ final class SidebarToolItemTests: XCTestCase {
         XCTAssertEqual(tools.firstIndex(of: "harness"), 5)
         XCTAssertEqual(tools.firstIndex(of: "replay"), 6)
         XCTAssertTrue(tools.contains("secrets"))
-        XCTAssertTrue(tools.contains("settings"))
+        XCTAssertFalse(tools.contains("settings"))
     }
 
     func testTerminalWorkspaceSidebarIncludesHarnessConfig() {
@@ -23,8 +23,17 @@ final class SidebarToolItemTests: XCTestCase {
 
         XCTAssertEqual(
             tools,
-            ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor", "settings"]
+            ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor"]
         )
+    }
+
+    func testSettingsIsDefinedButNotIncludedInWorkspaceToolLists() {
+        let project = Workspace(name: "Project", projectPath: "/tmp/project")
+        let terminal = Workspace(name: "Terminal")
+
+        XCTAssertEqual(sidebarToolDefinition(id: "settings")?.paneType, "settings")
+        XCTAssertFalse(sidebarTools(for: project).contains { $0.id == "settings" })
+        XCTAssertFalse(sidebarTools(for: terminal).contains { $0.id == "settings" })
     }
 
     func testSidebarToolDefinitionLookupByPaneTypeUsesSidebarMappings() {

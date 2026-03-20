@@ -29,6 +29,7 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             let appDelegate = launchAppDelegate()
 
             waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
             let window = try XCTUnwrap(appDelegate.window)
             let contentView = try XCTUnwrap(window.contentView)
 
@@ -106,6 +107,7 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             let appDelegate = launchAppDelegate()
 
             waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
             let window = try XCTUnwrap(appDelegate.window)
             let contentView = try XCTUnwrap(window.contentView)
             let openWorkspaceButton = try XCTUnwrap(
@@ -166,6 +168,7 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             let appDelegate = launchAppDelegate()
 
             waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
             let window = try XCTUnwrap(appDelegate.window)
             let contentView = try XCTUnwrap(window.contentView)
             let toolDockView = try XCTUnwrap(
@@ -210,6 +213,7 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
             let appDelegate = launchAppDelegate()
 
             waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
             let window = try XCTUnwrap(appDelegate.window)
             let contentView = try XCTUnwrap(window.contentView)
 
@@ -241,15 +245,111 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
         }
     }
 
+    func testResourceDrawerUsesSingleDrawerTitleAndHidesInlineHeader() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+
+            appDelegate.openToolInDrawerForTesting("resource_monitor")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "resource_monitor"
+                    && appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType == "resource_monitor"
+            }
+
+            let drawerTitle = try XCTUnwrap(
+                waitForView(withAccessibilityIdentifier: "bottom.drawer.title", in: contentView)
+            )
+            XCTAssertEqual(drawerTitle.accessibilityLabel(), "Resources")
+            XCTAssertNil(
+                waitForView(
+                    withAccessibilityIdentifier: "pane.resourceMonitor.inlineHeader",
+                    in: contentView,
+                    timeout: 0.1
+                )
+            )
+            XCTAssertNotNil(
+                waitForView(
+                    withAccessibilityIdentifier: "pane.resourceMonitor.segmentedControl",
+                    in: contentView
+                )
+            )
+        }
+    }
+
+    func testResourceDrawerSegmentedControlSwitchesTabsWithoutRemounting() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+
+            appDelegate.openToolInDrawerForTesting("resource_monitor")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "resource_monitor"
+                    && appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType == "resource_monitor"
+            }
+
+            let initialPaneView = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.activePaneView)
+            let initialRevision = appDelegate.toolDrawerContentModelForTesting.contentRevision
+            let segmentedControl = try XCTUnwrap(
+                waitForSegmentedControl(
+                    withAccessibilityIdentifier: "pane.resourceMonitor.segmentedControl",
+                    in: contentView
+                )
+            )
+
+            XCTAssertNotNil(
+                waitForView(
+                    withAccessibilityIdentifier: "pane.resourceMonitor.tab.overview",
+                    in: contentView
+                )
+            )
+
+            XCTAssertTrue(activateSegment(1, in: segmentedControl))
+            waitUntil {
+                segmentedControl.selectedSegment == 1
+                    && self.waitForView(
+                        withAccessibilityIdentifier: "pane.resourceMonitor.tab.processes",
+                        in: contentView,
+                        timeout: 0.05
+                    ) != nil
+            }
+
+            XCTAssertTrue(activateSegment(2, in: segmentedControl))
+            waitUntil {
+                segmentedControl.selectedSegment == 2
+                    && self.waitForView(
+                        withAccessibilityIdentifier: "pane.resourceMonitor.tab.host",
+                        in: contentView,
+                        timeout: 0.05
+                    ) != nil
+            }
+
+            XCTAssertTrue(appDelegate.toolDrawerChromeStateForTesting.isPresented)
+            XCTAssertTrue(initialPaneView === appDelegate.toolDrawerContentModelForTesting.activePaneView)
+            XCTAssertEqual(initialRevision, appDelegate.toolDrawerContentModelForTesting.contentRevision)
+        }
+    }
+
     func testToolDrawerVisibleRectInterceptsHitsBeforeContentArea() throws {
         try withUITestLightweightEnvironment {
             let appDelegate = launchAppDelegate()
 
             waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
             let window = try XCTUnwrap(appDelegate.window)
             let contentView = try XCTUnwrap(window.contentView)
             let contentArea = try XCTUnwrap(findSubview(ofType: ContentAreaView.self, in: contentView))
 
+            DrawerSizing.setStoredHeight(360)
             appDelegate.openToolInDrawerForTesting("analytics")
             waitUntil {
                 appDelegate.toolDrawerChromeStateForTesting.isPresented
@@ -342,6 +442,82 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
         }
     }
 
+    func testResourceDrawerResizeStripReceivesDragAfterTabSwitch() throws {
+        try withUITestLightweightEnvironment {
+            let appDelegate = launchAppDelegate()
+
+            waitUntil { appDelegate.window != nil }
+            waitUntil { self.workspaceManager(from: appDelegate)?.activeWorkspace != nil }
+            let window = try XCTUnwrap(appDelegate.window)
+            let contentView = try XCTUnwrap(window.contentView)
+            let contentArea = try XCTUnwrap(findSubview(ofType: ContentAreaView.self, in: contentView))
+
+            DrawerSizing.setStoredHeight(360)
+            appDelegate.openToolInDrawerForTesting("resource_monitor")
+            waitUntil {
+                appDelegate.toolDrawerChromeStateForTesting.isPresented
+                    && appDelegate.toolDrawerContentModelForTesting.activeToolID == "resource_monitor"
+                    && appDelegate.toolDrawerContentModelForTesting.activePaneView?.paneType == "resource_monitor"
+            }
+
+            let initialPaneView = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.activePaneView)
+            let segmentedControl = try XCTUnwrap(
+                waitForSegmentedControl(
+                    withAccessibilityIdentifier: "pane.resourceMonitor.segmentedControl",
+                    in: contentView
+                )
+            )
+            XCTAssertTrue(activateSegment(1, in: segmentedControl))
+            waitUntil {
+                segmentedControl.selectedSegment == 1
+                    && self.waitForView(
+                        withAccessibilityIdentifier: "pane.resourceMonitor.tab.processes",
+                        in: contentView,
+                        timeout: 0.05
+                    ) != nil
+            }
+
+            let initialRect = expectedDrawerRect(
+                in: contentArea,
+                storedHeight: appDelegate.toolDrawerContentModelForTesting.drawerHeight
+            )
+            let initialHeight = DrawerSizing.resolvedHeight(
+                storedHeight: appDelegate.toolDrawerContentModelForTesting.drawerHeight,
+                availableHeight: contentArea.bounds.height
+            )
+            let resizeHandle = try XCTUnwrap(
+                waitForView(withAccessibilityIdentifier: "bottom.drawer.resize", in: contentView)
+            )
+            XCTAssertEqual(
+                resizeHandle.frame.height,
+                DrawerSizing.resizeHandleHeight,
+                accuracy: 0.5
+            )
+            let startPoint = center(of: resizeHandle, ancestor: contentView)
+            let endPoint = contentView.convert(
+                NSPoint(x: initialRect.midX, y: max(0, initialRect.minY - 60)),
+                from: contentArea
+            )
+
+            try dispatchDrag(in: window, rootView: contentView, start: startPoint, end: endPoint)
+
+            waitUntil {
+                let updatedHeight = appDelegate.toolDrawerContentModelForTesting.drawerHeight ?? 0
+                return updatedHeight > initialHeight + 20
+            }
+            let updatedHeight = try XCTUnwrap(appDelegate.toolDrawerContentModelForTesting.drawerHeight)
+            XCTAssertGreaterThan(updatedHeight, initialHeight)
+            XCTAssertTrue(appDelegate.toolDrawerChromeStateForTesting.isPresented)
+            XCTAssertTrue(initialPaneView === appDelegate.toolDrawerContentModelForTesting.activePaneView)
+            contentView.layoutSubtreeIfNeeded()
+            XCTAssertEqual(
+                resizeHandle.frame.height,
+                DrawerSizing.resizeHandleHeight,
+                accuracy: 0.5
+            )
+        }
+    }
+
     func testToolDrawerSameToolStillTogglesClosed() throws {
         try withUITestLightweightEnvironment {
             let appDelegate = launchAppDelegate()
@@ -413,6 +589,7 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
         appDelegate.applicationDidFinishLaunching(
             Notification(name: NSApplication.didFinishLaunchingNotification)
         )
+        appDelegate.resetForIntegrationTesting()
         return appDelegate
     }
 
@@ -676,4 +853,45 @@ final class AppDelegateTabBarIntegrationTests: XCTestCase {
         )
     }
 
+    private func waitForSegmentedControl(
+        withAccessibilityIdentifier identifier: String,
+        in root: NSView,
+        timeout: TimeInterval = 2
+    ) -> NSSegmentedControl? {
+        if let view = waitForView(withAccessibilityIdentifier: identifier, in: root, timeout: timeout) {
+            if let control = view as? NSSegmentedControl {
+                return control
+            }
+            if let control = findSubview(ofType: NSSegmentedControl.self, in: view) {
+                return control
+            }
+        }
+        return findSubview(ofType: NSSegmentedControl.self, in: root)
+    }
+
+    @discardableResult
+    private func activateSegment(_ segment: Int, in control: NSSegmentedControl) -> Bool {
+        guard segment >= 0, segment < control.segmentCount else { return false }
+        guard control.isEnabled(forSegment: segment) else { return false }
+        guard let action = control.action else { return false }
+
+        control.selectedSegment = segment
+        let didSendAction = control.sendAction(action, to: control.target)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        return didSendAction
+    }
+
+    nonisolated private static func syncOnMainActor(_ body: @escaping @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(body)
+            return
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated(body)
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
 }

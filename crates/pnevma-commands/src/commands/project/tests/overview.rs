@@ -910,6 +910,205 @@ async fn create_workspace_from_branch_reuses_existing_worktree_without_checkout(
     assert_eq!(current_branch(&project_root), "main");
 }
 
+#[tokio::test]
+async fn commit_stages_and_commits_workspace_changes() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    std::fs::write(project_root.join("feature.txt"), "new change\n").expect("write feature file");
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-commit-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let result = commit("Add feature file", &state)
+        .await
+        .expect("commit result");
+    assert!(result.success);
+    assert!(result.error_message.is_none());
+    assert!(result
+        .commit_sha
+        .as_deref()
+        .is_some_and(|sha| !sha.is_empty()));
+    assert_eq!(git_stdout(&project_root, &["status", "--short"]), "");
+    assert_eq!(
+        git_stdout(&project_root, &["log", "-1", "--pretty=%s"]),
+        "Add feature file"
+    );
+}
+
+#[tokio::test]
+async fn commit_surfaces_git_message_when_repo_is_clean() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-clean-commit-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let result = commit("No changes", &state).await.expect("commit result");
+    assert!(!result.success);
+    let error = result.error_message.expect("commit error message");
+    let lowercased = error.to_lowercase();
+    assert_ne!(error, "git commit failed");
+    assert!(
+        lowercased.contains("nothing to commit") || lowercased.contains("working tree clean"),
+        "expected git status details, got: {error}"
+    );
+}
+
+#[tokio::test]
+async fn push_updates_the_tracked_remote_branch() {
+    let temp = tempdir().expect("tempdir");
+    let remote_root = temp.path().join("remote.git");
+    let bare_init = std::process::Command::new("git")
+        .args(["init", "--bare", remote_root.to_string_lossy().as_ref()])
+        .current_dir(temp.path())
+        .output()
+        .expect("git init --bare");
+    assert!(
+        bare_init.status.success(),
+        "git init --bare failed: {}",
+        String::from_utf8_lossy(&bare_init.stderr)
+    );
+
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+    run_git(
+        &project_root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote_root.to_string_lossy().as_ref(),
+        ],
+    );
+    run_git(&project_root, &["push", "-u", "origin", "main"]);
+
+    std::fs::write(project_root.join("feature.txt"), "remote update\n")
+        .expect("write feature file");
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-push-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let commit_result = commit("Prepare push", &state).await.expect("commit result");
+    assert!(commit_result.success);
+
+    let push_result = push(&state).await.expect("push result");
+    assert!(push_result.success);
+    assert!(push_result.error_message.is_none());
+
+    let local_head = git_stdout(&project_root, &["rev-parse", "HEAD"]);
+    let remote_head = git_stdout_raw(
+        temp.path(),
+        &[
+            "--git-dir",
+            remote_root.to_string_lossy().as_ref(),
+            "rev-parse",
+            "refs/heads/main",
+        ],
+    );
+    assert_eq!(remote_head, local_head);
+}
+
+#[tokio::test]
+async fn push_surfaces_git_message_when_no_remote_is_configured() {
+    let temp = tempdir().expect("tempdir");
+    let project_root = temp.path().join("repo");
+    init_toolbar_git_repo(&project_root);
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "toolbar-push-error-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+
+    let result = push(&state).await.expect("push result");
+    assert!(!result.success);
+    let error = result.error_message.expect("push error message");
+    let lowercased = error.to_lowercase();
+    assert_ne!(error, "git push failed");
+    assert!(
+        lowercased.contains("destination")
+            || lowercased.contains("upstream")
+            || lowercased.contains("remote"),
+        "expected git push details, got: {error}"
+    );
+}
+
+fn init_toolbar_git_repo(project_root: &Path) {
+    std::fs::create_dir_all(project_root).expect("create repo dir");
+    run_git(project_root, &["init", "-b", "main"]);
+    run_git(project_root, &["config", "user.name", "Test User"]);
+    run_git(project_root, &["config", "user.email", "test@example.com"]);
+    std::fs::write(project_root.join("README.md"), "hello\n").expect("write readme");
+    run_git(project_root, &["add", "README.md"]);
+    run_git(project_root, &["commit", "-m", "initial"]);
+}
+
+fn git_stdout(project_root: &Path, args: &[&str]) -> String {
+    git_stdout_raw(project_root, args)
+}
+
+fn git_stdout_raw(current_dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(current_dir)
+        .output()
+        .expect("git output");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 fn init_workspace_opener_repo(project_root: &Path) {
     std::fs::create_dir_all(project_root).expect("create repo dir");
     run_git(project_root, &["init", "-b", "main"]);

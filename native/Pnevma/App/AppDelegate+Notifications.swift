@@ -66,65 +66,44 @@ struct NotificationsPopoverView: View {
     var onViewAll: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 0) {
+        ToolbarAttachmentScaffold(title: "Notifications") {
+            Button("Mark All Read") { viewModel.markAllRead() }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+        } content: {
+            Group {
+                if let statusMessage = viewModel.statusMessage {
+                    EmptyStateView(icon: "bell.badge", title: statusMessage)
+                } else if viewModel.filteredNotifications.isEmpty {
+                    EmptyStateView(
+                        icon: "bell.slash",
+                        title: "No Notifications Yet",
+                        message: "Desktop notifications will appear here."
+                    )
+                } else {
+                    NativeCollectionShell(surface: .pane) {
+                        List(viewModel.filteredNotifications.prefix(10)) { notification in
+                            Button {
+                                viewModel.markRead(notification.id)
+                            } label: {
+                                NotificationRow(notification: notification)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                    }
+                }
+            }
+        } footer: {
             HStack {
-                Text("Notifications")
-                    .font(.headline)
-                Spacer()
-                Button("Mark All Read") { viewModel.markAllRead() }
+                Button("View All") { onViewAll?() }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
-                    .font(.caption)
+                Spacer()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            Divider()
-
-            if let statusMessage = viewModel.statusMessage {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "bell.badge")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                    Text(statusMessage)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            } else if viewModel.filteredNotifications.isEmpty {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "bell.slash")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                    Text("No notifications yet")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Text("Desktop notifications will appear here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            } else {
-                List(viewModel.filteredNotifications.prefix(10)) { notification in
-                    NotificationRow(notification: notification)
-                        .onTapGesture { viewModel.markRead(notification.id) }
-                }
-                .listStyle(.plain)
-            }
-
-            Divider()
-
-            Button(action: { onViewAll?() }) {
-                Text("View All")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
         }
+        .frame(width: 400, height: 400)
     }
 }
 

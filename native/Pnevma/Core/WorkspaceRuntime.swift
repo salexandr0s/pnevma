@@ -1,7 +1,14 @@
 import Foundation
 import Observation
 
-private struct WorkspaceRuntimeEmptyParams: Encodable {}
+enum WorkspaceProjectCloseMode: String, Encodable {
+    case workspaceClose = "workspace_close"
+    case appShutdown = "app_shutdown"
+}
+
+private struct WorkspaceRuntimeProjectCloseParams: Encodable {
+    let mode: WorkspaceProjectCloseMode
+}
 
 @MainActor
 @Observable
@@ -95,7 +102,7 @@ final class WorkspaceRuntime {
         try await commandBus.call(method: "project.command_center_snapshot", params: nil)
     }
 
-    func closeProject() async {
+    func closeProject(mode: WorkspaceProjectCloseMode = .workspaceClose) async {
         guard case .open = state else {
             markClosed()
             return
@@ -103,7 +110,7 @@ final class WorkspaceRuntime {
         do {
             let _: OkResponse = try await commandBus.call(
                 method: "project.close",
-                params: WorkspaceRuntimeEmptyParams()
+                params: WorkspaceRuntimeProjectCloseParams(mode: mode)
             )
         } catch {
             Log.workspace.error(
@@ -125,4 +132,3 @@ final class WorkspaceRuntime {
         bridge?.destroy()
     }
 }
-

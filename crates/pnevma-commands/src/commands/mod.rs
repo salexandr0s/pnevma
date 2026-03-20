@@ -492,6 +492,19 @@ pub struct CommitAndPushView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitView {
+    pub success: bool,
+    pub commit_sha: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitPushView {
+    pub success: bool,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortEntryView {
     pub port: u16,
     pub pid: u32,

@@ -469,60 +469,109 @@ struct ProviderUsagePopoverView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ProviderUsagePopoverHeader(
-                overview: store.overview,
-                snapshots: store.providerSnapshots,
-                isLoading: store.isLoading,
-                onRefresh: { Task { await store.refresh(force: true) } }
-            )
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.top, DesignTokens.Spacing.md)
-            .padding(.bottom, DesignTokens.Spacing.sm)
-
-            Divider()
+        ToolbarAttachmentScaffold(
+            title: "Provider Usage",
+            subtitle: popoverSubtitle
+        ) {
+            Button {
+                Task { await store.refresh(force: true) }
+            } label: {
+                if store.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(minWidth: 16)
+                } else {
+                    Label("Refresh Provider Usage", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Refresh provider usage data")
+        } content: {
+            let snapshots = store.providerSnapshots
 
             Group {
-                if let errorMessage = store.errorMessage, store.providerSnapshots.isEmpty {
-                    ContentUnavailableView(
-                        "Provider Usage Unavailable",
-                        systemImage: "chart.bar.xaxis",
-                        description: Text(errorMessage)
+                if let errorMessage = store.errorMessage, snapshots.isEmpty {
+                    EmptyStateView(
+                        icon: "chart.bar.xaxis",
+                        title: "Provider Usage Unavailable",
+                        message: errorMessage
                     )
-                    .padding(DesignTokens.Spacing.lg)
+                } else if snapshots.isEmpty, store.isLoading {
+                    ProgressView("Loading usage…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if snapshots.isEmpty {
+                    EmptyStateView(
+                        icon: "chart.bar.xaxis",
+                        title: "No Provider Usage Yet",
+                        message: "Usage summaries appear here once a provider reports activity."
+                    )
                 } else {
-                    ScrollView {
-                        VStack(spacing: DesignTokens.Spacing.md) {
-                            if let errorMessage = store.errorMessage {
-                                ProviderUsageInlineNotice(title: "Refresh issue", message: errorMessage)
-                            }
+                    VStack(spacing: 0) {
+                        ProviderUsagePopoverOverview(
+                            providerCount: snapshots.count,
+                            totalRequests: totalRequests,
+                            totalTokens: totalTokens
+                        )
+                        .padding(.horizontal, DesignTokens.Spacing.md)
+                        .padding(.top, DesignTokens.Spacing.md)
+                        .padding(.bottom, DesignTokens.Spacing.sm)
 
-                            ForEach(store.providerSnapshots) { snapshot in
-                                ProviderUsageCard(snapshot: snapshot, compact: true)
+                        Divider()
+                            .padding(.horizontal, DesignTokens.Spacing.md)
+
+                        NativeCollectionShell(surface: .pane) {
+                            ScrollView {
+                                VStack(spacing: DesignTokens.Spacing.sm) {
+                                    if let errorMessage = store.errorMessage {
+                                        ProviderUsageInlineNotice(title: "Refresh issue", message: errorMessage)
+                                    }
+
+                                    ForEach(snapshots) { snapshot in
+                                        ProviderUsageCompactCard(snapshot: snapshot)
+                                    }
+                                }
+                                .padding(DesignTokens.Spacing.md)
                             }
                         }
-                        .padding(DesignTokens.Spacing.md)
                     }
                 }
             }
-            .frame(minHeight: 320)
-
-            Divider()
-
+            .frame(minHeight: 250)
+        } footer: {
             HStack {
-                Button(action: { onOpenDashboard?() }) {
-                    Text("Open Dashboard")
-                }
-                .buttonStyle(.borderless)
+                Button("Open Dashboard") { onOpenDashboard?() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
                 Spacer()
             }
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.sm + DesignTokens.Spacing.md)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(width: 380)
         .task {
             await store.activate()
         }
+    }
+
+    private var popoverSubtitle: String {
+        var parts: [String] = []
+        if !store.providerSnapshots.isEmpty {
+            parts.append("\(providerFormatTokens(store.providerSnapshots.count)) providers")
+        }
+        if let generatedAt = store.overview?.generatedAt {
+            parts.append("updated \(formatProviderReset(generatedAt))")
+        }
+        if parts.isEmpty {
+            return "Compact provider summary"
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private var totalRequests: Int {
+        store.providerSnapshots.reduce(0) { $0 + $1.localUsage.requests }
+    }
+
+    private var totalTokens: Int {
+        store.providerSnapshots.reduce(0) { $0 + $1.localUsage.totalTokens }
     }
 }
 
@@ -549,7 +598,7 @@ struct ProviderUsageDashboardView: View {
                             ProviderUsageInlineNotice(title: "Refresh issue", message: errorMessage)
                         }
                         ForEach(store.providerSnapshots) { snapshot in
-                            ProviderUsageCard(snapshot: snapshot, compact: false)
+                            ProviderUsageCard(snapshot: snapshot)
                         }
                     }
                     .padding(16)
@@ -719,7 +768,6 @@ struct ProviderUsageSettingsTab: View {
 
 private struct ProviderUsageCard: View {
     let snapshot: ProviderUsageProviderSnapshot
-    let compact: Bool
 
     var body: some View {
         let brand = ProviderBrand(provider: snapshot.provider)
@@ -776,12 +824,8 @@ private struct ProviderUsageCard: View {
                 ProviderWindowRow(window: weeklyWindow, accent: brand.accent)
             }
 
-            if !compact {
-                ForEach(snapshot.modelWindows) { window in
-                    ProviderWindowRow(window: window, accent: brand.accent)
-                }
-            } else if let modelWindow = snapshot.modelWindows.first {
-                ProviderWindowRow(window: modelWindow, accent: brand.accent)
+            ForEach(snapshot.modelWindows) { window in
+                ProviderWindowRow(window: window, accent: brand.accent)
             }
 
             if let credit = snapshot.credit {
@@ -845,6 +889,46 @@ private struct ProviderUsageCard: View {
             return "Using fallback data"
         }
         return "Live quota unavailable"
+    }
+}
+
+private struct ProviderUsagePopoverOverview: View {
+    let providerCount: Int
+    let totalRequests: Int
+    let totalTokens: Int
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            ProviderUsageCompactMetric(
+                title: "Providers",
+                value: providerFormatTokens(providerCount)
+            )
+
+            Divider()
+                .frame(height: 26)
+
+            ProviderUsageCompactMetric(
+                title: "Requests",
+                value: providerFormatTokens(totalRequests)
+            )
+
+            Divider()
+                .frame(height: 26)
+
+            ProviderUsageCompactMetric(
+                title: "Tokens",
+                value: providerFormatCompactTokens(totalTokens)
+            )
+        }
+        .padding(DesignTokens.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(ChromeSurfaceStyle.groupedCard.color)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        }
     }
 }
 
@@ -914,7 +998,7 @@ private struct ProviderUsageCompactCard: View {
         .padding(DesignTokens.Spacing.sm)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.secondary.opacity(0.10))
+                .fill(ChromeSurfaceStyle.groupedCard.color)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12)
@@ -1112,64 +1196,6 @@ private struct ProviderDetailRow: View {
             Text(value)
                 .font(.subheadline)
         }
-    }
-}
-
-private struct ProviderUsagePopoverHeader: View {
-    let overview: ProviderUsageOverview?
-    let snapshots: [ProviderUsageProviderSnapshot]
-    let isLoading: Bool
-    let onRefresh: () -> Void
-
-    private var totalRequests: Int {
-        snapshots.reduce(0) { $0 + $1.localUsage.requests }
-    }
-
-    private var totalTokens: Int {
-        snapshots.reduce(0) { $0 + $1.localUsage.totalTokens }
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: DesignTokens.Spacing.md) {
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-                Text("Provider Usage")
-                    .font(.headline)
-                    .bold()
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer(minLength: DesignTokens.Spacing.sm)
-
-            Button(action: onRefresh) {
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(minWidth: 16)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .accessibilityLabel("Refresh usage provider data")
-        }
-    }
-
-    private var subtitle: String {
-        var parts = ["\(providerFormatTokens(snapshots.count)) providers"]
-        if totalRequests > 0 {
-            parts.append("\(providerFormatTokens(totalRequests)) requests")
-        }
-        if totalTokens > 0 {
-            parts.append("\(providerFormatCompactTokens(totalTokens)) tokens")
-        }
-        if let generatedAt = overview?.generatedAt {
-            parts.append("updated \(formatProviderReset(generatedAt))")
-        }
-        return parts.joined(separator: " • ")
     }
 }
 

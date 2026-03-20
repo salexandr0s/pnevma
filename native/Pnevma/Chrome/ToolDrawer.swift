@@ -174,81 +174,87 @@ struct BottomDrawerOverlayView: View {
         let maxDrawerHeight = DrawerSizing.maxHeight(for: size.height)
 
         VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                DrawerResizeHandle(
-                    currentHeight: effectiveHeight,
-                    availableHeight: size.height,
-                    onHeightChanged: { newHeight in
-                        if let session = contentModel.activeBrowserSession {
-                            session.setDrawerHeight(newHeight)
-                        } else {
-                            contentModel.drawerHeight = newHeight
-                            DrawerSizing.setStoredHeight(newHeight)
-                        }
-                        isMaximized = false
+            DrawerResizeHandle(
+                currentHeight: effectiveHeight,
+                availableHeight: size.height,
+                onHeightChanged: { newHeight in
+                    if let session = contentModel.activeBrowserSession {
+                        session.setDrawerHeight(newHeight)
+                    } else {
+                        contentModel.drawerHeight = newHeight
+                        DrawerSizing.setStoredHeight(newHeight)
                     }
-                )
-                .frame(height: DrawerSizing.resizeHandleHeight)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, DrawerSizing.resizeHandleTopPadding)
-
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(drawerTitle)
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-                            .accessibilityIdentifier("bottom.drawer.title")
-
-                        AccessibilityProbe(
-                            identifier: "bottom.drawer.state",
-                            label: contentModel.activeToolID ?? "empty"
-                        )
-                            .frame(width: 1, height: 1)
-                            .allowsHitTesting(false)
-                    }
-
-                    Spacer()
-
-                    Button(action: {
-                        if isMaximized {
-                            let restored = heightBeforeMaximize ?? effectiveHeight
-                            applyDrawerHeight(restored)
-                            isMaximized = false
-                        } else {
-                            heightBeforeMaximize = effectiveHeight
-                            applyDrawerHeight(maxDrawerHeight)
-                            isMaximized = true
-                        }
-                    }) {
-                        Image(systemName: isMaximized ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isMaximized ? "Restore drawer" : "Maximize drawer")
-
-                    Button("Open as Tab", action: onOpenAsTab)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .accessibilityIdentifier("bottom.drawer.openAsTab")
-
-                    Button("Pin as Pane", action: onPinToPane)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .accessibilityIdentifier("bottom.drawer.pinAsPane")
-
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Close drawer")
-                    .accessibilityIdentifier("bottom.drawer.close")
+                    isMaximized = false
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: DrawerSizing.resizeHandleHeight)
+            .background(ChromeSurfaceStyle.utilityShelf.color)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(drawerTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+
+                    AccessibilityProbe(
+                        identifier: "bottom.drawer.title",
+                        label: drawerTitle
+                    )
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+
+                    AccessibilityProbe(
+                        identifier: "bottom.drawer.state",
+                        label: contentModel.activeToolID ?? "empty"
+                    )
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                }
+
+                Spacer()
+
+                Button(action: {
+                    if isMaximized {
+                        let restored = heightBeforeMaximize ?? effectiveHeight
+                        applyDrawerHeight(restored)
+                        isMaximized = false
+                    } else {
+                        heightBeforeMaximize = effectiveHeight
+                        applyDrawerHeight(maxDrawerHeight)
+                        isMaximized = true
+                    }
+                }) {
+                    Image(systemName: isMaximized ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isMaximized ? "Restore drawer" : "Maximize drawer")
+
+                Button("Open as Tab", action: onOpenAsTab)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("bottom.drawer.openAsTab")
+
+                Button("Pin as Pane", action: onPinToPane)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("bottom.drawer.pinAsPane")
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close drawer")
+                .accessibilityIdentifier("bottom.drawer.close")
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .background(ChromeSurfaceStyle.utilityShelfToolbar.color)
 
             Divider()
@@ -276,9 +282,6 @@ struct BottomDrawerOverlayView: View {
         .frame(height: effectiveHeight)
         .contentShape(Rectangle())
         .background(ChromeSurfaceStyle.utilityShelf.color)
-        .overlay(alignment: .top) {
-            Divider()
-        }
     }
 
     private func resolvedDrawerHeight(for availableHeight: CGFloat) -> CGFloat {

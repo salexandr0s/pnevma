@@ -793,22 +793,13 @@ private struct InspectorChangesSection: View {
                         message: "No local changes were found for this project."
                     )
                 } else {
-                    List(viewModel.changes, selection: selectedPathBinding) { change in
-                        InspectorChangeRow(change: change)
-                            .tag(change.path)
-                            .accessibilityAddTraits(.isButton)
-                    }
-                    .listStyle(.plain)
-                    .listRowInsets(
-                        EdgeInsets(
-                            top: DesignTokens.Spacing.sm,
-                            leading: DesignTokens.Spacing.md,
-                            bottom: DesignTokens.Spacing.sm,
-                            trailing: DesignTokens.Spacing.md
-                        )
+                    InspectorChangesList(
+                        changes: viewModel.changes,
+                        selectedPath: viewModel.selectedPath,
+                        onSelect: { path in
+                            viewModel.selectPath(path, presentPreview: true)
+                        }
                     )
-                    .padding(.horizontal, RightInspectorLayout.railContentInset)
-                    .padding(.vertical, DesignTokens.Spacing.xs)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -875,64 +866,169 @@ private struct InspectorChangesSection: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
 
-    private var selectedPathBinding: Binding<String?> {
-        Binding(
-            get: { viewModel.selectedPath },
-            set: { newValue in
-                viewModel.selectPath(newValue, presentPreview: newValue != nil)
+private struct InspectorChangesList: View {
+    let changes: [WorkspaceChangeItem]
+    let selectedPath: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(changes.enumerated()), id: \.element.id) { index, change in
+                    InspectorChangeRow(
+                        change: change,
+                        isSelected: selectedPath == change.path,
+                        onSelect: { onSelect(change.path) }
+                    )
+                    .padding(.horizontal, RightInspectorLayout.railContentInset)
+
+                    if index < changes.count - 1 {
+                        Divider()
+                            .padding(.leading, RightInspectorLayout.railContentInset + 42)
+                    }
+                }
             }
-        )
+            .padding(.vertical, DesignTokens.Spacing.xs)
+        }
+        .scrollIndicators(.hidden)
     }
 }
 
 private struct InspectorChangeRow: View {
     let change: WorkspaceChangeItem
+    let isSelected: Bool
+    let onSelect: () -> Void
+    @State private var isHovering = false
 
-    private var indicatorColor: Color {
-        if change.conflicted { return .red }
-        if change.untracked { return .green }
-        if change.staged { return .blue }
-        return .orange
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                InspectorChangeStatusBadge(
+                    symbolName: statusSymbolName,
+                    tintColor: statusColor
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(fileName)
+                        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+
+                    Text(secondaryLabel)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: DesignTokens.Spacing.sm)
+
+                if hasDiffStats {
+                    DiffStatsChip(
+                        insertions: Int(clamping: change.additions ?? 0),
+                        deletions: Int(clamping: change.deletions ?? 0)
+                    )
+                } else {
+                    Text(statusLabel.uppercased())
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowBackground)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(change.path)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("right-inspector-change-row-\(inspectorIdentifierComponent(change.path))")
+        .onHover { isHovering = $0 }
     }
 
     private var fileName: String {
         (change.path as NSString).lastPathComponent
     }
 
+    private var directoryPath: String? {
+        let directory = (change.path as NSString).deletingLastPathComponent
+        return directory.isEmpty || directory == "." ? nil : directory
+    }
+
+    private var hasDiffStats: Bool {
+        (change.additions ?? 0) > 0 || (change.deletions ?? 0) > 0
+    }
+
+    private var secondaryLabel: String {
+        guard let directoryPath else { return statusLabel }
+        return "\(directoryPath) · \(statusLabel)"
+    }
+
+    private var statusLabel: String {
+        let normalized = change.status.replacingOccurrences(of: " ", with: "")
+        if change.conflicted { return "Conflict" }
+        if normalized.contains("R") { return "Renamed" }
+        if normalized.contains("D") { return "Deleted" }
+        if change.untracked || normalized == "??" { return "New file" }
+        if change.staged && change.modified { return "Partially staged" }
+        if normalized.contains("A") { return "Added" }
+        if change.staged { return "Staged" }
+        return "Modified"
+    }
+
+    private var statusSymbolName: String {
+        let normalized = change.status.replacingOccurrences(of: " ", with: "")
+        if change.conflicted { return "exclamationmark.triangle.fill" }
+        if normalized.contains("R") { return "arrow.left.arrow.right.circle.fill" }
+        if normalized.contains("D") { return "minus.circle.fill" }
+        if change.untracked || normalized == "??" { return "plus.circle.fill" }
+        if change.staged && change.modified { return "circle.lefthalf.filled" }
+        if normalized.contains("A") { return "plus.circle.fill" }
+        if change.staged { return "checkmark.circle.fill" }
+        return "pencil.circle.fill"
+    }
+
+    private var statusColor: Color {
+        let normalized = change.status.replacingOccurrences(of: " ", with: "")
+        if change.conflicted || normalized.contains("D") { return .red }
+        if change.untracked || normalized == "??" || normalized.contains("A") { return .green }
+        if change.staged { return .blue }
+        return .orange
+    }
+
+    @ViewBuilder
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(
+                isSelected
+                    ? ChromeSurfaceStyle.pane.selectionColor
+                    : Color.primary.opacity(isHovering ? 0.06 : 0)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(isSelected ? 0.08 : 0))
+            )
+    }
+}
+
+private struct InspectorChangeStatusBadge: View {
+    let symbolName: String
+    let tintColor: Color
+
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "square.fill")
-                .font(.system(size: 6))
-                .foregroundStyle(indicatorColor)
-                .frame(width: 16)
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(tintColor.opacity(0.16))
 
-            Text(fileName)
-                .font(.system(size: 12, design: .monospaced))
-                .lineLimit(1)
-
-            Spacer()
-
-            if let additions = change.additions, let deletions = change.deletions {
-                HStack(spacing: 4) {
-                    Text("+\(additions)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.green)
-                    Text("-\(deletions)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-            } else if let additions = change.additions {
-                Text("+\(additions)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.green)
-            }
+            Image(systemName: symbolName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tintColor)
         }
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .help(change.path)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("right-inspector-change-row-\(inspectorIdentifierComponent(change.path))")
+        .frame(width: 24, height: 24)
+        .accessibilityHidden(true)
     }
 }
 

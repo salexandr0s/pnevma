@@ -13,15 +13,25 @@ struct ResourceMonitorPopoverView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ResourceMonitorHeader(
-                isLoading: store.isLoading,
-                onRefresh: { Task { await store.refresh() } }
-            )
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.top, DesignTokens.Spacing.md)
-            .padding(.bottom, DesignTokens.Spacing.sm)
-
+        ToolbarAttachmentScaffold(
+            title: "Resource Usage",
+            subtitle: "Live app and terminal footprint"
+        ) {
+            Button {
+                Task { await store.refresh() }
+            } label: {
+                if store.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(minWidth: 16)
+                } else {
+                    Label("Refresh Resource Data", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Refresh resource data")
+        } content: {
             Group {
                 if let snapshot = store.snapshot {
                     VStack(spacing: 0) {
@@ -42,64 +52,30 @@ struct ResourceMonitorPopoverView: View {
                             .padding(.bottom, DesignTokens.Spacing.sm)
                     }
                 } else if let error = store.errorMessage {
-                    ContentUnavailableView(
-                        "Resource Monitor Unavailable",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(error)
+                    EmptyStateView(
+                        icon: "exclamationmark.triangle",
+                        title: "Resource Monitor Unavailable",
+                        message: error
                     )
-                    .padding(DesignTokens.Spacing.lg)
                 } else {
                     ProgressView("Collecting data\u{2026}")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(minHeight: 200)
-
-            if onOpenMonitor != nil {
-                Divider()
-                    .padding(.horizontal, DesignTokens.Spacing.md)
-
-                ResourceMonitorFooter(onOpenMonitor: onOpenMonitor)
-                    .padding(.horizontal, DesignTokens.Spacing.md)
-                    .padding(.vertical, DesignTokens.Spacing.sm)
-            }
-        }
-        .frame(width: 360)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .task {
-            await store.activate()
-        }
-    }
-}
-
-// MARK: - Header
-
-private struct ResourceMonitorHeader: View {
-    let isLoading: Bool
-    let onRefresh: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: DesignTokens.Spacing.md) {
-            Text("RESOURCE USAGE")
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(0.5)
-                .foregroundStyle(.primary)
-
-            Spacer(minLength: DesignTokens.Spacing.sm)
-
-            Button(action: onRefresh) {
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(minWidth: 16)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11))
+        } footer: {
+            if let onOpenMonitor {
+                HStack {
+                    Button("Open Monitor", action: onOpenMonitor)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                    Spacer()
                 }
             }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .accessibilityLabel("Refresh resource data")
+        }
+        .frame(width: 400)
+        .task {
+            await store.activate()
         }
     }
 }
@@ -299,23 +275,6 @@ private struct ResourceSessionRow: View {
         .accessibilityValue(
             "\(session.status), CPU \(resourceFormatCpu(session.totalCpuPercent)), Memory \(resourceFormatMemory(session.totalMemoryBytes))"
         )
-    }
-}
-
-// MARK: - Footer
-
-private struct ResourceMonitorFooter: View {
-    let onOpenMonitor: (() -> Void)?
-
-    var body: some View {
-        HStack {
-            Button(action: { onOpenMonitor?() }) {
-                Text("Open Monitor")
-                    .font(.system(size: 12))
-            }
-            .buttonStyle(.borderless)
-            Spacer()
-        }
     }
 }
 

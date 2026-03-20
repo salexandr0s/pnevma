@@ -15,7 +15,10 @@ use pnevma_remote::{
     auth::TokenRole,
     routes::{
         api,
-        ws::{ws_handler, WsClientMessage, WsServerMessage, WsState},
+        ws::{
+            ws_handler, WsClientMessage, WsServerMessage, WsState,
+            DEFAULT_MAX_CONSECUTIVE_RATE_VIOLATIONS, DEFAULT_MAX_MESSAGES_PER_SECOND,
+        },
     },
     CommandRouter, RemoteEventEnvelope,
 };
@@ -108,11 +111,46 @@ impl TestServer {
         Self::build(router_impl, true, 4, role).await
     }
 
+    async fn spawn_with_ws_rate_limit(
+        router_impl: Arc<RecordingRouter>,
+        max_messages_per_second: u32,
+        max_consecutive_rate_violations: u32,
+    ) -> Self {
+        Self::build_with_limits(
+            router_impl,
+            true,
+            4,
+            role_operator(),
+            max_messages_per_second,
+            max_consecutive_rate_violations,
+        )
+        .await
+    }
+
     async fn build(
         router_impl: Arc<RecordingRouter>,
         allow_session_input: bool,
         max_ws_per_ip: usize,
         role: TokenRole,
+    ) -> Self {
+        Self::build_with_limits(
+            router_impl,
+            allow_session_input,
+            max_ws_per_ip,
+            role,
+            DEFAULT_MAX_MESSAGES_PER_SECOND,
+            DEFAULT_MAX_CONSECUTIVE_RATE_VIOLATIONS,
+        )
+        .await
+    }
+
+    async fn build_with_limits(
+        router_impl: Arc<RecordingRouter>,
+        allow_session_input: bool,
+        max_ws_per_ip: usize,
+        role: TokenRole,
+        max_messages_per_second: u32,
+        max_consecutive_rate_violations: u32,
     ) -> Self {
         let router: Arc<dyn CommandRouter> = router_impl.clone();
         let (events, _rx) = broadcast::channel(64);
@@ -121,6 +159,8 @@ impl TestServer {
             remote_events: events.clone(),
             connection_counts: Arc::new(DashMap::new()),
             max_ws_per_ip,
+            max_messages_per_second,
+            max_consecutive_rate_violations,
             allowed_origins: vec![],
             allow_session_input,
         };
@@ -174,6 +214,10 @@ impl TestServer {
     }
 }
 
+fn role_operator() -> TokenRole {
+    TokenRole::Operator
+}
+
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.join.abort();
@@ -203,6 +247,34 @@ async fn read_ws_message(
                     .expect("respond to ping");
             }
             Message::Pong(_) => {}
+            other => panic!("expected text-compatible websocket flow, got {other:?}"),
+        }
+    }
+}
+
+async fn try_read_ws_message(
+    stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Option<WsServerMessage> {
+    loop {
+        let next_frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .ok()?;
+        let frame = next_frame?.ok()?;
+
+        match frame {
+            Message::Text(text) => {
+                return Some(serde_json::from_str(&text).expect("valid ws server message"));
+            }
+            Message::Ping(payload) => {
+                stream
+                    .send(Message::Pong(payload))
+                    .await
+                    .expect("respond to ping");
+            }
+            Message::Pong(_) => {}
+            Message::Close(_) => return None,
             other => panic!("expected text-compatible websocket flow, got {other:?}"),
         }
     }
@@ -707,7 +779,7 @@ async fn ws_per_ip_connection_cap_enforced() {
 #[tokio::test]
 async fn ws_message_rate_burst_triggers_error() {
     let router_impl = Arc::new(RecordingRouter::default());
-    let server = TestServer::spawn(router_impl).await;
+    let server = TestServer::spawn_with_ws_rate_limit(router_impl, 5, 2).await;
 
     let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
         .await
@@ -716,7 +788,7 @@ async fn ws_message_rate_burst_triggers_error() {
     // Send >60 messages in a tight loop. Use Subscribe messages for channels
     // that will get "channel not allowed" errors — that is fine, the rate
     // limiter counts all messages regardless.
-    for i in 0..80 {
+    for i in 0..20 {
         let msg = serde_json::to_string(&WsClientMessage::Subscribe {
             channel: format!("bogus_channel_{i}"),
         })
@@ -729,18 +801,17 @@ async fn ws_message_rate_burst_triggers_error() {
 
     // Read responses — we expect at least one rate-limit error among them.
     let mut saw_rate_limit = false;
-    for _ in 0..80 {
-        let msg = tokio::time::timeout(Duration::from_secs(2), read_ws_message(&mut stream)).await;
-        match msg {
-            Ok(WsServerMessage::Error { message }) if message.contains("rate limit") => {
+    for _ in 0..20 {
+        match try_read_ws_message(&mut stream).await {
+            Some(WsServerMessage::Error { message }) if message.contains("rate limit") => {
                 saw_rate_limit = true;
                 break;
             }
-            Ok(_) => {
+            Some(_) => {
                 // "channel not allowed" or other responses — keep reading.
             }
-            Err(_) => {
-                // Timeout — the server may have disconnected us.
+            None => {
+                // The server may have disconnected us after consecutive violations.
                 break;
             }
         }

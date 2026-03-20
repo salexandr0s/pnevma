@@ -160,7 +160,7 @@ final class WorkspaceManager {
         runtimeOpenTasks.removeAll()
         let runtimes = Array(workspaceRuntimes.values)
         for runtime in runtimes {
-            await runtime.closeProject()
+            await runtime.closeProject(mode: .appShutdown)
         }
     }
 
@@ -509,7 +509,7 @@ final class WorkspaceManager {
         runtimeOpenTasks.removeValue(forKey: workspaceID)
         guard let runtime = workspaceRuntimes.removeValue(forKey: workspaceID) else { return }
         Task { @MainActor in
-            await runtime.closeProject()
+            await runtime.closeProject(mode: .workspaceClose)
             runtime.destroy()
         }
     }

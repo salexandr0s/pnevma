@@ -11,9 +11,9 @@ final class ResourceMonitorPaneView: NSView, PaneContent {
     let shouldPersist = true
     var title: String { "Resources" }
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, chromeContext: PaneChromeContext = .standard) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(ResourceMonitorDetailView())
+        _ = addSwiftUISubview(ResourceMonitorDetailView(), chromeContext: chromeContext)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
@@ -49,15 +49,11 @@ struct ResourceMonitorDetailView: View {
             title: "Resource Monitor",
             subtitle: "Host, process, and live usage data for the current workspace",
             systemImage: "chart.bar.xaxis",
-            role: .monitor
+            role: .monitor,
+            inlineHeaderIdentifier: "pane.resourceMonitor.inlineHeader",
+            inlineHeaderLabel: "Resource Monitor inline header"
         ) {
-            Picker("Tab", selection: $selectedTab) {
-                ForEach(MonitorTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            ResourceMonitorTabControl(selectedTab: $selectedTab)
             .frame(width: 260)
         } content: {
             Group {
@@ -69,9 +65,18 @@ struct ResourceMonitorDetailView: View {
                     )
                 } else {
                     switch selectedTab {
-                    case .overview: overviewTab
-                    case .processes: processesTab
-                    case .host: hostTab
+                    case .overview:
+                        tabContent(identifier: "pane.resourceMonitor.tab.overview") {
+                            overviewTab
+                        }
+                    case .processes:
+                        tabContent(identifier: "pane.resourceMonitor.tab.processes") {
+                            processesTab
+                        }
+                    case .host:
+                        tabContent(identifier: "pane.resourceMonitor.tab.host") {
+                            hostTab
+                        }
                     }
                 }
             }
@@ -79,6 +84,22 @@ struct ResourceMonitorDetailView: View {
         }
         .task {
             await store.activate()
+        }
+    }
+
+    @ViewBuilder
+    private func tabContent<Content: View>(
+        identifier: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            content()
+            AccessibilityMarker(
+                identifier: identifier,
+                label: identifier
+            )
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
         }
     }
 
@@ -391,6 +412,52 @@ struct ResourceMonitorDetailView: View {
         .padding(.vertical, DesignTokens.Spacing.sm)
         .accessibilityLabel(label)
         .accessibilityValue(value)
+    }
+}
+
+private struct ResourceMonitorTabControl: NSViewRepresentable {
+    @Binding var selectedTab: ResourceMonitorDetailView.MonitorTab
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selectedTab: $selectedTab)
+    }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(
+            labels: ResourceMonitorDetailView.MonitorTab.allCases.map(\.rawValue),
+            trackingMode: .selectOne,
+            target: context.coordinator,
+            action: #selector(Coordinator.selectionChanged(_:))
+        )
+        control.segmentStyle = .rounded
+        control.controlSize = .regular
+        control.selectedSegment = ResourceMonitorDetailView.MonitorTab.allCases.firstIndex(of: selectedTab) ?? 0
+        control.setAccessibilityIdentifier("pane.resourceMonitor.segmentedControl")
+        control.setAccessibilityLabel("Resource monitor sections")
+        return control
+    }
+
+    func updateNSView(_ nsView: NSSegmentedControl, context: Context) {
+        let selectedIndex = ResourceMonitorDetailView.MonitorTab.allCases.firstIndex(of: selectedTab) ?? 0
+        if nsView.selectedSegment != selectedIndex {
+            nsView.selectedSegment = selectedIndex
+        }
+        context.coordinator.selectedTab = $selectedTab
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var selectedTab: Binding<ResourceMonitorDetailView.MonitorTab>
+
+        init(selectedTab: Binding<ResourceMonitorDetailView.MonitorTab>) {
+            self.selectedTab = selectedTab
+        }
+
+        @objc func selectionChanged(_ sender: NSSegmentedControl) {
+            let tabs = ResourceMonitorDetailView.MonitorTab.allCases
+            guard sender.selectedSegment >= 0, sender.selectedSegment < tabs.count else { return }
+            selectedTab.wrappedValue = tabs[sender.selectedSegment]
+        }
     }
 }
 

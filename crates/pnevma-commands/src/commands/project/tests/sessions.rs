@@ -296,6 +296,78 @@ async fn get_scrollback_defaults_to_tail_when_offset_is_omitted() {
 }
 
 #[tokio::test]
+async fn get_scrollback_falls_back_to_archived_persisted_local_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    let scrollback_dir = project_root.join(".pnevma/data/scrollback");
+    std::fs::create_dir_all(&scrollback_dir).unwrap();
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "scrollback-archived-fallback-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let session_id = Uuid::new_v4();
+    let now = Utc::now();
+    std::fs::write(
+        scrollback_dir.join(format!("{session_id}.log")),
+        "alpha\nbeta\ngamma\n",
+    )
+    .unwrap();
+    db.upsert_session(&SessionRow {
+        id: session_id.to_string(),
+        project_id: project_id.to_string(),
+        name: "shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "tmux_compat".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "exited".to_string(),
+        status: "complete".to_string(),
+        pid: None,
+        cwd: project_root.to_string_lossy().to_string(),
+        command: "/bin/zsh".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: Some(now),
+        last_error: None,
+        restore_status: None,
+        exit_code: Some(0),
+        ended_at: Some(now.to_rfc3339()),
+    })
+    .await
+    .expect("persist archived session row");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+    let slice = get_scrollback(
+        ScrollbackInput {
+            session_id: session_id.to_string(),
+            offset: None,
+            limit: Some(6),
+        },
+        &state,
+    )
+    .await
+    .expect("archived scrollback should load");
+
+    assert_eq!(slice.data, "gamma\n");
+    assert_eq!(slice.end_offset, slice.total_bytes);
+}
+
+#[tokio::test]
 async fn get_session_timeline_uses_scrollback_tail_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project_root = temp.path().join("project");
@@ -356,6 +428,86 @@ async fn get_session_timeline_uses_scrollback_tail_snapshot() {
 
     assert!(data.contains("TAIL-MARKER"));
     assert!(!data.contains("HEAD-MARKER"));
+}
+
+#[tokio::test]
+async fn get_session_timeline_uses_archived_persisted_local_scrollback_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_root = temp.path().join("project");
+    let scrollback_dir = project_root.join(".pnevma/data/scrollback");
+    std::fs::create_dir_all(&scrollback_dir).unwrap();
+
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "timeline-archived-fallback-test",
+        project_root.to_string_lossy().as_ref(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let session_id = Uuid::new_v4();
+    let now = Utc::now();
+    std::fs::write(
+        scrollback_dir.join(format!("{session_id}.log")),
+        "archived tail\n",
+    )
+    .unwrap();
+    db.upsert_session(&SessionRow {
+        id: session_id.to_string(),
+        project_id: project_id.to_string(),
+        name: "shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "tmux_compat".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "exited".to_string(),
+        status: "complete".to_string(),
+        pid: None,
+        cwd: project_root.to_string_lossy().to_string(),
+        command: "/bin/zsh".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: Some(now),
+        last_error: None,
+        restore_status: None,
+        exit_code: Some(0),
+        ended_at: Some(now.to_rfc3339()),
+    })
+    .await
+    .expect("persist archived session row");
+
+    let sessions = SessionSupervisor::new(project_root.join(".pnevma/data"));
+    let state = make_state_with_project(project_id, &project_root, db, sessions).await;
+    let timeline = get_session_timeline(
+        SessionTimelineInput {
+            session_id: session_id.to_string(),
+            limit: Some(10),
+        },
+        &state,
+    )
+    .await
+    .expect("timeline should load");
+
+    let snapshot = timeline
+        .iter()
+        .find(|entry| entry.kind == "ScrollbackSnapshot")
+        .expect("timeline should include a scrollback snapshot");
+    let data = snapshot
+        .payload
+        .get("data")
+        .and_then(Value::as_str)
+        .expect("snapshot payload should contain data");
+
+    assert_eq!(data, "archived tail\n");
 }
 
 pub(super) struct RemoteSshTestEnv {

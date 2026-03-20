@@ -36,6 +36,8 @@ pub struct WsState {
     pub remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
     pub connection_counts: WsConnectionCounts,
     pub max_ws_per_ip: usize,
+    pub max_messages_per_second: u32,
+    pub max_consecutive_rate_violations: u32,
     pub allowed_origins: Vec<String>,
     pub allow_session_input: bool,
 }
@@ -102,12 +104,12 @@ const ALLOWED_EVENT_CHANNELS: &[&str] = &[
     "telemetry_updated",
 ];
 const MAX_WS_MESSAGE_SIZE: usize = 65_536;
-const MAX_MESSAGES_PER_SECOND: u32 = 60;
+pub const DEFAULT_MAX_MESSAGES_PER_SECOND: u32 = 60;
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 8;
 const MAX_SESSION_INPUT_BYTES: usize = 16 * 1024;
 const MAX_RPC_ID_LEN: usize = 128;
 const MAX_RPC_METHOD_LEN: usize = 128;
-const MAX_CONSECUTIVE_RATE_VIOLATIONS: u32 = 5;
+pub const DEFAULT_MAX_CONSECUTIVE_RATE_VIOLATIONS: u32 = 5;
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -155,6 +157,8 @@ pub async fn ws_handler(
                 state.remote_events,
                 auth_context,
                 state.allow_session_input,
+                state.max_messages_per_second,
+                state.max_consecutive_rate_violations,
             )
             .await;
             // Release the slot when the connection closes.
@@ -352,6 +356,8 @@ async fn handle_socket(
     remote_events: tokio::sync::broadcast::Sender<RemoteEventEnvelope>,
     auth_context: Option<AuditAuthContext>,
     allow_session_input: bool,
+    max_messages_per_second: u32,
+    max_consecutive_rate_violations: u32,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let mut subscribed_sessions: HashSet<String> = HashSet::new();
@@ -376,6 +382,8 @@ async fn handle_socket(
     let mut heartbeat = tokio::time::interval(WS_PING_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     heartbeat.tick().await;
+    let max_messages_per_second = max_messages_per_second.max(1);
+    let max_consecutive_rate_violations = max_consecutive_rate_violations.max(1);
 
     loop {
         tokio::select! {
@@ -447,12 +455,12 @@ async fn handle_socket(
                     window_start = now;
                 }
                 message_count += 1;
-                if message_count > MAX_MESSAGES_PER_SECOND {
+                if message_count > max_messages_per_second {
                     consecutive_rate_violations += 1;
-                    if consecutive_rate_violations >= MAX_CONSECUTIVE_RATE_VIOLATIONS {
+                    if consecutive_rate_violations >= max_consecutive_rate_violations {
                         tracing::warn!(
                             subject = auth_context.as_ref().map(|ctx| ctx.subject.as_str()).unwrap_or("-"),
-                            violations = MAX_CONSECUTIVE_RATE_VIOLATIONS,
+                            violations = max_consecutive_rate_violations,
                             "disconnecting WebSocket client after consecutive rate-limit violations"
                         );
                         let _ = sender.send(Message::Close(None)).await;

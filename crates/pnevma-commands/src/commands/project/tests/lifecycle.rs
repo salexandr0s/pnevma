@@ -324,6 +324,65 @@ async fn close_project_marks_live_session_rows_complete() {
 }
 
 #[tokio::test]
+async fn close_project_with_app_shutdown_detaches_local_session_rows() {
+    let project_root = tempdir().expect("temp project");
+    let db = open_test_db().await;
+    let project_id = Uuid::new_v4();
+    db.upsert_project(
+        &project_id.to_string(),
+        "test-project",
+        &project_root.path().to_string_lossy(),
+        None,
+        None,
+    )
+    .await
+    .expect("upsert project");
+    let sessions = SessionSupervisor::new(project_root.path().join(".pnevma/data"));
+    let state = make_state_with_project(
+        project_id,
+        project_root.path(),
+        db.clone(),
+        sessions.clone(),
+    )
+    .await;
+
+    let session_id = Uuid::new_v4();
+    let mut meta = make_session_metadata(
+        project_id,
+        session_id,
+        project_root.path(),
+        SessionStatus::Running,
+    );
+    meta.pid = None;
+    sessions
+        .register_restored(meta.clone())
+        .await
+        .expect("register_restored");
+    db.upsert_session(&session_row_from_meta(&meta))
+        .await
+        .expect("persist session row");
+
+    close_project_with_mode(ProjectCloseMode::AppShutdown, &state)
+        .await
+        .expect("close project");
+
+    let row = db
+        .list_sessions(&project_id.to_string())
+        .await
+        .expect("list sessions")
+        .into_iter()
+        .find(|row| row.id == session_id.to_string())
+        .expect("session row exists");
+    assert_eq!(row.status, "waiting");
+    assert_eq!(row.lifecycle_state, "detached");
+    assert!(row.pid.is_none());
+    assert!(row.detached_at.is_some());
+    assert_eq!(row.ended_at, None);
+    assert_eq!(row.exit_code, None);
+    assert_eq!(row.restore_status.as_deref(), Some("detached"));
+}
+
+#[tokio::test]
 async fn close_project_terminates_running_session_helpers_and_persists_complete_rows() {
     let project_root = tempdir().expect("temp project");
     let db = open_test_db().await;
@@ -387,6 +446,106 @@ async fn close_project_terminates_running_session_helpers_and_persists_complete_
         .expect("session row");
     assert_eq!(row.status, "complete");
     assert_eq!(row.pid, None);
+}
+
+#[tokio::test]
+async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdown() {
+    let temp = tempfile::Builder::new()
+        .prefix("pnv")
+        .tempdir_in("/tmp")
+        .expect("temp root");
+    let home = tempfile::Builder::new()
+        .prefix("pnv-home")
+        .tempdir_in("/tmp")
+        .expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+    let project_root = temp.path().join("p");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/scrollback"))
+        .expect("create scaffold dirs");
+    write_test_project_config(&project_root, &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+    let opened_project_id = open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("open project");
+    let project_id = Uuid::parse_str(&opened_project_id).expect("project id");
+
+    let db = state
+        .with_project("tests.local_restore.db", |ctx| ctx.db.clone())
+        .await
+        .expect("project db");
+    let session_id = Uuid::new_v4();
+    let tmux_name = tmux_name_from_session_id(&session_id.to_string());
+    let tmux_tmpdir = tmux_tmpdir_for_project(&project_root);
+    std::fs::create_dir_all(&tmux_tmpdir).expect("create tmux tmpdir");
+    let status = TokioCommand::new(pnevma_session::resolve_binary("tmux"))
+        .env("TMUX_TMPDIR", &tmux_tmpdir)
+        .args(["new-session", "-d", "-s", &tmux_name, "/bin/sh"])
+        .status()
+        .await
+        .expect("start tmux session");
+    assert!(status.success(), "tmux session should start");
+
+    let now = Utc::now();
+    db.upsert_session(&SessionRow {
+        id: session_id.to_string(),
+        project_id: project_id.to_string(),
+        name: "shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "tmux_compat".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "detached".to_string(),
+        status: "waiting".to_string(),
+        pid: None,
+        cwd: project_root.to_string_lossy().to_string(),
+        command: "/bin/sh".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: Some(now),
+        last_error: None,
+        restore_status: Some("detached".to_string()),
+        exit_code: None,
+        ended_at: None,
+    })
+    .await
+    .expect("persist preserved local session");
+
+    close_project_with_mode(ProjectCloseMode::AppShutdown, &state)
+        .await
+        .expect("close project for app shutdown");
+    open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("reopen project");
+
+    let binding = get_session_binding(session_id.to_string(), &state)
+        .await
+        .expect("local session binding");
+    assert_eq!(binding.mode, "live_attach");
+    assert_eq!(binding.lifecycle_state, "attached");
+    assert!(binding.launch_command.is_some());
+
+    close_project(&state).await.expect("final close project");
 }
 
 #[tokio::test]

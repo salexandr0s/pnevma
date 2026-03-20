@@ -9,46 +9,53 @@ struct CommitPopoverView: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Commit Message")
-                .font(.headline)
-
-            if let branch {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.triangle.branch")
-                    Text(branch)
+        ToolbarAttachmentScaffold(title: "Commit Message") {
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
+                if let branch {
+                    Label(branch, systemImage: "arrow.triangle.branch")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+                TextField("Describe your changes\u{2026}", text: $commitMessage, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(4 ... 6)
+                    .padding(DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(ChromeSurfaceStyle.groupedCard.color)
+                    )
+                    .focused($isFocused)
+                    .onSubmit {
+                        commitIfPossible()
+                    }
             }
-
-            TextField("Describe your changes\u{2026}", text: $commitMessage, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(3 ... 6)
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
-                .focused($isFocused)
-                .onSubmit {
-                    let msg = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !msg.isEmpty { onCommit(msg) }
-                }
-
-            HStack {
+            .padding(DesignTokens.Spacing.md)
+        } footer: {
+            HStack(spacing: DesignTokens.Spacing.sm) {
                 Spacer()
+
                 Button("Cancel") { onCancel() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
 
                 Button("Commit") {
-                    let msg = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !msg.isEmpty { onCommit(msg) }
+                    commitIfPossible()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(trimmedCommitMessage.isEmpty)
             }
         }
-        .padding(12)
-        .frame(width: 320)
+        .frame(width: 340)
         .onAppear { isFocused = true }
+    }
+
+    private var trimmedCommitMessage: String {
+        commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func commitIfPossible() {
+        guard trimmedCommitMessage.isEmpty == false else { return }
+        onCommit(trimmedCommitMessage)
     }
 }

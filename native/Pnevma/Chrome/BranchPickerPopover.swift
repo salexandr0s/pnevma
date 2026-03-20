@@ -15,51 +15,69 @@ struct BranchPickerPopover: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Search field
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.tertiary)
-                TextField("Filter branches…", text: $searchText)
-                    .textFieldStyle(.plain)
-            }
-            .padding(8)
+        ToolbarAttachmentScaffold(title: "Switch Branch") {
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
+                HStack(spacing: DesignTokens.Spacing.sm) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    TextField("Filter branches…", text: $searchText)
+                        .textFieldStyle(.plain)
+                }
+                .padding(DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(ChromeSurfaceStyle.groupedCard.color)
+                )
 
-            Divider()
+                if filteredBranches.isEmpty {
+                    EmptyStateView(
+                        icon: "magnifyingglass",
+                        title: "No Matching Branches",
+                        message: "Try a different branch name."
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                            ForEach(filteredBranches, id: \.self) { branch in
+                                Button {
+                                    onSelect(branch)
+                                    onDismiss()
+                                } label: {
+                                    HStack(spacing: DesignTokens.Spacing.sm) {
+                                        if branch == currentBranch {
+                                            Image(systemName: "checkmark")
+                                                .foregroundStyle(Color.accentColor)
+                                                .frame(width: 14)
+                                        } else {
+                                            Spacer()
+                                                .frame(width: 14)
+                                        }
 
-            // Branch list
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(filteredBranches, id: \.self) { branch in
-                        Button {
-                            onSelect(branch)
-                            onDismiss()
-                        } label: {
-                            HStack {
-                                if branch == currentBranch {
-                                    Image(systemName: "checkmark")
-                                        .font(.caption)
-                                        .foregroundStyle(Color.accentColor)
-                                        .frame(width: 14)
-                                } else {
-                                    Spacer().frame(width: 14)
+                                        Text(branch)
+                                            .lineLimit(1)
+
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
+                                    .padding(.vertical, DesignTokens.Spacing.sm)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(branch == currentBranch ? ChromeSurfaceStyle.groupedCard.selectionColor : Color.clear)
+                                    )
+                                    .contentShape(Rectangle())
                                 }
-                                Text(branch)
-                                    .font(.body)
-                                    .lineLimit(1)
-                                Spacer()
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(branch == currentBranch ? "\(branch), current branch" : branch)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .padding(.bottom, DesignTokens.Spacing.xs)
                     }
                 }
             }
-            .frame(maxHeight: 300)
+            .padding(DesignTokens.Spacing.md)
         }
-        .frame(width: 260)
+        .frame(width: 300, height: 340)
         .accessibilityIdentifier("branchPicker")
     }
 }

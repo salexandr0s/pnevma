@@ -486,13 +486,25 @@ final class TerminalPaneViewTests: XCTestCase {
         pane.loadSession(sessionID: "session-archived", workingDirectory: "/tmp/project")
 
         try await waitUntil {
-            await bus.bindingCallCount() == 1 && pane.sessionID == "session-archived"
+            await bus.bindingCallCount() == 1
+                && pane.sessionID == "session-archived"
+                && pane.currentStateSnapshot?.scrollback == "restored log"
         }
 
         XCTAssertEqual(
             TerminalLaunchMetadata.from(json: pane.metadataJSON)?.launchMode,
             .managedSession
         )
+        XCTAssertEqual(pane.currentStateSnapshot?.title, "Session Ended")
+        XCTAssertEqual(
+            pane.currentStateSnapshot?.message,
+            "This terminal session is no longer live."
+        )
+        XCTAssertEqual(
+            pane.currentStateSnapshot?.detail,
+            "A cleaned transcript snapshot is shown below. Use Restore Previous Session to start a replacement managed session, or start a new session."
+        )
+        XCTAssertEqual(pane.currentStateSnapshot?.actionIDs, ["restore-previous"])
     }
 
     func testActiveTerminalPaneFocusesHostViewAfterJoiningWindow() throws {

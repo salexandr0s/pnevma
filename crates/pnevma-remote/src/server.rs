@@ -23,7 +23,10 @@ use crate::{
     routes::{
         api, auth_routes,
         health::health,
-        ws::{ws_handler, WsConnectionCounts, WsState},
+        ws::{
+            ws_handler, WsConnectionCounts, WsState, DEFAULT_MAX_CONSECUTIVE_RATE_VIOLATIONS,
+            DEFAULT_MAX_MESSAGES_PER_SECOND,
+        },
     },
     CommandRouter, RemoteEventEnvelope,
 };
@@ -67,6 +70,8 @@ pub async fn build_router(
         remote_events,
         connection_counts: ws_counts,
         max_ws_per_ip: config.max_ws_per_ip,
+        max_messages_per_second: DEFAULT_MAX_MESSAGES_PER_SECOND,
+        max_consecutive_rate_violations: DEFAULT_MAX_CONSECUTIVE_RATE_VIOLATIONS,
         allowed_origins: config.allowed_origins.clone(),
         allow_session_input: config.allow_session_input,
     };

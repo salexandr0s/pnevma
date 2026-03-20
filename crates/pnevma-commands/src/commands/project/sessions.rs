@@ -1,4 +1,8 @@
 use super::*;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+const MAX_SCROLLBACK_READ_BYTES: usize = 10 * 1024 * 1024;
+const MAX_SCROLLBACK_READ_LIMIT: usize = 1024 * 1024;
 
 pub(super) fn resolve_session_command(
     input_command: &str,
@@ -21,6 +25,53 @@ pub(super) fn resolve_session_command(
             })
         })
         .unwrap_or_else(|| "zsh".to_string())
+}
+
+fn canonical_archived_scrollback_path(project_path: &Path, session_id: &str) -> PathBuf {
+    project_path
+        .join(".pnevma/data/scrollback")
+        .join(format!("{session_id}.log"))
+}
+
+async fn read_scrollback_file_slice(
+    session_id: Uuid,
+    path: &Path,
+    offset: Option<u64>,
+    limit: usize,
+) -> Result<ScrollbackSlice, String> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let total = file.metadata().await.map_err(|e| e.to_string())?.len();
+
+    if total as usize > MAX_SCROLLBACK_READ_BYTES {
+        return Err(format!(
+            "scrollback too large: {} bytes (max {})",
+            total, MAX_SCROLLBACK_READ_BYTES
+        ));
+    }
+
+    let capped_limit = limit.min(MAX_SCROLLBACK_READ_LIMIT);
+    let start = match offset {
+        Some(offset) => offset.min(total),
+        None => total.saturating_sub(capped_limit as u64),
+    };
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; capped_limit];
+    let read = file.read(&mut buf).await.map_err(|e| e.to_string())?;
+    buf.truncate(read);
+
+    Ok(ScrollbackSlice {
+        session_id,
+        start_offset: start,
+        end_offset: start.saturating_add(read as u64),
+        total_bytes: total,
+        data: String::from_utf8_lossy(&buf).to_string(),
+    })
 }
 
 pub async fn create_session(input: SessionInput, state: &AppState) -> Result<String, String> {
@@ -549,9 +600,14 @@ pub async fn get_scrollback(
     state: &AppState,
 ) -> Result<ScrollbackSlice, String> {
     let started = Instant::now();
-    let (sessions, db, project_id) = state
+    let (sessions, db, project_id, project_path) = state
         .with_project("get_scrollback", |ctx| {
-            (ctx.sessions.clone(), ctx.db.clone(), ctx.project_id)
+            (
+                ctx.sessions.clone(),
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+            )
         })
         .await?;
     let session_id = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
@@ -570,7 +626,13 @@ pub async fn get_scrollback(
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| local_error.to_string())?;
             if !is_remote_ssh_durable_backend(&row.backend) {
-                return Err(local_error.to_string());
+                return read_scrollback_file_slice(
+                    session_id,
+                    &canonical_archived_scrollback_path(&project_path, &input.session_id),
+                    input.offset,
+                    limit,
+                )
+                .await;
             }
             let profile = resolve_ssh_profile_for_session_row(state, &db, &row).await?;
             let data = pnevma_ssh::read_remote_scrollback_tail(

@@ -1367,13 +1367,9 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
 
     fn test_runtime() -> HelperRuntime {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("unix epoch")
-            .as_nanos();
+        let unique = Uuid::new_v4();
         let root = env::temp_dir().join(format!("pnevma-remote-helper-tests-{unique}"));
         HelperRuntime::new(HelperPaths::new(
             root.join("pnevma-remote-helper"),

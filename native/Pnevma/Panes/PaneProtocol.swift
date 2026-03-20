@@ -297,8 +297,10 @@ enum PaneFactory {
         paneTuple(UsagePaneView(frame: .zero, chromeContext: chromeContext))
     }
 
-    static func makeResourceMonitor() -> (PaneID, NSView & PaneContent) {
-        paneTuple(ResourceMonitorPaneView(frame: .zero))
+    static func makeResourceMonitor(
+        chromeContext: PaneChromeContext = .standard
+    ) -> (PaneID, NSView & PaneContent) {
+        paneTuple(ResourceMonitorPaneView(frame: .zero, chromeContext: chromeContext))
     }
 
     static func makeSettings() -> (PaneID, NSView & PaneContent) {
@@ -434,7 +436,7 @@ enum PaneFactory {
         case "review":        return makeReview()
         case "diff":          return makeDiff()
         case "analytics":     return makeAnalytics(chromeContext: chromeContext)
-        case "resource_monitor": return makeResourceMonitor()
+        case "resource_monitor": return makeResourceMonitor(chromeContext: chromeContext)
         case "settings":      return makeSettings()
         case "notifications": return makeNotifications(chromeContext: chromeContext)
         case "daily_brief":   return makeDailyBrief(chromeContext: chromeContext)
@@ -476,7 +478,16 @@ enum PaneFactory {
                 "ports",
             ]
         }
-        return ["terminal", "ssh", "workflow", "notifications", "browser", "analytics", "harness_config"]
+        return [
+            "terminal",
+            "ssh",
+            "workflow",
+            "notifications",
+            "browser",
+            "analytics",
+            "resource_monitor",
+            "harness_config",
+        ]
     }
 }
 
@@ -757,6 +768,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private var projectNotReadyRetryCount = 0
     private var isPaneActive = false
     private let activationHub: ActiveWorkspaceActivationHub
+    private(set) var currentStateSnapshot: TerminalStateSnapshot?
     var onPersistedStateChange: ((PersistedPane) -> Void)?
 
     init(
@@ -1203,6 +1215,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     private func showEphemeralTerminal() {
         projectNotReadyRetryCount = 0
+        currentStateSnapshot = nil
         let hostView = TerminalHostView()
         hostView.launchConfiguration = .shell(
             workingDirectory: shellWorkingDirectory,
@@ -1263,6 +1276,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private func showLiveTerminal(_ binding: SessionBindingDescriptor, isNewSession: Bool) {
+        currentStateSnapshot = nil
         let hostView = TerminalHostView()
         hostView.launchConfiguration = binding.makeLaunchConfiguration()
         hostView.attachedSessionID = binding.sessionID
@@ -1310,18 +1324,12 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private func showArchivedTerminal(_ binding: SessionBindingDescriptor) async {
-        let title = binding.isDetachedRecovery ? "Session Detached" : "Session Ended"
-        let message = binding.isDetachedRecovery
-            ? "This terminal can be restored."
-            : "This terminal session is no longer live."
-        let detail = binding.isDetachedRecovery
-            ? "Use Restore Previous Session to reattach or restart the backend, or start a replacement session."
-            : "A cleaned transcript snapshot is shown below. Use Restore Previous Session to reconnect, or start a replacement session."
+        let stateCopy = archivedTerminalStateCopy(for: binding)
         let actions = recoveryActionButtons(preferRestorePrimary: true)
         showState(
-            title: title,
-            message: message,
-            detail: detail,
+            title: stateCopy.title,
+            message: stateCopy.message,
+            detail: stateCopy.detail,
             scrollback: nil,
             actions: actions,
             isLoading: false
@@ -1331,9 +1339,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         do {
             let scrollback = try await sessionBridge.scrollback(for: binding.sessionID)
             showState(
-                title: title,
-                message: message,
-                detail: detail,
+                title: stateCopy.title,
+                message: stateCopy.message,
+                detail: stateCopy.detail,
                 scrollback: scrollback.data,
                 actions: actions,
                 isLoading: false
@@ -1348,6 +1356,39 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 isLoading: false
             )
         }
+    }
+
+    private func archivedTerminalStateCopy(
+        for binding: SessionBindingDescriptor
+    ) -> (title: String, message: String, detail: String) {
+        let canReattach = recoveryOptions.contains(where: { $0.id == "reattach" && $0.enabled })
+        let canRestart = recoveryOptions.contains(where: { $0.id == "restart" && $0.enabled })
+
+        if binding.isDetachedRecovery || canReattach {
+            let detail: String
+            if canRestart {
+                detail = "Use Restore Previous Session to reattach if the backend is still running, or restart it if it has already stopped. A cleaned transcript snapshot is shown below when available."
+            } else {
+                detail = "Use Restore Previous Session to reattach to the preserved backend."
+            }
+            return (
+                title: "Session Detached",
+                message: "This terminal session can reconnect.",
+                detail: detail
+            )
+        }
+
+        let detail: String
+        if canRestart {
+            detail = "A cleaned transcript snapshot is shown below. Use Restore Previous Session to start a replacement managed session, or start a new session."
+        } else {
+            detail = "A cleaned transcript snapshot is shown below when available."
+        }
+        return (
+            title: "Session Ended",
+            message: "This terminal session is no longer live.",
+            detail: detail
+        )
     }
 
     private func recoveryActionButtons(preferRestorePrimary: Bool = false) -> [TerminalStateAction] {
@@ -1558,6 +1599,13 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             actions: actions,
             isLoadingOverride: isLoading
         )
+        currentStateSnapshot = TerminalStateSnapshot(
+            title: title,
+            message: message,
+            detail: detail,
+            scrollback: scrollback,
+            actionIDs: actions.map(\.id)
+        )
         hostView?.removeFromSuperview()
         hostView = nil
 
@@ -1578,6 +1626,14 @@ private struct TerminalStateAction: Identifiable {
     let enabled: Bool
     var isPrimary: Bool = true
     let perform: () -> Void
+}
+
+struct TerminalStateSnapshot: Equatable {
+    let title: String
+    let message: String
+    let detail: String?
+    let scrollback: String?
+    let actionIDs: [String]
 }
 
 struct TerminalArchivedScrollbackPresentation: Equatable {

@@ -49,6 +49,12 @@ enum DesignTokens {
         static let rightInspectorDefaultWidth: CGFloat = 340
         static let rightInspectorMinWidth: CGFloat = 280
         static let rightInspectorMaxWidth: CGFloat = 520
+        static let titlebarGroupHeight: CGFloat = 30
+        static let titlebarControlHeight: CGFloat = 28
+        static let titlebarIconButtonSize: CGFloat = 28
+        static let titlebarGroupCornerRadius: CGFloat = 10
+        static let titlebarInnerSpacing: CGFloat = 4
+        static let titlebarInterGroupSpacing: CGFloat = 8
         static let toolDockHeight: CGFloat = 54
         static let toolDockRevealHeight: CGFloat = 6
         static let statusBarHeight: CGFloat = 28

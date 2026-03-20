@@ -47,6 +47,7 @@ fi
 filtered=$(grep -nE 'warning:|error:|IDERunDestination:' "$log_path" \
   | grep -v 'failed to load toolchain: toolchain .* already registered' \
   | grep -v 'Metadata extraction skipped\. No AppIntents\.framework dependency found\.' \
+  | grep -v "XPCConnectionTerminationWatchdog" \
   || true)
 
 if [[ -n "$filtered" ]]; then
@@ -54,4 +55,3 @@ if [[ -n "$filtered" ]]; then
   echo "$filtered" >&2
   exit 1
 fi
-

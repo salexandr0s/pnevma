@@ -847,7 +847,14 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "project.close" => {
-            commands::close_project(state)
+            let close_mode = parse_optional_string_param(params, "mode")
+                .map(|value| {
+                    commands::ProjectCloseMode::parse(&value)
+                        .map_err(|e| ("invalid_params".to_string(), e))
+                })
+                .transpose()?
+                .unwrap_or(commands::ProjectCloseMode::WorkspaceClose);
+            commands::close_project_with_mode(close_mode, state)
                 .await
                 .map_err(|e| ("internal_error".to_string(), e))?;
             serde_json::to_value(commands::OkResponse { ok: true })
@@ -1035,6 +1042,22 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "workspace.commit" => {
+            let message = parse_string_param(params, "message")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::commit(&message, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "workspace.push" => serde_json::to_value(
+            commands::push(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "ports.list" => serde_json::to_value(
             commands::list_ports(state)
                 .await
