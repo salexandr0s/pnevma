@@ -490,6 +490,7 @@ class TerminalSurface {
                     let sp = spBits.flatMap { UnsafeMutableRawPointer(bitPattern: $0) }
                     surface.completeClipboardRead(state: sp, confirmed: false)
                 }
+                return true  // Ghostty v1.3.1: signals async clipboard handling
             },
             confirm_read_clipboard_cb: { userdata, _, statePtr, _ in
                 let udBits = userdata.map { Int(bitPattern: $0) }
