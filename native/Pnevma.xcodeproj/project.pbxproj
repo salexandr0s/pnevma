@@ -930,6 +930,7 @@
 			buildConfigurationList = 5948A3AF9B25FB971310FB9D /* Build configuration list for PBXNativeTarget "Pnevma" */;
 			buildPhases = (
 				D8BD220250856AB772A64785 /* Build Rust Bridge */,
+				5B9E1286336CFF04BB2383A9 /* Embed Session Proxy */,
 				A696CFEA5784697437BE6EFB /* Sources */,
 				F8E1F120DC096D8201D31417 /* Resources */,
 				59CE2FE693B4E9D149AD0FD7 /* Frameworks */,
@@ -1033,6 +1034,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		5B9E1286336CFF04BB2383A9 /* Embed Session Proxy */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed Session Proxy";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -euo pipefail\nHELPERS_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers\"\nmkdir -p \"$HELPERS_DIR\"\nCONF_DIR=$(echo \"${CONFIGURATION}\" | tr '[:upper:]' '[:lower:]')\ncp \"$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-session-proxy\" \"$HELPERS_DIR/\"\n";
+		};
 		D8BD220250856AB772A64785 /* Build Rust Bridge */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -1050,7 +1070,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin\nfi\n";
+			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -243,6 +243,8 @@ async fn command_center_snapshot_includes_live_queued_retry_review_and_failed_ro
                 .to_string(),
             exit_code: None,
             ended_at: None,
+            backend_kind: "local_pty".to_string(),
+            durability: "ephemeral".to_string(),
         })
         .await
         .expect("register_restored");
@@ -360,6 +362,8 @@ async fn command_center_snapshot_surfaces_unmatched_waiting_session_actions() {
                 .to_string(),
             exit_code: None,
             ended_at: None,
+            backend_kind: "local_pty".to_string(),
+            durability: "ephemeral".to_string(),
         })
         .await
         .expect("register_restored");

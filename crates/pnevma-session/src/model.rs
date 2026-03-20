@@ -37,4 +37,8 @@ pub struct SessionMetadata {
     pub scrollback_path: String,
     pub exit_code: Option<i32>,
     pub ended_at: Option<DateTime<Utc>>,
+    /// Backend kind string (e.g. "local_pty", "tmux_compat", "remote_ssh_durable").
+    pub backend_kind: String,
+    /// Durability string ("durable" or "ephemeral").
+    pub durability: String,
 }

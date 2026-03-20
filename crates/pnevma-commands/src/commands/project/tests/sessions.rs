@@ -152,24 +152,21 @@ async fn get_session_binding_reports_live_and_archived_modes() {
         .expect("live binding");
     assert_eq!(live.mode, "live_attach");
     assert_eq!(live.cwd, project_root.to_string_lossy());
-    let expected_tmux = pnevma_ssh::shell_escape_arg(
-        pnevma_session::resolve_binary("tmux")
-            .to_string_lossy()
-            .as_ref(),
+    // Default backend is LocalPty, so the launch command should point at the
+    // proxy binary rather than tmux attach.
+    assert!(
+        live.launch_command.is_some(),
+        "live session should have a launch command"
     );
-    assert_eq!(
-        live.launch_command.as_deref(),
-        Some(tmux_attach_launch_command().as_str())
+    let launch = live.launch_command.as_deref().unwrap();
+    assert!(
+        launch.contains("pnevma-session-proxy"),
+        "launch command should use the session proxy, got: {launch}"
     );
-    assert!(live
-        .launch_command
-        .as_deref()
-        .unwrap_or_default()
-        .contains(&expected_tmux));
-    assert!(live
-        .env
-        .iter()
-        .any(|env| env.key == "TMUX_TMPDIR" && !env.value.is_empty()));
+    assert!(
+        launch.contains(&live_session_id.to_string()),
+        "launch command should contain the session ID"
+    );
 
     let archived = get_session_binding(archived_session_id.to_string(), &state)
         .await

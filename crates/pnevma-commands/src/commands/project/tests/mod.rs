@@ -197,6 +197,8 @@ fn make_session_metadata(
             .to_string(),
         exit_code: (status == SessionStatus::Complete).then_some(0),
         ended_at: (status == SessionStatus::Complete).then_some(Utc::now()),
+        backend_kind: "local_pty".to_string(),
+        durability: "ephemeral".to_string(),
     }
 }
 

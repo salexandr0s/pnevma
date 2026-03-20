@@ -2,6 +2,7 @@
 members = [
   "crates/pnevma-core",
   "crates/pnevma-redaction",
+  "crates/pnevma-session-protocol",
   "crates/pnevma-session",
   "crates/pnevma-agents",
   "crates/pnevma-git",
@@ -55,6 +56,7 @@ rcgen = "0.13"
 governor = "0.8"
 dashmap = "6"
 rand = "0.8"
+base64 = "0.22"
 hex = "0.4"
 secrecy = { version = "0.10", features = ["serde"] }
 security-framework = "2"

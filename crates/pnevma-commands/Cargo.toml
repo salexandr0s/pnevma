@@ -9,6 +9,7 @@ pnevma-core = { path = "../pnevma-core" }
 pnevma-db = { path = "../pnevma-db" }
 pnevma-redaction = { path = "../pnevma-redaction" }
 pnevma-session = { path = "../pnevma-session" }
+pnevma-session-protocol = { path = "../pnevma-session-protocol" }
 pnevma-agents = { path = "../pnevma-agents" }
 pnevma-git = { path = "../pnevma-git" }
 pnevma-context = { path = "../pnevma-context" }
@@ -38,3 +39,4 @@ tempfile.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true
 sysinfo.workspace = true
+base64.workspace = true

@@ -56,11 +56,15 @@ rust-check:
 rust-build:
     @echo "Building Rust staticlib..."
     {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}}
+    @echo "Building session proxy..."
+    {{rust_tool}} cargo build -p pnevma-session --bin pnevma-session-proxy --target {{rust_target}}
     @echo "Rust staticlib built"
 
 rust-build-release:
     @echo "Building Rust staticlib (release)..."
     {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}} --release
+    @echo "Building session proxy (release)..."
+    {{rust_tool}} cargo build -p pnevma-session --bin pnevma-session-proxy --target {{rust_target}} --release
     @echo "Rust staticlib built (release)"
 
 remote-helper-build:

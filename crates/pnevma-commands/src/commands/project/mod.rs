@@ -128,6 +128,8 @@ async fn terminate_helper_pid(pid: i64) {
     }
 }
 
+/// Kill a session backend. Tries tmux first (legacy compat), silently
+/// succeeds if the session is already gone.
 async fn kill_tmux_session_for_row(project_path: &Path, session_id: &str) -> Result<(), String> {
     let name = tmux_name_from_session_id(session_id);
     let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
@@ -145,6 +147,8 @@ async fn kill_tmux_session_for_row(project_path: &Path, session_id: &str) -> Res
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
     if stderr.contains("can't find session") {
+        // Not a tmux session — local_pty sessions are handled via the
+        // supervisor's terminate() call at a higher level.
         return Ok(());
     }
     Err(stderr.trim().to_string())
@@ -467,6 +471,8 @@ pub async fn open_project(
     .map_err(|e| e.to_string())?;
 
     let redaction_secrets = load_redaction_secrets(&db, project_id).await;
+    // Use LocalPty as the default backend for new sessions.
+    // Legacy tmux_compat sessions are handled during restore below.
     let sessions = SessionSupervisor::new(path_buf.join(".pnevma/data"));
     sessions
         .set_redaction_secrets(redaction_secrets.clone())
@@ -504,6 +510,21 @@ pub async fn open_project(
         }
         if let Some(meta) = session_meta_from_row(&row, &restore_root) {
             let session_id = meta.id;
+
+            // Ephemeral (local_pty) sessions cannot survive app restart —
+            // the master fd is lost. Mark them as complete.
+            let is_ephemeral = row.backend == SESSION_BACKEND_LOCAL_PTY;
+            if is_ephemeral && matches!(row.status.as_str(), "running" | "waiting") {
+                let mut completed_meta = meta.clone();
+                completed_meta.status = SessionStatus::Complete;
+                completed_meta.health = SessionHealth::Complete;
+                completed_meta.ended_at = Some(Utc::now());
+                if let Err(e) = sessions.register_restored(completed_meta).await {
+                    tracing::warn!(error = %e, %session_id, "failed to register completed ephemeral session");
+                }
+                continue;
+            }
+
             append_event(
                 &db,
                 project_id,
@@ -518,6 +539,28 @@ pub async fn open_project(
                 tracing::warn!(error = %e, %session_id, "failed to register restored session (limit reached)");
             }
             if row.status == "waiting" {
+                // For legacy tmux_compat sessions, check tmux liveness directly.
+                // The supervisor's LocalPty backend won't know about tmux sessions,
+                // so we skip attach_existing and let the binding code handle tmux
+                // attach via the launch command.
+                if row.backend == SESSION_BACKEND_TMUX_COMPAT {
+                    let tmux_alive = session_backend_alive(path_buf.as_path(), &row.id).await;
+                    if tmux_alive {
+                        // Mark the session as Running so the binding shows "attached".
+                        sessions.mark_activity(session_id).await.ok();
+                        append_event(
+                            &db,
+                            project_id,
+                            None,
+                            Some(session_id),
+                            "session",
+                            "SessionReattached",
+                            json!({}),
+                        )
+                        .await;
+                    }
+                    continue;
+                }
                 match sessions.attach_existing(session_id).await {
                     Ok(()) => {
                         append_event(

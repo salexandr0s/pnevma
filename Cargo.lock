@@ -1811,6 +1811,7 @@ name = "pnevma-commands"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "libc",
  "parking_lot",
@@ -1822,6 +1823,7 @@ dependencies = [
  "pnevma-redaction",
  "pnevma-remote",
  "pnevma-session",
+ "pnevma-session-protocol",
  "pnevma-ssh",
  "pnevma-tracker",
  "regex",
@@ -1968,13 +1970,27 @@ dependencies = [
 name = "pnevma-session"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "libc",
  "pnevma-redaction",
+ "pnevma-session-protocol",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "pnevma-session-protocol"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
  "uuid",
 ]
 

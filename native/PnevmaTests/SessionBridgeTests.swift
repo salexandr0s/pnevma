@@ -115,7 +115,7 @@ final class SessionBridgeTests: XCTestCase {
         let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
 
         let binding = try await bridge.createSession(workingDirectory: nil)
-        let launch = binding.makeLaunchConfiguration()
+        let launch = try XCTUnwrap(binding.makeLaunchConfiguration())
 
         XCTAssertEqual(launch.workingDirectory, "/tmp/project")
         XCTAssertEqual(launch.command, "/bin/sh -lc 'echo backend-launch'")

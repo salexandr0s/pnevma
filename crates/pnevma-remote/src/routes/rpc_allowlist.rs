@@ -41,6 +41,8 @@ pub(crate) const READ_METHODS: &[&str] = &[
     "port.list",
     "workspace.hooks.list",
     "editor.profiles.list",
+    "ssh.files.read",
+    "ssh.files.list",
 ];
 
 /// Write/mutate methods — require Operator role.

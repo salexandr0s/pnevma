@@ -564,6 +564,63 @@ pub async fn ssh_runtime_health(
     })
 }
 
+// ─── Remote File RPC ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteFileReadView {
+    pub content_base64: String,
+    pub size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDirectoryListView {
+    pub path: String,
+    pub entries: Vec<pnevma_ssh::RemoteDirEntry>,
+}
+
+pub async fn read_remote_file_contents(
+    profile_id: String,
+    path: String,
+    limit: Option<usize>,
+    state: &AppState,
+) -> Result<RemoteFileReadView, String> {
+    use base64::Engine;
+    let project_db = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| ctx.db.clone())
+    };
+    let profile = resolve_ssh_profile_by_id(state, project_db.as_ref(), &profile_id)
+        .await?
+        .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
+    let bytes = pnevma_ssh::read_remote_file(&profile, &path, limit)
+        .await
+        .map_err(|e| e.to_string())?;
+    let size = bytes.len();
+    let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(RemoteFileReadView {
+        content_base64,
+        size,
+    })
+}
+
+pub async fn list_remote_directory_entries(
+    profile_id: String,
+    path: String,
+    state: &AppState,
+) -> Result<RemoteDirectoryListView, String> {
+    let project_db = {
+        let current = state.current.lock().await;
+        current.as_ref().map(|ctx| ctx.db.clone())
+    };
+    let profile = resolve_ssh_profile_by_id(state, project_db.as_ref(), &profile_id)
+        .await?
+        .ok_or_else(|| format!("ssh profile not found: {profile_id}"))?;
+    let entries = pnevma_ssh::list_remote_directory(&profile, &path)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(RemoteDirectoryListView { path, entries })
+}
+
 pub async fn list_ssh_keys(state: &AppState) -> Result<Vec<SshKeyInfoView>, String> {
     let _current = state.current.lock().await;
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());

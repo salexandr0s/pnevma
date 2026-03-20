@@ -5,13 +5,21 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
+libc.workspace = true
 pnevma-redaction = { path = "../pnevma-redaction" }
+pnevma-session-protocol = { path = "../pnevma-session-protocol" }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[[bin]]
+name = "pnevma-session-proxy"
+path = "src/bin/proxy.rs"
 
 [dev-dependencies]
 tempfile.workspace = true

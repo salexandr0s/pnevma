@@ -1859,6 +1859,7 @@ fn tmux_name_from_session_id(session_id: &str) -> String {
     format!("pnevma_{}", session_id.replace('-', ""))
 }
 
+#[allow(dead_code)] // Used in DB rows for legacy tmux sessions
 const SESSION_BACKEND_TMUX_COMPAT: &str = "tmux_compat";
 const SESSION_BACKEND_REMOTE_SSH_DURABLE: &str = "remote_ssh_durable";
 const SESSION_DURABILITY_DURABLE: &str = "durable";
@@ -1875,12 +1876,16 @@ struct StoredTerminalLaunchMetadata {
     remote_target: Option<SessionRemoteTargetInput>,
 }
 
+const SESSION_BACKEND_LOCAL_PTY: &str = "local_pty";
+
 fn default_session_backend() -> String {
-    SESSION_BACKEND_TMUX_COMPAT.to_string()
+    SESSION_BACKEND_LOCAL_PTY.to_string()
 }
 
+const SESSION_DURABILITY_EPHEMERAL: &str = "ephemeral";
+
 fn default_session_durability() -> String {
-    SESSION_DURABILITY_DURABLE.to_string()
+    SESSION_DURABILITY_EPHEMERAL.to_string()
 }
 
 fn default_session_lifecycle_state() -> String {
@@ -1980,6 +1985,38 @@ fn tmux_attach_launch_command() -> String {
     format!(
         r#"{tmux} set -t "$PNEVMA_TMUX_TARGET" status off 2>/dev/null; {tmux} set -t "$PNEVMA_TMUX_TARGET" allow-passthrough all 2>/dev/null; exec {tmux} -u attach-session -t "$PNEVMA_TMUX_TARGET""#
     )
+}
+
+fn session_proxy_launch_command(session_id: &str, socket_path: &std::path::Path) -> String {
+    let proxy = proxy_binary_path();
+    let proxy_str = pnevma_ssh::shell_escape_arg(proxy.to_string_lossy().as_ref());
+    let socket_str = pnevma_ssh::shell_escape_arg(socket_path.to_string_lossy().as_ref());
+    format!("exec {proxy_str} attach --session {session_id} --socket {socket_str}")
+}
+
+fn proxy_binary_path() -> std::path::PathBuf {
+    // Look in app bundle Contents/Helpers first, then fall back to cargo build output
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
+            let bundled = contents.join("Helpers").join("pnevma-session-proxy");
+            if bundled.exists() {
+                return bundled;
+            }
+        }
+    }
+
+    // Development fallback: cargo target directory
+    let candidate = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("target"))
+        .join("debug")
+        .join("pnevma-session-proxy");
+    if candidate.exists() {
+        return candidate;
+    }
+
+    // Last resort: PATH
+    std::path::PathBuf::from("pnevma-session-proxy")
 }
 
 fn parse_optional_datetime(value: &Option<String>) -> Option<DateTime<Utc>> {
@@ -2146,16 +2183,25 @@ fn tmux_tmpdir_for_project(project_path: &Path) -> PathBuf {
 }
 
 async fn session_backend_alive(project_path: &Path, session_id: &str) -> bool {
+    // Check tmux backend (legacy sessions)
     let name = tmux_name_from_session_id(session_id);
     let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
     let _ = tokio::fs::create_dir_all(&tmux_tmpdir).await;
-    TokioCommand::new(pnevma_session::resolve_binary("tmux"))
+    let tmux_alive = TokioCommand::new(pnevma_session::resolve_binary("tmux"))
         .env("TMUX_TMPDIR", &tmux_tmpdir)
         .args(["has-session", "-t", &name])
         .status()
         .await
         .map(|status| status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if tmux_alive {
+        return true;
+    }
+
+    // For local_pty sessions, check if the supervisor has an active handle
+    // (this is handled by the supervisor's is_alive check via the backend).
+    // If neither tmux nor the supervisor knows about it, it's dead.
+    false
 }
 
 async fn mark_remote_session_row_lost(
@@ -2409,8 +2455,8 @@ fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
         project_id: meta.project_id.to_string(),
         name: meta.name.clone(),
         r#type: Some("terminal".to_string()),
-        backend: default_session_backend(),
-        durability: default_session_durability(),
+        backend: meta.backend_kind.clone(),
+        durability: meta.durability.clone(),
         lifecycle_state: session_lifecycle_state_for_status(&status),
         status,
         pid: meta.pid.map(i64::from),
@@ -2644,8 +2690,8 @@ fn live_session_view_from_meta(meta: &SessionMetadata) -> LiveSessionView {
     LiveSessionView {
         id: meta.id.to_string(),
         name: meta.name.clone(),
-        backend: default_session_backend(),
-        durability: default_session_durability(),
+        backend: meta.backend_kind.clone(),
+        durability: meta.durability.clone(),
         lifecycle_state: session_lifecycle_state_for_status(&session_status_to_string(
             &meta.status,
         )),
@@ -2719,6 +2765,8 @@ fn session_meta_from_row(row: &SessionRow, data_root: &Path) -> Option<SessionMe
             .to_string(),
         exit_code: row.exit_code.map(|value| value as i32),
         ended_at: parse_optional_datetime(&row.ended_at),
+        backend_kind: row.backend.clone(),
+        durability: row.durability.clone(),
     })
 }
 

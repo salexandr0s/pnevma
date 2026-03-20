@@ -295,26 +295,51 @@ pub async fn get_session_binding(
     let mut env = Vec::new();
     if is_live {
         env.push(SessionEnvVarView {
-            key: "PNEVMA_TMUX_TARGET".to_string(),
-            value: tmux_name_from_session_id(&session_id),
-        });
-        env.push(SessionEnvVarView {
-            key: "TMUX_TMPDIR".to_string(),
-            value: sessions.tmux_tmpdir().to_string_lossy().to_string(),
-        });
-        env.push(SessionEnvVarView {
             key: "PNEVMA_SESSION_ID".to_string(),
             value: session_id.clone(),
         });
     }
+
+    let launch_command = if is_live {
+        let data_dir = sessions.data_dir();
+        let socket_path =
+            pnevma_session::socket_server::session_socket_path(&data_dir, session_uuid);
+        if socket_path.exists() {
+            // Proxy socket exists — use the proxy binary.
+            Some(session_proxy_launch_command(&session_id, &socket_path))
+        } else {
+            // No socket file. For tmux_compat sessions, fall back to tmux attach.
+            // For local_pty sessions, still point at the expected socket path —
+            // the socket may be created momentarily if the session is starting up.
+            let backend_kind = sessions.backend().backend_kind();
+            if matches!(
+                backend_kind,
+                pnevma_session_protocol::SessionBackendKind::TmuxCompat
+            ) {
+                env.push(SessionEnvVarView {
+                    key: "PNEVMA_TMUX_TARGET".to_string(),
+                    value: tmux_name_from_session_id(&session_id),
+                });
+                env.push(SessionEnvVarView {
+                    key: "TMUX_TMPDIR".to_string(),
+                    value: sessions.tmux_tmpdir().to_string_lossy().to_string(),
+                });
+                Some(tmux_attach_launch_command())
+            } else {
+                Some(session_proxy_launch_command(&session_id, &socket_path))
+            }
+        }
+    } else {
+        None
+    };
 
     let recovery_options = recovery_options_for_meta(&meta);
     let cwd = meta.cwd.clone();
 
     Ok(SessionBindingView {
         session_id,
-        backend: default_session_backend(),
-        durability: default_session_durability(),
+        backend: meta.backend_kind.clone(),
+        durability: meta.durability.clone(),
         lifecycle_state: session_lifecycle_state_for_status(&session_status_to_string(
             &meta.status,
         )),
@@ -324,7 +349,7 @@ pub async fn get_session_binding(
             "archived".to_string()
         },
         cwd,
-        launch_command: is_live.then(tmux_attach_launch_command),
+        launch_command,
         env,
         wait_after_command: false,
         recovery_options,

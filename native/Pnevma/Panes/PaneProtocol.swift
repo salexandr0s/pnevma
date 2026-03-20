@@ -1278,7 +1278,9 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private func showLiveTerminal(_ binding: SessionBindingDescriptor, isNewSession: Bool) {
         currentStateSnapshot = nil
         let hostView = TerminalHostView()
-        hostView.launchConfiguration = binding.makeLaunchConfiguration()
+        if let config = binding.makeLaunchConfiguration() {
+            hostView.launchConfiguration = config
+        }
         hostView.attachedSessionID = binding.sessionID
         hostView.onTerminalClose = { [weak self] _ in
             Task { @MainActor [weak self] in

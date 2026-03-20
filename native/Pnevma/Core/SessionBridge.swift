@@ -30,30 +30,21 @@ struct SessionBindingDescriptor: Decodable, Equatable {
         matchesLifecycle("detached") || matchesLifecycle("reattaching")
     }
 
-    private static let tmuxPath: String = {
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-            let path = "\(dir)/tmux"
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        return "tmux"
-    }()
-
     private func matchesLifecycle(_ value: String) -> Bool {
         lifecycleState?.caseInsensitiveCompare(value) == .orderedSame
     }
 
     private func shellQuote(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+        "'\(value.replacing("'", with: "'\\''"))'"
     }
 
-    func makeLaunchConfiguration() -> TerminalSurfaceLaunchConfiguration {
-        let tmux = Self.tmuxPath
-        let command = launchCommand.flatMap { command in
-            let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+    func makeLaunchConfiguration() -> TerminalSurfaceLaunchConfiguration? {
+        guard let command = launchCommand.flatMap({ cmd in
+            let trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
-        } ?? "\(tmux) set -t \"$PNEVMA_TMUX_TARGET\" status off 2>/dev/null; \(tmux) set -t \"$PNEVMA_TMUX_TARGET\" allow-passthrough all 2>/dev/null; exec \(tmux) -u attach-session -t \"$PNEVMA_TMUX_TARGET\""
+        }) else {
+            return nil  // No live terminal — archived mode
+        }
         return TerminalSurfaceLaunchConfiguration(
             workingDirectory: cwd,
             command: "/bin/sh -lc \(shellQuote(command))",

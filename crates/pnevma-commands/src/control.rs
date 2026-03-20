@@ -2697,6 +2697,31 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "ssh.files.read" => {
+            let profile_id = parse_string_param(params, "profile_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let limit = parse_optional_i64_param(params, "limit").map(|v| v as usize);
+            serde_json::to_value(
+                commands::read_remote_file_contents(profile_id, path, limit, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "ssh.files.list" => {
+            let profile_id = parse_string_param(params, "profile_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let path = parse_string_param(params, "path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::list_remote_directory_entries(profile_id, path, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "ssh.import_config" => serde_json::to_value(
             commands::import_ssh_config(state)
                 .await

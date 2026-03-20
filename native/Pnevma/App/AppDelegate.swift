@@ -3177,13 +3177,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func ensureRemoteNativeToolingSupport() -> Bool {
-        guard WorkspaceProjectTransportSupport.hasRemoteNativeToolingSupport() else {
-            let alert = NSAlert()
-            alert.messageText = "sshfs Required"
-            alert.informativeText = "Remote native tools require sshfs/macFUSE on this Mac. Install sshfs before creating a remote workspace."
-            alert.runModal()
-            return false
-        }
+        // Remote workspaces no longer require sshfs — file access goes through
+        // Rust SSH commands. Always return true.
         return true
     }
 
@@ -3203,7 +3198,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let alert = NSAlert()
             alert.messageText = "Open Remote Workspace"
-            alert.informativeText = "Select an SSH preset and enter the remote project path. Native project tools use an sshfs mount of the remote workspace."
+            alert.informativeText = "Select an SSH preset and enter the remote project path."
 
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
             profiles.forEach { profile in
@@ -3272,7 +3267,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Open Remote Workspace"
-        alert.informativeText = "Open a remote workspace for this Tailscale device. Native project tools use an sshfs mount of the remote workspace."
+        alert.informativeText = "Open a remote workspace for this Tailscale device."
 
         let hostLabel = NSTextField(labelWithString: "Tailscale Device")
         let hostValue = NSTextField(labelWithString: "\(device.hostname) (\(device.ipAddress))")

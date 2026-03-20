@@ -1,3 +1,4 @@
+use crate::backend::{BackendHandle, SessionBackend, TmuxCompatBackend};
 use crate::error::SessionError;
 use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
 use chrono::{Duration, Utc};
@@ -6,8 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use uuid::Uuid;
 
@@ -151,7 +151,7 @@ async fn re_redact_scrollback(
 
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
-    Spawned(SessionMetadata),
+    Spawned(Box<SessionMetadata>),
     Output {
         session_id: Uuid,
         chunk: String,
@@ -166,11 +166,8 @@ pub enum SessionEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionBackendKillResult {
-    Killed,
-    AlreadyGone,
-}
+// Re-export from backend module for backward compatibility.
+pub use crate::backend::SessionBackendKillResult;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScrollbackSlice {
@@ -187,19 +184,8 @@ enum ScrollbackReadStart {
     Tail,
 }
 
-/// Resolve a binary name to its full path, searching common macOS locations
-/// in addition to the inherited PATH (which may be minimal for GUI apps).
-pub fn resolve_binary(name: &str) -> PathBuf {
-    let extra_dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
-    for dir in &extra_dirs {
-        let candidate = PathBuf::from(dir).join(name);
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    // Fall back to bare name (rely on PATH)
-    PathBuf::from(name)
-}
+// `resolve_binary` moved to crate root (lib.rs). Re-export for backward compat.
+pub use crate::resolve_binary;
 
 /// Encodes `SessionHealth` as a `u8` for atomic storage.
 fn health_to_u8(h: &SessionHealth) -> u8 {
@@ -252,29 +238,46 @@ impl Clone for AtomicSessionState {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Writer handle type — wraps the backend's async writer for input forwarding.
+type InputWriter = Arc<Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
+
+#[derive(Clone)]
 pub struct SessionSupervisor {
     sessions: Arc<RwLock<HashMap<Uuid, SessionMetadata>>>,
     /// Lock-free heartbeat/health data parallel to `sessions`.
     atomic_states: Arc<RwLock<HashMap<Uuid, Arc<AtomicSessionState>>>>,
-    inputs: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChildStdin>>>>>,
+    inputs: Arc<RwLock<HashMap<Uuid, InputWriter>>>,
     /// Shared scrollback file handles for re-redaction. The SAME handle is
     /// used by reader tasks and `re_redact_scrollback`, ensuring mutual
     /// exclusion via a single Mutex.
     scrollback_files: Arc<RwLock<HashMap<Uuid, Arc<Mutex<tokio::fs::File>>>>>,
+    /// Socket servers for local sessions (proxy attach point).
+    socket_servers: Arc<RwLock<HashMap<Uuid, crate::socket_server::SessionSocketServer>>>,
     redaction_secrets: Arc<RwLock<Vec<String>>>,
     tx: broadcast::Sender<SessionEvent>,
     idle_after: Duration,
     stuck_after: Duration,
     data_dir: PathBuf,
-    tmux_tmpdir: PathBuf,
     max_sessions: usize,
-    tmux_bin: PathBuf,
-    script_bin: PathBuf,
+    backend: Arc<dyn SessionBackend>,
 }
 
 impl SessionSupervisor {
+    /// Create a supervisor with the default LocalPty backend.
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
+        let backend = crate::backend::LocalPtyBackend::new();
+        Self::new_with_backend(data_dir, Arc::new(backend))
+    }
+
+    /// Create a supervisor with the legacy TmuxCompat backend.
+    pub fn new_tmux_compat(data_dir: impl AsRef<Path>) -> Self {
+        let data_dir = data_dir.as_ref().to_path_buf();
+        let backend = TmuxCompatBackend::new(data_dir.join("tmux"));
+        Self::new_with_backend(data_dir, Arc::new(backend))
+    }
+
+    /// Create a supervisor with a specific backend implementation.
+    pub fn new_with_backend(data_dir: impl AsRef<Path>, backend: Arc<dyn SessionBackend>) -> Self {
         let data_dir = data_dir.as_ref().to_path_buf();
         let (tx, _) = broadcast::channel(512);
         Self {
@@ -282,24 +285,35 @@ impl SessionSupervisor {
             atomic_states: Arc::new(RwLock::new(HashMap::new())),
             inputs: Arc::new(RwLock::new(HashMap::new())),
             scrollback_files: Arc::new(RwLock::new(HashMap::new())),
+            socket_servers: Arc::new(RwLock::new(HashMap::new())),
             redaction_secrets: Arc::new(RwLock::new(Vec::new())),
             tx,
             idle_after: Duration::minutes(2),
             stuck_after: Duration::minutes(10),
-            tmux_tmpdir: data_dir.join("tmux"),
             data_dir,
             max_sessions: 64,
-            tmux_bin: resolve_binary("tmux"),
-            script_bin: resolve_binary("script"),
+            backend,
         }
+    }
+
+    /// Returns the backend being used by this supervisor.
+    pub fn backend(&self) -> &dyn SessionBackend {
+        self.backend.as_ref()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
         self.tx.subscribe()
     }
 
+    /// Returns the data directory for this supervisor.
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.clone()
+    }
+
+    /// Returns the tmux tmpdir path (for backward compatibility with callers
+    /// that need the path regardless of backend type).
     pub fn tmux_tmpdir(&self) -> PathBuf {
-        self.tmux_tmpdir.clone()
+        self.data_dir.join("tmux")
     }
 
     pub async fn set_redaction_secrets(&self, secrets: Vec<String>) {
@@ -381,6 +395,8 @@ impl SessionSupervisor {
             scrollback_path: scrollback_path.to_string_lossy().to_string(),
             exit_code: None,
             ended_at: None,
+            backend_kind: backend_kind_str(self.backend.backend_kind()),
+            durability: durability_str(self.backend.durability()),
         };
 
         // Atomically check the limit and reserve a slot under a single write lock.
@@ -421,7 +437,7 @@ impl SessionSupervisor {
             return Err(err);
         }
 
-        if self.tx.send(SessionEvent::Spawned(meta)).is_err() {
+        if self.tx.send(SessionEvent::Spawned(Box::new(meta))).is_err() {
             tracing::debug!("no active subscribers for session spawned event");
         }
 
@@ -430,8 +446,8 @@ impl SessionSupervisor {
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))
     }
 
-    /// Performs the I/O-heavy portion of session spawn (file creation, tmux,
-    /// attach). Separated so the caller can roll back the HashMap entry on
+    /// Performs the I/O-heavy portion of session spawn (file creation, backend
+    /// create). Separated so the caller can roll back the HashMap entry on
     /// failure.
     async fn finish_spawn(
         &self,
@@ -447,8 +463,9 @@ impl SessionSupervisor {
         let _ = open_append_only_file(scrollback_path).await?;
         let _ = open_append_only_file(&scrollback_index_path).await?;
 
-        self.create_tmux_session(session_id, cwd, command).await?;
-        self.attach_tmux_client(session_id).await?;
+        let handle = self.backend.create(session_id, cwd, command).await?;
+        self.wire_backend_handle(session_id, handle, scrollback_path)
+            .await?;
 
         Ok(())
     }
@@ -462,157 +479,13 @@ impl SessionSupervisor {
             return Ok(());
         }
 
-        if !self.tmux_has_session(&tmux_name(session_id)).await {
+        if !self.backend.is_alive(session_id).await {
             return Err(SessionError::SpawnFailed(format!(
-                "tmux session not found for {}",
+                "backend session not found for {}",
                 session_id
             )));
         }
 
-        self.attach_tmux_client(session_id).await
-    }
-
-    pub async fn kill_session_backend(
-        &self,
-        session_id: Uuid,
-    ) -> Result<SessionBackendKillResult, SessionError> {
-        self.ensure_tmux_tmpdir().await?;
-        let name = tmux_name(session_id);
-        let out = self
-            .tmux_command()
-            .args(["kill-session", "-t", &name])
-            .output()
-            .await
-            .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
-
-        if out.status.success() {
-            return Ok(SessionBackendKillResult::Killed);
-        }
-
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        if stderr.contains("can't find session") {
-            return Ok(SessionBackendKillResult::AlreadyGone);
-        }
-
-        Err(SessionError::SpawnFailed(format!(
-            "tmux kill-session failed: {}",
-            stderr.trim()
-        )))
-    }
-
-    async fn create_tmux_session(
-        &self,
-        session_id: Uuid,
-        cwd: &str,
-        command: &str,
-    ) -> Result<(), SessionError> {
-        self.ensure_tmux_tmpdir().await?;
-        let name = tmux_name(session_id);
-
-        if self.tmux_has_session(&name).await {
-            return Ok(());
-        }
-
-        let explicit_shell = explicit_shell_command(command);
-
-        // Create the tmux session directly with an explicit shell path/name when requested.
-        // Other commands still flow through send-keys below so they are not shell-expanded.
-        let mut args = vec![
-            "new-session".to_string(),
-            "-d".to_string(),
-            "-s".to_string(),
-            name.clone(),
-            "-c".to_string(),
-            cwd.to_string(),
-        ];
-        if let Some(explicit_shell) = explicit_shell.as_ref() {
-            args.push(explicit_shell.clone());
-        }
-
-        let out = self
-            .tmux_command()
-            .args(args)
-            .output()
-            .await
-            .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            return Err(SessionError::SpawnFailed(format!(
-                "tmux new-session failed: {}",
-                stderr.trim()
-            )));
-        }
-
-        // Hide the tmux status bar so only the shell content is visible
-        let _ = self
-            .tmux_command()
-            .args(["set", "-t", &name, "status", "off"])
-            .output()
-            .await;
-
-        // Allow escape-sequence passthrough so protocols such as Kitty
-        // graphics reach the outer terminal emulator (Ghostty) instead of
-        // being swallowed by tmux.  `all` rather than `on` so that
-        // passthrough works from any pane, not only the active one.
-        match self
-            .tmux_command()
-            .args(["set", "-t", &name, "allow-passthrough", "all"])
-            .output()
-            .await
-        {
-            Ok(out) if !out.status.success() => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                tracing::warn!(
-                    session_id = %session_id,
-                    "tmux set allow-passthrough failed: {}",
-                    stderr.trim()
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    session_id = %session_id,
-                    "tmux set allow-passthrough failed: {e}"
-                );
-            }
-            _ => {}
-        }
-
-        // Send non-shell commands as literal keystrokes to prevent shell injection.
-        if !command.trim().is_empty() && explicit_shell.is_none() {
-            let send_out = self
-                .tmux_command()
-                .args(["send-keys", "-t", &name, "-l", command])
-                .output()
-                .await
-                .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
-
-            if !send_out.status.success() {
-                let stderr = String::from_utf8_lossy(&send_out.stderr).to_string();
-                tracing::warn!(session_id = %session_id, "tmux send-keys failed: {}", stderr.trim());
-            }
-
-            // Press Enter to execute the command
-            let enter_out = self
-                .tmux_command()
-                .args(["send-keys", "-t", &name, "Enter"])
-                .output()
-                .await
-                .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
-
-            if !enter_out.status.success() {
-                let stderr = String::from_utf8_lossy(&enter_out.stderr).to_string();
-                tracing::warn!(session_id = %session_id, "tmux send-keys Enter failed: {}", stderr.trim());
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn attach_tmux_client(&self, session_id: Uuid) -> Result<(), SessionError> {
-        self.ensure_tmux_tmpdir().await?;
-
-        let tmux_target = tmux_name(session_id);
         let scrollback_path = {
             let sessions = self.sessions.read().await;
             sessions
@@ -620,44 +493,40 @@ impl SessionSupervisor {
                 .map(|meta| PathBuf::from(&meta.scrollback_path))
                 .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?
         };
+
+        let handle = self.backend.attach(session_id).await?;
+        self.wire_backend_handle(session_id, handle, &scrollback_path)
+            .await
+    }
+
+    pub async fn kill_session_backend(
+        &self,
+        session_id: Uuid,
+    ) -> Result<SessionBackendKillResult, SessionError> {
+        self.backend.terminate(session_id).await
+    }
+
+    /// Wire a BackendHandle into the supervisor's reader tasks, scrollback,
+    /// and exit handling. Called after backend.create() or backend.attach().
+    async fn wire_backend_handle(
+        &self,
+        session_id: Uuid,
+        handle: BackendHandle,
+        scrollback_path: &std::path::Path,
+    ) -> Result<(), SessionError> {
         let scrollback_index_path = scrollback_path.with_extension("idx");
-
-        let tmux_bin_str = self.tmux_bin.to_string_lossy().to_string();
-        let mut child = self
-            .script_command()
-            .args([
-                "-q",
-                "/dev/null",
-                &tmux_bin_str,
-                "attach-session",
-                "-t",
-                &tmux_target,
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
-
-        let pid = child.id();
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| SessionError::SpawnFailed("attach stdin unavailable".to_string()))?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
 
         self.inputs
             .write()
             .await
-            .insert(session_id, Arc::new(Mutex::new(stdin)));
+            .insert(session_id, Arc::new(Mutex::new(handle.writer)));
 
         {
             let mut sessions = self.sessions.write().await;
             let meta = sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
-            meta.pid = pid;
+            meta.pid = handle.pid;
             meta.status = SessionStatus::Running;
             meta.health = SessionHealth::Active;
             meta.last_heartbeat = Utc::now();
@@ -678,7 +547,7 @@ impl SessionSupervisor {
 
         // Create a single shared scrollback file handle for both reader tasks
         // and re-redaction. One handle + one Mutex = mutual exclusion.
-        let shared_scrollback = match open_scrollback_rw(&scrollback_path).await {
+        let shared_scrollback = match open_scrollback_rw(scrollback_path).await {
             Ok(f) => {
                 let mut f = f;
                 let _ = f.seek(std::io::SeekFrom::End(0)).await;
@@ -696,32 +565,44 @@ impl SessionSupervisor {
                     "failed to open shared scrollback handle; re-redaction disabled for this session"
                 );
                 Arc::new(Mutex::new(
-                    open_append_only_file(&scrollback_path).await.map_err(|e| {
+                    open_append_only_file(scrollback_path).await.map_err(|e| {
                         SessionError::SpawnFailed(format!("scrollback open failed: {e}"))
                     })?,
                 ))
             }
         };
 
-        if let Some(stdout) = stdout {
-            self.spawn_reader_task(
-                session_id,
-                stdout,
-                shared_scrollback.clone(),
-                scrollback_index_path.clone(),
-                self.redaction_secrets.clone(),
-            );
+        self.spawn_reader_task(
+            session_id,
+            handle.reader,
+            shared_scrollback,
+            scrollback_index_path,
+            self.redaction_secrets.clone(),
+        );
+
+        self.spawn_exit_notify_task(session_id, handle.exit_notify);
+
+        // Start a socket server for this session so the proxy binary can connect.
+        // Only for non-tmux backends (tmux sessions use tmux attach directly).
+        if !matches!(
+            self.backend.backend_kind(),
+            pnevma_session_protocol::SessionBackendKind::TmuxCompat
+        ) {
+            let mut socket_server =
+                crate::socket_server::SessionSocketServer::new(&self.data_dir, session_id);
+            if let Err(e) = socket_server.start(self.clone()).await {
+                tracing::warn!(
+                    error = %e,
+                    %session_id,
+                    "failed to start session socket server"
+                );
+            } else {
+                self.socket_servers
+                    .write()
+                    .await
+                    .insert(session_id, socket_server);
+            }
         }
-        if let Some(stderr) = stderr {
-            self.spawn_reader_task(
-                session_id,
-                stderr,
-                shared_scrollback,
-                scrollback_index_path.clone(),
-                self.redaction_secrets.clone(),
-            );
-        }
-        self.spawn_exit_task(session_id, child);
 
         Ok(())
     }
@@ -838,25 +719,36 @@ impl SessionSupervisor {
         });
     }
 
-    fn spawn_exit_task(&self, session_id: Uuid, mut child: Child) {
+    /// Spawn a task that waits for the backend's exit notification and
+    /// transitions the session to its terminal state.
+    fn spawn_exit_notify_task(
+        &self,
+        session_id: Uuid,
+        exit_notify: tokio::sync::oneshot::Receiver<Option<i32>>,
+    ) {
         let sessions = self.sessions.clone();
         let atomic_states = self.atomic_states.clone();
         let inputs = self.inputs.clone();
         let scrollback_files = self.scrollback_files.clone();
+        let socket_servers = self.socket_servers.clone();
         let tx = self.tx.clone();
-        let tmux_tmpdir = self.tmux_tmpdir.clone();
-        let tmux_bin = self.tmux_bin.clone();
+        let backend = self.backend.clone();
 
         tokio::spawn(async move {
-            let code = child.wait().await.ok().and_then(|status| status.code());
-            let tmux_alive =
-                tmux_has_session_name(&tmux_name(session_id), &tmux_tmpdir, &tmux_bin).await;
+            // Wait for the backend to signal exit. If the channel is dropped
+            // without sending, treat it as an abnormal exit (code = None).
+            let code = exit_notify.await.unwrap_or(None);
+
+            // For durable backends (tmux), check if the backend is still alive
+            // after the client process exits (detach vs real exit).
+            let backend_alive = backend.is_alive(session_id).await;
 
             {
                 let mut guard = sessions.write().await;
                 if let Some(meta) = guard.get_mut(&session_id) {
                     meta.last_heartbeat = Utc::now();
-                    if tmux_alive {
+                    if backend_alive {
+                        // Durable backend still running — client detached.
                         meta.status = SessionStatus::Waiting;
                         meta.health = SessionHealth::Waiting;
                         meta.pid = None;
@@ -876,7 +768,7 @@ impl SessionSupervisor {
                 if let Some(state) = states.get(&session_id) {
                     let now_ts = Utc::now().timestamp();
                     state.last_heartbeat.store(now_ts, Ordering::Release);
-                    if tmux_alive {
+                    if backend_alive {
                         state
                             .health
                             .store(health_to_u8(&SessionHealth::Waiting), Ordering::Release);
@@ -890,6 +782,10 @@ impl SessionSupervisor {
 
             inputs.write().await.remove(&session_id);
             scrollback_files.write().await.remove(&session_id);
+            // Stop the socket server for this session
+            if let Some(mut server) = socket_servers.write().await.remove(&session_id) {
+                server.stop().await;
+            }
             if tx.send(SessionEvent::Exited { session_id, code }).is_err() {
                 tracing::debug!("no active subscribers for session exited event");
             }
@@ -901,35 +797,7 @@ impl SessionSupervisor {
             return Err(SessionError::NotFound(session_id.to_string()));
         }
 
-        self.ensure_tmux_tmpdir().await?;
-        let name = tmux_name(session_id);
-
-        let out = self
-            .tmux_command()
-            .args([
-                "resize-window",
-                "-t",
-                &name,
-                "-x",
-                &cols.to_string(),
-                "-y",
-                &rows.to_string(),
-            ])
-            .output()
-            .await
-            .map_err(|e| SessionError::SpawnFailed(e.to_string()))?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if !stderr.contains("no current client") && !stderr.contains("can't find session") {
-                return Err(SessionError::SpawnFailed(format!(
-                    "tmux resize-window failed: {}",
-                    stderr.trim()
-                )));
-            }
-        }
-
-        Ok(())
+        self.backend.resize(session_id, cols, rows).await
     }
 
     pub async fn mark_activity(&self, session_id: Uuid) -> Result<(), SessionError> {
@@ -984,7 +852,7 @@ impl SessionSupervisor {
         }
 
         // CONCURRENCY: Read lock on `inputs` is dropped before acquiring the per-session
-        // ChildStdin Mutex. This two-step pattern (clone Arc then lock) avoids holding
+        // writer Mutex. This two-step pattern (clone Arc then lock) avoids holding
         // the map lock while doing I/O, preventing contention across sessions.
         let writer = self
             .inputs
@@ -996,6 +864,37 @@ impl SessionSupervisor {
 
         let mut lock = writer.lock().await;
         lock.write_all(input.as_bytes()).await?;
+        lock.flush().await?;
+        drop(lock);
+        self.mark_activity(session_id).await
+    }
+
+    /// Write raw bytes to a session's terminal input.
+    /// Unlike `send_input`, this does not assume UTF-8 encoding.
+    pub async fn send_input_bytes(
+        &self,
+        session_id: Uuid,
+        input: &[u8],
+    ) -> Result<(), SessionError> {
+        const MAX_INPUT_BYTES: usize = 64 * 1024;
+        if input.len() > MAX_INPUT_BYTES {
+            return Err(SessionError::SpawnFailed(format!(
+                "input too large: {} bytes (max {})",
+                input.len(),
+                MAX_INPUT_BYTES
+            )));
+        }
+
+        let writer = self
+            .inputs
+            .read()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
+
+        let mut lock = writer.lock().await;
+        lock.write_all(input).await?;
         lock.flush().await?;
         drop(lock);
         self.mark_activity(session_id).await
@@ -1035,7 +934,7 @@ impl SessionSupervisor {
             )),
         );
 
-        if self.tx.send(SessionEvent::Spawned(meta)).is_err() {
+        if self.tx.send(SessionEvent::Spawned(Box::new(meta))).is_err() {
             tracing::debug!("no active subscribers for session spawned event");
         }
         Ok(())
@@ -1234,6 +1133,9 @@ impl SessionSupervisor {
         self.atomic_states.write().await.remove(&session_id);
         self.inputs.write().await.remove(&session_id);
         self.scrollback_files.write().await.remove(&session_id);
+        if let Some(mut server) = self.socket_servers.write().await.remove(&session_id) {
+            server.stop().await;
+        }
         if self
             .tx
             .send(SessionEvent::Exited { session_id, code })
@@ -1252,59 +1154,31 @@ impl SessionSupervisor {
         self.sessions.read().await.values().cloned().collect()
     }
 
-    fn tmux_command(&self) -> Command {
-        let mut cmd = Command::new(&self.tmux_bin);
-        cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
-        cmd.env("PATH", gui_safe_path());
-        cmd
-    }
-
-    fn script_command(&self) -> Command {
-        let mut cmd = Command::new(&self.script_bin);
-        cmd.env("TMUX_TMPDIR", &self.tmux_tmpdir);
-        cmd.env("PATH", gui_safe_path());
-        if let Some(term) = fallback_script_term(std::env::var_os("TERM")) {
-            cmd.env("TERM", term);
-        }
-        cmd
-    }
-
-    async fn ensure_tmux_tmpdir(&self) -> Result<(), SessionError> {
-        tokio::fs::create_dir_all(&self.tmux_tmpdir).await?;
-        Ok(())
-    }
-
-    async fn tmux_has_session(&self, name: &str) -> bool {
-        tmux_has_session_name(name, &self.tmux_tmpdir, &self.tmux_bin).await
-    }
-
-    /// Spawn a background task that periodically checks whether tmux sessions
-    /// are still alive. If a session is marked Running but tmux reports it
+    /// Spawn a background task that periodically checks whether backend sessions
+    /// are still alive. If a session is marked Running but the backend reports it
     /// gone, mark it as Error and emit an Exited event.
     pub fn spawn_health_probe(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         let sessions = self.sessions.clone();
         let tx = self.tx.clone();
-        let tmux_tmpdir = self.tmux_tmpdir.clone();
-        let tmux_bin = self.tmux_bin.clone();
+        let backend = self.backend.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let snapshot: Vec<(Uuid, String)> = {
+                        let snapshot: Vec<Uuid> = {
                             let guard = sessions.read().await;
                             guard.iter()
                                 .filter(|(_, m)| m.status == SessionStatus::Running)
-                                .map(|(id, _)| (*id, tmux_name(*id)))
+                                .map(|(id, _)| *id)
                                 .collect()
                         };
-                        for (id, name) in snapshot {
-                            if !tmux_has_session_name(&name, &tmux_tmpdir, &tmux_bin).await {
+                        for id in snapshot {
+                            if !backend.is_alive(id).await {
                                 tracing::warn!(
                                     session_id = %id,
-                                    tmux_name = %name,
-                                    "tmux session lost — marking dead"
+                                    "backend session lost — marking dead"
                                 );
                                 {
                                     let mut guard = sessions.write().await;
@@ -1330,71 +1204,30 @@ impl SessionSupervisor {
     }
 }
 
-fn tmux_name(session_id: Uuid) -> String {
-    format!("pnevma_{}", session_id.simple())
-}
-
-/// Build a PATH that includes Homebrew and other common directories.
-/// GUI apps launched from Finder inherit a minimal PATH that lacks
-/// `/opt/homebrew/bin` and similar locations.  The tmux server inherits
-/// its environment at first launch, so every child shell would also
-/// miss these paths unless we inject them here.
-fn gui_safe_path() -> String {
-    let extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"];
-    let current = std::env::var("PATH").unwrap_or_default();
-    let mut parts: Vec<&str> = extra
-        .iter()
-        .copied()
-        .filter(|dir| !current.split(':').any(|p| p == *dir))
-        .collect();
-    if !current.is_empty() {
-        parts.push(&current);
-    }
-    parts.join(":")
-}
-
-fn explicit_shell_command(command: &str) -> Option<String> {
-    let trimmed = command.trim();
-    if trimmed.is_empty() || trimmed.split_whitespace().count() != 1 {
-        return None;
-    }
-
-    let shell_name = std::path::Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str())?;
-
-    ["zsh", "bash", "sh", "fish"]
-        .contains(&shell_name)
-        .then(|| trimmed.to_string())
-}
-
-fn fallback_script_term(term: Option<std::ffi::OsString>) -> Option<&'static str> {
-    match term.as_ref().and_then(|term| term.to_str()) {
-        Some(term) if !term.is_empty() && term != "dumb" && term != "unknown" => None,
-        _ => Some("xterm-256color"),
+fn backend_kind_str(kind: crate::backend::SessionBackendKind) -> String {
+    match kind {
+        crate::backend::SessionBackendKind::LocalPty => "local_pty".to_string(),
+        crate::backend::SessionBackendKind::TmuxCompat => "tmux_compat".to_string(),
+        crate::backend::SessionBackendKind::RemoteSshDurable => "remote_ssh_durable".to_string(),
     }
 }
 
-async fn tmux_has_session_name(name: &str, tmux_tmpdir: &Path, tmux_bin: &Path) -> bool {
-    let _ = tokio::fs::create_dir_all(tmux_tmpdir).await;
-
-    Command::new(tmux_bin)
-        .env("TMUX_TMPDIR", tmux_tmpdir)
-        .args(["has-session", "-t", name])
-        .status()
-        .await
-        .map(|status| status.success())
-        .unwrap_or(false)
+fn durability_str(dur: crate::backend::SessionDurability) -> String {
+    match dur {
+        crate::backend::SessionDurability::Durable => "durable".to_string(),
+        crate::backend::SessionDurability::Ephemeral => "ephemeral".to_string(),
+    }
 }
+
+// Legacy free functions moved to crate::backend::tmux_compat.
 
 #[cfg(test)]
 mod tests {
-    use super::explicit_shell_command;
-    use super::fallback_script_term;
     use super::redact_stream_chunk;
     use super::SessionBackendKillResult;
     use super::SessionSupervisor;
     use super::StreamRedactor;
+    use crate::backend::tmux_compat::{explicit_shell_command, fallback_script_term};
     use crate::error::SessionError;
     use crate::model::{SessionHealth, SessionMetadata, SessionStatus};
     use chrono::Utc;
@@ -1507,6 +1340,8 @@ mod tests {
                 scrollback_path: missing_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await
             .expect("register_restored");
@@ -1554,6 +1389,8 @@ mod tests {
                 scrollback_path: attacker_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1602,6 +1439,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1645,6 +1484,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1688,6 +1529,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1728,6 +1571,8 @@ mod tests {
                 scrollback_path: dir_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1769,6 +1614,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1806,6 +1653,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await
             .expect("register_restored");
@@ -1901,6 +1750,8 @@ mod tests {
                 scrollback_path: scrollback.to_string_lossy().to_string(),
                 exit_code: Some(0),
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -1913,8 +1764,10 @@ mod tests {
     #[tokio::test]
     async fn kill_session_backend_returns_killed_for_successful_tmux_exit() {
         let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
-        let mut supervisor = SessionSupervisor::new(&root);
-        supervisor.tmux_bin = write_fake_tmux(&root, "exit 0");
+        let fake_tmux = write_fake_tmux(&root, "exit 0");
+        let backend =
+            crate::backend::TmuxCompatBackend::with_tmux_bin(root.join("tmux"), fake_tmux);
+        let supervisor = SessionSupervisor::new_with_backend(&root, Arc::new(backend));
 
         let result = supervisor
             .kill_session_backend(Uuid::new_v4())
@@ -1926,8 +1779,10 @@ mod tests {
     #[tokio::test]
     async fn kill_session_backend_returns_already_gone_for_missing_tmux_session() {
         let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
-        let mut supervisor = SessionSupervisor::new(&root);
-        supervisor.tmux_bin = write_fake_tmux(&root, "echo \"can't find session\" 1>&2\nexit 1");
+        let fake_tmux = write_fake_tmux(&root, "echo \"can't find session\" 1>&2\nexit 1");
+        let backend =
+            crate::backend::TmuxCompatBackend::with_tmux_bin(root.join("tmux"), fake_tmux);
+        let supervisor = SessionSupervisor::new_with_backend(&root, Arc::new(backend));
 
         let result = supervisor
             .kill_session_backend(Uuid::new_v4())
@@ -1939,8 +1794,10 @@ mod tests {
     #[tokio::test]
     async fn kill_session_backend_returns_error_for_real_tmux_failure() {
         let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
-        let mut supervisor = SessionSupervisor::new(&root);
-        supervisor.tmux_bin = write_fake_tmux(&root, "echo \"permission denied\" 1>&2\nexit 1");
+        let fake_tmux = write_fake_tmux(&root, "echo \"permission denied\" 1>&2\nexit 1");
+        let backend =
+            crate::backend::TmuxCompatBackend::with_tmux_bin(root.join("tmux"), fake_tmux);
+        let supervisor = SessionSupervisor::new_with_backend(&root, Arc::new(backend));
 
         let err = supervisor
             .kill_session_backend(Uuid::new_v4())
@@ -1975,6 +1832,8 @@ mod tests {
                 scrollback_path: scrollback.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -2096,6 +1955,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 
@@ -2213,6 +2074,8 @@ mod tests {
                     scrollback_path: scrollback.to_string_lossy().to_string(),
                     exit_code: None,
                     ended_at: None,
+                    backend_kind: "local_pty".to_string(),
+                    durability: "ephemeral".to_string(),
                 })
                 .await;
         }
@@ -2259,6 +2122,8 @@ mod tests {
                     scrollback_path: scrollback.to_string_lossy().to_string(),
                     exit_code: Some(0),
                     ended_at: Some(now),
+                    backend_kind: "local_pty".to_string(),
+                    durability: "ephemeral".to_string(),
                 })
                 .await;
         }
@@ -2284,6 +2149,8 @@ mod tests {
                     scrollback_path: scrollback.to_string_lossy().to_string(),
                     exit_code: None,
                     ended_at: None,
+                    backend_kind: "local_pty".to_string(),
+                    durability: "ephemeral".to_string(),
                 })
                 .await;
         }
@@ -2301,9 +2168,10 @@ mod tests {
     #[tokio::test]
     async fn spawn_failure_rolls_back_reserved_slot() {
         let root = std::env::temp_dir().join(format!("pnevma-session-test-{}", Uuid::new_v4()));
-        let mut supervisor = SessionSupervisor::new(&root);
-        // Use a tmux binary that always fails so create_tmux_session errors out.
-        supervisor.tmux_bin = write_fake_tmux(&root, "echo 'fail' >&2\nexit 1");
+        let fake_tmux = write_fake_tmux(&root, "echo 'fail' >&2\nexit 1");
+        let backend =
+            crate::backend::TmuxCompatBackend::with_tmux_bin(root.join("tmux"), fake_tmux);
+        let mut supervisor = SessionSupervisor::new_with_backend(&root, Arc::new(backend));
         supervisor.max_sessions = 1;
 
         let project_id = Uuid::new_v4();
@@ -2441,6 +2309,8 @@ mod tests {
                 scrollback_path: scrollback_path.to_string_lossy().to_string(),
                 exit_code: None,
                 ended_at: None,
+                backend_kind: "local_pty".to_string(),
+                durability: "ephemeral".to_string(),
             })
             .await;
 

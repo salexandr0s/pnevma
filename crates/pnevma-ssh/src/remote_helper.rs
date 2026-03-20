@@ -327,6 +327,59 @@ pub async fn read_remote_scrollback_tail(
     Ok(output.stdout)
 }
 
+/// Read a file from the remote host via SSH command execution.
+pub async fn read_remote_file(
+    profile: &SshProfile,
+    path: &str,
+    limit: Option<usize>,
+) -> Result<Vec<u8>, SshError> {
+    let limit_arg = limit.map(|l| format!(" | head -c {l}")).unwrap_or_default();
+    let output = run_ssh(
+        profile,
+        &format!("cat -- {} {}", shell_escape_arg(path), limit_arg),
+        None,
+    )
+    .await?;
+    Ok(output.stdout.into_bytes())
+}
+
+/// List a remote directory via SSH, returning entries as JSON.
+pub async fn list_remote_directory(
+    profile: &SshProfile,
+    path: &str,
+) -> Result<Vec<RemoteDirEntry>, SshError> {
+    let output = run_ssh(
+        profile,
+        &format!("ls -1pa -- {}", shell_escape_arg(path),),
+        None,
+    )
+    .await?;
+
+    let entries = output
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let is_dir = line.ends_with('/');
+            let name = if is_dir {
+                line.trim_end_matches('/').to_string()
+            } else {
+                line.to_string()
+            };
+            RemoteDirEntry { name, is_dir }
+        })
+        .collect();
+
+    Ok(entries)
+}
+
+/// A single entry in a remote directory listing.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RemoteDirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
 async fn remote_helper_health_for_platform(
     profile: &SshProfile,
     platform: &RemoteHelperPlatform,

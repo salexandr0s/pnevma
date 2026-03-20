@@ -333,7 +333,7 @@ final class WorkspaceManager {
             let replacementIndex = min(index, workspaces.count - 1)
             activateWorkspace(id: workspaces[replacementIndex].id)
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                try? await Task.sleep(for: .milliseconds(250))
                 self?.projectPathResolver.cleanup(workspace: workspace)
             }
         } else {
@@ -434,7 +434,7 @@ final class WorkspaceManager {
             case .opening:
                 break
             }
-            try? await Task.sleep(nanoseconds: 75_000_000)
+            try? await Task.sleep(for: .milliseconds(75))
         }
 
         throw WorkspaceRuntimeReadinessError.timedOut(workspace.name)
@@ -1124,30 +1124,26 @@ protocol WorkspaceProjectPathResolving {
 
 private enum WorkspaceProjectTransportError: LocalizedError {
     case missingRemoteTarget
-    case missingSSHFS
     case projectPathUnavailable
     case remotePathResolutionFailed(String)
-    case mountFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .missingRemoteTarget:
             return "The remote workspace is missing its SSH target configuration."
-        case .missingSSHFS:
-            return "Remote native tools require sshfs. Install sshfs/macFUSE locally to open this remote project."
         case .projectPathUnavailable:
             return "The workspace project path could not be resolved."
         case .remotePathResolutionFailed(let message):
             return "Failed to resolve the remote project path: \(message)"
-        case .mountFailed(let message):
-            return "Failed to mount the remote project: \(message)"
         }
     }
 }
 
 enum WorkspaceProjectTransportSupport {
+    /// Remote workspaces now use Rust SSH commands instead of sshfs.
+    /// Always returns true — sshfs is no longer required.
     static func hasRemoteNativeToolingSupport(fileManager: FileManager = .default) -> Bool {
-        findExecutable(named: "sshfs", fileManager: fileManager) != nil
+        true
     }
 
     static func findExecutable(
@@ -1168,8 +1164,6 @@ enum WorkspaceProjectTransportSupport {
 
 @MainActor
 private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathResolving {
-    private let remoteMountManager = RemoteWorkspaceMountManager()
-
     func resolveProjectPath(for workspace: Workspace) async throws -> String? {
         guard workspace.kind == .project else { return nil }
 
@@ -1180,16 +1174,14 @@ private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathRes
             guard let remoteTarget = workspace.remoteTarget else {
                 throw WorkspaceProjectTransportError.missingRemoteTarget
             }
-            return try await remoteMountManager.ensureMounted(
-                remoteTarget: remoteTarget,
-                preferredMountPath: workspace.projectPath
-            )
+            // Return the remote path as-is. File operations are handled
+            // through Rust SSH commands, not local mounts.
+            return remoteTarget.remotePath
         }
     }
 
     func cleanup(workspace: Workspace) {
-        guard workspace.location == .remote else { return }
-        remoteMountManager.unmount(mountPath: workspace.projectPath)
+        // No-op: remote file access goes through Rust, no mounts to clean up.
     }
 
     private static func standardizeLocalProjectPath(_ path: String?) -> String? {
@@ -1199,230 +1191,8 @@ private final class DefaultWorkspaceProjectPathResolver: WorkspaceProjectPathRes
     }
 
     func cleanupAll(workspaces: [Workspace]) {
-        let mountPaths = workspaces
-            .filter { $0.location == .remote }
-            .compactMap(\.projectPath)
-        remoteMountManager.unmountAll(mountPaths: mountPaths)
+        // No-op: no mounts to clean up.
     }
-}
-
-@MainActor
-private final class RemoteWorkspaceMountManager {
-    private let fileManager = FileManager.default
-
-    func ensureMounted(
-        remoteTarget: WorkspaceRemoteTarget,
-        preferredMountPath: String?
-    ) async throws -> String {
-        guard let sshfsPath = findExecutable(named: "sshfs") else {
-            throw WorkspaceProjectTransportError.missingSSHFS
-        }
-
-        let mountPath = preferredMountPath ?? defaultMountPath(for: remoteTarget)
-        if isMounted(at: mountPath) {
-            return mountPath
-        }
-
-        let resolvedRemotePath = try await resolveRemotePath(for: remoteTarget)
-        try prepareMountDirectory(at: mountPath)
-
-        let source = "\(remoteTarget.user)@\(remoteTarget.host):\(resolvedRemotePath)"
-        let result = await runCommand(
-            executable: sshfsPath,
-            arguments: sshfsArguments(
-                source: source,
-                mountPath: mountPath,
-                remoteTarget: remoteTarget
-            )
-        )
-        guard result.status == 0, isMounted(at: mountPath) else {
-            let message = result.stderr.isEmpty ? result.stdout : result.stderr
-            throw WorkspaceProjectTransportError.mountFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-
-        Log.workspace.info("Mounted remote workspace at \(mountPath, privacy: .public)")
-        return mountPath
-    }
-
-    func unmount(mountPath: String?) {
-        guard let mountPath, isMounted(at: mountPath) else { return }
-
-        if let umountPath = findExecutable(named: "umount") {
-            let result = Self.runCommandSync(executable: umountPath, arguments: [mountPath])
-            if result.status == 0 || !isMounted(at: mountPath) {
-                cleanupMountDirectory(at: mountPath)
-                return
-            }
-        }
-
-        if let diskutilPath = findExecutable(named: "diskutil") {
-            _ = Self.runCommandSync(executable: diskutilPath, arguments: ["unmount", "force", mountPath])
-        }
-        cleanupMountDirectory(at: mountPath)
-    }
-
-    func unmountAll(mountPaths: [String]) {
-        for mountPath in Set(mountPaths) {
-            unmount(mountPath: mountPath)
-        }
-    }
-
-    private func resolveRemotePath(for remoteTarget: WorkspaceRemoteTarget) async throws -> String {
-        let destination = "\(remoteTarget.user)@\(remoteTarget.host)"
-        let remoteCommand = "cd -- \(remoteTarget.shellDirectoryExpression) && pwd -P"
-        let result = await runCommand(
-            executable: "/usr/bin/ssh",
-            arguments: sshArguments(
-                remoteTarget: remoteTarget,
-                destination: destination,
-                remoteCommand: remoteCommand
-            )
-        )
-
-        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard result.status == 0, !output.isEmpty else {
-            let message = result.stderr.isEmpty ? result.stdout : result.stderr
-            throw WorkspaceProjectTransportError.remotePathResolutionFailed(
-                message.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-        }
-        return output
-    }
-
-    private func defaultMountPath(for remoteTarget: WorkspaceRemoteTarget) -> String {
-        let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("Pnevma", isDirectory: true)
-            .appendingPathComponent("RemoteWorkspaces", isDirectory: true)
-            ?? URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent("Library/Application Support/Pnevma/RemoteWorkspaces", isDirectory: true)
-
-        let fingerprintInput = "\(remoteTarget.sshProfileID)|\(remoteTarget.remotePath)"
-        let digest = SHA256.hash(data: Data(fingerprintInput.utf8))
-        let digestString = digest.map { String(format: "%02x", $0) }.joined()
-        return baseURL
-            .appendingPathComponent(remoteTarget.sshProfileID, isDirectory: true)
-            .appendingPathComponent(digestString, isDirectory: true)
-            .path
-    }
-
-    private func prepareMountDirectory(at path: String) throws {
-        let mountURL = URL(fileURLWithPath: path)
-        if fileManager.fileExists(atPath: path), !isMounted(at: path) {
-            try? fileManager.removeItem(at: mountURL)
-        }
-        try fileManager.createDirectory(
-            at: mountURL,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-    }
-
-    private func cleanupMountDirectory(at path: String) {
-        guard !isMounted(at: path) else { return }
-        try? fileManager.removeItem(at: URL(fileURLWithPath: path))
-    }
-
-    private func isMounted(at path: String) -> Bool {
-        guard let mountPath = findExecutable(named: "mount") else { return false }
-        let result = Self.runCommandSync(executable: mountPath, arguments: [])
-        guard result.status == 0 else { return false }
-        return result.stdout
-            .split(separator: "\n")
-            .contains { $0.contains(" on \(path) ") }
-    }
-
-    private func sshfsArguments(
-        source: String,
-        mountPath: String,
-        remoteTarget: WorkspaceRemoteTarget
-    ) -> [String] {
-        var args = [
-            source,
-            mountPath,
-            "-p", String(remoteTarget.port),
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=10",
-            "-o", "reconnect",
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "defer_permissions",
-            "-o", "auto_cache",
-        ]
-        if let identityFile = remoteTarget.identityFile, !identityFile.isEmpty {
-            args.append(contentsOf: ["-o", "IdentityFile=\(identityFile)"])
-        }
-        if let proxyJump = remoteTarget.proxyJump, !proxyJump.isEmpty {
-            args.append(contentsOf: ["-o", "ProxyJump=\(proxyJump)"])
-        }
-        return args
-    }
-
-    private func sshArguments(
-        remoteTarget: WorkspaceRemoteTarget,
-        destination: String,
-        remoteCommand: String
-    ) -> [String] {
-        var args = [
-            "-p", String(remoteTarget.port),
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=10",
-        ]
-        if let identityFile = remoteTarget.identityFile, !identityFile.isEmpty {
-            args.append(contentsOf: ["-i", identityFile])
-        }
-        if let proxyJump = remoteTarget.proxyJump, !proxyJump.isEmpty {
-            args.append(contentsOf: ["-J", proxyJump])
-        }
-        args.append(destination)
-        args.append(remoteCommand)
-        return args
-    }
-
-    private func findExecutable(named name: String) -> String? {
-        WorkspaceProjectTransportSupport.findExecutable(
-            named: name,
-            fileManager: fileManager
-        )
-    }
-
-    private nonisolated func runCommand(
-        executable: String,
-        arguments: [String]
-    ) async -> ShellCommandResult {
-        Self.runCommandSync(executable: executable, arguments: arguments)
-    }
-
-    private nonisolated static func runCommandSync(
-        executable: String,
-        arguments: [String]
-    ) -> ShellCommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return ShellCommandResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-
-        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return ShellCommandResult(status: process.terminationStatus, stdout: stdout, stderr: stderr)
-    }
-}
-
-private struct ShellCommandResult {
-    let status: Int32
-    let stdout: String
-    let stderr: String
 }
 
 // MARK: - API Types

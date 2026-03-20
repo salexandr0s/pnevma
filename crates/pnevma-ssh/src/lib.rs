@@ -13,9 +13,10 @@ pub use key_manager::{generate_key, list_ssh_keys, SshKeyInfo};
 pub use profile::{build_ssh_command, validate_profile, validate_profile_fields, SshProfile};
 pub use remote_helper::{
     build_remote_attach_command, create_remote_session, ensure_remote_helper,
-    read_remote_scrollback_tail, remote_helper_health, remote_session_status,
-    signal_remote_session, terminate_remote_session, RemoteHelperEnsureResult, RemoteHelperHealth,
-    RemoteHelperInstallKind, RemoteSessionCreateResult, RemoteSessionStatus,
+    list_remote_directory, read_remote_file, read_remote_scrollback_tail, remote_helper_health,
+    remote_session_status, signal_remote_session, terminate_remote_session, RemoteDirEntry,
+    RemoteHelperEnsureResult, RemoteHelperHealth, RemoteHelperInstallKind,
+    RemoteSessionCreateResult, RemoteSessionStatus,
 };
 pub use tailscale::{discover_tailscale_devices, TailscaleDevice};
 
