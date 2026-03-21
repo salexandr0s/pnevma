@@ -104,9 +104,9 @@ async fn run_local_proxy(
     _session_id: Uuid,
     socket_path: &std::path::Path,
 ) -> Result<Option<i32>, Box<dyn std::error::Error>> {
-    let stream = UnixStream::connect(socket_path).await.map_err(|e| {
-        format!("connect to {}: {e}", socket_path.display())
-    })?;
+    let stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|e| format!("connect to {}: {e}", socket_path.display()))?;
     let (mut socket_reader, mut socket_writer) = stream.into_split();
 
     // Set stdin to raw mode so input bytes pass through without

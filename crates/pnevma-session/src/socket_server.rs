@@ -340,7 +340,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let stream = UnixStream::connect(server.socket_path()).await.unwrap();
-        let (mut reader, _writer) = stream.into_split();
+        let (_reader, _writer) = stream.into_split();
 
         // Give the client time to subscribe before we send the event
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
