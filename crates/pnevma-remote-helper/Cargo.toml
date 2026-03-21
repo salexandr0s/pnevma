@@ -9,4 +9,8 @@ libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true }
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

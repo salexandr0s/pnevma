@@ -1,5 +1,6 @@
 use crate::{shell_escape_arg, SshError, SshProfile};
 use serde::Deserialize;
+use serde_json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -215,6 +216,25 @@ pub async fn create_remote_session(
     cwd: &str,
     command: Option<&str>,
 ) -> Result<RemoteSessionCreateResult, SshError> {
+    if let Some(client) = crate::rpc_pool::rpc_pool().get_or_connect(profile).await {
+        let params = serde_json::json!({
+            "session_id": session_id,
+            "cwd": cwd,
+            "command": command,
+        });
+        if let Ok(result) = client.call("session.create", params).await {
+            return parse_create_result_from_json(result);
+        }
+    }
+    create_remote_session_via_ssh(profile, session_id, cwd, command).await
+}
+
+async fn create_remote_session_via_ssh(
+    profile: &SshProfile,
+    session_id: &str,
+    cwd: &str,
+    command: Option<&str>,
+) -> Result<RemoteSessionCreateResult, SshError> {
     let _ = ensure_remote_helper(profile).await?;
     let command = command.map(str::trim).filter(|value| !value.is_empty());
     let command_clause = command
@@ -244,6 +264,19 @@ pub async fn create_remote_session(
 }
 
 pub async fn remote_session_status(
+    profile: &SshProfile,
+    session_id: &str,
+) -> Result<RemoteSessionStatus, SshError> {
+    if let Some(client) = crate::rpc_pool::rpc_pool().get_or_connect(profile).await {
+        let params = serde_json::json!({"session_id": session_id});
+        if let Ok(result) = client.call("session.status", params).await {
+            return parse_status_from_json(result);
+        }
+    }
+    remote_session_status_via_ssh(profile, session_id).await
+}
+
+async fn remote_session_status_via_ssh(
     profile: &SshProfile,
     session_id: &str,
 ) -> Result<RemoteSessionStatus, SshError> {
@@ -277,6 +310,20 @@ pub async fn signal_remote_session(
     session_id: &str,
     signal: &str,
 ) -> Result<(), SshError> {
+    if let Some(client) = crate::rpc_pool::rpc_pool().get_or_connect(profile).await {
+        let params = serde_json::json!({"session_id": session_id, "signal": signal});
+        if client.call("session.signal", params).await.is_ok() {
+            return Ok(());
+        }
+    }
+    signal_remote_session_via_ssh(profile, session_id, signal).await
+}
+
+async fn signal_remote_session_via_ssh(
+    profile: &SshProfile,
+    session_id: &str,
+    signal: &str,
+) -> Result<(), SshError> {
     let _ = run_ssh(
         profile,
         &format!(
@@ -295,12 +342,64 @@ pub async fn terminate_remote_session(
     profile: &SshProfile,
     session_id: &str,
 ) -> Result<(), SshError> {
+    if let Some(client) = crate::rpc_pool::rpc_pool().get_or_connect(profile).await {
+        let params = serde_json::json!({"session_id": session_id});
+        if client.call("session.terminate", params).await.is_ok() {
+            return Ok(());
+        }
+    }
+    terminate_remote_session_via_ssh(profile, session_id).await
+}
+
+async fn terminate_remote_session_via_ssh(
+    profile: &SshProfile,
+    session_id: &str,
+) -> Result<(), SshError> {
     let _ = run_ssh(
         profile,
         &format!(
             "exec {} session terminate --session-id {} --json",
             REMOTE_HELPER_REMOTE_PATH,
             shell_escape_arg(session_id)
+        ),
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn list_remote_sessions(
+    profile: &SshProfile,
+) -> Result<Vec<RemoteSessionStatus>, SshError> {
+    if let Some(client) = crate::rpc_pool::rpc_pool().get_or_connect(profile).await {
+        let result = client.call("session.list", serde_json::json!({})).await?;
+        let sessions = result
+            .get("sessions")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| SshError::Parse("missing sessions array".to_string()))?;
+        return sessions
+            .iter()
+            .map(|v| parse_status_from_json(v.clone()))
+            .collect();
+    }
+    Err(SshError::Command(
+        "RPC not available; session.list requires the serve mode control socket".to_string(),
+    ))
+}
+
+pub async fn start_remote_serve_mode(profile: &SshProfile) -> Result<(), SshError> {
+    // Check if serve mode is already reachable via the pool.
+    if let Some(client) = crate::rpc_pool::rpc_pool().get_or_connect(profile).await {
+        if client.call("health", serde_json::json!({})).await.is_ok() {
+            return Ok(());
+        }
+    }
+    // Start serve in background on the remote host.
+    let _ = run_ssh(
+        profile,
+        &format!(
+            "nohup {} serve >/dev/null 2>&1 &",
+            REMOTE_HELPER_REMOTE_PATH,
         ),
         None,
     )
@@ -958,6 +1057,63 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn parse_status_from_json(value: serde_json::Value) -> Result<RemoteSessionStatus, SshError> {
+    Ok(RemoteSessionStatus {
+        session_id: value
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SshError::Parse("missing session_id".to_string()))?
+            .to_string(),
+        controller_id: value
+            .get("controller_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SshError::Parse("missing controller_id".to_string()))?
+            .to_string(),
+        state: value
+            .get("state")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SshError::Parse("missing state".to_string()))?
+            .to_string(),
+        pid: value.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
+        exit_code: value
+            .get("exit_code")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        total_bytes: value
+            .get("total_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        last_output_at_epoch: value.get("last_output_at_epoch").and_then(|v| v.as_i64()),
+    })
+}
+
+fn parse_create_result_from_json(
+    value: serde_json::Value,
+) -> Result<RemoteSessionCreateResult, SshError> {
+    Ok(RemoteSessionCreateResult {
+        session_id: value
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SshError::Parse("missing session_id".to_string()))?
+            .to_string(),
+        controller_id: value
+            .get("controller_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SshError::Parse("missing controller_id".to_string()))?
+            .to_string(),
+        state: value
+            .get("state")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SshError::Parse("missing state".to_string()))?
+            .to_string(),
+        pid: value.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
+        log_path: value
+            .get("log_path")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned),
+    })
+}
+
 async fn run_ssh(
     profile: &SshProfile,
     remote_command: &str,
@@ -1021,7 +1177,7 @@ fn remote_command_arg(remote_command: &str) -> String {
     format!("sh -lc {}", shell_escape_arg(remote_command))
 }
 
-fn ssh_binary_path() -> PathBuf {
+pub(crate) fn ssh_binary_path() -> PathBuf {
     std::env::var_os("PNEVMA_SSH_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_local_binary("ssh"))

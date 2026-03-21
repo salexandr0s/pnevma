@@ -512,6 +512,8 @@ pub async fn ensure_ssh_runtime_helper(
     let ensured = pnevma_ssh::ensure_remote_helper(&profile)
         .await
         .map_err(|e| e.to_string())?;
+    // Start RPC serve mode on the remote (best-effort).
+    let _ = pnevma_ssh::start_remote_serve_mode(&profile).await;
     Ok(SshRuntimeHealthView {
         profile_id,
         version: ensured.health.version,

@@ -2269,6 +2269,14 @@ async fn refresh_remote_session_row(
             status = retried;
         }
     }
+    apply_remote_session_status(db, row, &status).await
+}
+
+async fn apply_remote_session_status(
+    db: &Db,
+    row: &SessionRow,
+    status: &pnevma_ssh::RemoteSessionStatus,
+) -> Result<SessionRow, String> {
     let Some(project_uuid) = Uuid::parse_str(&row.project_id).ok() else {
         return Err(format!("invalid project id for session {}", row.id));
     };
@@ -2285,7 +2293,7 @@ async fn refresh_remote_session_row(
             command: row.command.clone(),
             started_at: row.started_at,
         },
-        &status,
+        status,
     );
     if next.status != row.status || next.lifecycle_state != row.lifecycle_state {
         append_event(
@@ -2369,26 +2377,92 @@ async fn reconcile_persisted_sessions(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut out = Vec::with_capacity(rows.len());
-    for mut row in rows {
+    // Separate remote live sessions from others for batch processing.
+    let mut remote_live: Vec<SessionRow> = Vec::new();
+    let mut remote_nonlive: Vec<SessionRow> = Vec::new();
+    let mut local: Vec<SessionRow> = Vec::new();
+    for row in rows {
         if is_remote_ssh_durable_backend(&row.backend) {
             if remote_session_is_live(&row) {
-                row = match refresh_remote_session_row(state, db, &row).await {
-                    Ok(refreshed) => refreshed,
-                    Err(error) => {
-                        mark_remote_session_row_lost(
-                            db,
-                            &row,
-                            error,
-                            "reconcile_persisted_sessions",
-                        )
-                        .await?
-                    }
-                };
+                remote_live.push(row);
+            } else {
+                remote_nonlive.push(row);
             }
-            out.push(row);
-            continue;
+        } else {
+            local.push(row);
         }
+    }
+
+    let mut out = Vec::new();
+
+    // Batch-query remote sessions grouped by connection_id.
+    let mut groups: HashMap<String, Vec<SessionRow>> = HashMap::new();
+    for row in remote_live {
+        let key = row.connection_id.clone().unwrap_or_default();
+        groups.entry(key).or_default().push(row);
+    }
+    for (connection_id, group_rows) in groups {
+        // Try batch query via session.list RPC.
+        let batch_result = try_batch_remote_status(state, db, &connection_id).await;
+        for mut row in group_rows {
+            row = match &batch_result {
+                Some(batch_statuses) => {
+                    let remote_id = row.remote_session_id.as_deref().unwrap_or(row.id.as_str());
+                    if let Some(status) = batch_statuses.iter().find(|s| s.session_id == remote_id)
+                    {
+                        match apply_remote_session_status(db, &row, status).await {
+                            Ok(refreshed) => refreshed,
+                            Err(error) => {
+                                mark_remote_session_row_lost(
+                                    db,
+                                    &row,
+                                    error,
+                                    "reconcile_persisted_sessions",
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        // Session not in batch result — fall back to individual query.
+                        match refresh_remote_session_row(state, db, &row).await {
+                            Ok(refreshed) => refreshed,
+                            Err(error) => {
+                                mark_remote_session_row_lost(
+                                    db,
+                                    &row,
+                                    error,
+                                    "reconcile_persisted_sessions",
+                                )
+                                .await?
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // Batch unavailable — fall back to per-session SSH.
+                    match refresh_remote_session_row(state, db, &row).await {
+                        Ok(refreshed) => refreshed,
+                        Err(error) => {
+                            mark_remote_session_row_lost(
+                                db,
+                                &row,
+                                error,
+                                "reconcile_persisted_sessions",
+                            )
+                            .await?
+                        }
+                    }
+                }
+            };
+            out.push(row);
+        }
+    }
+
+    // Pass through remote non-live sessions unchanged.
+    out.extend(remote_nonlive);
+
+    // Process local sessions.
+    for mut row in local {
         if row.status == "running" || row.status == "waiting" {
             let alive = session_backend_alive(project_path, &row.id).await;
             row.status = if alive {
@@ -2410,7 +2484,20 @@ async fn reconcile_persisted_sessions(
         }
         out.push(row);
     }
+
     Ok(out)
+}
+
+async fn try_batch_remote_status(
+    state: &AppState,
+    db: &Db,
+    connection_id: &str,
+) -> Option<Vec<pnevma_ssh::RemoteSessionStatus>> {
+    let profile = resolve_ssh_profile_by_id(state, Some(db), connection_id)
+        .await
+        .ok()
+        .flatten()?;
+    pnevma_ssh::list_remote_sessions(&profile).await.ok()
 }
 
 fn session_status_to_string(status: &SessionStatus) -> String {

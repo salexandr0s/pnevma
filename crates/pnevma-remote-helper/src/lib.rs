@@ -1,3 +1,7 @@
+pub mod protocol;
+pub mod serve;
+pub mod watcher;
+
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -70,7 +74,7 @@ impl HelperPaths {
         }
     }
 
-    fn ensure_layout(&self) -> Result<(), HelperError> {
+    pub fn ensure_layout(&self) -> Result<(), HelperError> {
         ensure_dir(&self.state_root)?;
         ensure_dir(&self.sessions_root)?;
         ensure_dir(&self.controller_root)?;
@@ -97,7 +101,7 @@ struct InstallMetadata {
     artifact_sha256: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HelperHealth {
     pub version: String,
     pub protocol_version: String,
@@ -112,7 +116,7 @@ pub struct HelperHealth {
     pub missing_dependencies: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionCreateResult {
     pub session_id: String,
     pub controller_id: String,
@@ -121,7 +125,7 @@ pub struct SessionCreateResult {
     pub log_path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionStatusResult {
     pub session_id: String,
     pub controller_id: String,
@@ -369,6 +373,26 @@ impl HelperRuntime {
             total_bytes: file_len(&log_path)?,
             last_output_at_epoch: file_mtime_epoch(&log_path)?,
         })
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<SessionStatusResult>, HelperError> {
+        let mut results = Vec::new();
+        let sessions_root = &self.paths.sessions_root;
+        if !sessions_root.is_dir() {
+            return Ok(results);
+        }
+        for entry in fs::read_dir(sessions_root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let session_id = entry.file_name().to_string_lossy().to_string();
+            match self.session_status(&session_id) {
+                Ok(status) => results.push(status),
+                Err(_) => continue,
+            }
+        }
+        Ok(results)
     }
 
     pub fn signal_session(&self, session_id: &str, signal: &str) -> Result<(), HelperError> {

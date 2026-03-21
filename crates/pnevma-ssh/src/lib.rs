@@ -5,6 +5,9 @@ pub mod error;
 pub mod key_manager;
 pub mod profile;
 pub mod remote_helper;
+pub mod rpc_client;
+pub mod rpc_pool;
+pub mod rpc_tunnel;
 pub mod tailscale;
 
 pub use config_parser::parse_ssh_config;
@@ -16,10 +19,10 @@ pub use profile::{
 };
 pub use remote_helper::{
     build_remote_attach_command, create_remote_session, ensure_remote_helper,
-    list_remote_directory, read_remote_file, read_remote_scrollback_tail, remote_helper_health,
-    remote_session_status, signal_remote_session, terminate_remote_session, RemoteDirEntry,
-    RemoteHelperEnsureResult, RemoteHelperHealth, RemoteHelperInstallKind,
-    RemoteSessionCreateResult, RemoteSessionStatus,
+    list_remote_directory, list_remote_sessions, read_remote_file, read_remote_scrollback_tail,
+    remote_helper_health, remote_session_status, signal_remote_session, start_remote_serve_mode,
+    terminate_remote_session, RemoteDirEntry, RemoteHelperEnsureResult, RemoteHelperHealth,
+    RemoteHelperInstallKind, RemoteSessionCreateResult, RemoteSessionStatus,
 };
 pub use tailscale::{discover_tailscale_devices, TailscaleDevice};
 
