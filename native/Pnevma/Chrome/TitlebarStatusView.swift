@@ -51,6 +51,26 @@ final class TitlebarStatusView: NSView {
     var onBranchClicked: (() -> Void)?
     var onPRClicked: (() -> Void)?
 
+    var branchButtonFrame: NSRect {
+        popoverAnchorRect(for: branchButton)
+    }
+
+    var sessionsButtonFrame: NSRect {
+        popoverAnchorRect(for: sessionsContainer)
+    }
+
+    /// Thin anchor rect at the bottom edge of a subview, matching the
+    /// toolbar button pattern so the popover drops below the capsule.
+    private func popoverAnchorRect(for subview: NSView) -> NSRect {
+        let full = convert(subview.bounds, from: subview)
+        return NSRect(
+            x: full.midX - 14,
+            y: full.minY - DesignTokens.Spacing.xs,
+            width: 28,
+            height: DesignTokens.Spacing.xs
+        )
+    }
+
     private var currentPRNumber: UInt64?
     private var currentPRURL: String?
 

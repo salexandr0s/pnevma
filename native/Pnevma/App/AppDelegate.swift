@@ -2386,7 +2386,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
         popover.show(
-            relativeTo: titlebarStatusView.bounds,
+            relativeTo: titlebarStatusView.branchButtonFrame,
             of: titlebarStatusView,
             preferredEdge: .minY
         )
@@ -4860,7 +4860,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
         popover.show(
-            relativeTo: titlebarStatusView.bounds,
+            relativeTo: titlebarStatusView.sessionsButtonFrame,
             of: titlebarStatusView,
             preferredEdge: .minY
         )
