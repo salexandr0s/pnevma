@@ -2,6 +2,14 @@
 import Cocoa
 import Observation
 
+/// Display-only button used inside `TitlebarStatusView`.
+/// Mouse events are handled by the parent view's `mouseDown` override;
+/// these overrides are defensive in case the view is ever used standalone.
+final class TitlebarStatusButton: NSButton {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 struct TitlebarStatusLayoutState: Equatable {
     let showsPullRequest: Bool
     let showsAgents: Bool
@@ -27,9 +35,9 @@ struct TitlebarStatusLayoutState: Equatable {
 
 final class TitlebarStatusView: NSView {
     private let contentStack = NSStackView()
-    private let branchButton = NSButton(frame: .zero)
+    private let branchButton = TitlebarStatusButton(frame: .zero)
     private let agentsLabel = NSTextField(labelWithString: "")
-    let sessionsButton = NSButton(frame: .zero)
+    let sessionsButton = TitlebarStatusButton(frame: .zero)
     private let sessionsContainer = NSView(frame: .zero)
     private let prPill = NSButton(frame: .zero)
     private let attentionDot = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
@@ -63,35 +71,38 @@ final class TitlebarStatusView: NSView {
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Return self for all hits inside our bounds.  Child views
+    /// (NSStackView, separators, labels) default `mouseDownCanMoveWindow`
+    /// to `true`, which makes NSThemeFrame consume the click for window
+    /// dragging.  By claiming the hit ourselves the window checks OUR
+    /// `mouseDownCanMoveWindow` (false) and forwards the event here.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = superview?.convert(point, to: self) ?? point
+        return bounds.contains(local) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let branchRect = convert(branchButton.bounds, from: branchButton)
+        let sessionsRect = convert(sessionsContainer.bounds, from: sessionsContainer)
+        let prRect = convert(prPill.bounds, from: prPill)
+
+        if branchButton.isEnabled && branchRect.contains(point) {
+            onBranchClicked?()
+        } else if sessionsButton.isEnabled && sessionsRect.contains(point) {
+            onSessionsClicked?()
+        } else if !prPill.isHidden && prPill.isEnabled && prRect.contains(point) {
+            if let url = currentPRURL, let nsURL = URL(string: url) {
+                NSWorkspace.shared.open(nsURL)
+            }
+            onPRClicked?()
+        }
+    }
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: DesignTokens.Layout.titlebarGroupHeight)
-    }
-
-    var branchPopoverAnchorRect: NSRect {
-        layoutSubtreeIfNeeded()
-        let branchRect = convert(branchButton.bounds, from: branchButton)
-        let anchorWidth = min(max(branchRect.width * 0.45, 36), 64)
-        let anchorX = floor(branchRect.midX - (anchorWidth / 2))
-        return NSRect(
-            x: anchorX,
-            y: -DesignTokens.Spacing.xs,
-            width: anchorWidth,
-            height: DesignTokens.Spacing.xs
-        )
-    }
-
-    var sessionsPopoverAnchorRect: NSRect {
-        layoutSubtreeIfNeeded()
-        let sessionsRect = convert(sessionsContainer.bounds, from: sessionsContainer)
-        let anchorWidth = min(max(sessionsRect.width * 0.55, 28), 44)
-        let anchorX = floor(sessionsRect.midX - (anchorWidth / 2))
-        return NSRect(
-            x: anchorX,
-            y: -DesignTokens.Spacing.xs,
-            width: anchorWidth,
-            height: DesignTokens.Spacing.xs
-        )
     }
 
     override func layout() {
@@ -185,8 +196,6 @@ final class TitlebarStatusView: NSView {
         branchButton.imagePosition = .imageLeading
         branchButton.imageHugsTitle = true
         branchButton.cell?.lineBreakMode = .byTruncatingTail
-        branchButton.target = self
-        branchButton.action = #selector(branchClicked)
         branchButton.setAccessibilityLabel("Git branch")
         branchButton.toolTip = "Switch branch"
         branchButton.translatesAutoresizingMaskIntoConstraints = false
@@ -209,8 +218,6 @@ final class TitlebarStatusView: NSView {
         sessionsButton.isBordered = false
         sessionsButton.font = .systemFont(ofSize: 11, weight: .medium)
         sessionsButton.title = "0 sessions"
-        sessionsButton.target = self
-        sessionsButton.action = #selector(sessionsClicked)
         sessionsButton.setAccessibilityLabel("Sessions")
         sessionsButton.translatesAutoresizingMaskIntoConstraints = false
     }
@@ -220,8 +227,6 @@ final class TitlebarStatusView: NSView {
         prPill.isBordered = false
         prPill.font = .systemFont(ofSize: 10, weight: .semibold)
         prPill.title = ""
-        prPill.target = self
-        prPill.action = #selector(prClicked)
         prPill.wantsLayer = true
         prPill.layer?.cornerRadius = 7
         prPill.setAccessibilityLabel("Pull request")
@@ -286,21 +291,6 @@ final class TitlebarStatusView: NSView {
         agentsLabel.isHidden = !state.showsAgents
         separator1.isHidden = !state.showsLeadingSeparator
         separator2.isHidden = !state.showsTrailingSeparator
-    }
-
-    @objc private func sessionsClicked() {
-        onSessionsClicked?()
-    }
-
-    @objc private func branchClicked() {
-        onBranchClicked?()
-    }
-
-    @objc private func prClicked() {
-        if let url = currentPRURL, let nsURL = URL(string: url) {
-            NSWorkspace.shared.open(nsURL)
-        }
-        onPRClicked?()
     }
 
     func updateBranch(_ branch: String?) {

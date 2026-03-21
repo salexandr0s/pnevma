@@ -87,10 +87,11 @@ struct TitlebarStatusControlAvailability: Equatable {
 
 func resolveTitlebarStatusControlAvailability(
     hasProject: Bool,
+    hasGitBranch: Bool,
     hasSessionStore: Bool
 ) -> TitlebarStatusControlAvailability {
     TitlebarStatusControlAvailability(
-        branchEnabled: hasProject,
+        branchEnabled: hasProject || hasGitBranch,
         sessionsEnabled: hasSessionStore
     )
 }
@@ -2358,50 +2359,70 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showBranchPicker() {
-        guard let workspace = workspaceManager?.activeWorkspace,
-              workspace.projectPath != nil else { return }
+        if let popover = branchPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let workspace = workspaceManager?.activeWorkspace else {
+            Log.general.warning("showBranchPicker: skipped — no active workspace")
+            return
+        }
+        guard let titlebarStatusView else { return }
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        let currentBranch = workspace.gitBranch
+        let popover = NSPopover()
+        configureToolbarAttachmentPopover(
+            popover,
+            contentSize: NSSize(width: 300, height: 340)
+        ) {
+            BranchPickerPopover(
+                branches: currentBranch.map { [$0] } ?? [],
+                currentBranch: currentBranch,
+                onSelect: { [weak self, weak popover] branch in
+                    popover?.close()
+                    self?.switchBranch(branch)
+                },
+                onDismiss: { [weak popover] in popover?.close() }
+            )
+        }
+        popover.show(
+            relativeTo: titlebarStatusView.bounds,
+            of: titlebarStatusView,
+            preferredEdge: .minY
+        )
+        branchPopover = popover
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.willCloseNotification,
+            object: popover,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.branchPopover = nil }
+        }
+
+        // Load full branch list in background and update
+        Task { @MainActor [weak self, weak popover] in
+            guard let self, let popover else { return }
             do {
-                guard let workspaceManager = self.workspaceManager else {
-                    throw WorkspaceActionError.workspaceUnavailable
-                }
+                guard popover === self.branchPopover else { return }
+                guard let workspaceManager = self.workspaceManager else { return }
                 let bus = try await resolveTitlebarGitActionCommandBus(
                     workspaceManager: workspaceManager
                 )
                 let branches: [String] = try await bus.call(method: "git.list_branches")
-                let currentBranch = self.workspaceManager?.activeWorkspace?.gitBranch
-
-                let popover = NSPopover()
-                self.configureToolbarAttachmentPopover(
-                    popover,
-                    contentSize: NSSize(width: 300, height: 340)
-                ) {
-                    BranchPickerPopover(
+                guard popover === self.branchPopover, popover.isShown else { return }
+                popover.contentViewController = NSHostingController(
+                    rootView: BranchPickerPopover(
                         branches: branches,
-                        currentBranch: currentBranch,
-                        onSelect: { [weak self] branch in
-                            popover.close()
+                        currentBranch: self.workspaceManager?.activeWorkspace?.gitBranch,
+                        onSelect: { [weak self, weak popover] branch in
+                            popover?.close()
                             self?.switchBranch(branch)
                         },
-                        onDismiss: { popover.close() }
-                    )
-                }
-
-                if let titlebarStatusView = self.titlebarStatusView {
-                    popover.show(
-                        relativeTo: titlebarStatusView.branchPopoverAnchorRect,
-                        of: titlebarStatusView,
-                        preferredEdge: .minY
-                    )
-                }
-            } catch {
-                ToastManager.shared.show(
-                    "Failed to list branches: \(error.localizedDescription)",
-                    icon: "exclamationmark.triangle",
-                    style: .error
+                        onDismiss: { [weak popover] in popover?.close() }
+                    ).environment(GhosttyThemeProvider.shared)
                 )
+            } catch {
+                Log.general.warning("Branch list load failed: \(error.localizedDescription)")
             }
         }
     }
@@ -2482,6 +2503,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let hasProject = workspace?.projectPath != nil
         let controlAvailability = resolveTitlebarStatusControlAvailability(
             hasProject: hasProject,
+            hasGitBranch: workspace?.gitBranch != nil,
             hasSessionStore: sessionStore != nil
         )
 
@@ -4803,6 +4825,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationsPopover: NSPopover?
     private var usagePopover: NSPopover?
     private var resourceMonitorPopover: NSPopover?
+    private var branchPopover: NSPopover?
     private var sessionsPopover: NSPopover?
     private weak var notificationToolbarButton: NSButton?
     private weak var notificationBadge: BadgeOverlayView?
@@ -4821,7 +4844,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard let titlebarStatusView,
-              let sessionStore else { return }
+              let sessionStore else {
+            Log.general.warning("showSessionManager: skipped — titlebarStatusView=\(self.titlebarStatusView != nil), sessionStore=\(self.sessionStore != nil)")
+            return
+        }
 
         let popover = NSPopover()
         configureToolbarAttachmentPopover(
@@ -4834,7 +4860,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
         popover.show(
-            relativeTo: titlebarStatusView.sessionsPopoverAnchorRect,
+            relativeTo: titlebarStatusView.bounds,
             of: titlebarStatusView,
             preferredEdge: .minY
         )
