@@ -896,6 +896,13 @@ cleanup() {
   set +e
   stop_attach_process
   stop_packaged_app
+  # Remove the SSH profile created for this lifecycle run
+  if [[ -n "${PROFILE_ID:-}" ]]; then
+    local db="$HOME/.local/share/pnevma/global.db"
+    if [[ -f "$db" ]]; then
+      sqlite3 "$db" "DELETE FROM global_ssh_profiles WHERE id = '${PROFILE_ID}';" 2>/dev/null || true
+    fi
+  fi
   if [[ -n "${mounted_dir:-}" && -d "${mounted_dir:-}" ]]; then
     hdiutil detach "$mounted_dir" -quiet >/dev/null 2>&1 || true
   fi

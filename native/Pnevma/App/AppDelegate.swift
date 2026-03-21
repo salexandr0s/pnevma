@@ -3221,8 +3221,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accessory.spacing = 8
             accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
             accessory.translatesAutoresizingMaskIntoConstraints = false
-            popup.widthAnchor.constraint(equalToConstant: 360).isActive = true
-            pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            let accessoryWidth: CGFloat = 360
+            popup.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+            pathField.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+            accessory.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+            accessory.layoutSubtreeIfNeeded()
+            accessory.frame.size = NSSize(width: accessoryWidth, height: accessory.fittingSize.height)
             alert.accessoryView = accessory
             alert.addButton(withTitle: "Open Workspace")
             alert.addButton(withTitle: "Cancel")
@@ -3304,10 +3308,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         accessory.spacing = 8
         accessory.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
         accessory.translatesAutoresizingMaskIntoConstraints = false
-        hostValue.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        userField.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        portField.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        pathField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        let accessoryWidth: CGFloat = 360
+        hostValue.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+        userField.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+        portField.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+        pathField.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+        accessory.widthAnchor.constraint(equalToConstant: accessoryWidth).isActive = true
+        accessory.layoutSubtreeIfNeeded()
+        accessory.frame.size = NSSize(width: accessoryWidth, height: accessory.fittingSize.height)
         alert.accessoryView = accessory
         alert.addButton(withTitle: "Open Workspace")
         alert.addButton(withTitle: "Cancel")
