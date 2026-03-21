@@ -39,9 +39,9 @@ struct RenderedDiffDocument {
 }
 
 enum RightInspectorDiffRenderer {
-    static let overlayPrimaryTextColor = NSColor.white.withAlphaComponent(DesignTokens.TextOpacity.primary)
-    static let overlaySecondaryTextColor = NSColor.white.withAlphaComponent(DesignTokens.TextOpacity.secondary)
-    static let overlayHeaderBackgroundColor = NSColor.white.withAlphaComponent(0.12)
+    static let overlayPrimaryTextColor = NSColor.labelColor.withAlphaComponent(DesignTokens.TextOpacity.primary)
+    static let overlaySecondaryTextColor = NSColor.labelColor.withAlphaComponent(DesignTokens.TextOpacity.secondary)
+    static let overlayHeaderBackgroundColor = NSColor.labelColor.withAlphaComponent(0.12)
 
     static func render(diffFile: DiffFile) -> RenderedDiffDocument {
         let attributed = NSMutableAttributedString()

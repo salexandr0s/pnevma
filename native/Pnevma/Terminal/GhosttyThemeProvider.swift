@@ -9,8 +9,8 @@ final class GhosttyThemeProvider {
 
     static let shared = GhosttyThemeProvider()
 
-    private(set) var backgroundColor: NSColor = .black
-    private(set) var foregroundColor: NSColor = .white
+    private(set) var backgroundColor: NSColor = GhosttyThemeProvider.defaultBackground()
+    private(set) var foregroundColor: NSColor = GhosttyThemeProvider.defaultForeground()
     private(set) var backgroundOpacity: Double = 1.0
     private(set) var splitDividerColor: NSColor?
     private(set) var unfocusedSplitFill: NSColor?
@@ -21,6 +21,15 @@ final class GhosttyThemeProvider {
 
     private init() {
         loadFromConfig()
+        // Observe system appearance changes to update fallback colors.
+        // No deinit needed — this singleton lives for the app's lifetime.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeOcclusionStateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
     /// Re-read all theme colors from the current ghostty config.
@@ -29,11 +38,25 @@ final class GhosttyThemeProvider {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
+    /// Appearance-aware default background: dark in dark mode, light in light mode.
+    private static func defaultBackground() -> NSColor {
+        let isDark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? .black : .white
+    }
+
+    /// Appearance-aware default foreground: white in dark mode, black in light mode.
+    private static func defaultForeground() -> NSColor {
+        let isDark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? .white : .black
+    }
+
     private func loadFromConfig() {
         let snapshot = GhosttyConfigController.shared.themeSnapshot()
 
-        backgroundColor = snapshot.background.flatMap { NSColor(hexString: $0) } ?? .black
-        foregroundColor = snapshot.foreground.flatMap { NSColor(hexString: $0) } ?? .white
+        backgroundColor = snapshot.background.flatMap { NSColor(hexString: $0) }
+            ?? GhosttyThemeProvider.defaultBackground()
+        foregroundColor = snapshot.foreground.flatMap { NSColor(hexString: $0) }
+            ?? GhosttyThemeProvider.defaultForeground()
         backgroundOpacity = snapshot.backgroundOpacity
         splitDividerColor = snapshot.splitDividerColor.flatMap { NSColor(hexString: $0) }
         unfocusedSplitFill = snapshot.unfocusedSplitFill.flatMap { NSColor(hexString: $0) }

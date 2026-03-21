@@ -175,8 +175,11 @@ final class BrowserViewModel: NSObject {
 
         let webView = PnevmaWebView(frame: .zero, configuration: config)
         PerformanceDiagnostics.shared.recordBrowserWebViewCreation()
-        webView.appearance = NSAppearance(named: .darkAqua)
-        webView.underPageBackgroundColor = NSColor(white: 0.15, alpha: 1.0)
+        let isDark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        webView.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        webView.underPageBackgroundColor = isDark
+            ? NSColor(white: 0.15, alpha: 1.0)
+            : .controlBackgroundColor
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15"
 
