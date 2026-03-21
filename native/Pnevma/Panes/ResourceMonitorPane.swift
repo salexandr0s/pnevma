@@ -1,6 +1,5 @@
 import SwiftUI
 import Observation
-import Cocoa
 import Charts
 
 // MARK: - NSView Wrapper
@@ -31,18 +30,16 @@ final class ResourceMonitorPaneView: NSView, PaneContent {
 
 struct ResourceMonitorDetailView: View {
     @State private var store: ResourceMonitorStore
-    @State private var selectedTab: MonitorTab = .overview
-
-    enum MonitorTab: String, CaseIterable {
-        case overview = "Overview"
-        case processes = "Processes"
-        case host = "Host"
-    }
 
     @MainActor
     init(store: ResourceMonitorStore? = nil) {
         _store = State(initialValue: store ?? ResourceMonitorStore.shared)
     }
+
+    /// Monochrome chart color — neutral grey that works in both light and dark mode
+    private static let chartStroke = Color.primary.opacity(0.45)
+    private static let chartFill = Color.primary.opacity(0.06)
+    private static let chartGridLine = Color.primary.opacity(0.08)
 
     var body: some View {
         NativePaneScaffold(
@@ -53,108 +50,98 @@ struct ResourceMonitorDetailView: View {
             inlineHeaderIdentifier: "pane.resourceMonitor.inlineHeader",
             inlineHeaderLabel: "Resource Monitor inline header"
         ) {
-            ResourceMonitorTabControl(selectedTab: $selectedTab)
-            .frame(width: 260)
-        } content: {
-            Group {
-                if let error = store.errorMessage, store.snapshot == nil {
-                    ContentUnavailableView(
-                        "Resource Monitor Unavailable",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(error)
-                    )
-                } else {
-                    switch selectedTab {
-                    case .overview:
-                        tabContent(identifier: "pane.resourceMonitor.tab.overview") {
-                            overviewTab
-                        }
-                    case .processes:
-                        tabContent(identifier: "pane.resourceMonitor.tab.processes") {
-                            processesTab
-                        }
-                    case .host:
-                        tabContent(identifier: "pane.resourceMonitor.tab.host") {
-                            hostTab
-                        }
+            if let error = store.errorMessage, store.snapshot == nil {
+                ContentUnavailableView(
+                    "Resource Monitor Unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(error)
+                )
+            } else {
+                ScrollView {
+                    VStack(spacing: DesignTokens.Spacing.sm) {
+                        // Host info
+                        hostInfoSection
+
+                        // Charts stacked
+                        cpuChartSection
+                        memoryChartSection
+
+                        // Process table
+                        processSection
                     }
+                    .padding(DesignTokens.Spacing.sm)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task {
             await store.activate()
         }
     }
 
-    @ViewBuilder
-    private func tabContent<Content: View>(
-        identifier: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        ZStack(alignment: .topLeading) {
-            content()
-            AccessibilityMarker(
-                identifier: identifier,
-                label: identifier
-            )
-            .frame(width: 1, height: 1)
-            .allowsHitTesting(false)
-        }
-    }
-
-    // MARK: - Overview Tab
+    // MARK: - Host Info Section
 
     @ViewBuilder
-    private var overviewTab: some View {
-        ScrollView {
-            VStack(spacing: DesignTokens.Spacing.md) {
-                if let snapshot = store.snapshot {
-                    statCardsRow(snapshot: snapshot)
+    private var hostInfoSection: some View {
+        if let snapshot = store.snapshot {
+            GroupBox {
+                Grid(alignment: .leading, horizontalSpacing: DesignTokens.Spacing.lg, verticalSpacing: DesignTokens.Spacing.xs) {
+                    GridRow {
+                        monitorHostLabel("Host")
+                        monitorHostLabel("OS")
+                        monitorHostLabel("Cores")
+                        monitorHostLabel("RAM")
+                        monitorHostLabel("Uptime")
+                    }
+                    GridRow {
+                        monitorHostValue(snapshot.host.hostname)
+                        monitorHostValue(snapshot.host.osVersion)
+                        monitorHostValue("\(snapshot.host.cpuCores)")
+                        monitorHostValue(monitorFormatMemory(snapshot.host.totalMemoryBytes))
+                        monitorHostValue(monitorFormatUptime(snapshot.host.uptimeSeconds))
+                    }
                 }
-
-                cpuChart
-                memoryChart
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(DesignTokens.Spacing.md)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Host information")
         }
     }
 
-    private func statCardsRow(snapshot: ResourceSnapshot) -> some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            MonitorStatCard(
-                label: "CPU",
-                value: monitorFormatCpu(snapshot.totals.cpuPercent),
-                color: monitorSeverityColor(snapshot.totals.cpuPercent)
-            )
-            MonitorStatCard(
-                label: "Memory",
-                value: monitorFormatMemory(snapshot.totals.memoryBytes),
-                color: monitorSeverityColor(snapshot.totals.memoryPercent)
-            )
-            MonitorStatCard(
-                label: "Processes",
-                value: "\(snapshot.totals.processCount)",
-                color: .primary
-            )
-        }
+    private func monitorHostLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func monitorHostValue(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .lineLimit(1)
     }
 
     // MARK: - CPU Chart
 
     @ViewBuilder
-    private var cpuChart: some View {
+    private var cpuChartSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-                Text("CPU Usage")
-                    .font(.subheadline)
-                    .bold()
+                HStack(alignment: .firstTextBaseline) {
+                    Text("CPU Usage")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let snapshot = store.snapshot {
+                        Text(monitorFormatCpu(snapshot.totals.cpuPercent))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(monitorSeverityColor(snapshot.totals.cpuPercent))
+                    }
+                }
 
                 if store.timeSeriesBuffer.count < 2 {
                     Text("Collecting data\u{2026}")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, minHeight: 100, alignment: .center)
                 } else {
                     Chart(store.timeSeriesBuffer) { point in
                         LineMark(
@@ -162,31 +149,45 @@ struct ResourceMonitorDetailView: View {
                             y: .value("CPU %", point.cpuPercent)
                         )
                         .interpolationMethod(.catmullRom)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Self.chartStroke)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
 
                         AreaMark(
                             x: .value("Time", point.date),
                             y: .value("CPU %", point.cpuPercent)
                         )
                         .interpolationMethod(.catmullRom)
-                        .foregroundStyle(.blue.opacity(0.1))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Self.chartFill, Self.chartFill.opacity(0)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                     }
                     .chartYAxis {
-                        AxisMarks(position: .leading) { _ in
-                            AxisGridLine()
-                            AxisTick()
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                                .foregroundStyle(Self.chartGridLine)
                             AxisValueLabel()
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     .chartXAxis {
                         AxisMarks(values: .stride(by: .minute)) { _ in
-                            AxisGridLine()
-                            AxisTick()
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                                .foregroundStyle(Self.chartGridLine)
                             AxisValueLabel(format: .dateTime.minute(.twoDigits).second(.twoDigits))
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
                         }
                     }
-                    .chartYScale(domain: 0 ... max(cpuYMax, 10))
-                    .frame(height: 150)
+                    .chartYScale(domain: 0 ... cpuYMax)
+                    .chartPlotStyle { plotArea in
+                        plotArea.background(Color.clear)
+                    }
+                    .frame(height: 100)
                     .drawingGroup()
                     .accessibilityLabel("CPU usage over time")
                     .accessibilityValue(
@@ -199,25 +200,38 @@ struct ResourceMonitorDetailView: View {
 
     private var cpuYMax: Float {
         let peak = store.timeSeriesBuffer.map(\.cpuPercent).max() ?? 0
-        return ceil(peak / 10) * 10
+        // Round up to next nice interval with 20% headroom
+        let withHeadroom = peak * 1.2
+        let interval: Float = withHeadroom <= 20 ? 5 : withHeadroom <= 50 ? 10 : withHeadroom <= 200 ? 25 : 50
+        return max(ceil(withHeadroom / interval) * interval, 10)
     }
 
     // MARK: - Memory Chart
 
     @ViewBuilder
-    private var memoryChart: some View {
+    private var memoryChartSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-                Text("Memory Usage")
-                    .font(.subheadline)
-                    .bold()
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Memory Usage")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let snapshot = store.snapshot {
+                        Text(monitorFormatMemory(snapshot.totals.memoryBytes))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 if store.timeSeriesBuffer.count < 2 {
                     Text("Collecting data\u{2026}")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, minHeight: 100, alignment: .center)
                 } else {
+                    let memoryMBValues = store.timeSeriesBuffer.map { Double($0.memoryBytes) / (1024 * 1024) }
+
                     Chart(store.timeSeriesBuffer) { point in
                         let megabytes = Double(point.memoryBytes) / (1024 * 1024)
 
@@ -226,30 +240,45 @@ struct ResourceMonitorDetailView: View {
                             y: .value("MB", megabytes)
                         )
                         .interpolationMethod(.catmullRom)
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(Self.chartStroke)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
 
                         AreaMark(
                             x: .value("Time", point.date),
                             y: .value("MB", megabytes)
                         )
                         .interpolationMethod(.catmullRom)
-                        .foregroundStyle(.purple.opacity(0.1))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Self.chartFill, Self.chartFill.opacity(0)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                     }
                     .chartYAxis {
-                        AxisMarks(position: .leading) { _ in
-                            AxisGridLine()
-                            AxisTick()
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                                .foregroundStyle(Self.chartGridLine)
                             AxisValueLabel()
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     .chartXAxis {
                         AxisMarks(values: .stride(by: .minute)) { _ in
-                            AxisGridLine()
-                            AxisTick()
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                                .foregroundStyle(Self.chartGridLine)
                             AxisValueLabel(format: .dateTime.minute(.twoDigits).second(.twoDigits))
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
                         }
                     }
-                    .frame(height: 150)
+                    .chartYScale(domain: monitorMemoryYRange(memoryMBValues))
+                    .chartPlotStyle { plotArea in
+                        plotArea.background(Color.clear)
+                    }
+                    .frame(height: 100)
                     .drawingGroup()
                     .accessibilityLabel("Memory usage over time")
                     .accessibilityValue(
@@ -260,87 +289,91 @@ struct ResourceMonitorDetailView: View {
         }
     }
 
-    // MARK: - Processes Tab
+    // MARK: - Processes Section
 
     @ViewBuilder
-    private var processesTab: some View {
+    private var processSection: some View {
         if let snapshot = store.snapshot {
             let allProcesses = monitorFlattenProcesses(snapshot: snapshot)
 
-            if allProcesses.isEmpty {
-                ContentUnavailableView(
-                    "No Processes",
-                    systemImage: "gearshape",
-                    description: Text("No tracked processes found.")
-                )
-            } else {
-                processTable(allProcesses)
+            GroupBox {
+                VStack(spacing: 0) {
+                    // Section header
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Processes")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(allProcesses.count)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.bottom, DesignTokens.Spacing.sm)
+
+                    if allProcesses.isEmpty {
+                        Text("No tracked processes")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(DesignTokens.Spacing.lg)
+                    } else {
+                        processTable(allProcesses)
+                    }
+                }
             }
-        } else {
-            ProgressView("Collecting data\u{2026}")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     @ViewBuilder
     private func processTable(_ processes: [MonitorProcessEntry]) -> some View {
         VStack(spacing: 0) {
-            // Header
+            // Column headers
             HStack(spacing: 0) {
-                monitorColumnHeader("PID", width: 60, alignment: .trailing)
+                monitorColumnHeader("PID", width: 54, alignment: .trailing)
                 monitorColumnHeader("Name", width: nil, alignment: .leading)
-                monitorColumnHeader("CPU %", width: 70, alignment: .trailing)
-                monitorColumnHeader("Memory", width: 90, alignment: .trailing)
-                monitorColumnHeader("Category", width: 80, alignment: .center)
+                monitorColumnHeader("CPU", width: 60, alignment: .trailing)
+                monitorColumnHeader("Memory", width: 80, alignment: .trailing)
+                monitorColumnHeader("Type", width: 60, alignment: .trailing)
             }
-            .padding(.horizontal, DesignTokens.Spacing.md)
             .padding(.vertical, DesignTokens.Spacing.xs)
-            .background(Color.primary.opacity(DesignTokens.Opacity.subtle))
 
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(processes) { entry in
-                        VStack(spacing: 0) {
-                            HStack(spacing: 0) {
-                                Text("\(entry.pid)")
-                                    .font(.system(.caption, design: .monospaced))
-                                    .frame(width: 60, alignment: .trailing)
+            LazyVStack(spacing: 0) {
+                ForEach(processes) { entry in
+                    HStack(spacing: 0) {
+                        Text("\(entry.pid)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 54, alignment: .trailing)
 
-                                Text(entry.name)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.leading, DesignTokens.Spacing.sm)
+                        Text(entry.name)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, DesignTokens.Spacing.sm)
 
-                                Text(monitorFormatCpu(entry.cpuPercent))
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(monitorSeverityColor(entry.cpuPercent))
-                                    .frame(width: 70, alignment: .trailing)
+                        Text(monitorFormatCpu(entry.cpuPercent))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(monitorSeverityColor(entry.cpuPercent))
+                            .frame(width: 60, alignment: .trailing)
 
-                                Text(monitorFormatMemory(entry.memoryBytes))
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 90, alignment: .trailing)
+                        Text(monitorFormatMemory(entry.memoryBytes))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 80, alignment: .trailing)
 
-                                Text(entry.category.rawValue)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 80, alignment: .center)
-                            }
-                            .padding(.horizontal, DesignTokens.Spacing.md)
-                            .padding(.vertical, DesignTokens.Spacing.xs)
-                            .accessibilityLabel("\(entry.name), PID \(entry.pid)")
-                            .accessibilityValue(
-                                "CPU \(monitorFormatCpu(entry.cpuPercent)), Memory \(monitorFormatMemory(entry.memoryBytes)), \(entry.category.rawValue)"
-                            )
-
-                            Divider()
-                                .padding(.leading, DesignTokens.Spacing.md)
-                        }
+                        Text(entry.category.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 60, alignment: .trailing)
                     }
+                    .padding(.vertical, 3)
+                    .accessibilityLabel("\(entry.name), PID \(entry.pid)")
+                    .accessibilityValue(
+                        "CPU \(monitorFormatCpu(entry.cpuPercent)), Memory \(monitorFormatMemory(entry.memoryBytes)), \(entry.category.rawValue)"
+                    )
                 }
             }
         }
@@ -350,142 +383,16 @@ struct ResourceMonitorDetailView: View {
     private func monitorColumnHeader(_ title: String, width: CGFloat?, alignment: Alignment) -> some View {
         if let width {
             Text(title)
-                .font(.caption2)
-                .bold()
-                .foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
                 .frame(width: width, alignment: alignment)
         } else {
             Text(title)
-                .font(.caption2)
-                .bold()
-                .foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: alignment)
                 .padding(.leading, DesignTokens.Spacing.sm)
         }
-    }
-
-    // MARK: - Host Tab
-
-    @ViewBuilder
-    private var hostTab: some View {
-        if let snapshot = store.snapshot {
-            ScrollView {
-                VStack(spacing: DesignTokens.Spacing.md) {
-                    GroupBox {
-                        VStack(spacing: 0) {
-                            monitorInfoRow(label: "Hostname", value: snapshot.host.hostname)
-                            Divider()
-                            monitorInfoRow(label: "OS Version", value: snapshot.host.osVersion)
-                            Divider()
-                            monitorInfoRow(label: "CPU Cores", value: "\(snapshot.host.cpuCores)")
-                            Divider()
-                            monitorInfoRow(
-                                label: "Total RAM",
-                                value: monitorFormatMemory(snapshot.host.totalMemoryBytes)
-                            )
-                            Divider()
-                            monitorInfoRow(
-                                label: "Uptime",
-                                value: monitorFormatUptime(snapshot.host.uptimeSeconds)
-                            )
-                        }
-                    }
-                }
-                .padding(DesignTokens.Spacing.md)
-            }
-        } else {
-            ProgressView("Collecting data\u{2026}")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private func monitorInfoRow(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .font(.system(.subheadline, design: .monospaced))
-        }
-        .padding(.horizontal, DesignTokens.Spacing.sm)
-        .padding(.vertical, DesignTokens.Spacing.sm)
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
-    }
-}
-
-private struct ResourceMonitorTabControl: NSViewRepresentable {
-    @Binding var selectedTab: ResourceMonitorDetailView.MonitorTab
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(selectedTab: $selectedTab)
-    }
-
-    func makeNSView(context: Context) -> NSSegmentedControl {
-        let control = NSSegmentedControl(
-            labels: ResourceMonitorDetailView.MonitorTab.allCases.map(\.rawValue),
-            trackingMode: .selectOne,
-            target: context.coordinator,
-            action: #selector(Coordinator.selectionChanged(_:))
-        )
-        control.segmentStyle = .rounded
-        control.controlSize = .regular
-        control.selectedSegment = ResourceMonitorDetailView.MonitorTab.allCases.firstIndex(of: selectedTab) ?? 0
-        control.setAccessibilityIdentifier("pane.resourceMonitor.segmentedControl")
-        control.setAccessibilityLabel("Resource monitor sections")
-        return control
-    }
-
-    func updateNSView(_ nsView: NSSegmentedControl, context: Context) {
-        let selectedIndex = ResourceMonitorDetailView.MonitorTab.allCases.firstIndex(of: selectedTab) ?? 0
-        if nsView.selectedSegment != selectedIndex {
-            nsView.selectedSegment = selectedIndex
-        }
-        context.coordinator.selectedTab = $selectedTab
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        var selectedTab: Binding<ResourceMonitorDetailView.MonitorTab>
-
-        init(selectedTab: Binding<ResourceMonitorDetailView.MonitorTab>) {
-            self.selectedTab = selectedTab
-        }
-
-        @objc func selectionChanged(_ sender: NSSegmentedControl) {
-            let tabs = ResourceMonitorDetailView.MonitorTab.allCases
-            guard sender.selectedSegment >= 0, sender.selectedSegment < tabs.count else { return }
-            selectedTab.wrappedValue = tabs[sender.selectedSegment]
-        }
-    }
-}
-
-// MARK: - Stat Card
-
-private struct MonitorStatCard: View {
-    let label: String
-    let value: String
-    let color: Color
-
-    var body: some View {
-        VStack(spacing: DesignTokens.Spacing.xs) {
-            Text(value)
-                .font(.system(.title2, design: .monospaced))
-                .bold()
-                .foregroundStyle(color)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(DesignTokens.Spacing.sm + DesignTokens.Spacing.xs)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.primary.opacity(DesignTokens.Opacity.subtle))
-        )
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
     }
 }
 
@@ -569,10 +476,22 @@ private func monitorFormatCpu(_ percent: Float) -> String {
     String(format: "%.1f%%", percent)
 }
 
+/// Compute a Y-axis range for memory that fits the data with headroom, avoiding 0-origin when values are clustered high
+private func monitorMemoryYRange(_ values: [Double]) -> ClosedRange<Double> {
+    guard let minVal = values.min(), let maxVal = values.max() else {
+        return 0 ... 100
+    }
+    let spread = maxVal - minVal
+    let padding = max(spread * 0.3, maxVal * 0.1, 10)
+    let lower = max(floor((minVal - padding) / 10) * 10, 0)
+    let upper = ceil((maxVal + padding) / 10) * 10
+    return lower ... max(upper, lower + 20)
+}
+
 private func monitorSeverityColor(_ percent: Float) -> Color {
     if percent >= 80 { return .red }
     if percent >= 50 { return .orange }
-    return .green
+    return .primary
 }
 
 private func monitorFormatUptime(_ seconds: UInt64) -> String {
