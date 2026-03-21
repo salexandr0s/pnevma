@@ -779,13 +779,17 @@ async fn ws_per_ip_connection_cap_enforced() {
 #[tokio::test]
 async fn ws_message_rate_burst_triggers_error() {
     let router_impl = Arc::new(RecordingRouter::default());
-    let server = TestServer::spawn_with_ws_rate_limit(router_impl, 5, 2).await;
+    // Use a very low per-second limit (2) so the 3rd message triggers the rate
+    // limiter even on slow CI runners where a 1-second window reset is possible.
+    // A high max_consecutive_rate_violations (10) keeps the connection open long
+    // enough to guarantee multiple rate-limit error responses before disconnect.
+    let server = TestServer::spawn_with_ws_rate_limit(router_impl, 2, 10).await;
 
     let (mut stream, _) = connect_async(format!("ws://{}/api/ws", server.address))
         .await
         .expect("connect websocket");
 
-    // Send >60 messages in a tight loop. Use Subscribe messages for channels
+    // Send messages in a tight loop. Use Subscribe messages for channels
     // that will get "channel not allowed" errors — that is fine, the rate
     // limiter counts all messages regardless.
     for i in 0..20 {
