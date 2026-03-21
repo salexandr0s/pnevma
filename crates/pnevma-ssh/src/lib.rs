@@ -10,7 +10,10 @@ pub mod tailscale;
 pub use config_parser::parse_ssh_config;
 pub use error::SshError;
 pub use key_manager::{generate_key, list_ssh_keys, SshKeyInfo};
-pub use profile::{build_ssh_command, validate_profile, validate_profile_fields, SshProfile};
+pub use profile::{
+    build_ssh_command, cleanup_control_sockets, control_socket_path, ensure_control_socket_dir,
+    validate_profile, validate_profile_fields, SshKeepAliveMode, SshProfile,
+};
 pub use remote_helper::{
     build_remote_attach_command, create_remote_session, ensure_remote_helper,
     list_remote_directory, read_remote_file, read_remote_scrollback_tail, remote_helper_health,

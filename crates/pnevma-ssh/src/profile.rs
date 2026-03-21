@@ -1,7 +1,28 @@
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::SshError;
+
+/// SSH keepalive mode determines how aggressively dead connections are detected.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum SshKeepAliveMode {
+    /// 10s interval, 2 max → 20s detection. For interactive attach sessions.
+    Interactive,
+    /// 30s interval, 3 max → 90s detection. For background operations.
+    #[default]
+    Background,
+}
+
+const KEEPALIVE_INTERACTIVE_INTERVAL: u32 = 10;
+const KEEPALIVE_INTERACTIVE_COUNT: u32 = 2;
+const KEEPALIVE_BACKGROUND_INTERVAL: u32 = 30;
+const KEEPALIVE_BACKGROUND_COUNT: u32 = 3;
+
+const CONTROL_SOCKET_DIR: &str = ".pnevma/ssh/control";
+const CONTROL_PERSIST_SECS: u32 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshProfile {
@@ -16,6 +37,10 @@ pub struct SshProfile {
     pub source: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Enable OpenSSH ControlMaster connection multiplexing.
+    /// `None` and `Some(true)` both enable it; `Some(false)` disables it.
+    #[serde(default)]
+    pub use_control_master: Option<bool>,
 }
 
 impl SshProfile {
@@ -39,6 +64,7 @@ impl SshProfile {
             source: source.into(),
             created_at: now,
             updated_at: now,
+            use_control_master: None,
         })
     }
 }
@@ -181,14 +207,34 @@ pub fn validate_profile_fields(
     Ok(())
 }
 
-pub fn build_ssh_command(profile: &SshProfile) -> Vec<String> {
+pub fn build_ssh_command(profile: &SshProfile, keepalive: SshKeepAliveMode) -> Vec<String> {
+    let (interval, count) = match keepalive {
+        SshKeepAliveMode::Interactive => {
+            (KEEPALIVE_INTERACTIVE_INTERVAL, KEEPALIVE_INTERACTIVE_COUNT)
+        }
+        SshKeepAliveMode::Background => (KEEPALIVE_BACKGROUND_INTERVAL, KEEPALIVE_BACKGROUND_COUNT),
+    };
     let mut args = vec![
         "ssh".into(),
         "-o".into(),
-        "ServerAliveInterval=30".into(),
+        format!("ServerAliveInterval={interval}"),
         "-o".into(),
-        "ServerAliveCountMax=3".into(),
+        format!("ServerAliveCountMax={count}"),
     ];
+    if profile.use_control_master.unwrap_or(true) {
+        // Only enable ControlMaster when we can compute a safe socket path
+        // (requires $HOME to be set — never fall back to /tmp).
+        if let Some(socket_path) = control_socket_path(profile) {
+            args.extend([
+                "-o".into(),
+                "ControlMaster=auto".into(),
+                "-o".into(),
+                format!("ControlPath={}", socket_path.display()),
+                "-o".into(),
+                format!("ControlPersist={CONTROL_PERSIST_SECS}"),
+            ]);
+        }
+    }
     if profile.port != 22 {
         args.extend(["-p".to_string(), profile.port.to_string()]);
     }
@@ -205,6 +251,62 @@ pub fn build_ssh_command(profile: &SshProfile) -> Vec<String> {
     args
 }
 
+/// Returns the home directory, or `None` if `$HOME` is not set.
+/// Never falls back to `/tmp` — callers must handle the `None` case.
+fn home_dir() -> Option<String> {
+    std::env::var("HOME").ok().filter(|h| !h.is_empty())
+}
+
+/// Compute a hashed control socket path for ControlMaster multiplexing.
+/// Uses SHA256 prefix (16 hex chars) to stay within the 104-char macOS limit.
+/// Returns `None` if `$HOME` is not set (ControlMaster requires a user-owned directory).
+pub fn control_socket_path(profile: &SshProfile) -> Option<PathBuf> {
+    let home = home_dir()?;
+    let key = format!(
+        "{}@{}:{}",
+        profile.user.as_deref().unwrap_or("_"),
+        profile.host,
+        profile.port
+    );
+    let hash = format!("{:x}", Sha256::digest(key.as_bytes()));
+    Some(
+        PathBuf::from(home)
+            .join(CONTROL_SOCKET_DIR)
+            .join(&hash[..16]),
+    )
+}
+
+/// Ensure the ControlMaster socket directory exists with 0700 permissions.
+/// Returns `Err` if `$HOME` is not set.
+pub fn ensure_control_socket_dir() -> std::io::Result<()> {
+    let home = home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))?;
+    let dir = PathBuf::from(home).join(CONTROL_SOCKET_DIR);
+    // Always create + set permissions (idempotent), avoiding TOCTOU race.
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Remove all control sockets. Call on app shutdown.
+pub fn cleanup_control_sockets() -> std::io::Result<()> {
+    let Some(home) = home_dir() else {
+        return Ok(());
+    };
+    let dir = PathBuf::from(home).join(CONTROL_SOCKET_DIR);
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,7 +318,7 @@ mod tests {
     #[test]
     fn build_ssh_command_minimal() {
         let p = base_profile();
-        let cmd = build_ssh_command(&p);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
         assert_eq!(cmd[0], "ssh");
         // Default port 22 should not add -p flag
         assert!(!cmd.contains(&"-p".to_string()));
@@ -228,7 +330,7 @@ mod tests {
     fn build_ssh_command_with_user() {
         let mut p = base_profile();
         p.user = Some("admin".to_string());
-        let cmd = build_ssh_command(&p);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
         assert_eq!(cmd.last().unwrap(), "admin@mybox.example.com");
     }
 
@@ -236,7 +338,7 @@ mod tests {
     fn build_ssh_command_with_non_default_port() {
         let mut p = base_profile();
         p.port = 2222;
-        let cmd = build_ssh_command(&p);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
         let port_idx = cmd.iter().position(|a| a == "-p").expect("-p flag");
         assert_eq!(cmd[port_idx + 1], "2222");
     }
@@ -245,7 +347,7 @@ mod tests {
     fn build_ssh_command_with_identity_file() {
         let mut p = base_profile();
         p.identity_file = Some("/home/user/.ssh/id_ed25519".to_string());
-        let cmd = build_ssh_command(&p);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
         let i_idx = cmd.iter().position(|a| a == "-i").expect("-i flag");
         assert_eq!(cmd[i_idx + 1], "/home/user/.ssh/id_ed25519");
     }
@@ -254,19 +356,66 @@ mod tests {
     fn build_ssh_command_with_proxy_jump() {
         let mut p = base_profile();
         p.proxy_jump = Some("bastion.example.com".to_string());
-        let cmd = build_ssh_command(&p);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
         let j_idx = cmd.iter().position(|a| a == "-J").expect("-J flag");
         assert_eq!(cmd[j_idx + 1], "bastion.example.com");
     }
 
     #[test]
-    fn build_ssh_command_includes_keepalive_options() {
+    fn build_ssh_command_background_keepalive() {
         let p = base_profile();
-        let cmd = build_ssh_command(&p);
-        let o_count = cmd.iter().filter(|a| a.as_str() == "-o").count();
-        assert_eq!(o_count, 2, "should have two -o flags");
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
         assert!(cmd.contains(&"ServerAliveInterval=30".to_string()));
         assert!(cmd.contains(&"ServerAliveCountMax=3".to_string()));
+    }
+
+    #[test]
+    fn build_ssh_command_interactive_keepalive() {
+        let p = base_profile();
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Interactive);
+        assert!(cmd.contains(&"ServerAliveInterval=10".to_string()));
+        assert!(cmd.contains(&"ServerAliveCountMax=2".to_string()));
+    }
+
+    #[test]
+    fn build_ssh_command_includes_control_master() {
+        let p = base_profile();
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        assert!(cmd.contains(&"ControlMaster=auto".to_string()));
+        assert!(
+            cmd.iter().any(|a| a.starts_with("ControlPath=")),
+            "should have ControlPath"
+        );
+        assert!(
+            cmd.iter().any(|a| a.starts_with("ControlPersist=")),
+            "should have ControlPersist"
+        );
+    }
+
+    #[test]
+    fn build_ssh_command_control_master_disabled() {
+        let mut p = base_profile();
+        p.use_control_master = Some(false);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        assert!(
+            !cmd.contains(&"ControlMaster=auto".to_string()),
+            "ControlMaster should not be present when disabled"
+        );
+    }
+
+    #[test]
+    fn control_socket_path_under_limit() {
+        let mut p = base_profile();
+        // Use a very long hostname to test path length
+        p.host = "a".repeat(253);
+        p.user = Some("verylongusername".to_string());
+        let path = control_socket_path(&p).expect("HOME should be set in test");
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.len() < 104,
+            "socket path must be under 104 chars, got {} chars: {path_str}",
+            path_str.len()
+        );
     }
 
     #[test]
@@ -279,6 +428,7 @@ mod tests {
         assert!(p.tags.is_empty());
         assert_eq!(p.source, "manual");
         assert!(!p.id.is_empty());
+        assert!(p.use_control_master.is_none());
     }
 
     #[test]

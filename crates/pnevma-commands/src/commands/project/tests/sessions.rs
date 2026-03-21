@@ -845,6 +845,7 @@ pub(super) fn test_remote_profile(profile_id: &str, name: &str) -> pnevma_ssh::S
         source: "manual".to_string(),
         created_at: now,
         updated_at: now,
+        use_control_master: None,
     }
 }
 

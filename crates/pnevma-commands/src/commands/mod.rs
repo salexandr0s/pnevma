@@ -1939,6 +1939,7 @@ fn ssh_profile_from_remote_target(
         source: "session_remote_target".to_string(),
         created_at: now,
         updated_at: now,
+        use_control_master: None,
     })
 }
 
@@ -2108,6 +2109,7 @@ async fn resolve_ssh_profile_by_id(
                 source: row.source,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
+                use_control_master: None,
             }));
         }
     }
@@ -2132,6 +2134,7 @@ async fn resolve_ssh_profile_by_id(
         source: row.source,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        use_control_master: None,
     }))
 }
 

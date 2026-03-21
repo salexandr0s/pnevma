@@ -232,9 +232,9 @@ cmd_create_session() {
 
   rm -f "$exit_code_path" "$attach_marker"
   launch_cmd="$(script_launch_command "$launch_path")"
-  nohup sh -c "${launch_cmd} < $(shell_quote "$fifo_path") >> $(shell_quote "$log_path") 2>&1; code=\$?; printf '%s' \"\$code\" > $(shell_quote "$exit_code_path"); rm -f $(shell_quote "$runner_pid_path")" >/dev/null 2>&1 &
+  nohup sh -c "${launch_cmd} < $(shell_quote "$fifo_path") >> $(shell_quote "$log_path") 2>&1; code=\$?; printf '%s' \"\$code\" > $(shell_quote "$exit_code_path.tmp") && mv $(shell_quote "$exit_code_path.tmp") $(shell_quote "$exit_code_path"); rm -f $(shell_quote "$runner_pid_path")" >/dev/null 2>&1 &
   runner_pid=$!
-  printf '%s\n' "$runner_pid" > "$runner_pid_path"
+  printf '%s\n' "$runner_pid" > "$runner_pid_path.tmp" && mv "$runner_pid_path.tmp" "$runner_pid_path"
   start_keepalive_writer "$fifo_path" "$keepalive_pid_path"
 
   print_kv session_id "$session_id"
@@ -280,7 +280,6 @@ cmd_session_status() {
   cleanup_dead_pid_file "$keepalive_pid_path"
 
   runner_pid="$(read_pid_file "$runner_pid_path")"
-  state="lost"
   if [ -n "$runner_pid" ] && pid_alive "$runner_pid"; then
     if [ -f "$attach_marker" ]; then
       state="attached"
@@ -288,6 +287,11 @@ cmd_session_status() {
       state="detached"
     fi
   elif [ -f "$exit_code_path" ]; then
+    state="exited"
+  else
+    # Auto-repair: PID dead or missing, no exit_code — write synthetic
+    # exit code so session transitions to "exited" instead of "lost".
+    printf '%s\n' "-1" > "$exit_code_path.tmp" && mv "$exit_code_path.tmp" "$exit_code_path" 2>/dev/null || true
     state="exited"
   fi
 

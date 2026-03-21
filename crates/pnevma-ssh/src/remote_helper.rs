@@ -161,7 +161,7 @@ struct RemoteHelperArtifactManifestEntry {
 }
 
 pub fn build_remote_attach_command(profile: &SshProfile, session_id: &str) -> String {
-    let mut args = ssh_args_without_binary(profile);
+    let mut args = ssh_args_without_binary(profile, crate::SshKeepAliveMode::Interactive);
     args.insert(0, "-tt".to_string());
     args.insert(0, ssh_binary_path().to_string_lossy().to_string());
     args.push(remote_command_arg(&format!(
@@ -972,12 +972,19 @@ async fn run_ssh_with_tty(
     stdin_bytes: Option<&[u8]>,
     request_tty: bool,
 ) -> Result<SshCommandOutput, SshError> {
+    let keepalive = if request_tty {
+        crate::SshKeepAliveMode::Interactive
+    } else {
+        crate::SshKeepAliveMode::Background
+    };
+    // Ensure control socket directory exists (best-effort, non-fatal).
+    let _ = crate::ensure_control_socket_dir();
     let mut command = Command::new(ssh_binary_path());
     if request_tty {
         command.arg("-tt");
     }
     command
-        .args(ssh_args_without_binary(profile))
+        .args(ssh_args_without_binary(profile, keepalive))
         .arg(remote_command_arg(remote_command))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1030,8 +1037,11 @@ fn resolve_local_binary(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn ssh_args_without_binary(profile: &SshProfile) -> Vec<String> {
-    let mut args = crate::build_ssh_command(profile);
+fn ssh_args_without_binary(
+    profile: &SshProfile,
+    keepalive: crate::SshKeepAliveMode,
+) -> Vec<String> {
+    let mut args = crate::build_ssh_command(profile, keepalive);
     if !args.is_empty() {
         args.remove(0);
     }
@@ -1061,6 +1071,7 @@ mod tests {
             source: "manual".to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            use_control_master: None,
         }
     }
 

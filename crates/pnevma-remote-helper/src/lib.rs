@@ -12,7 +12,9 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -128,6 +130,16 @@ pub struct SessionStatusResult {
     pub exit_code: Option<i32>,
     pub total_bytes: u64,
     pub last_output_at_epoch: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionManifest {
+    session_id: String,
+    controller_id: String,
+    pid: u32,
+    start_time: Option<i64>,
+    command: String,
+    created_at: i64,
 }
 
 pub fn run_cli<I, S>(args: I) -> Result<(), HelperError>
@@ -254,8 +266,23 @@ impl HelperRuntime {
             shell_quote(session_id),
         );
         let runner_pid = spawn_detached_shell(&runner_command)?;
-        write_private_file(&runner_pid_path, format!("{runner_pid}\n").as_bytes())?;
+        write_atomic(&runner_pid_path, format!("{runner_pid}\n").as_bytes())?;
         remove_if_exists(&keepalive_pid_path)?;
+
+        let manifest = SessionManifest {
+            session_id: session_id.to_string(),
+            controller_id: controller_id.clone(),
+            pid: runner_pid,
+            start_time: process_start_time(runner_pid),
+            command: command.unwrap_or(DEFAULT_SHELL_COMMAND).to_string(),
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        };
+        if let Err(e) = write_session_manifest(&session_dir, &manifest) {
+            eprintln!("pnevma-remote-helper: failed to write session manifest: {e}");
+        }
 
         Ok(SessionCreateResult {
             session_id: session_id.to_string(),
@@ -303,9 +330,12 @@ impl HelperRuntime {
             let _ = remove_if_exists(&attach_marker_path);
         }
 
+        let manifest = read_session_manifest(&session_dir);
+        let expected_start_time = manifest.as_ref().and_then(|m| m.start_time);
+
         let runner_pid = read_pid_file(&runner_pid_path)?;
         let state = if let Some(pid) = runner_pid {
-            if pid_alive(pid) {
+            if pid_is_same_process(pid, expected_start_time) {
                 if attach_active {
                     "attached"
                 } else {
@@ -314,12 +344,19 @@ impl HelperRuntime {
             } else if exit_code_path.exists() {
                 "exited"
             } else {
-                "lost"
+                // Auto-repair: PID is dead (or reused) with no exit_code — write
+                // a synthetic exit code so the session transitions to "exited"
+                // instead of remaining permanently "lost".
+                let _ = write_atomic(&exit_code_path, b"-1\n");
+                "exited"
             }
         } else if exit_code_path.exists() {
             "exited"
         } else {
-            "lost"
+            // No runner PID file and no exit code — session dir exists but
+            // state is unrecoverable. Auto-repair with synthetic exit code.
+            let _ = write_atomic(&exit_code_path, b"-1\n");
+            "exited"
         };
 
         Ok(SessionStatusResult {
@@ -508,7 +545,7 @@ impl HelperRuntime {
             touch_file(&log_path)?;
             let mut log = OpenOptions::new().append(true).open(&log_path)?;
             writeln!(log, "runner error: {error}")?;
-            write_private_file(&exit_code_path, b"1\n")?;
+            let _ = write_atomic(&exit_code_path, b"1\n");
             let _ = remove_if_exists(&child_pid_path);
             let _ = remove_if_exists(&runner_pid_path);
             let _ = remove_if_exists(&attach_marker_path);
@@ -551,11 +588,11 @@ impl HelperRuntime {
         let output_handle = thread::spawn(move || copy_pty_to_log(output_master, log));
 
         let mut child = spawn_session_child(&launch_path, slave_fd)?;
-        write_private_file(&child_pid_path, format!("{}\n", child.id()).as_bytes())?;
+        write_atomic(&child_pid_path, format!("{}\n", child.id()).as_bytes())?;
 
         let status = child.wait()?;
         let exit_code = exit_status_code(status);
-        write_private_file(&exit_code_path, format!("{exit_code}\n").as_bytes())?;
+        write_atomic(&exit_code_path, format!("{exit_code}\n").as_bytes())?;
 
         stop.store(true, Ordering::Relaxed);
         join_helper_thread(input_handle, "session input forwarder")?;
@@ -1008,6 +1045,17 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), HelperError> {
     Ok(())
 }
 
+/// Atomic write: write to `{path}.tmp` then rename into place.
+/// Ensures readers never see a partial file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), HelperError> {
+    // Append ".tmp" rather than using with_extension, which would replace
+    // the existing extension (e.g. runner.pid → runner.tmp instead of runner.pid.tmp).
+    let tmp = PathBuf::from(format!("{}.tmp", path.display()));
+    write_private_file(&tmp, bytes)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 fn touch_file(path: &Path) -> Result<(), HelperError> {
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
@@ -1067,6 +1115,23 @@ fn read_pid_file(path: &Path) -> Result<Option<u32>, HelperError> {
     Ok(read_trimmed_string(path)?.and_then(|value| value.parse::<u32>().ok()))
 }
 
+fn read_session_manifest(session_dir: &Path) -> Option<SessionManifest> {
+    let path = session_dir.join("session.json");
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn write_session_manifest(
+    session_dir: &Path,
+    manifest: &SessionManifest,
+) -> Result<(), HelperError> {
+    let path = session_dir.join("session.json");
+    let json = serde_json::to_string_pretty(manifest).map_err(|e| {
+        HelperError::CommandFailed(format!("failed to serialize session manifest: {e}"))
+    })?;
+    write_atomic(&path, json.as_bytes())
+}
+
 fn command_exists(name: &str) -> bool {
     Command::new("sh")
         .arg("-lc")
@@ -1092,6 +1157,72 @@ fn pid_alive(pid: u32) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// Get a stable process start time identifier for PID reuse detection.
+/// On Linux, returns the starttime field from /proc (clock ticks since boot).
+/// On macOS, returns `lstart` from `ps` hashed to a stable i64.
+/// Returns `None` if the process doesn't exist or info is unavailable.
+#[cfg(target_os = "linux")]
+fn process_start_time(pid: u32) -> Option<i64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Field 22 (1-indexed) is starttime in clock ticks.
+    // The comm field (field 2) may contain spaces/parens, so find the last ')' first.
+    let after_comm = stat.rfind(')')? + 1;
+    let fields: Vec<&str> = stat[after_comm..].split_whitespace().collect();
+    // After ')' we have fields 3..N (0-indexed from after_comm: field 3 = index 0).
+    // starttime is field 22, so index 22-3 = 19.
+    let starttime = fields.get(19)?.parse::<i64>().ok()?;
+    Some(starttime)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_start_time(pid: u32) -> Option<i64> {
+    // macOS and other platforms: use `ps -p PID -o lstart=` to get the process
+    // start time, then convert to a Unix timestamp for stable comparison.
+    // The lstart format is "Day Mon DD HH:MM:SS YYYY" (e.g. "Fri Mar 21 10:30:15 2025").
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let lstart = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if lstart.is_empty() {
+        return None;
+    }
+    // Compute a stable fingerprint using FNV-1a (deterministic across Rust versions).
+    // We don't need a real timestamp — just a stable identifier that changes when the
+    // process is different. FNV-1a has no external dependencies and is trivially stable.
+    Some(fnv1a_hash(lstart.as_bytes()) as i64)
+}
+
+/// FNV-1a 64-bit hash — deterministic, stable across Rust versions.
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Check if a PID is genuinely the same process we spawned, not a reused PID.
+/// Falls back to `pid_alive()` if start time verification is unavailable.
+fn pid_is_same_process(pid: u32, expected_start_time: Option<i64>) -> bool {
+    if !pid_alive(pid) {
+        return false;
+    }
+    let Some(expected) = expected_start_time else {
+        return true; // no start time to verify — trust pid_alive
+    };
+    let Some(actual) = process_start_time(pid) else {
+        return true; // can't verify — trust pid_alive
+    };
+    actual == expected
 }
 
 fn cleanup_dead_pid_file(path: &Path) -> Result<(), HelperError> {
@@ -1529,5 +1660,103 @@ mod tests {
         let runtime = test_runtime();
         let result = runtime.run_command("signal", &["--session-id".into(), "missing".into()]);
         assert!(matches!(result, Err(HelperError::CommandFailed(_))));
+    }
+
+    #[test]
+    fn write_atomic_creates_file_without_partial() {
+        let dir = env::temp_dir().join(format!("pnevma-atomic-{}", Uuid::new_v4()));
+        ensure_dir(&dir).expect("dir");
+        let target = dir.join("data.txt");
+        let tmp = target.with_extension("tmp");
+
+        write_atomic(&target, b"hello\n").expect("write atomic");
+        assert!(target.exists(), "target should exist after atomic write");
+        assert!(!tmp.exists(), "tmp file should be gone after rename");
+        assert_eq!(fs::read_to_string(&target).expect("read"), "hello\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_repair_dead_pid_no_exit_code_returns_exited() {
+        let runtime = test_runtime();
+        let session_id = "auto-repair-test";
+        let session_dir = runtime.paths.session_dir(session_id);
+        ensure_dir(&session_dir).expect("session dir");
+
+        let log_path = session_dir.join("output.log");
+        let runner_pid_path = session_dir.join("runner.pid");
+        let exit_code_path = session_dir.join("exit_code");
+
+        touch_file(&log_path).expect("log");
+        // Write a dead PID (999999 is very unlikely to be alive)
+        write_private_file(&runner_pid_path, b"999999\n").expect("runner pid");
+
+        // No exit_code file — previously this would return "lost"
+        let status = runtime.session_status(session_id).expect("status");
+        assert_eq!(
+            status.state, "exited",
+            "auto-repair should produce 'exited' not 'lost'"
+        );
+        assert_eq!(
+            status.exit_code,
+            Some(-1),
+            "auto-repair should write exit_code -1"
+        );
+        assert!(
+            exit_code_path.exists(),
+            "exit_code file should be created by auto-repair"
+        );
+    }
+
+    #[test]
+    fn auto_repair_no_pid_no_exit_code_returns_exited() {
+        let runtime = test_runtime();
+        let session_id = "auto-repair-no-pid";
+        let session_dir = runtime.paths.session_dir(session_id);
+        ensure_dir(&session_dir).expect("session dir");
+
+        let log_path = session_dir.join("output.log");
+        let exit_code_path = session_dir.join("exit_code");
+        touch_file(&log_path).expect("log");
+
+        // No runner.pid, no exit_code — session dir exists but state is unrecoverable
+        let status = runtime.session_status(session_id).expect("status");
+        assert_eq!(status.state, "exited", "should auto-repair to 'exited'");
+        assert!(exit_code_path.exists(), "exit_code should be created");
+    }
+
+    #[test]
+    fn session_manifest_written_on_create() {
+        let runtime = test_runtime();
+        let session_id = "manifest-test";
+        let session_dir = runtime.paths.session_dir(session_id);
+
+        let manifest = SessionManifest {
+            session_id: session_id.to_string(),
+            controller_id: "test-controller".to_string(),
+            pid: std::process::id(),
+            start_time: process_start_time(std::process::id()),
+            command: "echo hello".to_string(),
+            created_at: 1234567890,
+        };
+
+        ensure_dir(&session_dir).expect("session dir");
+        write_session_manifest(&session_dir, &manifest).expect("write manifest");
+
+        let loaded = read_session_manifest(&session_dir);
+        assert!(loaded.is_some(), "manifest should be readable");
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.session_id, session_id);
+        assert_eq!(loaded.pid, std::process::id());
+        assert_eq!(loaded.command, "echo hello");
+    }
+
+    #[test]
+    fn process_start_time_returns_value_for_current_process() {
+        let start = process_start_time(std::process::id());
+        // On macOS and Linux this should return a valid timestamp
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(start.is_some(), "should get start time for current process");
+        let _ = start; // suppress unused on other platforms
     }
 }
