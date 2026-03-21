@@ -8,7 +8,7 @@ Pnevma is a native macOS application with a Swift/AppKit UI and a Rust backend. 
 
 ### Prerequisites
 
-- Apple Silicon Mac running macOS 14+
+- Apple Silicon Mac running macOS 15+
 - Rust via the repo-pinned toolchain
 - Xcode 26+ with Command Line Tools
 - [just](https://github.com/casey/just) (command runner)

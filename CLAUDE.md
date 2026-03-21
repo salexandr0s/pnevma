@@ -11,7 +11,7 @@ See the global workspace conventions at `~/GitHub/CLAUDE.md`. Project rules here
 | Layer        | Technology                                                       |
 | ------------ | ---------------------------------------------------------------- |
 | Backend      | Rust 2021 edition, Tokio async, 10-crate workspace               |
-| Native app   | Swift 6 + AppKit, XcodeGen (`native/project.yml`)                |
+| Native app   | Swift 6.1 + AppKit, XcodeGen (`native/project.yml`)                |
 | Terminal     | Ghostty (libghostty), compiled with Zig, embedded as xcframework |
 | FFI bridge   | `pnevma-bridge` → `libpnevma_bridge.a` (C ABI, linked by Swift)  |
 | Database     | SQLite via sqlx (compile-time checked queries)                   |

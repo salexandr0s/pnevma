@@ -60,7 +60,7 @@ The first release must explicitly choose one support target:
 ### Recommended first release
 
 - architecture: `Apple Silicon (arm64)`
-- operating system: `macOS 14.0+`
+- operating system: `macOS 15.0+`
 
 ### Deferred option
 

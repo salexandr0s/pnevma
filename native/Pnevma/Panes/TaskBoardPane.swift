@@ -403,7 +403,7 @@ private struct TaskLaneColumn: View {
 
             if tasks.isEmpty {
                 TaskLaneEmptyState(status: status, onCreate: onCreate)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(spacing: 10) {
@@ -453,7 +453,8 @@ private struct TaskLaneEmptyState: View {
                     .padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 220)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
     }
 
     private var message: String {

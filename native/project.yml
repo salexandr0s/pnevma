@@ -2,15 +2,15 @@ name: Pnevma
 options:
   bundleIdPrefix: com.pnevma
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "15.0"
   xcodeVersion: "26.3"
   generateEmptyDirectories: true
 
 settings:
   base:
     PRODUCT_NAME: Pnevma
-    SWIFT_VERSION: "6"
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "6.1"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
     ENABLE_HARDENED_RUNTIME: YES
     ENABLE_APP_INTENTS_METADATA_GENERATION: NO
 
@@ -60,7 +60,7 @@ targets:
   Pnevma:
     type: application
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     preBuildScripts:
       - name: Build Rust Bridge
         shell: /bin/zsh
@@ -121,7 +121,7 @@ targets:
   PnevmaTests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     sources:
       - path: PnevmaTests
     dependencies:
@@ -137,7 +137,7 @@ targets:
   PnevmaAppDelegateTests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     sources:
       - path: PnevmaAppDelegateTests
     dependencies:
@@ -155,7 +155,7 @@ targets:
   PnevmaUITests:
     type: bundle.ui-testing
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     sources:
       - path: PnevmaUITests
     dependencies:

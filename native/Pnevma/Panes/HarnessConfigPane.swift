@@ -48,28 +48,66 @@ enum ConfigCategory: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .settings: return "Settings"
-        case .mcp: return "MCP"
-        case .hooks: return "Hooks"
-        case .agents: return "Agents"
-        case .skills: return "Skills"
-        case .memory: return "Memory"
-        case .design: return "Design"
-        case .rules: return "Rules"
+        case .settings: "Settings"
+        case .mcp: "MCP"
+        case .hooks: "Hooks"
+        case .agents: "Agents"
+        case .skills: "Skills"
+        case .memory: "Memory"
+        case .design: "Design"
+        case .rules: "Rules"
         }
     }
 
     var icon: String {
         switch self {
-        case .settings: return "gearshape"
-        case .mcp: return "server.rack"
-        case .hooks: return "arrow.triangle.branch"
-        case .agents: return "person.crop.circle"
-        case .skills: return "hammer"
-        case .memory: return "brain"
-        case .design: return "paintbrush"
-        case .rules: return "list.bullet.clipboard"
+        case .settings: "gearshape"
+        case .mcp: "server.rack"
+        case .hooks: "arrow.triangle.branch"
+        case .agents: "person.crop.circle"
+        case .skills: "hammer"
+        case .memory: "brain"
+        case .design: "paintbrush"
+        case .rules: "list.bullet.clipboard"
         }
+    }
+
+    var iconTintColor: Color {
+        switch self {
+        case .settings: Color(nsColor: .systemGray)
+        case .mcp: Color(nsColor: .systemPurple)
+        case .hooks: Color(nsColor: .systemOrange)
+        case .agents: Color(nsColor: .systemBlue)
+        case .skills: Color(nsColor: .systemIndigo)
+        case .memory: Color(nsColor: .systemPink)
+        case .design: Color(nsColor: .systemTeal)
+        case .rules: Color(nsColor: .systemBrown)
+        }
+    }
+
+    var iconFillColor: Color {
+        switch self {
+        case .settings: Color(nsColor: .quaternaryLabelColor)
+        case .mcp: Color(nsColor: .systemPurple)
+        case .hooks: Color(nsColor: .systemOrange)
+        case .agents: Color(nsColor: .systemBlue)
+        case .skills: Color(nsColor: .systemIndigo)
+        case .memory: Color(nsColor: .systemPink)
+        case .design: Color(nsColor: .systemTeal)
+        case .rules: Color(nsColor: .systemBrown)
+        }
+    }
+}
+
+// MARK: - Format Helpers
+
+private func formatIcon(for format: String) -> String {
+    switch format {
+    case "json": "curlybraces"
+    case "toml": "gearshape.2"
+    case "markdown": "doc.richtext"
+    case "yaml": "list.bullet"
+    default: "doc"
     }
 }
 
@@ -80,17 +118,25 @@ enum HarnessBrand {
 
     var label: String {
         switch self {
-        case .anthropic: return "Claude"
-        case .codex: return "Codex"
-        case .generic: return ""
+        case .anthropic: "Claude"
+        case .codex: "Codex"
+        case .generic: ""
         }
     }
 
     var color: Color {
         switch self {
-        case .anthropic: return Color(red: 0.85, green: 0.55, blue: 0.35)
-        case .codex: return Color(red: 0.3, green: 0.75, blue: 0.45)
-        case .generic: return .secondary
+        case .anthropic: Color(red: 0.85, green: 0.55, blue: 0.35)
+        case .codex: Color(red: 0.3, green: 0.75, blue: 0.45)
+        case .generic: .secondary
+        }
+    }
+
+    var logoAsset: String? {
+        switch self {
+        case .anthropic: "anthropic-logo"
+        case .codex: "openai-logo"
+        case .generic: nil
         }
     }
 
@@ -120,11 +166,63 @@ struct HarnessBrandPill: View {
     }
 }
 
+// MARK: - Search Field
+
+private struct HarnessConfigSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Filter", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+
+            if !text.isEmpty {
+                Button("Clear filter", systemImage: "xmark.circle.fill") {
+                    text = ""
+                }
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.tertiary)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
 // MARK: - HarnessConfigView
 
 struct HarnessConfigView: View {
     @State private var viewModel = HarnessConfigViewModel()
     @State private var isReaderMode = false
+    @State private var searchText = ""
+
+    private func filteredEntries(for category: ConfigCategory) -> [HarnessConfigEntry] {
+        let entries = viewModel.entries(for: category)
+        guard !searchText.isEmpty else { return entries }
+        return entries.filter {
+            $0.displayName.localizedStandardContains(searchText) ||
+            $0.format.localizedStandardContains(searchText) ||
+            $0.key.localizedStandardContains(searchText)
+        }
+    }
+
+    private var filteredCategories: [ConfigCategory] {
+        viewModel.activeCategories.filter { !filteredEntries(for: $0).isEmpty }
+    }
 
     var body: some View {
         NativePaneScaffold(
@@ -136,29 +234,55 @@ struct HarnessConfigView: View {
             inlineHeaderLabel: "Harness Config inline header"
         ) {
             NativeSplitScaffold(
-                sidebarMinWidth: 220,
+                sidebarMinWidth: 240,
                 sidebarIdealWidth: 280,
-                sidebarMaxWidth: 320
+                sidebarMaxWidth: 340,
+                sidebarSurface: .sidebar
             ) {
-                NativeCollectionShell {
-                    List(selection: $viewModel.selectedKey) {
-                        ForEach(viewModel.activeCategories, id: \.self) { category in
-                            let categoryEntries = viewModel.entries(for: category)
-                            Section {
-                                ForEach(categoryEntries) { entry in
-                                    HarnessConfigRow(entry: entry)
-                                        .tag(entry.key)
+                VStack(alignment: .leading, spacing: 0) {
+                    HarnessConfigSearchField(text: $searchText)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+
+                    Divider()
+
+                    if filteredCategories.isEmpty && !searchText.isEmpty {
+                        VStack(spacing: DesignTokens.Spacing.sm) {
+                            Text("No matching configs")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Try a different search term.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 2) {
+                                ForEach(Array(filteredCategories.enumerated()), id: \.element) { index, category in
+                                    let entries = filteredEntries(for: category)
+
+                                    HarnessCategoryHeader(
+                                        category: category,
+                                        count: entries.count
+                                    )
+                                    .padding(.top, index == 0 ? 4 : 14)
+
+                                    ForEach(entries) { entry in
+                                        HarnessConfigRow(
+                                            entry: entry,
+                                            category: category,
+                                            isSelected: viewModel.selectedKey == entry.key
+                                        ) {
+                                            viewModel.selectedKey = entry.key
+                                        }
+                                    }
                                 }
-                            } header: {
-                                HarnessCategoryHeader(
-                                    category: category,
-                                    count: categoryEntries.count
-                                )
                             }
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 8)
                         }
                     }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
                 }
             } detail: {
                 VStack(spacing: 0) {
@@ -194,9 +318,9 @@ struct HarnessConfigView: View {
                         }
                     } else {
                         EmptyStateView(
-                            icon: "doc.text",
-                            title: "Select a config file",
-                            message: "Choose a harness configuration file from the sidebar to view or edit it"
+                            icon: "slider.horizontal.3",
+                            title: "Harness Config",
+                            message: "Select a configuration file from the sidebar to view or edit it"
                         )
                     }
                 }
@@ -225,24 +349,17 @@ struct HarnessCategoryHeader: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: category.icon)
+            Text(category.displayName.uppercased())
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(category.displayName)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
                 .textCase(nil)
             Spacer()
             Text("\(count)")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(Capsule())
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(.quaternary)
         }
-        .padding(.top, 6)
-        .padding(.bottom, 2)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 4)
     }
 }
 
@@ -250,29 +367,100 @@ struct HarnessCategoryHeader: View {
 
 struct HarnessConfigRow: View {
     let entry: HarnessConfigEntry
+    let category: ConfigCategory
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    private var brand: HarnessBrand {
+        HarnessBrand.from(key: entry.key)
+    }
 
     var body: some View {
-        let brand = HarnessBrand.from(key: entry.key)
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.displayName)
-                    .font(.body)
-                    .lineLimit(1)
-                HStack(spacing: 4) {
-                    Text(entry.format)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                    HarnessBrandPill(brand: brand)
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if let logoAsset = brand.logoAsset {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? Color.white.opacity(0.18) : brand.color.opacity(0.12))
+                        .frame(width: 24, height: 24)
+                        .overlay {
+                            Image(logoAsset)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 14, height: 14)
+                                .foregroundStyle(isSelected ? Color.white : brand.color)
+                        }
+                } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(iconBackground)
+                        .frame(width: 24, height: 24)
+                        .overlay {
+                            Image(systemName: formatIcon(for: entry.format))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(iconForeground)
+                        }
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(entry.displayName)
+                        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(rowForeground)
+                        .lineLimit(1)
+
+                    HStack(spacing: 3) {
+                        Text(entry.format)
+                            .font(.system(size: 10, weight: .medium))
+                        if brand != .generic {
+                            Text("\u{00B7}")
+                            Text(brand.label)
+                        }
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(isSelected ? .white.opacity(0.7) : .secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                if !entry.exists {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.6) : Color.secondary)
                 }
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(rowBackground)
+            )
         }
-        .padding(.vertical, 2)
-        .opacity(entry.exists ? 1.0 : 0.45)
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onHover { isHovering = $0 }
+        .opacity(entry.exists ? 1.0 : 0.5)
         .accessibilityAddTraits(.isButton)
+    }
+
+    private var rowBackground: Color {
+        if isSelected { return Color.accentColor }
+        if isHovering { return Color.primary.opacity(0.06) }
+        return .clear
+    }
+
+    private var rowForeground: Color {
+        isSelected ? .white : .primary
+    }
+
+    private var iconBackground: Color {
+        if isSelected { return .white.opacity(0.18) }
+        return category.iconFillColor.opacity(category == .settings ? 0.65 : 0.92)
+    }
+
+    private var iconForeground: Color {
+        if isSelected { return .white }
+        return category == .settings ? .primary : .white
     }
 }
 
@@ -289,23 +477,42 @@ struct HarnessConfigEditorHeader: View {
         HarnessBrand.from(key: entry.key)
     }
 
+    private var category: ConfigCategory {
+        ConfigCategory(rawValue: entry.category) ?? .settings
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 12) {
+            if let logoAsset = brand.logoAsset {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(brand.color.opacity(0.12))
+                    .frame(width: 32, height: 32)
+                    .overlay {
+                        Image(logoAsset)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 18, height: 18)
+                            .foregroundStyle(brand.color)
+                    }
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(category.iconFillColor.opacity(category == .settings ? 0.65 : 0.92))
+                    .frame(width: 32, height: 32)
+                    .overlay {
+                        Image(systemName: formatIcon(for: entry.format))
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(category == .settings ? Color.primary : Color.white)
+                    }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(entry.displayName)
-                        .font(.headline)
+                        .font(.system(size: 13, weight: .semibold))
                     HarnessBrandPill(brand: brand, large: true)
-                    Text(entry.format)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
                 Text(entry.path)
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -336,10 +543,13 @@ struct HarnessConfigEditorHeader: View {
 
             Button("Save") { onSave() }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
                 .disabled(!hasChanges || isSaving)
                 .keyboardShortcut("s", modifiers: .command)
         }
-        .padding(12)
+        .padding(.horizontal, DesignTokens.Spacing.md)
+        .padding(.vertical, 10)
+        .background(ChromeSurfaceStyle.toolbar.color)
     }
 }
 
@@ -357,7 +567,7 @@ struct HarnessConfigEditor: View {
                 .scrollContentBackground(.hidden)
 
             if let error = validationError {
-                HStack {
+                HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow)
                     Text(error)
@@ -365,9 +575,10 @@ struct HarnessConfigEditor: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.red.opacity(0.1))
+                .padding(.horizontal, DesignTokens.Spacing.md)
+                .padding(.vertical, DesignTokens.Spacing.sm)
+                .background(Color.red.opacity(0.08))
+                .overlay(alignment: .top) { Divider() }
             }
         }
     }

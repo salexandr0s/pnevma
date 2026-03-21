@@ -30,7 +30,7 @@ struct AgentsSection: View {
             )
         } else {
             ScrollView {
-                LazyVStack(spacing: 8) {
+                LazyVStack(spacing: 6) {
                     ForEach(viewModel.agents) { agent in
                         AgentRow(agent: agent, viewModel: viewModel, onRequestDelete: { id in
                             agentToDelete = id
@@ -55,78 +55,119 @@ struct AgentsSection: View {
     }
 }
 
+// MARK: - AgentRow
+
 struct AgentRow: View {
     let agent: AgentProfileFullItem
     var viewModel: AgentViewModel
     var onRequestDelete: (String) -> Void = { _ in }
 
+    @State private var isHovering = false
+
+    private var providerLogo: String? {
+        switch agent.provider.lowercased() {
+        case "anthropic": "anthropic-logo"
+        case "openai": "openai-logo"
+        default: nil
+        }
+    }
+
+    private var providerColor: Color {
+        switch agent.provider.lowercased() {
+        case "anthropic": Color(red: 0.85, green: 0.55, blue: 0.35)
+        case "openai": Color(red: 0.3, green: 0.75, blue: 0.45)
+        default: .secondary
+        }
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(roleColor(for: agent.role))
+                .frame(width: 32, height: 32)
+                .overlay {
+                    Image(systemName: roleIcon(for: agent.role))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(agent.name)
-                        .font(.headline)
+                        .font(.system(size: 13, weight: .semibold))
                     RoleBadge(role: agent.role)
                     if let source = agent.source, source != "user" {
                         SourceBadge(source: source)
                     }
                 }
+
                 HStack(spacing: 4) {
-                    Image(systemName: agent.provider == "anthropic" ? "brain.head.profile" : "sparkle")
-                        .font(.caption2)
-                        .foregroundStyle(agent.provider == "anthropic"
-                            ? Color(red: 0.85, green: 0.55, blue: 0.35)
-                            : Color(red: 0.3, green: 0.75, blue: 0.45))
-                    Text("\(agent.provider) / \(agent.model)")
-                        .font(.caption)
+                    if let logo = providerLogo {
+                        Image(logo)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 12, height: 12)
+                            .foregroundStyle(providerColor)
+                    }
+                    Text(agent.model)
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
+
                 if let prompt = agent.systemPrompt, !prompt.isEmpty {
-                    Text(String(prompt.prefix(80)) + (prompt.count > 80 ? "\u{2026}" : ""))
-                        .font(.caption2)
+                    Text(String(prompt.prefix(120)))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
+
             Spacer()
-            HStack(spacing: 8) {
+
+            HStack(spacing: 4) {
                 if viewModel.scope == .global {
-                    Button(action: { viewModel.copyToProject(agent.id) }) {
-                        Image(systemName: "arrow.down.doc")
-                            .frame(width: 14, height: 14)
-                            .padding(4)
+                    Button("Copy to Project", systemImage: "arrow.down.doc") {
+                        viewModel.copyToProject(agent.id)
                     }
-                    .buttonStyle(.borderless)
                     .help("Copy to Project")
                 } else {
-                    Button(action: { viewModel.copyToGlobal(agent.id) }) {
-                        Image(systemName: "arrow.up.doc")
-                            .frame(width: 14, height: 14)
-                            .padding(4)
+                    Button("Copy to Global", systemImage: "arrow.up.doc") {
+                        viewModel.copyToGlobal(agent.id)
                     }
-                    .buttonStyle(.borderless)
                     .help("Copy to Global")
                 }
-                Button(action: { viewModel.startEditing(agent) }) {
-                    Image(systemName: "pencil")
-                        .frame(width: 14, height: 14)
-                        .padding(4)
+                Button("Edit Agent", systemImage: "pencil") {
+                    viewModel.startEditing(agent)
                 }
-                .buttonStyle(.borderless)
                 .help("Edit Agent")
-                Button(action: { onRequestDelete(agent.id) }) {
-                    Image(systemName: "trash")
-                        .frame(width: 14, height: 14)
-                        .padding(4)
+                Button("Delete Agent", systemImage: "trash") {
+                    onRequestDelete(agent.id)
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.red)
+                .foregroundStyle(Color.red.opacity(0.7))
                 .help("Delete Agent")
             }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .font(.system(size: 12))
+            .opacity(isHovering ? 1.0 : 0.3)
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(.rect(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                if isHovering {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.primary.opacity(0.04))
+                }
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(nsColor: .separatorColor).opacity(isHovering ? 0.5 : 0.2), lineWidth: 0.5)
+        )
+        .onHover { isHovering = $0 }
     }
 }
 
@@ -141,52 +182,82 @@ struct AgentFormCard: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
                 // Header
-                HStack {
-                    Text(agent.createdAt == nil ? "New Agent" : "Edit Agent")
-                        .font(.headline)
+                HStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(roleColor(for: agent.role))
+                        .frame(width: 32, height: 32)
+                        .overlay {
+                            Image(systemName: roleIcon(for: agent.role))
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(agent.createdAt == nil ? "New Agent" : "Edit Agent")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Configure agent profile and behavior")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+
                     Spacer()
+
                     Button("Cancel") { onCancel() }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     Button("Save") { onSave(agent) }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                         .disabled(agent.name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
-                // Name
-                TextField("Agent name", text: $agent.name)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.title3)
+                Divider()
 
-                // Provider + Model
-                HStack(spacing: 8) {
-                    Picker("", selection: $agent.provider) {
-                        Label {
-                            Text("Anthropic")
-                        } icon: {
-                            Image(systemName: "brain.head.profile")
-                                .foregroundStyle(Color(red: 0.85, green: 0.55, blue: 0.35))
-                        }
-                        .tag("anthropic")
-                        Label {
-                            Text("OpenAI")
-                        } icon: {
-                            Image(systemName: "sparkle")
-                                .foregroundStyle(Color(red: 0.3, green: 0.75, blue: 0.45))
-                        }
-                        .tag("openai")
-                    }
-                    .labelsHidden()
-                    .frame(width: 140)
-                    TextField("Model ID", text: $agent.model)
+                // Name
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Name")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    TextField("Agent name", text: $agent.name)
                         .textFieldStyle(.roundedBorder)
+                        .font(.title3)
                 }
 
-                // System Prompt — always visible, full editor
+                // Provider + Model
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Provider & Model")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Picker("", selection: $agent.provider) {
+                            Label {
+                                Text("Anthropic")
+                            } icon: {
+                                Image("anthropic-logo")
+                                    .foregroundStyle(Color(red: 0.85, green: 0.55, blue: 0.35))
+                            }
+                            .tag("anthropic")
+                            Label {
+                                Text("OpenAI")
+                            } icon: {
+                                Image("openai-logo")
+                                    .foregroundStyle(Color(red: 0.3, green: 0.75, blue: 0.45))
+                            }
+                            .tag("openai")
+                        }
+                        .labelsHidden()
+                        .frame(width: 140)
+                        TextField("Model ID", text: $agent.model)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+
+                // System Prompt
                 VStack(alignment: .leading, spacing: 4) {
                     Text("System Prompt")
-                        .font(.subheadline)
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                     TextEditor(text: Binding(
                         get: { agent.systemPrompt ?? "" },
@@ -195,18 +266,18 @@ struct AgentFormCard: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 200)
                     .scrollContentBackground(.hidden)
-                    .padding(6)
+                    .padding(8)
                     .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(.rect(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: 8)
                             .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
                     )
                 }
 
                 // Advanced
                 DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Picker("Role", selection: $agent.role) {
                             Text("Build").tag("build")
                             Text("Plan").tag("plan")
@@ -246,7 +317,7 @@ struct AgentFormCard: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             }
-            .padding(16)
+            .padding(20)
         }
     }
 }

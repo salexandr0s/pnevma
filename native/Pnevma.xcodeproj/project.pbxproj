@@ -82,6 +82,7 @@
 		6689FF6358E1837188069A2E /* BrowserToolBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 268F69B878A8B48B916445F3 /* BrowserToolBridgeTests.swift */; };
 		6A4098E1954AE8294A210FD8 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF3059187ECC603279A0295F /* AppIntents.framework */; };
 		6A93CB1E7FC63DBC6721A914 /* NativeChromeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3542380B276C48DCE3B8BF1B /* NativeChromeTests.swift */; };
+		6B089FDB9A434858674CCB65 /* SidebarTaskListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3185ABB51DE9A18ED9081034 /* SidebarTaskListView.swift */; };
 		6C4CA666946EA722CBC80A9E /* AppDelegateTabBarIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B25FAE9D350AB036606B91F3 /* AppDelegateTabBarIntegrationTests.swift */; };
 		6C59F86DEE0BD552874B3297 /* IssuesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E94D0D55FD837EFD5ADEA92C /* IssuesTabView.swift */; };
 		6FB2CBA75A034D792DEF1FFE /* PortsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89E6B9E90C75E6AD8842877 /* PortsViewModel.swift */; };
@@ -95,6 +96,7 @@
 		7604F1A869A5EAD0ED8787FE /* LayoutTemplateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE8BE2163B026CBDA323F6F1 /* LayoutTemplateStore.swift */; };
 		7690DA09065DBDD38ADB2E59 /* BrowserToolBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ACB3F33D02090D78D76C2A4 /* BrowserToolBridge.swift */; };
 		77A40247DB25D4639B897245 /* SecretsManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D17A817492A2A41BCB3B35 /* SecretsManagerPane.swift */; };
+		78FBE8F09BB3558D96B36F54 /* SidebarTaskRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D57BF50F0D713371825C75D /* SidebarTaskRow.swift */; };
 		7995E2053C57C8D087823C49 /* SidebarToolItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F634002B3FE8370CBCA78AA /* SidebarToolItem.swift */; };
 		7C37A8E688D5E8A045D42915 /* ConfigFileWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0793B251514870DC6B6DCC45 /* ConfigFileWatcher.swift */; };
 		8034B7939104803F6D608161 /* ErrorBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED80FCBA4BE6CBA17D9873F3 /* ErrorBanner.swift */; };
@@ -293,6 +295,7 @@
 		2E52F41573A608565E5F0B7E /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		2E9AA7146B1E25EFB67A0270 /* WorkflowAgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowAgentsView.swift; sourceTree = "<group>"; };
 		309A721DB157BF7B3EF75B7F /* PaneLayoutEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneLayoutEngineTests.swift; sourceTree = "<group>"; };
+		3185ABB51DE9A18ED9081034 /* SidebarTaskListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarTaskListView.swift; sourceTree = "<group>"; };
 		31A605D01D0B29D49ED01546 /* TerminalSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceTests.swift; sourceTree = "<group>"; };
 		321BE0235CE16EE75EC87DF9 /* PnevmaBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaBridgeTests.swift; sourceTree = "<group>"; };
 		32A2C0B6462CB680EA84B8F4 /* WorkspaceRowChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRowChips.swift; sourceTree = "<group>"; };
@@ -338,6 +341,7 @@
 		6847835F54BC8465D9280845 /* RightInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightInspectorView.swift; sourceTree = "<group>"; };
 		6B150E4219D93DE78384CDB4 /* BranchesTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BranchesTabView.swift; sourceTree = "<group>"; };
 		6C544DBD7E3A974E4C975167 /* SidebarFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarFooter.swift; sourceTree = "<group>"; };
+		6D57BF50F0D713371825C75D /* SidebarTaskRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarTaskRow.swift; sourceTree = "<group>"; };
 		6F5BC101BEBA1786EEA39659 /* ChromeMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeMotion.swift; sourceTree = "<group>"; };
 		7128B807BE64773097BA36E6 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		716265615CEC70180EE15AC4 /* CommandCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandCenterView.swift; sourceTree = "<group>"; };
@@ -607,6 +611,8 @@
 				58FF1B6AC31D7241243B2DF1 /* SidebarNavigationHeader.swift */,
 				BC606B3CC7CF9E3F578CC80E /* SidebarResizeHandle.swift */,
 				FD99CF62BD447E070374E23F /* SidebarSectionHeader.swift */,
+				3185ABB51DE9A18ED9081034 /* SidebarTaskListView.swift */,
+				6D57BF50F0D713371825C75D /* SidebarTaskRow.swift */,
 				AC189336BEE185BB13D2ED00 /* SidebarToolButton.swift */,
 				1F634002B3FE8370CBCA78AA /* SidebarToolItem.swift */,
 				BA90EB2FAF63DF28EC4C2B7F /* SidebarView.swift */,
@@ -1248,6 +1254,8 @@
 				2C9853485E1DBE4364B0EC80 /* SidebarNavigationHeader.swift in Sources */,
 				1964AC9006F0EB9D7B06D265 /* SidebarResizeHandle.swift in Sources */,
 				CB7360D5B8EE3B09E3C5CFBF /* SidebarSectionHeader.swift in Sources */,
+				6B089FDB9A434858674CCB65 /* SidebarTaskListView.swift in Sources */,
+				78FBE8F09BB3558D96B36F54 /* SidebarTaskRow.swift in Sources */,
 				B5FD6634BFAB3E1B0B91CF82 /* SidebarToolButton.swift in Sources */,
 				7995E2053C57C8D087823C49 /* SidebarToolItem.swift in Sources */,
 				E34C7FF1C1E65E7E2466FB69 /* SidebarView.swift in Sources */,
@@ -1337,7 +1345,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.tests;
 				PRODUCT_MODULE_NAME = PnevmaTests;
 				PRODUCT_NAME = PnevmaTests;
@@ -1357,7 +1365,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.tests;
 				PRODUCT_MODULE_NAME = PnevmaTests;
 				PRODUCT_NAME = PnevmaTests;
@@ -1377,7 +1385,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.appdelegatetests;
 				PRODUCT_MODULE_NAME = PnevmaAppDelegateTests;
 				PRODUCT_NAME = PnevmaAppDelegateTests;
@@ -1399,7 +1407,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.uitests;
 				PRODUCT_MODULE_NAME = PnevmaUITests;
 				PRODUCT_NAME = PnevmaUITests;
@@ -1424,7 +1432,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_LDFLAGS = "$(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge -lstdc++";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.app;
 				SDKROOT = macosx;
@@ -1448,7 +1456,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_LDFLAGS = "$(inherited) -L$(SRCROOT)/../target/aarch64-apple-darwin/$(CONFIGURATION:lower)/ -lpnevma_bridge -lstdc++";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.app;
 				SDKROOT = macosx;
@@ -1467,7 +1475,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.appdelegatetests;
 				PRODUCT_MODULE_NAME = PnevmaAppDelegateTests;
 				PRODUCT_NAME = PnevmaAppDelegateTests;
@@ -1523,14 +1531,14 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = Pnevma;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 6;
+				SWIFT_VERSION = 6.1;
 			};
 			name = Release;
 		};
@@ -1587,7 +1595,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1595,7 +1603,7 @@
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 6;
+				SWIFT_VERSION = 6.1;
 			};
 			name = Debug;
 		};
@@ -1612,7 +1620,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pnevma.uitests;
 				PRODUCT_MODULE_NAME = PnevmaUITests;
 				PRODUCT_NAME = PnevmaUITests;

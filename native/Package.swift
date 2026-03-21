@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 // SPM build path — alternative to xcodebuild.
 // Note: SPM cannot directly consume a .xcodeproj, so this file
 // describes the same target for `swift build` / CI use.
@@ -35,7 +35,7 @@ var pnevmaLinkerSettings: [LinkerSetting] = [
 let package = Package(
     name: "Pnevma",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         .library(name: "Pnevma", targets: ["Pnevma"]),

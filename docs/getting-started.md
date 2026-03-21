@@ -4,7 +4,7 @@ This guide gets a local source build running, then walks through the first works
 
 ## Prerequisites
 
-1. Apple Silicon Mac running macOS 14+.
+1. Apple Silicon Mac running macOS 15+.
 2. Rust via `rustup` using the repo-pinned toolchain in `rust-toolchain.toml`.
 3. Zig matching `.zig-version`.
 4. `just` (`brew install just`).

@@ -24,7 +24,7 @@
 
 Pnevma gives you one place to open a repository, supervise CLI coding agents in real terminals, review what they changed, and decide when that work is ready to merge.
 
-> Status: Pnevma currently targets Apple Silicon Macs on macOS 14+. Source builds are supported today. The first public `arm64` DMG for `v0.2.0` is planned to be Developer ID signed but not notarized, so first launch on a clean Mac may require Finder `Open` or System Settings `Open Anyway`.
+> Status: Pnevma currently targets Apple Silicon Macs on macOS 15+. Source builds are supported today. The first public `arm64` DMG for `v0.2.0` is planned to be Developer ID signed but not notarized, so first launch on a clean Mac may require Finder `Open` or System Settings `Open Anyway`.
 
 ## Why Pnevma
 
