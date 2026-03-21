@@ -182,6 +182,7 @@ pub async fn run_single_hook(
                     | "ENV"
                     | "CDPATH"
                     | "NODE_OPTIONS"
+                    | "NODE_EXTRA_CA_CERTS"
                     | "PERL5OPT"
                     | "PERL5LIB"
                     | "PYTHONSTARTUP"

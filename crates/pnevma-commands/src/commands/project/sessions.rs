@@ -683,6 +683,13 @@ pub async fn get_scrollback(
             )
             .await
             .map_err(|e| e.to_string())?;
+            // Defense-in-depth: redact remote scrollback with current secrets.
+            let secrets = current_redaction_secrets(&redaction_secrets).await;
+            let data = if secrets.is_empty() {
+                data
+            } else {
+                pnevma_redaction::redact_text(&data, &secrets)
+            };
             let end_offset = data.len() as u64;
             ScrollbackSlice {
                 session_id,
