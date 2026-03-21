@@ -276,11 +276,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn env_password_trims_whitespace() {
         let key = "PNEVMA_TEST_ENV_PASSWORD";
-        std::env::set_var(key, "  secret  ");
+        // Safety: test-only, single-threaded test, unique env var name
+        unsafe { std::env::set_var(key, "  secret  ") };
         let password = env_password(key).expect("env password");
-        std::env::remove_var(key);
+        unsafe { std::env::remove_var(key) };
         assert_eq!(password, "secret");
     }
 
@@ -317,8 +319,9 @@ mod tests {
     #[test]
     fn debug_impl_redacts_password() {
         use crate::control::ControlAuthMode;
+        use secrecy::SecretString;
         let mode = ControlAuthMode::Password {
-            password: "super-secret-password".into(),
+            password: SecretString::from("super-secret-password"),
         };
         let debug_output = format!("{:?}", mode);
         assert!(
@@ -334,9 +337,10 @@ mod tests {
     #[test]
     fn password_not_in_debug_output_env_sourced() {
         use crate::control::ControlAuthMode;
+        use secrecy::SecretString;
         let env_password_value = "env-sourced-secret-42";
         let mode = ControlAuthMode::Password {
-            password: env_password_value.into(),
+            password: SecretString::from(env_password_value),
         };
         let debug_output = format!("{:?}", mode);
         assert!(

@@ -6,6 +6,7 @@ use pnevma_context::redact_secrets;
 use pnevma_core::{GlobalConfig, ProjectConfig};
 use pnevma_db::NewEvent;
 use pnevma_session::{SessionBackendKillResult, SessionStatus, SessionSupervisor};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -75,7 +76,7 @@ impl ControlResponse {
 #[derive(Clone)]
 pub enum ControlAuthMode {
     SameUser,
-    Password { password: String },
+    Password { password: SecretString },
 }
 
 impl std::fmt::Debug for ControlAuthMode {
@@ -208,7 +209,9 @@ pub fn resolve_control_plane_settings(
                         crate::auth_secret::SOCKET_KEYCHAIN_ACCOUNT
                     )
                 })?;
-            ControlAuthMode::Password { password }
+            ControlAuthMode::Password {
+                password: SecretString::from(password),
+            }
         }
     };
 
@@ -763,7 +766,7 @@ fn authorize_request(
                 .ok_or_else(|| "missing auth.password".to_string())?;
             use subtle::ConstantTimeEq;
             let supplied_bytes = supplied.as_bytes();
-            let password_bytes = password.as_bytes();
+            let password_bytes = password.expose_secret().as_bytes();
             // Use fixed-length comparison to avoid leaking password length.
             // ct_eq on slices of different lengths is not constant-time in subtle,
             // so we hash both to a fixed size first.
@@ -3035,7 +3038,7 @@ mod tests {
             enabled: true,
             socket_path: PathBuf::from(".pnevma/run/control.sock"),
             auth_mode: ControlAuthMode::Password {
-                password: password.to_string(),
+                password: SecretString::from(password.to_string()),
             },
             socket_rate_limit_rpm: 60,
         }
@@ -3296,7 +3299,7 @@ mod tests {
     #[test]
     fn debug_impl_redacts_control_auth_mode() {
         let mode = ControlAuthMode::Password {
-            password: "top-secret".into(),
+            password: SecretString::from("top-secret"),
         };
         let output = format!("{:?}", mode);
         assert!(output.contains("[REDACTED]"));

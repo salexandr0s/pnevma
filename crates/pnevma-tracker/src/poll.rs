@@ -174,4 +174,99 @@ mod tests {
             .await;
         assert!(result.is_ok());
     }
+
+    // --- Sequenced mock for multi-poll tests ---
+
+    struct SequencedMockAdapter {
+        responses:
+            tokio::sync::Mutex<std::collections::VecDeque<Result<Vec<TrackerItem>, TrackerError>>>,
+    }
+
+    #[async_trait]
+    impl TrackerAdapter for SequencedMockAdapter {
+        async fn poll_candidates(
+            &self,
+            _filter: &TrackerFilter,
+        ) -> Result<Vec<TrackerItem>, TrackerError> {
+            self.responses
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or(Ok(vec![]))
+        }
+        async fn fetch_states(&self, _ids: &[String]) -> Result<Vec<TrackerItem>, TrackerError> {
+            Ok(vec![])
+        }
+        async fn transition_item(&self, _transition: &StateTransition) -> Result<(), TrackerError> {
+            Ok(())
+        }
+        async fn post_comment(&self, _external_id: &str, _body: &str) -> Result<(), TrackerError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_cycle_with_state_transitions() {
+        let mut item_todo = sample_item(); // state = Todo
+        let mut item_in_progress = sample_item();
+        item_in_progress.state = ExternalState::InProgress;
+        let mut item_done = sample_item();
+        item_done.state = ExternalState::Done;
+
+        let responses = std::collections::VecDeque::from([
+            Ok(vec![item_todo]),
+            Ok(vec![item_in_progress]),
+            Ok(vec![item_done]),
+        ]);
+        let adapter = Arc::new(SequencedMockAdapter {
+            responses: tokio::sync::Mutex::new(responses),
+        });
+        let coordinator =
+            TrackerCoordinator::new(adapter, TrackerFilter::default(), "linear".to_string());
+
+        // First poll: item in Todo
+        let items = coordinator.poll_once().await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].state, ExternalState::Todo);
+
+        // Second poll: same item now InProgress, and updated_since should be set
+        assert!(coordinator.last_poll_at.read().await.is_some());
+        let items = coordinator.poll_once().await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].state, ExternalState::InProgress);
+
+        // Third poll: same item now Done
+        let items = coordinator.poll_once().await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].state, ExternalState::Done);
+    }
+
+    #[tokio::test]
+    async fn poll_once_propagates_adapter_error() {
+        let responses = std::collections::VecDeque::from([Err(TrackerError::GraphQL(
+            "query failed".to_string(),
+        ))]);
+        let adapter = Arc::new(SequencedMockAdapter {
+            responses: tokio::sync::Mutex::new(responses),
+        });
+        let coordinator =
+            TrackerCoordinator::new(adapter, TrackerFilter::default(), "linear".to_string());
+
+        let result = coordinator.poll_once().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("query failed"));
+    }
+
+    #[tokio::test]
+    async fn poll_once_empty_returns_no_items() {
+        let adapter = Arc::new(MockAdapter { items: vec![] });
+        let coordinator =
+            TrackerCoordinator::new(adapter, TrackerFilter::default(), "linear".to_string());
+
+        let items = coordinator.poll_once().await.unwrap();
+        assert!(items.is_empty());
+        // last_poll_at still gets updated even on empty result
+        assert!(coordinator.last_poll_at.read().await.is_some());
+    }
 }

@@ -193,6 +193,8 @@ impl CodexV2Adapter {
         Self::default()
     }
 
+    // Command::pre_exec for process group setup
+    #[allow(unsafe_code)]
     async fn start_server(
         config: &AgentConfig,
     ) -> Result<
@@ -512,6 +514,8 @@ impl AgentAdapter for CodexV2Adapter {
         Ok(())
     }
 
+    // libc::kill for process group signaling
+    #[allow(unsafe_code)]
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         let mut conns = self.connections.write().await;
         if let Some(conn) = conns.remove(&handle.id) {

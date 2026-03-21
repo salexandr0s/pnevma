@@ -32,8 +32,7 @@ pub async fn security_headers(
         "nosniff".parse().expect("valid header value"),
     );
 
-    let csp =
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:";
+    let csp = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:";
     headers.insert(
         axum::http::HeaderName::from_static("content-security-policy"),
         csp.parse().expect("valid header value"),
@@ -79,7 +78,7 @@ mod tests {
         );
         assert_eq!(
             response.headers().get("content-security-policy").unwrap(),
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:"
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:"
         );
     }
 

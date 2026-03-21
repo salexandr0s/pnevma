@@ -172,9 +172,11 @@ fn day_dir_for_key(key: &str) -> Option<String> {
 
 fn local_day_boundary_secs(date: NaiveDate, end_of_day: bool) -> i64 {
     let time = if end_of_day {
-        date.and_hms_milli_opt(23, 59, 59, 999).unwrap()
+        date.and_hms_milli_opt(23, 59, 59, 999)
+            .expect("valid end-of-day HMS constant")
     } else {
-        date.and_hms_opt(0, 0, 0).unwrap()
+        date.and_hms_opt(0, 0, 0)
+            .expect("valid start-of-day HMS constant")
     };
     match Local.from_local_datetime(&time) {
         LocalResult::Single(dt) => dt.timestamp(),

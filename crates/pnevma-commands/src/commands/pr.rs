@@ -128,17 +128,12 @@ pub async fn pr_create(input: PrCreateInput, state: &AppState) -> Result<PrView,
 }
 
 pub async fn pr_sync(_input: PrSyncInput, state: &AppState) -> Result<Vec<PrView>, String> {
-    let db = {
+    let (db, project_id) = {
         let current = state.current.lock().await;
         let ctx = current
             .as_ref()
             .ok_or_else(|| "no open project".to_string())?;
-        ctx.db.clone()
-    };
-
-    let project_id = {
-        let current = state.current.lock().await;
-        current.as_ref().unwrap().project_id.to_string()
+        (ctx.db.clone(), ctx.project_id.to_string())
     };
 
     let rows = db

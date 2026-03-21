@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 pub mod adapters;
 pub mod env;
 pub mod error;

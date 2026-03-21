@@ -50,6 +50,8 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
+    // Command::pre_exec for process group setup, libc::kill for timeout cleanup
+    #[allow(unsafe_code)]
     async fn send(&self, handle: &AgentHandle, input: TaskPayload) -> Result<(), AgentError> {
         let tx = self
             .channels
@@ -288,6 +290,8 @@ impl AgentAdapter for CodexAdapter {
         Ok(())
     }
 
+    // libc::kill for process group signaling
+    #[allow(unsafe_code)]
     async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
@@ -309,6 +313,8 @@ impl AgentAdapter for CodexAdapter {
         }
     }
 
+    // libc::kill for process group signaling
+    #[allow(unsafe_code)]
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         // Send SIGTERM, then SIGKILL after 5 seconds if still alive.
         let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {

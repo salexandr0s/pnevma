@@ -101,6 +101,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
         })
     }
 
+    // Command::pre_exec for process group setup, libc::kill for timeout cleanup
+    #[allow(unsafe_code)]
     async fn send(&self, handle: &AgentHandle, input: TaskPayload) -> Result<(), AgentError> {
         let tx = self
             .state

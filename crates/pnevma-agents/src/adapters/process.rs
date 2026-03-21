@@ -33,6 +33,8 @@ impl<C: Clone + Send + Sync + 'static> Default for ProcessState<C> {
 
 impl<C: Clone + Send + Sync + 'static> ProcessState<C> {
     /// Send SIGINT to the agent's process group and mark it as Paused.
+    // libc::kill for process group signaling
+    #[allow(unsafe_code)]
     pub async fn interrupt(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
@@ -55,6 +57,8 @@ impl<C: Clone + Send + Sync + 'static> ProcessState<C> {
     }
 
     /// Send SIGTERM, then SIGKILL after 5 seconds if still alive.
+    // libc::kill for process group signaling
+    #[allow(unsafe_code)]
     pub async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         let pid_found = if let Some(&pid) = self.processes.read().await.get(&handle.id) {
             // SAFETY: PID max (4,194,304) is well below i32::MAX; negation targets the process group.
