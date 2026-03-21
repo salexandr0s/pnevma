@@ -104,11 +104,18 @@ async fn run_local_proxy(
     _session_id: Uuid,
     socket_path: &std::path::Path,
 ) -> Result<Option<i32>, Box<dyn std::error::Error>> {
-    let stream = UnixStream::connect(socket_path).await?;
+    let stream = UnixStream::connect(socket_path).await.map_err(|e| {
+        format!("connect to {}: {e}", socket_path.display())
+    })?;
     let (mut socket_reader, mut socket_writer) = stream.into_split();
 
-    // Set stdin to raw mode
-    let _raw_guard = RawModeGuard::enter()?;
+    // Set stdin to raw mode so input bytes pass through without
+    // line-discipline processing (echo, canonical buffering, signal handling).
+    //
+    // When launched inside an embedded terminal (e.g. Ghostty libghostty),
+    // the PTY slave may not be fully initialized at exec time. We retry
+    // briefly with back-off to handle this race.
+    let _raw_guard = enter_raw_mode_with_retry();
 
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -223,6 +230,44 @@ fn exec_ssh_command(command: &str) -> ! {
         .exec();
     eprintln!("exec failed: {err}");
     std::process::exit(1);
+}
+
+/// Check whether fd 0 (stdin) refers to a terminal device.
+fn stdin_is_tty() -> bool {
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::isatty(libc::STDIN_FILENO) == 1
+    }
+}
+
+/// Try to enter raw mode, retrying a few times if stdin is a TTY that
+/// isn't ready yet (common in embedded terminal contexts).
+fn enter_raw_mode_with_retry() -> Option<RawModeGuard> {
+    if !stdin_is_tty() {
+        eprintln!("proxy: stdin is not a TTY, skipping raw mode");
+        return None;
+    }
+
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_DELAY_MS: u64 = 15;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match RawModeGuard::enter() {
+            Ok(guard) => return Some(guard),
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                eprintln!(
+                    "proxy: raw mode attempt {attempt}/{MAX_ATTEMPTS} failed: {e}, retrying in {RETRY_DELAY_MS}ms"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+            }
+            Err(e) => {
+                eprintln!(
+                    "proxy: could not set raw mode after {MAX_ATTEMPTS} attempts ({e}), continuing without it"
+                );
+            }
+        }
+    }
+    None
 }
 
 fn get_terminal_size() -> Option<(u16, u16)> {
