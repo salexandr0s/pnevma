@@ -147,7 +147,7 @@ fn redaction_github_token_regex() -> &'static Regex {
 fn redaction_provider_token_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{19,}\b")
+        Regex::new(r"\b(?:sk[-_](?:live|test|proj|ant)[_-][A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9][A-Za-z0-9_-]{19,}|rk_(?:live|test)_[A-Za-z0-9]{24,}|SK[0-9a-f]{32})\b")
             .expect("provider token redaction regex must compile")
     })
 }
@@ -186,7 +186,16 @@ fn redaction_pem_open_header_regex() -> &'static Regex {
 fn redaction_connection_string_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"://[^:]+:([^@]+)@").expect("connection string redaction regex must compile")
+        Regex::new(r"://[^:@\s]*:([^@\s]+)@")
+            .expect("connection string redaction regex must compile")
+    })
+}
+
+fn redaction_connection_string_query_param_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)([?&])(password|passwd|pwd|secret|token)=([^&\s]+)")
+            .expect("connection string query param redaction regex must compile")
     })
 }
 
@@ -246,7 +255,7 @@ fn redaction_partial_github_token_regex() -> &'static Regex {
 fn redaction_partial_provider_token_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\bsk-[A-Za-z0-9_-]*$")
+        Regex::new(r"\b(?:sk[-_][A-Za-z0-9_-]*|rk_(?:live|test)_[A-Za-z0-9]*|SK[0-9a-f]*)$")
             .expect("partial provider token redaction regex must compile")
     })
 }
@@ -262,8 +271,16 @@ fn redaction_partial_slack_token_regex() -> &'static Regex {
 fn redaction_partial_connection_string_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^:@\s]+:[^@\s]*$")
+        Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^:@\s]*:[^@\s]*$")
             .expect("partial connection string redaction regex must compile")
+    })
+}
+
+fn redaction_partial_connection_string_query_param_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)[?&](?:password|passwd|pwd|secret|token)=[^&\s]*$")
+            .expect("partial connection string query param redaction regex must compile")
     })
 }
 
@@ -323,10 +340,15 @@ fn redact_patterns(input: &str) -> String {
     // Redact any remaining PEM private-key headers that were not covered by a
     // complete block match above (i.e. unterminated / truncated blocks).
     let result = cow_replace_all(result, redaction_pem_open_header_regex(), REDACTED);
-    let mut result = cow_replace_all(
+    let result = cow_replace_all(
         result,
         redaction_connection_string_regex(),
         &format!("://{REDACTED}@"),
+    );
+    let mut result = cow_replace_all(
+        result,
+        redaction_connection_string_query_param_regex(),
+        &format!("$1$2={REDACTED}"),
     );
     for regex in &runtime_config.extra_patterns {
         result = cow_replace_all(result, regex, REDACTED);
@@ -558,6 +580,7 @@ fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
         redaction_partial_provider_token_regex(),
         redaction_partial_slack_token_regex(),
         redaction_partial_connection_string_regex(),
+        redaction_partial_connection_string_query_param_regex(),
     ] {
         if let Some(found) = regex.find(input) {
             retain_start = Some(
@@ -1302,6 +1325,81 @@ mod tests {
         assert!(
             !full_output.contains(secret),
             "full secret should not appear in output"
+        );
+    }
+
+    #[test]
+    fn redacts_stripe_live_key() {
+        let input = "key sk_live_abcdefghijklmnopqrstuvwxyz";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("sk_live_"),
+            "Stripe live key should be redacted: {output}"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_stripe_test_key() {
+        let input = "key sk_test_abcdefghijklmnopqrstuvwxyz";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("sk_test_"),
+            "Stripe test key should be redacted: {output}"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_stripe_restricted_key() {
+        let input = "key rk_live_abcdefghijklmnopqrstuvwxyz1234";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("rk_live_"),
+            "Stripe restricted key should be redacted: {output}"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_twilio_key() {
+        let input = "key SKabcdef0123456789abcdef0123456789";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("SKabcdef"),
+            "Twilio key should be redacted: {output}"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_redis_empty_user_connection_string() {
+        let input = "redis://:s3cretP4ss@host:6379/0";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("s3cretP4ss"),
+            "Redis password should be redacted: {output}"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_query_param_password() {
+        let input = "jdbc:postgresql://host/db?user=admin&password=s3cret&sslmode=require";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("s3cret"),
+            "Query param password should be redacted: {output}"
+        );
+    }
+
+    #[test]
+    fn redacts_query_param_token() {
+        let input = "https://api.example.com/v1?token=abc123def456ghi789";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("abc123def456"),
+            "Query param token should be redacted: {output}"
         );
     }
 }

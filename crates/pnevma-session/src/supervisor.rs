@@ -999,6 +999,15 @@ impl SessionSupervisor {
         let read = file.read(&mut buf).await?;
         buf.truncate(read);
         let data = String::from_utf8_lossy(&buf).to_string();
+        // Defense-in-depth: re-apply redaction with current secrets to catch
+        // any secrets added after the original write or missed during stream
+        // redaction.
+        let secrets = self.redaction_secrets.read().await.clone();
+        let data = if secrets.is_empty() {
+            data
+        } else {
+            pnevma_redaction::redact_text(&data, &secrets)
+        };
 
         Ok(ScrollbackSlice {
             session_id,

@@ -207,7 +207,11 @@ pub fn validate_profile_fields(
     Ok(())
 }
 
-pub fn build_ssh_command(profile: &SshProfile, keepalive: SshKeepAliveMode) -> Vec<String> {
+pub fn build_ssh_command(
+    profile: &SshProfile,
+    keepalive: SshKeepAliveMode,
+) -> Result<Vec<String>, SshError> {
+    validate_profile(profile)?;
     let (interval, count) = match keepalive {
         SshKeepAliveMode::Interactive => {
             (KEEPALIVE_INTERACTIVE_INTERVAL, KEEPALIVE_INTERACTIVE_COUNT)
@@ -248,7 +252,7 @@ pub fn build_ssh_command(profile: &SshProfile, keepalive: SshKeepAliveMode) -> V
         Some(user) => format!("{user}@{}", profile.host),
         None => profile.host.clone(),
     });
-    args
+    Ok(args)
 }
 
 /// Returns the home directory, or `None` if `$HOME` is not set.
@@ -318,7 +322,7 @@ mod tests {
     #[test]
     fn build_ssh_command_minimal() {
         let p = base_profile();
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         assert_eq!(cmd[0], "ssh");
         // Default port 22 should not add -p flag
         assert!(!cmd.contains(&"-p".to_string()));
@@ -330,7 +334,7 @@ mod tests {
     fn build_ssh_command_with_user() {
         let mut p = base_profile();
         p.user = Some("admin".to_string());
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         assert_eq!(cmd.last().unwrap(), "admin@mybox.example.com");
     }
 
@@ -338,7 +342,7 @@ mod tests {
     fn build_ssh_command_with_non_default_port() {
         let mut p = base_profile();
         p.port = 2222;
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         let port_idx = cmd.iter().position(|a| a == "-p").expect("-p flag");
         assert_eq!(cmd[port_idx + 1], "2222");
     }
@@ -347,7 +351,7 @@ mod tests {
     fn build_ssh_command_with_identity_file() {
         let mut p = base_profile();
         p.identity_file = Some("/home/user/.ssh/id_ed25519".to_string());
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         let i_idx = cmd.iter().position(|a| a == "-i").expect("-i flag");
         assert_eq!(cmd[i_idx + 1], "/home/user/.ssh/id_ed25519");
     }
@@ -356,7 +360,7 @@ mod tests {
     fn build_ssh_command_with_proxy_jump() {
         let mut p = base_profile();
         p.proxy_jump = Some("bastion.example.com".to_string());
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         let j_idx = cmd.iter().position(|a| a == "-J").expect("-J flag");
         assert_eq!(cmd[j_idx + 1], "bastion.example.com");
     }
@@ -364,7 +368,7 @@ mod tests {
     #[test]
     fn build_ssh_command_background_keepalive() {
         let p = base_profile();
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         assert!(cmd.contains(&"ServerAliveInterval=30".to_string()));
         assert!(cmd.contains(&"ServerAliveCountMax=3".to_string()));
     }
@@ -372,7 +376,7 @@ mod tests {
     #[test]
     fn build_ssh_command_interactive_keepalive() {
         let p = base_profile();
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Interactive);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Interactive).unwrap();
         assert!(cmd.contains(&"ServerAliveInterval=10".to_string()));
         assert!(cmd.contains(&"ServerAliveCountMax=2".to_string()));
     }
@@ -380,7 +384,7 @@ mod tests {
     #[test]
     fn build_ssh_command_includes_control_master() {
         let p = base_profile();
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         assert!(cmd.contains(&"ControlMaster=auto".to_string()));
         assert!(
             cmd.iter().any(|a| a.starts_with("ControlPath=")),
@@ -396,7 +400,7 @@ mod tests {
     fn build_ssh_command_control_master_disabled() {
         let mut p = base_profile();
         p.use_control_master = Some(false);
-        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background);
+        let cmd = build_ssh_command(&p, SshKeepAliveMode::Background).unwrap();
         assert!(
             !cmd.contains(&"ControlMaster=auto".to_string()),
             "ControlMaster should not be present when disabled"

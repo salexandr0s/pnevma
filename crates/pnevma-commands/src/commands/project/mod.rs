@@ -678,6 +678,8 @@ pub async fn open_project(
         Arc::clone(&redaction_secrets),
         workflow_store,
         shutdown_rx,
+        path_buf.clone(),
+        cfg.retention.clone(),
     )
     .await;
 
@@ -873,7 +875,7 @@ fn prune_stale_files_in_dir(
     Ok((entries_pruned, files_deleted))
 }
 
-async fn cleanup_project_data_retention_inner(
+pub(super) async fn cleanup_project_data_retention_inner(
     db: &Db,
     project_id: Uuid,
     project_path: &Path,

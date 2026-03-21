@@ -74,6 +74,7 @@ pub async fn set_app_settings(
     Ok(app_settings_view_from_config(&config))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn install_project_runtime(
     state: &AppState,
     db: Db,
@@ -82,7 +83,12 @@ pub(super) async fn install_project_runtime(
     redaction_secrets: Arc<RwLock<Vec<String>>>,
     workflow_store: Arc<crate::automation::workflow_store::WorkflowStore>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    project_path: std::path::PathBuf,
+    retention_config: pnevma_core::RetentionSection,
 ) {
+    let retention_shutdown_rx = shutdown_rx.clone();
+    let retention_db = db.clone();
+
     let session_bridge = spawn_session_bridge(
         Arc::clone(&state.emitter),
         db,
@@ -119,10 +125,41 @@ pub(super) async fn install_project_runtime(
         None
     };
 
+    let retention_cleanup = if retention_config.enabled {
+        let emitter = Arc::clone(&state.emitter);
+        let mut shutdown = retention_shutdown_rx;
+        Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Err(e) = super::cleanup_project_data_retention_inner(
+                            &retention_db,
+                            project_id,
+                            &project_path,
+                            &retention_config,
+                            &emitter,
+                            false,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %e, "periodic retention cleanup failed");
+                        }
+                    }
+                    _ = shutdown.changed() => break,
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
     *state.current_runtime.lock().await = Some(crate::state::ProjectRuntime::new(
         session_bridge,
         health_refresh,
         coordinator_task,
+        retention_cleanup,
     ));
 }
 

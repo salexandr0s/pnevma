@@ -47,7 +47,7 @@ pub async fn build_router(
     api_rate_limit.spawn_cleanup(cleanup_shutdown_rx.clone());
     auth_rate_limit.spawn_cleanup(cleanup_shutdown_rx.clone());
 
-    // Auth route (rate-limited separately, no bearer token required)
+    // Auth login route (rate-limited separately, no bearer token required)
     let lockout = crate::routes::auth_routes::LoginLockoutState::new();
     lockout.spawn_cleanup(cleanup_shutdown_rx.clone());
     let auth_state = crate::routes::auth_routes::AuthState {
@@ -56,7 +56,6 @@ pub async fn build_router(
     };
     let auth_router = Router::new()
         .route("/api/auth/token", post(auth_routes::create_token))
-        .route("/api/auth/token", delete(auth_routes::revoke_token))
         .with_state(auth_state)
         .layer(middleware::from_fn_with_state(
             auth_rate_limit,
@@ -110,6 +109,12 @@ pub async fn build_router(
         .route("/api/workflows/{id}", get(api::workflow_get))
         .route("/api/rpc", post(api::rpc))
         .merge(ws_router)
+        // Token revocation — behind auth middleware (unlike create_token).
+        .merge(
+            Router::new()
+                .route("/api/auth/revoke", delete(auth_routes::revoke_token))
+                .with_state(token_store.clone()),
+        )
         .with_state(router)
         .layer(middleware::from_fn_with_state(token_store, auth_token))
         .layer(middleware::from_fn_with_state(

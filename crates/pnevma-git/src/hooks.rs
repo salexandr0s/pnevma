@@ -173,6 +173,27 @@ pub async fn run_single_hook(
         .env("PNEVMA_HOOK_PHASE", phase.as_str());
 
     for (k, v) in &hook.env {
+        let upper = k.to_ascii_uppercase();
+        if upper.starts_with("DYLD_")
+            || upper.starts_with("LD_")
+            || matches!(
+                upper.as_str(),
+                "BASH_ENV"
+                    | "ENV"
+                    | "CDPATH"
+                    | "NODE_OPTIONS"
+                    | "PERL5OPT"
+                    | "PERL5LIB"
+                    | "PYTHONSTARTUP"
+                    | "PYTHONPATH"
+                    | "RUBYOPT"
+                    | "PATH"
+                    | "HOME"
+            )
+        {
+            tracing::warn!(key = %k, "blocked dangerous hook env var");
+            continue;
+        }
         cmd.env(k, v);
     }
 

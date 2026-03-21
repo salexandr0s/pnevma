@@ -161,8 +161,11 @@ struct RemoteHelperArtifactManifestEntry {
     size: u64,
 }
 
-pub fn build_remote_attach_command(profile: &SshProfile, session_id: &str) -> String {
-    let mut args = ssh_args_without_binary(profile, crate::SshKeepAliveMode::Interactive);
+pub fn build_remote_attach_command(
+    profile: &SshProfile,
+    session_id: &str,
+) -> Result<String, crate::SshError> {
+    let mut args = ssh_args_without_binary(profile, crate::SshKeepAliveMode::Interactive)?;
     args.insert(0, "-tt".to_string());
     args.insert(0, ssh_binary_path().to_string_lossy().to_string());
     args.push(remote_command_arg(&format!(
@@ -170,10 +173,11 @@ pub fn build_remote_attach_command(profile: &SshProfile, session_id: &str) -> St
         REMOTE_HELPER_REMOTE_PATH,
         shell_escape_arg(session_id)
     )));
-    args.iter()
+    Ok(args
+        .iter()
         .map(|arg| shell_escape_arg(arg))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" "))
 }
 
 pub async fn ensure_remote_helper(
@@ -1140,7 +1144,7 @@ async fn run_ssh_with_tty(
         command.arg("-tt");
     }
     command
-        .args(ssh_args_without_binary(profile, keepalive))
+        .args(ssh_args_without_binary(profile, keepalive)?)
         .arg(remote_command_arg(remote_command))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1196,12 +1200,12 @@ fn resolve_local_binary(name: &str) -> PathBuf {
 fn ssh_args_without_binary(
     profile: &SshProfile,
     keepalive: crate::SshKeepAliveMode,
-) -> Vec<String> {
-    let mut args = crate::build_ssh_command(profile, keepalive);
+) -> Result<Vec<String>, crate::SshError> {
+    let mut args = crate::build_ssh_command(profile, keepalive)?;
     if !args.is_empty() {
         args.remove(0);
     }
-    args
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -1313,7 +1317,7 @@ mod tests {
 
     #[test]
     fn build_remote_attach_command_includes_helper_attach() {
-        let command = build_remote_attach_command(&sample_profile(), "session-1");
+        let command = build_remote_attach_command(&sample_profile(), "session-1").unwrap();
         assert!(command.contains("pnevma-remote-helper session attach"));
         assert!(command.contains("session-1"));
         assert!(command.contains("-tt"));

@@ -298,6 +298,7 @@ async fn close_project_resets_runtime_redaction_config_after_shutdown() {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }),
         None,
+        None,
     ));
     let active = pnevma_redaction::RedactionConfig {
         extra_patterns: vec![r"close-secret-[A-Z]+".to_string()],

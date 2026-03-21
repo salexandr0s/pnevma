@@ -19,6 +19,24 @@ const BLOCKED_EXACT_NAMES: &[&str] = &[
     "GH_TOKEN",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
+    // Shell/runtime code execution vectors
+    "BASH_ENV",
+    "ENV",
+    "CDPATH",
+    "PERL5OPT",
+    "PERL5LIB",
+    "PYTHONSTARTUP",
+    "PYTHONPATH",
+    "RUBYOPT",
+    "NODE_OPTIONS",
+    "NODE_EXTRA_CA_CERTS",
+    // Additional credential leakage prevention
+    "GITLAB_TOKEN",
+    "GITLAB_ACCESS_TOKEN",
+    "STRIPE_API_KEY",
+    "STRIPE_SECRET_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
 ];
 
 /// Allowlist of extra env names that may reach agent processes at spawn time.
@@ -289,6 +307,12 @@ mod tests {
         assert!(validate_agent_env_name("GH_TOKEN").is_err());
         assert!(validate_agent_env_name("ANTHROPIC_API_KEY").is_err());
         assert!(validate_agent_env_name("OPENAI_API_KEY").is_err());
+        // Shell/runtime code execution vectors
+        assert!(is_blocked_agent_env_name("BASH_ENV"));
+        assert!(is_blocked_agent_env_name("NODE_OPTIONS"));
+        assert!(is_blocked_agent_env_name("PYTHONSTARTUP"));
+        // Additional credential leakage prevention
+        assert!(is_blocked_agent_env_name("AWS_SECRET_ACCESS_KEY"));
     }
 
     #[test]

@@ -49,6 +49,7 @@ pub struct ProjectRuntime {
     session_bridge: JoinHandle<()>,
     health_refresh: JoinHandle<()>,
     coordinator_task: Option<JoinHandle<()>>,
+    retention_cleanup: Option<JoinHandle<()>>,
 }
 
 impl ProjectRuntime {
@@ -56,11 +57,13 @@ impl ProjectRuntime {
         session_bridge: JoinHandle<()>,
         health_refresh: JoinHandle<()>,
         coordinator_task: Option<JoinHandle<()>>,
+        retention_cleanup: Option<JoinHandle<()>>,
     ) -> Self {
         Self {
             session_bridge,
             health_refresh,
             coordinator_task,
+            retention_cleanup,
         }
     }
 
@@ -68,6 +71,9 @@ impl ProjectRuntime {
         self.session_bridge.abort();
         self.health_refresh.abort();
         if let Some(task) = self.coordinator_task {
+            task.abort();
+        }
+        if let Some(task) = self.retention_cleanup {
             task.abort();
         }
     }

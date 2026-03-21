@@ -32,11 +32,29 @@ pub async fn security_headers(
         "nosniff".parse().expect("valid header value"),
     );
 
-    let csp = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:";
+    let csp = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; form-action 'self'";
     headers.insert(
         axum::http::HeaderName::from_static("content-security-policy"),
         csp.parse().expect("valid header value"),
     );
+
+    headers.insert(
+        axum::http::HeaderName::from_static("x-frame-options"),
+        "DENY".parse().expect("valid header value"),
+    );
+
+    headers.insert(
+        axum::http::HeaderName::from_static("referrer-policy"),
+        "no-referrer".parse().expect("valid header value"),
+    );
+
+    headers.insert(
+        axum::http::HeaderName::from_static("permissions-policy"),
+        "camera=(), microphone=(), geolocation=()"
+            .parse()
+            .expect("valid header value"),
+    );
+
     response
 }
 
@@ -78,7 +96,16 @@ mod tests {
         );
         assert_eq!(
             response.headers().get("content-security-policy").unwrap(),
-            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:"
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; form-action 'self'"
+        );
+        assert_eq!(response.headers().get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(
+            response.headers().get("referrer-policy").unwrap(),
+            "no-referrer"
+        );
+        assert_eq!(
+            response.headers().get("permissions-policy").unwrap(),
+            "camera=(), microphone=(), geolocation=()"
         );
     }
 
@@ -107,6 +134,15 @@ mod tests {
             response.headers().get("x-content-type-options").unwrap(),
             "nosniff"
         );
+        assert_eq!(response.headers().get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(
+            response.headers().get("referrer-policy").unwrap(),
+            "no-referrer"
+        );
+        assert_eq!(
+            response.headers().get("permissions-policy").unwrap(),
+            "camera=(), microphone=(), geolocation=()"
+        );
     }
 
     #[tokio::test]
@@ -133,6 +169,10 @@ mod tests {
         assert!(
             !without_wss.contains("ws:"),
             "CSP should not include plain ws:: {csp}"
+        );
+        assert_eq!(
+            csp,
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; form-action 'self'"
         );
     }
 }

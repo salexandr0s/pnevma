@@ -38,7 +38,7 @@ HIGH priority. Fix before design-partner beta.
 
 | ID  | Item                          | File(s)                                    | Action                                                                                                                             |
 | --- | ----------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| B1  | Token revocation              | `pnevma-remote/src/auth.rs`                | Add `revoke_token(token_id)` to `TokenStore` and expose `DELETE /api/auth/token` route                                             |
+| B1  | Token revocation              | `pnevma-remote/src/auth.rs`                | Add `revoke_token(token_id)` to `TokenStore` and expose `DELETE /api/auth/revoke` route (behind auth middleware)                   |
 | B2  | Secret redaction population   | `pnevma-commands/src/commands/mod.rs:2638` | Populate the secrets list from keychain entries / known env vars and pass it to all `redact_text` callsites instead of `&[]`       |
 | B3  | TestCommand validation        | `pnevma-commands/src/commands/mod.rs:1954` | Validate `CheckType::TestCommand` commands against an allowlist of patterns, or block `task.create` from the remote RPC allowlist  |
 | B4  | FFI cb_ctx safety             | `pnevma-bridge/src/lib.rs:268-283`         | Add Arc-based reference counting or sentinel canary for `cb_ctx` pointer in `pnevma_call_async`; add `#[safety]` doc comments      |
@@ -192,7 +192,7 @@ Items completed as of 2026-03-11:
 - **A4**: Query-string token restricted to WebSocket upgrade requests only
 - **A5**: Secrets in CLI args resolved via security-framework crate
 - **A6**: auto_approve configurable; env stripping implemented
-- **B1**: Token revocation with DELETE /api/auth/token
+- **B1**: Token revocation with DELETE /api/auth/revoke (behind auth middleware)
 - **B2**: Secret redaction populated from keychain/env
 - **B5**: Token TTL changed to second-precision comparison
 - **B6**: Tailscale IPv6 CGNAT range added

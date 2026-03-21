@@ -102,20 +102,27 @@ fn infer_access_level(id: &str) -> AccessLevel {
         "session.kill_all",
         "session.send_input",
         "session.recovery.execute",
+        "session.restart_active",
+        "session.reattach_active",
         "fleet.action",
         // Agent execution triggers
         "task.dispatch",
         "task.dispatch_next_ready",
         "task.claim",
         "task.draft",
+        "task.delete_ready",
         "workflow.dispatch",
         "workflow.instantiate",
         // Git / merge operations
         "merge.queue.execute",
+        "merge.execute_task",
         "checkpoint.restore",
+        "checkpoint.create",
         // Review gates (can trigger merge)
         "review.approve",
         "review.approve_next",
+        "review.approve_task",
+        "review.reject_task",
         // Config / secrets / settings
         "harness.config.write",
         "plan.write",

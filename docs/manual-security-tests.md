@@ -259,7 +259,7 @@ curl -sk -H "Authorization: Bearer $EXPIRED_TOKEN" "$BASE_URL/api/tasks" | jq .
 For faster testing, issue a token and immediately revoke it:
 
 ```bash
-curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/auth/token" | jq .
+curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/auth/revoke" | jq .
 curl -sk -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/tasks" | jq .
 ```
 
@@ -296,7 +296,7 @@ curl -sk "$BASE_URL/api/tasks?token=$TOKEN" | jq .
 3. Revoke the token:
 
    ```bash
-   curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/auth/token" | jq .
+   curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/auth/revoke" | jq .
    ```
 
 4. Inspect the remote server logs and confirm they include `auth_event`, `subject`, and `token_id`.

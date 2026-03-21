@@ -33,7 +33,7 @@ impl RpcTunnel {
         // Remove stale socket if present.
         let _ = std::fs::remove_file(&local_socket);
 
-        let ssh_args = ssh_args_for_tunnel(profile);
+        let ssh_args = ssh_args_for_tunnel(profile)?;
         let forward_spec = format!("{}:{}", local_socket.display(), REMOTE_CONTROL_SOCKET);
 
         let mut child = Command::new(super::remote_helper::ssh_binary_path())
@@ -104,11 +104,11 @@ fn sha256_short(input: &str) -> String {
     format!("{:x}", digest)[..16].to_string()
 }
 
-fn ssh_args_for_tunnel(profile: &SshProfile) -> Vec<String> {
-    let mut args = crate::build_ssh_command(profile, SshKeepAliveMode::Background);
+fn ssh_args_for_tunnel(profile: &SshProfile) -> Result<Vec<String>, crate::SshError> {
+    let mut args = crate::build_ssh_command(profile, SshKeepAliveMode::Background)?;
     // Remove the "ssh" binary name — we supply it separately.
     if !args.is_empty() {
         args.remove(0);
     }
-    args
+    Ok(args)
 }

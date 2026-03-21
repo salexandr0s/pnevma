@@ -144,13 +144,10 @@ fn build_server_config(
 ) -> Result<ServerConfig, RemoteError> {
     ensure_rustls_crypto_provider();
 
-    ServerConfig::builder_with_protocol_versions(&[
-        &rustls::version::TLS13,
-        &rustls::version::TLS12,
-    ])
-    .with_no_client_auth()
-    .with_single_cert(certs, key)
-    .map_err(|e| RemoteError::Tls(format!("rustls config error: {e}")))
+    ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| RemoteError::Tls(format!("rustls config error: {e}")))
 }
 
 #[cfg(test)]

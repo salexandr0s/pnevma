@@ -70,11 +70,22 @@ impl ContextCompiler {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, markdown)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(path)?;
+            file.write_all(markdown.as_bytes())?;
+            file.sync_all()?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, markdown)?;
         }
         Ok(())
     }
@@ -207,7 +218,7 @@ impl ContextCompiler {
     fn redact_file_contents(&self, inputs: &[(String, String)]) -> Vec<(String, String)> {
         inputs
             .iter()
-            .map(|(path, content)| (path.clone(), self.redact_string(content)))
+            .map(|(path, content)| (self.redact_string(path), self.redact_string(content)))
             .collect()
     }
 

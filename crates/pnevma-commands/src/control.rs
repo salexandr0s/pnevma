@@ -333,14 +333,65 @@ async fn handle_unix_client(
     let mut line = String::new();
     loop {
         line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| e.to_string())?;
-        if bytes == 0 {
+        // Bounded line reading: read up to MAX_LINE_BYTES + 1 bytes looking
+        // for a newline. If we exceed the limit before finding one, drain the
+        // rest of the oversized line and return an error response.
+        let mut found_newline = false;
+        let mut overflow = false;
+        loop {
+            let buf = reader.fill_buf().await.map_err(|e| e.to_string())?;
+            if buf.is_empty() {
+                // EOF
+                break;
+            }
+            if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                // Found newline within buffer
+                let to_consume = pos + 1; // include the newline
+                if line.len() + to_consume > MAX_LINE_BYTES + 1 {
+                    overflow = true;
+                    reader.consume(to_consume);
+                } else {
+                    let chunk = &buf[..to_consume];
+                    line.push_str(&String::from_utf8_lossy(chunk));
+                    reader.consume(to_consume);
+                }
+                found_newline = true;
+                break;
+            } else {
+                // No newline in buffer — consume it all
+                let len = buf.len();
+                if line.len() + len > MAX_LINE_BYTES {
+                    // Would exceed limit — mark as overflow and drain until newline
+                    overflow = true;
+                    reader.consume(len);
+                    // Continue draining until we find a newline
+                    loop {
+                        let drain_buf = reader.fill_buf().await.map_err(|e| e.to_string())?;
+                        if drain_buf.is_empty() {
+                            break;
+                        }
+                        if let Some(pos) = drain_buf.iter().position(|&b| b == b'\n') {
+                            reader.consume(pos + 1);
+                            found_newline = true;
+                            break;
+                        }
+                        let drain_len = drain_buf.len();
+                        reader.consume(drain_len);
+                    }
+                    break;
+                }
+                let chunk = &buf[..len];
+                line.push_str(&String::from_utf8_lossy(chunk));
+                reader.consume(len);
+            }
+        }
+
+        if line.is_empty() && !found_newline && !overflow {
+            // EOF with no data
             break;
         }
-        if line.len() > MAX_LINE_BYTES {
+
+        if overflow {
             let _ = write_half
                 .write_all(b"{\"ok\":false,\"error\":{\"code\":\"payload_too_large\",\"message\":\"request exceeds 1 MB limit\"}}\n")
                 .await;

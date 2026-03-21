@@ -67,7 +67,7 @@ WebSocket upgrade requests validate the `Origin` header against the same `allowe
 All API endpoints (except `/health`) require a Bearer token. Tokens are issued via `POST /api/auth/token` with the shared password.
 
 - Tokens have a configurable TTL (default: 24 hours)
-- Token revocation: `DELETE /api/auth/token`
+- Token revocation: `DELETE /api/auth/revoke` (requires valid bearer token)
 - WebSocket connections accept the token via `?token=` query parameter (restricted to upgrade requests only)
 
 ## Log Rotation

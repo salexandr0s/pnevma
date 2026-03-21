@@ -232,7 +232,10 @@ pub async fn create_token(
     response
 }
 
-/// DELETE /api/auth/token — revokes the bearer token in the Authorization header.
+/// DELETE /api/auth/revoke — revokes the bearer token in the Authorization header.
+///
+/// This endpoint is behind the auth middleware, so the caller must present a
+/// valid bearer token. The token to revoke is extracted from that same header.
 pub async fn revoke_token(
     State(store): State<Arc<TokenStore>>,
     headers: HeaderMap,
@@ -340,14 +343,14 @@ mod tests {
             TokenRole::Operator,
         );
         let app = Router::new()
-            .route("/api/auth/token", delete(revoke_token))
+            .route("/api/auth/revoke", delete(revoke_token))
             .with_state(state);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/api/auth/token")
+                    .uri("/api/auth/revoke")
                     .header(header::AUTHORIZATION, format!("Bearer {}", issued.token))
                     .body(Body::empty())
                     .expect("request"),

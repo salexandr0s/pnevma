@@ -38,6 +38,7 @@ async fn read_scrollback_file_slice(
     path: &Path,
     offset: Option<u64>,
     limit: usize,
+    redaction_secrets: &[String],
 ) -> Result<ScrollbackSlice, String> {
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
@@ -64,13 +65,22 @@ async fn read_scrollback_file_slice(
     let mut buf = vec![0u8; capped_limit];
     let read = file.read(&mut buf).await.map_err(|e| e.to_string())?;
     buf.truncate(read);
+    let data = String::from_utf8_lossy(&buf).to_string();
+    // Defense-in-depth: re-apply redaction with current secrets to catch
+    // any secrets added after the original write or missed during stream
+    // redaction.
+    let data = if redaction_secrets.is_empty() {
+        data
+    } else {
+        redact_text(&data, redaction_secrets)
+    };
 
     Ok(ScrollbackSlice {
         session_id,
         start_offset: start,
         end_offset: start.saturating_add(read as u64),
         total_bytes: total,
-        data: String::from_utf8_lossy(&buf).to_string(),
+        data,
     })
 }
 
@@ -265,10 +275,13 @@ pub async fn get_session_binding(
                 "attached" | "detached" | "reattaching"
             ) {
             let profile = resolve_ssh_profile_for_session_row(state, &db, &row).await?;
-            Some(pnevma_ssh::build_remote_attach_command(
-                &profile,
-                row.remote_session_id.as_deref().unwrap_or(row.id.as_str()),
-            ))
+            Some(
+                pnevma_ssh::build_remote_attach_command(
+                    &profile,
+                    row.remote_session_id.as_deref().unwrap_or(row.id.as_str()),
+                )
+                .map_err(|e| e.to_string())?,
+            )
         } else {
             None
         };
@@ -625,13 +638,14 @@ pub async fn get_scrollback(
     state: &AppState,
 ) -> Result<ScrollbackSlice, String> {
     let started = Instant::now();
-    let (sessions, db, project_id, project_path) = state
+    let (sessions, db, project_id, project_path, redaction_secrets) = state
         .with_project("get_scrollback", |ctx| {
             (
                 ctx.sessions.clone(),
                 ctx.db.clone(),
                 ctx.project_id,
                 ctx.project_path.clone(),
+                Arc::clone(&ctx.redaction_secrets),
             )
         })
         .await?;
@@ -651,11 +665,13 @@ pub async fn get_scrollback(
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| local_error.to_string())?;
             if !is_remote_ssh_durable_backend(&row.backend) {
+                let secrets = current_redaction_secrets(&redaction_secrets).await;
                 return read_scrollback_file_slice(
                     session_id,
                     &canonical_archived_scrollback_path(&project_path, &input.session_id),
                     input.offset,
                     limit,
+                    &secrets,
                 )
                 .await;
             }
