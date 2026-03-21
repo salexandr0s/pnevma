@@ -218,6 +218,7 @@ impl TaskContract {
         let valid = matches!(
             (&self.status, &to),
             (Planned, Ready)
+                | (Ready, Planned)
                 | (Ready, Dispatching)
                 | (Dispatching, InProgress)
                 | (Dispatching, Ready)
@@ -453,6 +454,27 @@ mod tests {
             prop_assert!(task.transition(TaskStatus::Done).is_ok());
             prop_assert_eq!(task.status, TaskStatus::Done);
         }
+    }
+
+    #[test]
+    fn ready_to_planned_transition_succeeds() {
+        let mut task = base_task();
+        task.transition(TaskStatus::Ready)
+            .expect("Planned -> Ready must succeed");
+        assert_eq!(task.status, TaskStatus::Ready);
+        task.transition(TaskStatus::Planned)
+            .expect("Ready -> Planned must succeed");
+        assert_eq!(task.status, TaskStatus::Planned);
+    }
+
+    #[test]
+    fn ready_planned_round_trip() {
+        let mut task = base_task();
+        // Planned -> Ready -> Planned -> Ready should all succeed
+        task.transition(TaskStatus::Ready).unwrap();
+        task.transition(TaskStatus::Planned).unwrap();
+        task.transition(TaskStatus::Ready).unwrap();
+        assert_eq!(task.status, TaskStatus::Ready);
     }
 
     #[test]

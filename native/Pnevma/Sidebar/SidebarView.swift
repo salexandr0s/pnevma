@@ -38,12 +38,7 @@ struct SidebarView: View {
                 case .workspaces:
                     workspacesContent
                 case .tasks:
-                    EmptyStateView(
-                        icon: "checklist",
-                        title: "No tasks yet",
-                        message: "Task tracking will appear here."
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    SidebarTaskListView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

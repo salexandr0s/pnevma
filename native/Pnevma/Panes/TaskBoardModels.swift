@@ -22,21 +22,25 @@ struct TaskItem: Identifiable, Equatable {
 enum TaskStatus: String, CaseIterable, Hashable {
     case planned = "Planned"
     case ready = "Ready"
+    case dispatching = "Dispatching"
     case inProgress = "InProgress"
     case review = "Review"
     case done = "Done"
     case failed = "Failed"
     case blocked = "Blocked"
+    case looped = "Looped"
 
     var displayName: String {
         switch self {
         case .planned: return "Planned"
         case .ready: return "Ready"
+        case .dispatching: return "Dispatching"
         case .inProgress: return "In Progress"
         case .review: return "Review"
         case .done: return "Done"
         case .failed: return "Failed"
         case .blocked: return "Blocked"
+        case .looped: return "Looped"
         }
     }
 
@@ -44,11 +48,13 @@ enum TaskStatus: String, CaseIterable, Hashable {
         switch self {
         case .planned: return "calendar"
         case .ready: return "checkmark.circle"
+        case .dispatching: return "arrow.up.circle"
         case .inProgress: return "bolt"
         case .review: return "doc.text.magnifyingglass"
         case .done: return "checkmark.seal"
         case .failed: return "exclamationmark.triangle"
         case .blocked: return "lock"
+        case .looped: return "arrow.triangle.2.circlepath"
         }
     }
 
@@ -56,11 +62,13 @@ enum TaskStatus: String, CaseIterable, Hashable {
         switch self {
         case .planned: return Color(nsColor: .systemBlue)
         case .ready: return Color(nsColor: .systemMint)
+        case .dispatching: return Color(nsColor: .systemTeal)
         case .inProgress: return Color(nsColor: .systemOrange)
         case .review: return Color(nsColor: .systemYellow)
         case .done: return Color(nsColor: .systemGreen)
         case .failed: return Color(nsColor: .systemRed)
         case .blocked: return Color(nsColor: .systemGray)
+        case .looped: return Color(nsColor: .systemPurple)
         }
     }
 }
