@@ -255,10 +255,13 @@ final class TabRenameField: NSTextField, NSTextFieldDelegate {
         guard let window, self.window === window else { return }
         didFinishEditing = false
         window.makeFirstResponder(self)
-        DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.window === window else { return }
-            window.makeFirstResponder(self)
-            self.currentEditor()?.selectedRange = NSRange(
+        // Defer text selection to the next run-loop tick so the field editor
+        // is fully installed. Do NOT call makeFirstResponder again — that
+        // cycles the field editor, firing controlTextDidEndEditing which
+        // immediately commits and dismisses the rename.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let editor = self.currentEditor() else { return }
+            editor.selectedRange = NSRange(
                 location: 0,
                 length: (self.stringValue as NSString).length
             )
