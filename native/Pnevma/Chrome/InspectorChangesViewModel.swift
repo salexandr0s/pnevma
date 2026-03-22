@@ -30,7 +30,7 @@ final class InspectorChangesViewModel {
 
     var totalAdditions: Int { fileStats.reduce(0) { $0 + $1.additions } }
     var totalDeletions: Int { fileStats.reduce(0) { $0 + $1.deletions } }
-    var reviewedCount: Int { fileStats.filter(\.isReviewed).count }
+    var reviewedCount: Int { fileStats.count(where: \.isReviewed) }
 
     func refresh(using bus: any CommandCalling) async {
         isLoading = true

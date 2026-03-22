@@ -748,7 +748,7 @@ private struct ProjectOpenFailureEventPayload: Decodable {
 /// Wraps TerminalHostView to conform to PaneContent.
 final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, TerminalPaneControlling {
     private static let maxManagedSessionProjectNotReadyRetries = 5
-    private static let managedSessionRetryDelayNanos: UInt64 = 250_000_000
+    private static let managedSessionRetryDelay: Duration = .milliseconds(250)
 
     let paneID = PaneID()
     let paneType = "terminal"
@@ -1055,7 +1055,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private func scheduleManagedSessionRetryAfterProjectNotReady() {
         loadTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(nanoseconds: Self.managedSessionRetryDelayNanos)
+                try await Task.sleep(for: Self.managedSessionRetryDelay)
             } catch {
                 return
             }
@@ -2024,13 +2024,14 @@ private struct TerminalStateView: View {
                 }
 
                 if archivedScrollback.hasReadableContent {
-                    ScrollView(.horizontal, showsIndicators: false) {
+                    ScrollView(.horizontal) {
                         Text(archivedScrollback.text)
                             .font(.system(.body, design: .monospaced))
                             .lineSpacing(3)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .scrollIndicators(.hidden)
                 } else {
                     Text("No readable transcript could be recovered from the archived terminal bytes.")
                         .font(.footnote)

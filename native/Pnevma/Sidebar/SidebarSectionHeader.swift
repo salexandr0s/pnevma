@@ -63,6 +63,7 @@ struct SidebarSectionHeader: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture { if isCollapsible { onToggle?() } }
+        .accessibilityAddTraits(isCollapsible ? .isButton : [])
         .accessibilityLabel("\(title) section\(isCollapsed ? ", collapsed" : "")")
         .accessibilityIdentifier("sidebar.section.\(title.lowercased())")
     }

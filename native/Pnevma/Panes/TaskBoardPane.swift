@@ -164,7 +164,7 @@ struct TaskBoardView: View {
     @ViewBuilder
     private var expandedBoard: some View {
         let createAction: (() -> Void)? = openCreateSheet
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: layout.spacing) {
                 ForEach(TaskStatus.allCases, id: \.self) { status in
                     TaskLaneColumn(
@@ -180,6 +180,7 @@ struct TaskBoardView: View {
             }
             .padding(.bottom, 2)
         }
+        .scrollIndicators(.hidden)
     }
 
     private func openCreateSheet() {
@@ -306,7 +307,7 @@ private struct TaskBoardStackedLayout: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     ForEach(TaskStatus.allCases, id: \.self) { status in
                         Button {
@@ -641,7 +642,7 @@ private struct FlowingTagRow: View {
     let tags: [String]
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 ForEach(tags, id: \.self) { tag in
                     TaskMetaBadge(text: tag)

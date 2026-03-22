@@ -148,6 +148,7 @@ struct ToastOverlayView: View {
         .onTapGesture {
             manager.dismiss()
         }
+        .accessibilityAddTraits(.isButton)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Notification")
     }

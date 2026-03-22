@@ -251,7 +251,7 @@ final class CommandCenterStore {
     }
 
     var attentionRunCount: Int {
-        scopedRuns.filter(\.needsAttention).count + scopedWorkspaceSnapshots.filter { $0.errorMessage != nil }.count
+        scopedRuns.count(where: \.needsAttention) + scopedWorkspaceSnapshots.count { $0.errorMessage != nil }
     }
 
     /// Total cost across all workspaces today, formatted as currency.
@@ -362,10 +362,10 @@ final class CommandCenterStore {
     var workspaceClusters: [CommandCenterWorkspaceCluster] {
         workspaceSnapshots.map { snapshot in
             let runs = snapshot.runs
-            let attentionCount = runs.filter(\.needsAttention).count
-            let activeCount = runs.filter { $0.normalizedState == "running" }.count
-            let queuedCount = runs.filter { $0.normalizedState == "queued" }.count
-            let idleCount = runs.filter { $0.normalizedState == "idle" }.count
+            let attentionCount = runs.count(where: \.needsAttention)
+            let activeCount = runs.count { $0.normalizedState == "running" }
+            let queuedCount = runs.count { $0.normalizedState == "queued" }
+            let idleCount = runs.count { $0.normalizedState == "idle" }
             return CommandCenterWorkspaceCluster(
                 id: snapshot.id,
                 workspaceName: snapshot.workspaceName,
@@ -433,7 +433,7 @@ final class CommandCenterStore {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while let self, !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(for: .seconds(1.5))
                 guard !Task.isCancelled else { return }
                 self.queueRefresh()
             }

@@ -20,7 +20,7 @@ struct InstanceDetailView: View {
 
             Divider().opacity(0.3)
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(Array(layers.enumerated()), id: \.offset) { layerIdx, layer in
                         let (_, layerSteps) = layer

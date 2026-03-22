@@ -33,7 +33,7 @@ struct StatusBadge: View {
 
     var body: some View {
         Text(status)
-            .font(.caption2.weight(.medium))
+            .font(.caption.weight(.medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.15)))
@@ -57,7 +57,7 @@ struct RoleBadge: View {
 
     var body: some View {
         Text(role)
-            .font(.caption2.weight(.medium))
+            .font(.caption.weight(.medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(roleColor(for: role).opacity(0.15))
@@ -106,7 +106,7 @@ struct SourceBadge: View {
             }
             Text(label)
         }
-        .font(.caption2.weight(.medium))
+        .font(.caption.weight(.medium))
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(color.opacity(0.12))

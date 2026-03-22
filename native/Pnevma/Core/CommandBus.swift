@@ -99,7 +99,7 @@ actor CommandBus: CommandCalling {
             }
 
             group.addTask {
-                try await Task.sleep(nanoseconds: 30_000_000_000)
+                try await Task.sleep(for: .seconds(30))
                 if let cont = continuationGuard.takeContinuation() {
                     cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
                 }
@@ -169,7 +169,7 @@ actor CommandBus: CommandCalling {
             }
 
             group.addTask {
-                try await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds
+                try await Task.sleep(for: .seconds(30))
                 if let cont = continuationGuard.takeContinuation() {
                     cont.resume(throwing: PnevmaError.bridgeCallFailed(method: method))
                 }
