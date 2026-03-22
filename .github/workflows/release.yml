@@ -108,7 +108,7 @@ jobs:
       - name: Generate SBOM
         run: |
           command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
-          cargo cyclonedx --format json --output-cdx
+          cargo cyclonedx --format json
 
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -123,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: sbom
-          path: ./**/bom.cdx.json
+          path: ./**/*.cdx.json
           retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
   sign-notarize-package:
@@ -275,7 +275,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           DMG_PATH="$(find "$RUNNER_TEMP/release-evidence" -name '*.dmg' -print -quit)"
           CHECKSUM_PATH="$(find "$RUNNER_TEMP/release-evidence" -name '*.sha256' -print -quit)"
-          SBOM_PATH="$(find "$RUNNER_TEMP/sbom" -name 'bom.cdx.json' -print -quit)"
+          SBOM_PATH="$(find "$RUNNER_TEMP/sbom" -name '*.cdx.json' -print -quit)"
           test -f "$DMG_PATH"
           test -f "$CHECKSUM_PATH"
           {
