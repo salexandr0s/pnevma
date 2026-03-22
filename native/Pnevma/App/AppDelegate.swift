@@ -725,12 +725,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 ) {
                     Task { @MainActor [weak self] in
+                        PaneFactory.isAppShuttingDown = true
                         await self?.workspaceManager?.prepareForShutdown()
                         sender.reply(toApplicationShouldTerminate: true)
                     }
                 }
             } else {
                 Task { @MainActor [weak self] in
+                    PaneFactory.isAppShuttingDown = true
                     await self?.workspaceManager?.prepareForShutdown()
                     sender.reply(toApplicationShouldTerminate: true)
                 }

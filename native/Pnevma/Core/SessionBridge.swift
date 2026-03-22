@@ -149,12 +149,15 @@ protocol SessionBridging: Sendable {
     func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice
     func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult
     func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async
+    func killSession(sessionID: String) async
 }
 
 extension SessionBridging {
     func scrollback(for sessionID: String) async throws -> SessionScrollbackSlice {
         try await scrollback(for: sessionID, limit: 128 * 1024)
     }
+
+    func killSession(sessionID: String) async {}
 }
 
 @MainActor
@@ -234,6 +237,21 @@ final class SessionBridge: SessionBridging {
         }
     }
 
+    func killSession(sessionID: String) async {
+        struct KillParams: Encodable { let sessionID: String }
+        struct KillResult: Decodable { let outcome: String }
+        do {
+            let _: KillResult = try await commandBus.call(
+                method: "session.kill",
+                params: KillParams(sessionID: sessionID)
+            )
+        } catch {
+            Log.workspace.debug(
+                "Ignoring session kill error for \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
 }
 
 actor ActiveSessionBridge: SessionBridging {
@@ -283,6 +301,10 @@ actor ActiveSessionBridge: SessionBridging {
 
     func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async {
         await current?.sendResize(sessionID: sessionID, columns: columns, rows: rows)
+    }
+
+    func killSession(sessionID: String) async {
+        await current?.killSession(sessionID: sessionID)
     }
 
 }

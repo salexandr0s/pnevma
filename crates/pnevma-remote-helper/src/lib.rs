@@ -12,7 +12,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI32, Ordering},
     Arc,
 };
 use std::thread;
@@ -478,6 +478,42 @@ impl HelperRuntime {
         remove_if_exists(&keepalive_pid_path)?;
         remove_if_exists(&attach_marker_path)?;
         remove_if_exists(&attach_pid_path)?;
+        remove_if_exists(&session_dir.join("control.fifo"))?;
+        Ok(())
+    }
+
+    pub fn resize_session(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), HelperError> {
+        if session_id.trim().is_empty() {
+            return Err(HelperError::InvalidArgs("missing --session-id".to_string()));
+        }
+        let session_dir = self.paths.session_dir(session_id);
+        let control_fifo_path = session_dir.join("control.fifo");
+        if !control_fifo_path.exists() {
+            return Err(HelperError::CommandFailed(
+                "session does not support resize (no control fifo)".to_string(),
+            ));
+        }
+        let mut fifo = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&control_fifo_path)
+            .map_err(|e| {
+                if e.raw_os_error() == Some(libc::ENXIO) {
+                    HelperError::CommandFailed(
+                        "session runner is not reading the control fifo".to_string(),
+                    )
+                } else {
+                    HelperError::Io(e)
+                }
+            })?;
+        let msg = format!("{{\"type\":\"resize\",\"cols\":{cols},\"rows\":{rows}}}\n");
+        fifo.write_all(msg.as_bytes())?;
+        fifo.flush()?;
         Ok(())
     }
 
@@ -581,6 +617,7 @@ impl HelperRuntime {
     fn run_session_runner_inner(&self, session_id: &str) -> Result<(), HelperError> {
         let session_dir = self.paths.session_dir(session_id);
         let fifo_path = session_dir.join("input.fifo");
+        let control_fifo_path = session_dir.join("control.fifo");
         let log_path = session_dir.join("output.log");
         let launch_path = session_dir.join("launch.sh");
         let runner_pid_path = session_dir.join("runner.pid");
@@ -590,9 +627,12 @@ impl HelperRuntime {
         let attach_pid_path = session_dir.join("attach.pid");
 
         ensure_fifo(&fifo_path)?;
+        ensure_fifo(&control_fifo_path)?;
         touch_file(&log_path)?;
 
         let (master_fd, slave_fd) = open_pty_pair()?;
+        let master_raw = master_fd.as_raw_fd();
+        let master_raw_shared = Arc::new(AtomicI32::new(master_raw));
         let master = File::from(master_fd);
         let input_master = master.try_clone()?;
         let output_master = master;
@@ -608,8 +648,14 @@ impl HelperRuntime {
 
         let stop = Arc::new(AtomicBool::new(false));
         let input_stop = Arc::clone(&stop);
+        let control_stop = Arc::clone(&stop);
+        let control_master = Arc::clone(&master_raw_shared);
         let input_handle = thread::spawn(move || copy_fifo_to_pty(fifo, input_master, input_stop));
         let output_handle = thread::spawn(move || copy_pty_to_log(output_master, log));
+        let control_fifo_for_thread = control_fifo_path.clone();
+        let control_handle = thread::spawn(move || {
+            read_control_fifo(&control_fifo_for_thread, control_master, control_stop)
+        });
 
         let mut child = spawn_session_child(&launch_path, slave_fd)?;
         write_atomic(&child_pid_path, format!("{}\n", child.id()).as_bytes())?;
@@ -621,11 +667,13 @@ impl HelperRuntime {
         stop.store(true, Ordering::Relaxed);
         join_helper_thread(input_handle, "session input forwarder")?;
         join_helper_thread(output_handle, "session output recorder")?;
+        join_helper_thread(control_handle, "session control reader")?;
 
         remove_if_exists(&child_pid_path)?;
         remove_if_exists(&runner_pid_path)?;
         remove_if_exists(&attach_marker_path)?;
         remove_if_exists(&attach_pid_path)?;
+        remove_if_exists(&control_fifo_path)?;
         Ok(())
     }
 
@@ -1398,6 +1446,76 @@ fn copy_pty_to_log(mut pty_output: File, mut log: File) -> Result<(), HelperErro
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(()),
             Err(error) => return Err(HelperError::Io(error)),
+        }
+    }
+}
+
+/// Control message sent via the control FIFO to the session runner.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ControlMessage {
+    #[serde(rename = "resize")]
+    Resize { cols: u16, rows: u16 },
+}
+
+fn read_control_fifo(
+    control_fifo_path: &Path,
+    master_raw: Arc<AtomicI32>,
+    stop: Arc<AtomicBool>,
+) -> Result<(), HelperError> {
+    let mut fifo = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(control_fifo_path)?;
+    let mut buffer = [0_u8; 4096];
+    let mut line_buf = Vec::new();
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match fifo.read(&mut buffer) {
+            Ok(0) => {
+                thread::sleep(FIFO_POLL_INTERVAL);
+            }
+            Ok(n) => {
+                for &byte in &buffer[..n] {
+                    if byte == b'\n' {
+                        if let Ok(line) = std::str::from_utf8(&line_buf) {
+                            if let Ok(msg) = serde_json::from_str::<ControlMessage>(line) {
+                                apply_control_message(&msg, &master_raw);
+                            }
+                        }
+                        line_buf.clear();
+                    } else {
+                        line_buf.push(byte);
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(FIFO_POLL_INTERVAL);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Ok(()),
+        }
+    }
+}
+
+fn apply_control_message(msg: &ControlMessage, master_raw: &AtomicI32) {
+    match msg {
+        ControlMessage::Resize { cols, rows } => {
+            let fd = master_raw.load(Ordering::Relaxed);
+            if fd >= 0 {
+                let ws = libc::winsize {
+                    ws_row: *rows,
+                    ws_col: *cols,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                unsafe {
+                    libc::ioctl(fd, libc::TIOCSWINSZ, &ws);
+                }
+            }
         }
     }
 }

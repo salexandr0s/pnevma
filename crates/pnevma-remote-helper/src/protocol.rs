@@ -47,6 +47,13 @@ pub struct SessionSignalParams {
     pub signal: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SessionResizeParams {
+    pub session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
 impl RpcResponse {
     pub fn ok(id: u64, result: serde_json::Value) -> Self {
         Self {

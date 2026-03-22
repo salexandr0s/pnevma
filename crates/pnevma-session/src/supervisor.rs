@@ -276,6 +276,14 @@ impl SessionSupervisor {
         Self::new_with_backend(data_dir, Arc::new(backend))
     }
 
+    /// Create a supervisor with the local durable backend (pnevma-remote-helper).
+    pub fn new_local_durable(data_dir: impl AsRef<Path>, helper_bin: std::path::PathBuf) -> Self {
+        let data_dir = data_dir.as_ref().to_path_buf();
+        let state_root = data_dir.join("local-durable");
+        let backend = crate::backend::LocalDurableBackend::new(helper_bin, state_root);
+        Self::new_with_backend(data_dir, Arc::new(backend))
+    }
+
     /// Create a supervisor with a specific backend implementation.
     pub fn new_with_backend(data_dir: impl AsRef<Path>, backend: Arc<dyn SessionBackend>) -> Self {
         let data_dir = data_dir.as_ref().to_path_buf();
@@ -1218,6 +1226,7 @@ fn backend_kind_str(kind: crate::backend::SessionBackendKind) -> String {
         crate::backend::SessionBackendKind::LocalPty => "local_pty".to_string(),
         crate::backend::SessionBackendKind::TmuxCompat => "tmux_compat".to_string(),
         crate::backend::SessionBackendKind::RemoteSshDurable => "remote_ssh_durable".to_string(),
+        crate::backend::SessionBackendKind::LocalDurable => "local_durable".to_string(),
     }
 }
 

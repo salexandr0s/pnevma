@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 
 use crate::protocol::{
     RpcNotification, RpcRequest, RpcResponse, SessionCreateParams, SessionIdParams,
-    SessionSignalParams,
+    SessionResizeParams, SessionSignalParams,
 };
 use crate::{HelperError, HelperPaths, HelperRuntime};
 
@@ -133,6 +133,7 @@ async fn dispatch_request(runtime: &Arc<HelperRuntime>, line: &str) -> RpcRespon
         "session.create" => handle_session_create(runtime, &request.params).await,
         "session.signal" => handle_session_signal(runtime, &request.params).await,
         "session.terminate" => handle_session_terminate(runtime, &request.params).await,
+        "session.resize" => handle_session_resize(runtime, &request.params).await,
         "session.list" => handle_session_list(runtime).await,
         "health" => handle_health(runtime).await,
         other => Err(RpcResponse::err(
@@ -202,6 +203,20 @@ async fn handle_session_terminate(
         .map_err(|e| RpcResponse::err(0, -32602, format!("invalid params: {e}")))?;
     let rt = runtime.clone();
     tokio::task::spawn_blocking(move || rt.terminate_session(&p.session_id))
+        .await
+        .map_err(|e| RpcResponse::err(0, -32603, format!("internal error: {e}")))?
+        .map_err(|e| RpcResponse::err(0, -1, e.to_string()))?;
+    Ok(serde_json::json!({"ok": true}))
+}
+
+async fn handle_session_resize(
+    runtime: &Arc<HelperRuntime>,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, RpcResponse> {
+    let p: SessionResizeParams = serde_json::from_value(params.clone())
+        .map_err(|e| RpcResponse::err(0, -32602, format!("invalid params: {e}")))?;
+    let rt = runtime.clone();
+    tokio::task::spawn_blocking(move || rt.resize_session(&p.session_id, p.cols, p.rows))
         .await
         .map_err(|e| RpcResponse::err(0, -32603, format!("internal error: {e}")))?
         .map_err(|e| RpcResponse::err(0, -1, e.to_string()))?;

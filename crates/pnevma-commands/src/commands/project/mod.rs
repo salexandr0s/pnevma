@@ -317,6 +317,13 @@ async fn shutdown_project_sessions(
     if !close_mode.preserves_local_sessions() {
         terminate_project_owned_helpers(project_path).await;
 
+        // Stop the local durable helper daemon on workspace close.
+        let local_durable_root = project_path
+            .join(".pnevma")
+            .join("data")
+            .join("local-durable");
+        pnevma_session::backend::local_durable::stop_helper_daemon(&local_durable_root).await;
+
         if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
             for mut row in rows {
                 if !matches!(row.status.as_str(), "running" | "waiting") {
@@ -471,9 +478,12 @@ pub async fn open_project(
     .map_err(|e| e.to_string())?;
 
     let redaction_secrets = load_redaction_secrets(&db, project_id).await;
-    // Use LocalPty as the default backend for new sessions.
-    // Legacy tmux_compat sessions are handled during restore below.
-    let sessions = SessionSupervisor::new(path_buf.join(".pnevma/data"));
+    // Use LocalDurable backend — sessions survive app restart via pnevma-remote-helper.
+    // Legacy local_pty and tmux_compat sessions are handled during restore below.
+    let sessions = SessionSupervisor::new_local_durable(
+        path_buf.join(".pnevma/data"),
+        super::helper_binary_path(),
+    );
     sessions
         .set_redaction_secrets(redaction_secrets.clone())
         .await;
@@ -558,6 +568,35 @@ pub async fn open_project(
                             json!({}),
                         )
                         .await;
+                    }
+                    continue;
+                }
+                // Local durable sessions: auto-reattach via the helper backend.
+                if row.backend == SESSION_BACKEND_LOCAL_DURABLE {
+                    let alive = session_backend_alive(path_buf.as_path(), &row.id).await;
+                    if alive {
+                        match sessions.attach_existing(session_id).await {
+                            Ok(()) => {
+                                sessions.mark_activity(session_id).await.ok();
+                                append_event(
+                                    &db,
+                                    project_id,
+                                    None,
+                                    Some(session_id),
+                                    "session",
+                                    "SessionReattached",
+                                    json!({"backend": "local_durable"}),
+                                )
+                                .await;
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    %session_id,
+                                    error = %err,
+                                    "failed to auto-reattach local durable session"
+                                );
+                            }
+                        }
                     }
                     continue;
                 }

@@ -1057,7 +1057,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\nHELPERS_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers\"\nmkdir -p \"$HELPERS_DIR\"\nCONF_DIR=$(echo \"${CONFIGURATION}\" | tr '[:upper:]' '[:lower:]')\ncp \"$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-session-proxy\" \"$HELPERS_DIR/\"\n";
+			shellScript = "set -euo pipefail\nHELPERS_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers\"\nmkdir -p \"$HELPERS_DIR\"\nCONF_DIR=$(echo \"${CONFIGURATION}\" | tr '[:upper:]' '[:lower:]')\ncp \"$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-session-proxy\" \"$HELPERS_DIR/\"\ncp \"$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-remote-helper\" \"$HELPERS_DIR/\"\n";
 		};
 		D8BD220250856AB772A64785 /* Build Rust Bridge */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1076,7 +1076,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin\nfi\n";
+			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n\nif [[ \"${CONFIGURATION}\" == \"Release\" ]]; then\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin --release\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-remote-helper --target aarch64-apple-darwin --release\nelse\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin\n  ./scripts/with-rust-toolchain.sh cargo build -p pnevma-remote-helper --target aarch64-apple-darwin\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

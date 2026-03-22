@@ -1,3 +1,4 @@
+pub mod local_durable;
 pub mod local_pty;
 pub mod tmux_compat;
 
@@ -15,6 +16,7 @@ pub enum SessionBackendKillResult {
     AlreadyGone,
 }
 
+pub use local_durable::LocalDurableBackend;
 pub use local_pty::LocalPtyBackend;
 pub use tmux_compat::TmuxCompatBackend;
 

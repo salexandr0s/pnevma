@@ -199,6 +199,8 @@ enum PaneFactory {
     static var sessionBridge: (any SessionBridging)?
     static var activeWorkspaceProvider: (() -> Workspace?)?
     static var browserSessionProvider: ((Workspace) -> BrowserWorkspaceSession)?
+    /// Set to true during app shutdown so dispose() skips killing durable sessions.
+    static var isAppShuttingDown = false
 
     private static func paneTuple(_ view: NSView & PaneContent) -> (PaneID, NSView & PaneContent) {
         (view.paneID, view)
@@ -883,6 +885,16 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             activationHub.removeObserver(activationObserverID)
         }
         hostView?.closeSurfaceSilently()
+        // Kill the backend session on explicit tab close so durable sessions don't pile up.
+        // During app quit, sessions are preserved for reattach on relaunch.
+        if !PaneFactory.isAppShuttingDown,
+           let sessionID = currentSessionID,
+           let bridge = PaneFactory.sessionBridge
+        {
+            Task {
+                await bridge.killSession(sessionID: sessionID)
+            }
+        }
     }
 
     var workingDirectory: String? { currentWorkingDirectory }

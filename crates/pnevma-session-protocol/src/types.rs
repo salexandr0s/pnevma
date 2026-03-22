@@ -9,6 +9,8 @@ pub enum SessionBackendKind {
     LocalPty,
     /// Remote durable session via SSH + pnevma-remote-helper.
     RemoteSshDurable,
+    /// Local durable session via pnevma-remote-helper daemon.
+    LocalDurable,
 }
 
 /// Whether a session can survive process/app restarts.

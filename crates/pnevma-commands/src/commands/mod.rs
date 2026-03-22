@@ -1877,15 +1877,17 @@ struct StoredTerminalLaunchMetadata {
 }
 
 const SESSION_BACKEND_LOCAL_PTY: &str = "local_pty";
+const SESSION_BACKEND_LOCAL_DURABLE: &str = "local_durable";
 
 fn default_session_backend() -> String {
-    SESSION_BACKEND_LOCAL_PTY.to_string()
+    SESSION_BACKEND_LOCAL_DURABLE.to_string()
 }
 
+#[allow(dead_code)] // Used for ephemeral local_pty sessions (legacy)
 const SESSION_DURABILITY_EPHEMERAL: &str = "ephemeral";
 
 fn default_session_durability() -> String {
-    SESSION_DURABILITY_EPHEMERAL.to_string()
+    SESSION_DURABILITY_DURABLE.to_string()
 }
 
 fn default_session_lifecycle_state() -> String {
@@ -2018,6 +2020,31 @@ fn proxy_binary_path() -> std::path::PathBuf {
 
     // Last resort: PATH
     std::path::PathBuf::from("pnevma-session-proxy")
+}
+
+fn helper_binary_path() -> std::path::PathBuf {
+    // Look in app bundle Contents/Helpers first, then fall back to cargo build output
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
+            let bundled = contents.join("Helpers").join("pnevma-remote-helper");
+            if bundled.exists() {
+                return bundled;
+            }
+        }
+    }
+
+    // Development fallback: cargo target directory
+    let candidate = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("target"))
+        .join("debug")
+        .join("pnevma-remote-helper");
+    if candidate.exists() {
+        return candidate;
+    }
+
+    // Last resort: PATH
+    std::path::PathBuf::from("pnevma-remote-helper")
 }
 
 fn parse_optional_datetime(value: &Option<String>) -> Option<DateTime<Utc>> {
@@ -2186,6 +2213,32 @@ fn tmux_tmpdir_for_project(project_path: &Path) -> PathBuf {
 }
 
 async fn session_backend_alive(project_path: &Path, session_id: &str) -> bool {
+    // Check local durable backend (pnevma-remote-helper managed sessions).
+    let state_root = project_path
+        .join(".pnevma")
+        .join("data")
+        .join("local-durable");
+    let runner_pid_path = state_root
+        .join("sessions")
+        .join(session_id)
+        .join("runner.pid");
+    if let Ok(contents) = tokio::fs::read_to_string(&runner_pid_path).await {
+        if let Ok(pid) = contents.trim().parse::<u32>() {
+            let alive = TokioCommand::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if alive {
+                return true;
+            }
+        }
+    }
+
     // Check tmux backend (legacy sessions)
     let name = tmux_name_from_session_id(session_id);
     let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
@@ -2462,9 +2515,59 @@ async fn reconcile_persisted_sessions(
     out.extend(remote_nonlive);
 
     // Process local sessions.
+    let stale_threshold = Utc::now() - chrono::Duration::hours(24);
     for mut row in local {
         if row.status == "running" || row.status == "waiting" {
             let alive = session_backend_alive(project_path, &row.id).await;
+
+            // Stale session cleanup: if a local durable session has been
+            // detached for over 24 hours, terminate it to prevent pile-up.
+            if alive
+                && row.backend == SESSION_BACKEND_LOCAL_DURABLE
+                && row
+                    .detached_at
+                    .as_ref()
+                    .and_then(|dt| {
+                        if *dt < stale_threshold {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    })
+                    .is_some()
+            {
+                tracing::info!(
+                    session_id = %row.id,
+                    "cleaning up stale local durable session (>24h detached)"
+                );
+                // Kill only this specific session via its runner PID, not the daemon.
+                let runner_pid_path = project_path
+                    .join(".pnevma/data/local-durable/sessions")
+                    .join(&row.id)
+                    .join("runner.pid");
+                if let Ok(contents) = tokio::fs::read_to_string(&runner_pid_path).await {
+                    if let Ok(pid) = contents.trim().parse::<u32>() {
+                        let _ = TokioCommand::new("kill")
+                            .args(["-TERM", &pid.to_string()])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .await;
+                    }
+                }
+                // Mark as terminated.
+                row.status = "complete".to_string();
+                row.lifecycle_state = "exited".to_string();
+                row.pid = None;
+                row.last_heartbeat = Utc::now();
+                row.ended_at = Some(Utc::now().to_rfc3339());
+                row.last_error = Some("stale session cleaned up (>24h detached)".to_string());
+                db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+                out.push(row);
+                continue;
+            }
+
             row.status = if alive {
                 "waiting".to_string()
             } else {
@@ -2477,7 +2580,13 @@ async fn reconcile_persisted_sessions(
             };
             row.pid = None;
             row.last_heartbeat = Utc::now();
-            row.detached_at = alive.then(Utc::now);
+            // Only set detached_at if it wasn't already set, so the stale
+            // session TTL counts from the original detach, not every project open.
+            if alive && row.detached_at.is_none() {
+                row.detached_at = Some(Utc::now());
+            } else if !alive {
+                row.detached_at = None;
+            }
             row.last_error =
                 (!alive).then(|| "session backend not available during restore".to_string());
             db.upsert_session(&row).await.map_err(|e| e.to_string())?;
