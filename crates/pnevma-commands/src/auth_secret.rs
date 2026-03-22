@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use secrecy::SecretString;
+
 pub(crate) const REMOTE_KEYCHAIN_SERVICE: &str = "com.pnevma.remote-access";
 pub(crate) const REMOTE_KEYCHAIN_ACCOUNT: &str = "shared-password";
 pub(crate) const SOCKET_KEYCHAIN_SERVICE: &str = "com.pnevma.control-plane";
@@ -26,7 +28,7 @@ pub(crate) fn remote_password_file_path() -> PathBuf {
     PathBuf::from(home).join(".config/pnevma/remote-password")
 }
 
-pub(crate) fn load_remote_password() -> Result<Option<String>, String> {
+pub(crate) fn load_remote_password() -> Result<Option<SecretString>, String> {
     load_password(
         "PNEVMA_REMOTE_PASSWORD",
         REMOTE_KEYCHAIN_SERVICE,
@@ -35,7 +37,9 @@ pub(crate) fn load_remote_password() -> Result<Option<String>, String> {
     )
 }
 
-pub(crate) fn load_socket_password(password_file: Option<&str>) -> Result<Option<String>, String> {
+pub(crate) fn load_socket_password(
+    password_file: Option<&str>,
+) -> Result<Option<SecretString>, String> {
     load_password(
         "PNEVMA_SOCKET_PASSWORD",
         SOCKET_KEYCHAIN_SERVICE,
@@ -49,13 +53,13 @@ fn load_password(
     keychain_service: &str,
     keychain_account: &str,
     password_file: Option<PathBuf>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<SecretString>, String> {
     if let Some(password) = env_password(env_var) {
-        return Ok(Some(password));
+        return Ok(Some(SecretString::from(password)));
     }
 
     if let Some(password) = read_keychain_password(keychain_service, keychain_account)? {
-        return Ok(Some(password));
+        return Ok(Some(SecretString::from(password)));
     }
 
     let Some(path) = password_file else {
@@ -63,7 +67,7 @@ fn load_password(
     };
 
     match read_password_file_secure(&path) {
-        Ok(password) => Ok(Some(password)),
+        Ok(password) => Ok(Some(SecretString::from(password))),
         Err(PasswordFileError::NotFound) => Ok(None),
         Err(err) => Err(err.to_string()),
     }
@@ -84,7 +88,10 @@ fn read_keychain_password(service: &str, account: &str) -> Result<Option<String>
 
         match get_generic_password(service, account) {
             Ok(value) => {
-                let value = String::from_utf8_lossy(&value).trim().to_string();
+                let value = String::from_utf8(value.to_vec()).map_err(|_| {
+                    format!("Keychain item {service}/{account} contains invalid UTF-8")
+                })?;
+                let value = value.trim().to_string();
                 if value.is_empty() {
                     return Err(format!("Keychain item {service}/{account} is empty"));
                 }

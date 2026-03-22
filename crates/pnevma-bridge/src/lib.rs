@@ -12,14 +12,14 @@ use pnevma_commands::{route_method, NullEmitter};
 use pnevma_db::GlobalDb;
 use pnevma_session::SessionEvent;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
 };
 use tokio::runtime::{Handle, Runtime};
 
@@ -61,6 +61,17 @@ static GLOBAL_HANDLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Using a single runtime avoids spawning a separate thread pool per workspace,
 /// which previously caused thread count to scale linearly with open workspaces.
 static SHARED_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Registry of live handle pointers for use-after-free protection.
+///
+/// `pnevma_create` inserts the raw pointer address; `pnevma_destroy` removes it
+/// before any dereference, preventing undefined behaviour if a caller passes an
+/// already-freed pointer.
+static HANDLE_REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+
+fn handle_registry() -> &'static Mutex<HashSet<usize>> {
+    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 /// Return a reference to the shared Tokio runtime, creating it on first call.
 fn shared_runtime() -> &'static Runtime {
@@ -147,12 +158,24 @@ impl EventEmitter for FfiEventEmitter {
     fn emit(&self, event: &str, payload: Value) {
         let event_cstr = match CString::new(event) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(_) => {
+                tracing::warn!("null byte in FFI event string, stripping");
+                match CString::new(event.replace('\0', "")) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                }
+            }
         };
         let payload_str = payload.to_string();
-        let payload_cstr = match CString::new(payload_str) {
+        let payload_cstr = match CString::new(payload_str.as_str()) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(_) => {
+                tracing::warn!("null byte in FFI payload string, stripping");
+                match CString::new(payload_str.replace('\0', "")) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                }
+            }
         };
         let cb = self.inner.cb;
         let ctx = self.inner.ctx;
@@ -173,7 +196,9 @@ impl EventEmitter for FfiEventEmitter {
 
 fn make_result(ok: bool, data: &str) -> *mut PnevmaResult {
     let cstr = CString::new(data).unwrap_or_else(|_| {
-        CString::new("").expect("empty string literal cannot contain interior nuls")
+        tracing::warn!("null byte in FFI result data, stripping");
+        CString::new(data.replace('\0', ""))
+            .unwrap_or_else(|_| CString::new("").expect("empty CString"))
     });
     let len = cstr.as_bytes().len();
     let ptr = cstr.into_raw();
@@ -354,7 +379,7 @@ fn wait_for_session_output_callback_quiescence(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while Arc::strong_count(&registration) > 1 {
         if std::time::Instant::now() > deadline {
-            tracing::warn!("session output callback quiescence timed out after 5s");
+            tracing::error!("session output callback quiescence timed out after 5s");
             break;
         }
         std::thread::yield_now();
@@ -385,7 +410,13 @@ fn invoke_session_output_callback(
 ) {
     let sid_cstr = match CString::new(session_id) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => {
+            tracing::warn!("null byte in session_id FFI string, stripping");
+            match CString::new(session_id.replace('\0', "")) {
+                Ok(s) => s,
+                Err(_) => return,
+            }
+        }
     };
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let wrapper = registration.wrapper;
@@ -587,9 +618,13 @@ async fn stop_project_services(state: Arc<AppState>) {
 /// `ctx` is an opaque pointer forwarded to every callback invocation.
 ///
 /// Returns NULL on failure. The caller must eventually call `pnevma_destroy`.
+///
+/// # Safety
+///
+/// `ctx` must be valid for the lifetime of the returned handle (until
+/// `pnevma_destroy` is called). `cb` must be safe to call from any thread.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaHandle {
+pub unsafe extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaHandle {
     let result = panic::catch_unwind(|| {
         let runtime = shared_runtime();
         let handle = runtime.handle().clone();
@@ -628,7 +663,7 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             );
         });
 
-        Arc::into_raw(Arc::new(PnevmaHandle {
+        let raw = Arc::into_raw(Arc::new(PnevmaHandle {
             runtime: handle,
             state,
             session_output_cb: Arc::new(std::sync::Mutex::new(None)),
@@ -640,7 +675,14 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
             shutting_down,
             destroyed: AtomicBool::new(false),
             shutdown: shutdown_tx,
-        })) as *mut PnevmaHandle
+        })) as *mut PnevmaHandle;
+
+        // Register the pointer so pnevma_destroy can validate before dereference.
+        if let Ok(mut registry) = handle_registry().lock() {
+            registry.insert(raw as usize);
+        }
+
+        raw
     });
 
     result.unwrap_or(ptr::null_mut())
@@ -649,14 +691,32 @@ pub extern "C" fn pnevma_create(cb: EventCallback, ctx: *mut ()) -> *mut PnevmaH
 /// Destroy a Pnevma handle, shutting down all background tasks.
 ///
 /// After this call, the handle pointer is invalid.
+///
+/// # Safety
+///
+/// `handle` must be a pointer returned by `pnevma_create` that has not yet been
+/// destroyed, or NULL (which is a no-op).
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
+pub unsafe extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
     if handle.is_null() {
         return;
     }
-    // SAFETY: handle is non-null (checked above). We read the `destroyed` flag
-    // before taking ownership to prevent double Arc::from_raw on the same pointer.
+
+    // Validate the pointer against the registry before any dereference.
+    // If the pointer is not registered, it was already destroyed or never created.
+    {
+        let mut registry = match handle_registry().lock() {
+            Ok(r) => r,
+            Err(_) => return, // poisoned mutex — cannot safely proceed
+        };
+        if !registry.remove(&(handle as usize)) {
+            // Already destroyed or invalid pointer — no-op.
+            return;
+        }
+    }
+
+    // SAFETY: handle is non-null (checked above) and was validated against the
+    // registry, confirming it is a live pointer from pnevma_create.
     let handle_ref = unsafe { &*handle };
     if handle_ref
         .destroyed
@@ -707,9 +767,14 @@ pub extern "C" fn pnevma_destroy(handle: *mut PnevmaHandle) {
 /// `params_json` must point to a valid allocation of at least `params_len`
 /// bytes. Passing a length exceeding the allocation is undefined behavior.
 /// NULL is valid when `params_len` is 0 (treated as empty params).
+///
+/// # Safety
+///
+/// `handle` must be a live pointer returned by `pnevma_create`. `method` must
+/// be a valid null-terminated C string. `params_json` must point to at least
+/// `params_len` valid bytes, or be NULL when `params_len` is 0.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn pnevma_call(
+pub unsafe extern "C" fn pnevma_call(
     handle: *mut PnevmaHandle,
     method: *const c_char,
     params_json: *const c_char,
@@ -816,9 +881,16 @@ pub extern "C" fn pnevma_call(
 /// `release_cb` exactly once for each pending callback. `release_cb` must be a
 /// valid function pointer; use a no-op function when `cb_ctx` requires no
 /// cleanup. Passing NULL is valid only if both callbacks handle NULL context.
+///
+/// # Safety
+///
+/// `handle` must be a live pointer returned by `pnevma_create`. `method` must
+/// be a valid null-terminated C string. `params_json` must point to at least
+/// `params_len` valid bytes, or be NULL when `params_len` is 0. `cb`,
+/// `release_cb` must be valid function pointers. `cb_ctx` must remain valid
+/// until `cb` or `release_cb` is invoked.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn pnevma_call_async(
+pub unsafe extern "C" fn pnevma_call_async(
     handle: *mut PnevmaHandle,
     method: *const c_char,
     params_json: *const c_char,
@@ -1002,9 +1074,14 @@ pub unsafe extern "C" fn pnevma_free_result(result: *mut PnevmaResult) {
 /// in-flight callback snapshots to finish before returning. The caller must
 /// NOT free or mutate the context while the callback may be invoked from a
 /// background thread.
+///
+/// # Safety
+///
+/// `handle` must be a live pointer returned by `pnevma_create`. `cb` must be a
+/// valid function pointer (or zero to unregister). `ctx` must remain valid for
+/// the lifetime of the registration.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn pnevma_set_session_output_callback(
+pub unsafe extern "C" fn pnevma_set_session_output_callback(
     handle: *mut PnevmaHandle,
     cb: SessionOutputCallback,
     ctx: *mut (),
@@ -1174,54 +1251,60 @@ mod tests {
     #[test]
     fn pnevma_create_returns_non_null() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
-        assert!(
-            !handle.is_null(),
-            "pnevma_create should return non-null handle"
-        );
-        pnevma_destroy(handle);
+        unsafe {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(
+                !handle.is_null(),
+                "pnevma_create should return non-null handle"
+            );
+            pnevma_destroy(handle);
+        }
     }
 
     #[test]
     fn pnevma_call_with_null_handle_returns_error() {
         let method = CString::new("task.list").unwrap();
         let params = CString::new("{}").unwrap();
-        let result = pnevma_call(
-            ptr::null_mut(),
-            method.as_ptr(),
-            params.as_ptr(),
-            params.as_bytes().len(),
-        );
-        assert!(!result.is_null());
-        let r = unsafe { &*result };
-        assert_eq!(r.ok, 0, "should return error for null handle");
-        unsafe { pnevma_free_result(result) };
+        unsafe {
+            let result = pnevma_call(
+                ptr::null_mut(),
+                method.as_ptr(),
+                params.as_ptr(),
+                params.as_bytes().len(),
+            );
+            assert!(!result.is_null());
+            let r = &*result;
+            assert_eq!(r.ok, 0, "should return error for null handle");
+            pnevma_free_result(result);
+        }
     }
 
     #[test]
     fn pnevma_call_returns_valid_result() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
-        assert!(!handle.is_null());
+        unsafe {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(!handle.is_null());
 
-        let method = CString::new("task.list").unwrap();
-        let params = CString::new("{}").unwrap();
-        let result = pnevma_call(
-            handle,
-            method.as_ptr(),
-            params.as_ptr(),
-            params.as_bytes().len(),
-        );
-        assert!(
-            !result.is_null(),
-            "pnevma_call should return non-null result"
-        );
-        let r = unsafe { &*result };
-        // Result may be ok or error depending on DB state — just verify it has data
-        assert!(!r.data.is_null(), "result should have data pointer");
-        assert!(r.len > 0, "result should have non-zero length");
-        unsafe { pnevma_free_result(result) };
-        pnevma_destroy(handle);
+            let method = CString::new("task.list").unwrap();
+            let params = CString::new("{}").unwrap();
+            let result = pnevma_call(
+                handle,
+                method.as_ptr(),
+                params.as_ptr(),
+                params.as_bytes().len(),
+            );
+            assert!(
+                !result.is_null(),
+                "pnevma_call should return non-null result"
+            );
+            let r = &*result;
+            // Result may be ok or error depending on DB state — just verify it has data
+            assert!(!r.data.is_null(), "result should have data pointer");
+            assert!(r.len > 0, "result should have non-zero length");
+            pnevma_free_result(result);
+            pnevma_destroy(handle);
+        }
     }
 
     #[test]
@@ -1276,90 +1359,96 @@ mod tests {
         extern "C" fn output_cb(_sid: *const c_char, _data: *const u8, _len: usize, _ctx: *mut ()) {
         }
 
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
-        assert!(!handle.is_null());
+        unsafe {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(!handle.is_null());
 
-        pnevma_set_session_output_callback(handle, output_cb, ptr::null_mut());
+            pnevma_set_session_output_callback(handle, output_cb, ptr::null_mut());
 
-        // Verify the callback was stored
-        let h = unsafe { &*handle };
-        let guard = h.session_output_cb.lock().unwrap();
-        assert!(
-            guard.is_some(),
-            "callback should be stored after registration"
-        );
-        drop(guard);
-        let task_guard = h.session_output_task.lock().unwrap();
-        assert!(task_guard.is_some(), "forward loop should be running");
-        drop(task_guard);
+            // Verify the callback was stored
+            let h = &*handle;
+            let guard = h.session_output_cb.lock().unwrap();
+            assert!(
+                guard.is_some(),
+                "callback should be stored after registration"
+            );
+            drop(guard);
+            let task_guard = h.session_output_task.lock().unwrap();
+            assert!(task_guard.is_some(), "forward loop should be running");
+            drop(task_guard);
 
-        // Give the forward loop a moment to start (it will be waiting for a project)
-        std::thread::sleep(std::time::Duration::from_millis(100));
+            // Give the forward loop a moment to start (it will be waiting for a project)
+            std::thread::sleep(std::time::Duration::from_millis(100));
 
-        pnevma_destroy(handle);
+            pnevma_destroy(handle);
+        }
     }
 
     #[test]
     fn pnevma_call_async_invokes_callback() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
-        assert!(!handle.is_null());
         let state = Arc::new(AsyncCallbackState::default());
+        unsafe {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(!handle.is_null());
 
-        let method = CString::new("task.list").unwrap();
-        let params = CString::new("{}").unwrap();
-        pnevma_call_async(
-            handle,
-            method.as_ptr(),
-            params.as_ptr(),
-            params.as_bytes().len(),
-            test_async_cb,
-            async_callback_ctx(&state),
-            test_async_release_cb,
-        );
+            let method = CString::new("task.list").unwrap();
+            let params = CString::new("{}").unwrap();
+            pnevma_call_async(
+                handle,
+                method.as_ptr(),
+                params.as_ptr(),
+                params.as_bytes().len(),
+                test_async_cb,
+                async_callback_ctx(&state),
+                test_async_release_cb,
+            );
 
-        // Give the async task time to complete
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        assert_eq!(
-            state.called.load(Ordering::SeqCst),
-            1,
-            "async callback should fire exactly once"
-        );
-        assert_eq!(
-            state.released.load(Ordering::SeqCst),
-            1,
-            "async callback context should be released once after completion"
-        );
+            // Give the async task time to complete
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            assert_eq!(
+                state.called.load(Ordering::SeqCst),
+                1,
+                "async callback should fire exactly once"
+            );
+            assert_eq!(
+                state.released.load(Ordering::SeqCst),
+                1,
+                "async callback context should be released once after completion"
+            );
 
-        pnevma_destroy(handle);
+            pnevma_destroy(handle);
+        }
     }
 
     #[test]
     fn pnevma_destroy_cancels_pending_async_callbacks() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
-        assert!(!handle.is_null());
         let state = Arc::new(AsyncCallbackState::default());
+        unsafe {
+            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            assert!(!handle.is_null());
 
-        let method = CString::new("task.list").unwrap();
-        let params = CString::new("{}").unwrap();
-        pnevma_call_async(
-            handle,
-            method.as_ptr(),
-            params.as_ptr(),
-            params.as_bytes().len(),
-            test_async_cb,
-            async_callback_ctx(&state),
-            test_async_release_cb,
-        );
-        let h = unsafe { &*handle };
-        assert_eq!(
-            h.pending_async_callbacks.lock().len(),
-            1,
-            "callback should be pending before destroy"
-        );
+            let method = CString::new("task.list").unwrap();
+            let params = CString::new("{}").unwrap();
+            pnevma_call_async(
+                handle,
+                method.as_ptr(),
+                params.as_ptr(),
+                params.as_bytes().len(),
+                test_async_cb,
+                async_callback_ctx(&state),
+                test_async_release_cb,
+            );
+            let h = &*handle;
+            assert_eq!(
+                h.pending_async_callbacks.lock().len(),
+                1,
+                "callback should be pending before destroy"
+            );
 
-        pnevma_destroy(handle);
+            pnevma_destroy(handle);
+        }
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert!(
             state.called.load(Ordering::SeqCst) == 0,
@@ -1372,6 +1461,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(panic = "abort", ignore)]
     #[test]
     fn pending_async_callback_guard_cleans_up_panic_once() {
         let callbacks = Arc::new(ParkingMutex::new(HashMap::new()));
@@ -1641,7 +1731,7 @@ mod tests {
     #[test]
     fn stress_concurrent_async_calls() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        let handle = unsafe { pnevma_create(noop_cb, ptr::null_mut()) };
         assert!(!handle.is_null());
 
         let count = 50usize;
@@ -1665,15 +1755,17 @@ mod tests {
                     let params = CString::new("{}").unwrap();
                     // Barrier ensures all 50 threads fire simultaneously
                     barrier.wait();
-                    pnevma_call_async(
-                        handle_addr as *mut PnevmaHandle,
-                        method.as_ptr(),
-                        params.as_ptr(),
-                        params.as_bytes().len(),
-                        test_async_cb,
-                        async_callback_ctx(&state),
-                        test_async_release_cb,
-                    );
+                    unsafe {
+                        pnevma_call_async(
+                            handle_addr as *mut PnevmaHandle,
+                            method.as_ptr(),
+                            params.as_ptr(),
+                            params.as_bytes().len(),
+                            test_async_cb,
+                            async_callback_ctx(&state),
+                            test_async_release_cb,
+                        );
+                    }
                 })
             })
             .collect();
@@ -1691,7 +1783,7 @@ mod tests {
             "all {count} async callbacks must fire"
         );
 
-        pnevma_destroy(handle);
+        unsafe { pnevma_destroy(handle) };
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         for (i, state) in states.iter().enumerate() {
@@ -1710,7 +1802,7 @@ mod tests {
     fn stress_create_destroy_cycles() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
         for i in 0..100 {
-            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            let handle = unsafe { pnevma_create(noop_cb, ptr::null_mut()) };
             assert!(
                 !handle.is_null(),
                 "create must return non-null on cycle {i}"
@@ -1721,20 +1813,22 @@ mod tests {
             let state = Arc::new(AsyncCallbackState::default());
             let method = CString::new("task.list").unwrap();
             let params = CString::new("{}").unwrap();
-            pnevma_call_async(
-                handle,
-                method.as_ptr(),
-                params.as_ptr(),
-                params.as_bytes().len(),
-                test_async_cb,
-                async_callback_ctx(&state),
-                test_async_release_cb,
-            );
+            unsafe {
+                pnevma_call_async(
+                    handle,
+                    method.as_ptr(),
+                    params.as_ptr(),
+                    params.as_bytes().len(),
+                    test_async_cb,
+                    async_callback_ctx(&state),
+                    test_async_release_cb,
+                );
+            }
 
             // Destroy while the async call may still be in flight — exercises
             // both the "completed before destroy" and "pending at destroy" paths
             // across 100 iterations.
-            pnevma_destroy(handle);
+            unsafe { pnevma_destroy(handle) };
 
             // Verify the callback context was released (either via normal
             // completion or destroy cleanup) — a leak here would mean the
@@ -1763,7 +1857,7 @@ mod tests {
 
         // Run multiple rounds to increase the chance of hitting the race window
         for round in 0..10 {
-            let handle = pnevma_create(noop_cb, ptr::null_mut());
+            let handle = unsafe { pnevma_create(noop_cb, ptr::null_mut()) };
             assert!(!handle.is_null());
 
             let count = 10usize;
@@ -1786,15 +1880,17 @@ mod tests {
                         let method = CString::new("task.list").unwrap();
                         let params = CString::new("{}").unwrap();
                         barrier.wait();
-                        pnevma_call_async(
-                            handle_addr as *mut PnevmaHandle,
-                            method.as_ptr(),
-                            params.as_ptr(),
-                            params.as_bytes().len(),
-                            test_async_cb,
-                            async_callback_ctx(&state),
-                            test_async_release_cb,
-                        );
+                        unsafe {
+                            pnevma_call_async(
+                                handle_addr as *mut PnevmaHandle,
+                                method.as_ptr(),
+                                params.as_ptr(),
+                                params.as_bytes().len(),
+                                test_async_cb,
+                                async_callback_ctx(&state),
+                                test_async_release_cb,
+                            );
+                        }
                     })
                 })
                 .collect();
@@ -1806,7 +1902,7 @@ mod tests {
 
             // Destroy immediately — async tasks may still be running on the
             // Tokio runtime. The generation guard must prevent stale invocations.
-            pnevma_destroy(handle);
+            unsafe { pnevma_destroy(handle) };
             std::thread::sleep(std::time::Duration::from_millis(250));
 
             for (i, state) in states.iter().enumerate() {
@@ -1829,7 +1925,7 @@ mod tests {
     #[test]
     fn stress_no_callback_lost_under_contention() {
         extern "C" fn noop_cb(_: *const c_char, _: *const c_char, _: *mut ()) {}
-        let handle = pnevma_create(noop_cb, ptr::null_mut());
+        let handle = unsafe { pnevma_create(noop_cb, ptr::null_mut()) };
         assert!(!handle.is_null());
 
         let count = 20usize;
@@ -1849,15 +1945,17 @@ mod tests {
                     let method = CString::new("task.list").unwrap();
                     let params = CString::new("{}").unwrap();
                     barrier.wait();
-                    pnevma_call_async(
-                        handle_addr as *mut PnevmaHandle,
-                        method.as_ptr(),
-                        params.as_ptr(),
-                        params.as_bytes().len(),
-                        test_async_cb,
-                        async_callback_ctx(&state),
-                        test_async_release_cb,
-                    );
+                    unsafe {
+                        pnevma_call_async(
+                            handle_addr as *mut PnevmaHandle,
+                            method.as_ptr(),
+                            params.as_ptr(),
+                            params.as_bytes().len(),
+                            test_async_cb,
+                            async_callback_ctx(&state),
+                            test_async_release_cb,
+                        );
+                    }
                 })
             })
             .collect();
@@ -1876,7 +1974,7 @@ mod tests {
             );
         }
 
-        pnevma_destroy(handle);
+        unsafe { pnevma_destroy(handle) };
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         for (i, state) in states.iter().enumerate() {

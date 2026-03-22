@@ -387,7 +387,7 @@ final class FileBrowserPaneTests: XCTestCase {
         let viewModel = FileBrowserViewModel(
             commandBus: bus,
             activationHub: activationHub,
-            searchDebounceNanoseconds: 1_000_000
+            searchDebounceDuration: .milliseconds(1)
         )
 
         activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))

@@ -154,7 +154,7 @@ final class SessionStore {
     }
 
     var activeCount: Int {
-        sessions.filter(\.isActive).count
+        sessions.count(where: \.isActive)
     }
 
     var hasActiveProject: Bool {

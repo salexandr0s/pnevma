@@ -851,7 +851,8 @@ private func withGhosttyKeyEvent<T>(
     key.keycode = UInt32(event.keyCode)
     key.composing = false
 
-    if let chars = eventText(for: event), !chars.isEmpty {
+    if action != GHOSTTY_ACTION_RELEASE,
+       let chars = eventText(for: event), !chars.isEmpty {
         return chars.withCString { ptr in
             key.text = ptr
             applyUnshiftedCodepoint(to: &key, event: event)

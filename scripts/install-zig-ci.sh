@@ -34,6 +34,38 @@ detect_platform() {
   esac
 }
 
+verify_checksum() {
+  local file="$1" expected="$2"
+  local actual
+  actual="$(shasum -a 256 "$file" | cut -d' ' -f1)"
+  if [ "$actual" != "$expected" ]; then
+    echo "ERROR: SHA256 checksum mismatch for $file" >&2
+    echo "  Expected: $expected" >&2
+    echo "  Got:      $actual" >&2
+    exit 1
+  fi
+  echo "Checksum verified: $file" >&2
+}
+
+# SHA256 checksums for Zig archives. Update when changing ZIG_VERSION.
+# Obtain from https://ziglang.org/download/index.json
+ZIG_SHA256_AARCH64_MACOS="3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
+ZIG_SHA256_X86_64_MACOS="375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f"
+ZIG_SHA256_AARCH64_LINUX="958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f"
+ZIG_SHA256_X86_64_LINUX="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
+
+expected_zig_checksum() {
+  local platform
+  platform="$(detect_platform)"
+  case "$platform" in
+    aarch64-macos) printf '%s\n' "$ZIG_SHA256_AARCH64_MACOS" ;;
+    x86_64-macos)  printf '%s\n' "$ZIG_SHA256_X86_64_MACOS" ;;
+    aarch64-linux) printf '%s\n' "$ZIG_SHA256_AARCH64_LINUX" ;;
+    x86_64-linux)  printf '%s\n' "$ZIG_SHA256_X86_64_LINUX" ;;
+    *) fail "no checksum for platform: $platform" ;;
+  esac
+}
+
 zig_archive_stem() {
   local platform
   platform="$(detect_platform)"
@@ -78,6 +110,7 @@ install_zig() {
 
   echo "Downloading Zig from $url" >&2
   curl -sSfL "$url" -o "$archive_path"
+  verify_checksum "$archive_path" "$(expected_zig_checksum)"
   tar -xf "$archive_path" -C "$tmpdir"
 
   rm -rf "$install_dir"

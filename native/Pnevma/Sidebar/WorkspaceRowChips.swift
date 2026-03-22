@@ -16,7 +16,7 @@ struct DiffStatsChip: View {
                     .foregroundStyle(.red)
             }
         }
-        .font(.caption2.weight(.medium).monospaced())
+        .font(.caption.weight(.medium).monospaced())
         .fixedSize()
         .accessibilityLabel("\(insertions) insertions, \(deletions) deletions")
     }
@@ -31,7 +31,7 @@ struct PRChip: View {
 
     var body: some View {
         Text("#\(number)")
-            .font(.caption2.weight(.medium))
+            .font(.caption.weight(.medium))
             .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -44,6 +44,7 @@ struct PRChip: View {
                     NSWorkspace.shared.open(nsURL)
                 }
             }
+            .accessibilityAddTraits(.isButton)
             .help(url ?? "PR #\(number)")
             .fixedSize()
             .accessibilityLabel("Pull request \(number)")
@@ -90,7 +91,7 @@ struct AttentionChip: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 9))
             Text("Attention")
-                .font(.caption2.weight(.medium))
+                .font(.caption.weight(.medium))
         }
         .foregroundStyle(.orange)
         .help(reason)

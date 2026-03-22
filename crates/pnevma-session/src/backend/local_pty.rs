@@ -250,12 +250,35 @@ fn open_pty_pair() -> Result<(OwnedFd, OwnedFd), std::io::Error> {
     Ok((master, slave))
 }
 
+/// Validate that the command parameter is suitable for session spawning.
+///
+/// # Trust boundary
+///
+/// This is an internal-only API. Commands originate from the dispatch system
+/// and are never directly user-supplied. This validation provides defense-in-depth.
+fn validate_session_command(command: &str) -> Result<(), std::io::Error> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "session command must not be empty",
+        ));
+    }
+    tracing::debug!(
+        command_len = trimmed.len(),
+        "spawning PTY session with validated command"
+    );
+    Ok(())
+}
+
 /// Spawn a child process attached to the slave side of a PTY.
 fn spawn_pty_child(
     slave_fd: OwnedFd,
     cwd: &std::path::Path,
     command: &str,
 ) -> Result<tokio::process::Child, std::io::Error> {
+    validate_session_command(command)?;
+
     let slave_file = std::fs::File::from(slave_fd);
     let stdin = slave_file.try_clone()?;
     let stdout = slave_file.try_clone()?;
@@ -285,9 +308,7 @@ fn spawn_pty_child(
 
     // Inject a safe PATH for GUI-launched processes
     cmd.env("PATH", super::tmux_compat::gui_safe_path());
-    if std::env::var_os("TERM").is_none() {
-        cmd.env("TERM", "xterm-256color");
-    }
+    cmd.env("TERM", "xterm-256color");
 
     cmd.spawn()
 }

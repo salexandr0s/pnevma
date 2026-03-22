@@ -10,15 +10,8 @@ enum PaneChromeContext: Equatable {
     }
 }
 
-private struct PaneChromeContextKey: EnvironmentKey {
-    static let defaultValue: PaneChromeContext = .standard
-}
-
 extension EnvironmentValues {
-    var paneChromeContext: PaneChromeContext {
-        get { self[PaneChromeContextKey.self] }
-        set { self[PaneChromeContextKey.self] = newValue }
-    }
+    @Entry var paneChromeContext: PaneChromeContext = .standard
 }
 
 struct AccessibilityMarker: NSViewRepresentable {

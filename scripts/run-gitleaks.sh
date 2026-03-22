@@ -14,6 +14,19 @@ fail() {
   exit 1
 }
 
+verify_checksum() {
+  local file="$1" expected="$2"
+  local actual
+  actual="$(shasum -a 256 "$file" | cut -d' ' -f1)"
+  if [ "$actual" != "$expected" ]; then
+    echo "ERROR: SHA256 checksum mismatch for $file" >&2
+    echo "  Expected: $expected" >&2
+    echo "  Got:      $actual" >&2
+    exit 1
+  fi
+  echo "Checksum verified: $file" >&2
+}
+
 usage() {
   cat <<'EOF'
 Usage: run-gitleaks.sh [--latest-commit] [--working-tree] [--log-opts=<git log opts>] [--verify-only]
@@ -34,6 +47,25 @@ detect_platform() {
     Linux/aarch64 | Linux/arm64) printf '%s\n' "linux_arm64" ;;
     Linux/x86_64) printf '%s\n' "linux_x64" ;;
     *) fail "unsupported platform: $os/$arch" ;;
+  esac
+}
+
+# SHA256 checksums for gitleaks archives. Update when changing GITLEAKS_VERSION.
+# Obtain from https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt
+GITLEAKS_SHA256_DARWIN_ARM64="b251ab2bcd4cd8ba9e56ff37698c033ebf38582b477d21ebd86586d927cf87e7"
+GITLEAKS_SHA256_DARWIN_X64="ca221d012d247080c2f6f61f4b7a83bffa2453806b0c195c795bbe9a8c775ed5"
+GITLEAKS_SHA256_LINUX_ARM64="b4cbbb6ddf7d1b2a603088cd03a4e3f7ce48ee7fd449b51f7de6ee2906f5fa2f"
+GITLEAKS_SHA256_LINUX_X64="79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
+
+expected_gitleaks_checksum() {
+  local platform
+  platform="$(detect_platform)"
+  case "$platform" in
+    darwin_arm64) printf '%s\n' "$GITLEAKS_SHA256_DARWIN_ARM64" ;;
+    darwin_x64)   printf '%s\n' "$GITLEAKS_SHA256_DARWIN_X64" ;;
+    linux_arm64)  printf '%s\n' "$GITLEAKS_SHA256_LINUX_ARM64" ;;
+    linux_x64)    printf '%s\n' "$GITLEAKS_SHA256_LINUX_X64" ;;
+    *) fail "no checksum for platform: $platform" ;;
   esac
 }
 
@@ -65,6 +97,7 @@ ensure_gitleaks() {
 
   echo "Downloading gitleaks from $url" >&2
   curl -sSfL "$url" -o "$tmpdir/$archive"
+  verify_checksum "$tmpdir/$archive" "$(expected_gitleaks_checksum)"
   tar -xzf "$tmpdir/$archive" -C "$install_dir"
   rm -rf "$tmpdir"
 

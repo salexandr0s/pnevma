@@ -122,6 +122,10 @@ pub async fn build_router(
             crate::middleware::rate_limit::rate_limit,
         ));
 
+    // Static file rate limit — separate budget from API/auth.
+    let static_rate_limit = RateLimitState::new(300); // 300 req/min for static assets
+    static_rate_limit.spawn_cleanup(cleanup_shutdown_rx.clone());
+
     // Health check (no auth, rate-limited separately)
     let health_rate_limit = RateLimitState::new(120); // 120 req/min
     health_rate_limit.spawn_cleanup(cleanup_shutdown_rx);
@@ -153,7 +157,12 @@ pub async fn build_router(
     // Optionally serve frontend SPA
     if config.serve_frontend {
         if let Some(dir) = frontend_dir {
-            let static_router = crate::routes::static_files::static_files_router(dir);
+            let static_router = crate::routes::static_files::static_files_router(dir).layer(
+                middleware::from_fn_with_state(
+                    static_rate_limit,
+                    crate::middleware::rate_limit::rate_limit,
+                ),
+            );
             app = app.merge(static_router);
         }
     }
@@ -257,6 +266,35 @@ mod tests {
             .get("x-tls-fingerprint")
             .expect("X-TLS-Fingerprint header should be present");
         assert_eq!(header.to_str().unwrap(), format!("sha256:{fp}"),);
+    }
+
+    #[test]
+    fn rest_route_methods_are_in_rpc_allowlist() {
+        let rest_methods = [
+            "project.status",
+            "project.daily_brief",
+            "project.automation",
+            "project.search",
+            "fleet.snapshot",
+            "fleet.action",
+            "task.list",
+            "task.create",
+            "task.dispatch",
+            "session.list",
+            "workflow.list",
+            "workflow.list_defs",
+            "workflow.list_instances",
+            "workflow.instantiate",
+            "workflow.dispatch",
+            "workflow.get",
+            "workflow.get_instance",
+        ];
+        for method in &rest_methods {
+            assert!(
+                crate::routes::rpc_allowlist::is_allowed(method),
+                "REST route method {method:?} is not in the RPC allowlist"
+            );
+        }
     }
 
     #[tokio::test]

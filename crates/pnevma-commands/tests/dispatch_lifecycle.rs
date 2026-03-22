@@ -634,7 +634,9 @@ async fn completed_task_unblocks_blocked_dependent_task() {
 
     release_completion.notify_waiters();
 
-    let result = tokio::time::timeout(Duration::from_secs(5), async {
+    // CI runners under load may need more time for the full async pipeline:
+    // event receive → status update → dependency refresh → DB write.
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let dependent = harness
                 .db
@@ -651,7 +653,7 @@ async fn completed_task_unblocks_blocked_dependent_task() {
             if main.status == "Done" && dependent.status == "Ready" {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await;

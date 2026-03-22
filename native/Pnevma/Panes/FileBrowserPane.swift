@@ -479,7 +479,7 @@ final class FileBrowserViewModel {
     @ObservationIgnored
     private let activationHub: ActiveWorkspaceActivationHub
     @ObservationIgnored
-    private let searchDebounceNanoseconds: UInt64
+    private let searchDebounceDuration: Duration
     @ObservationIgnored
     private var activationObserverID: UUID?
     @ObservationIgnored
@@ -506,11 +506,11 @@ final class FileBrowserViewModel {
     init(
         commandBus: (any CommandCalling)? = CommandBus.shared,
         activationHub: ActiveWorkspaceActivationHub = .shared,
-        searchDebounceNanoseconds: UInt64 = 250_000_000
+        searchDebounceDuration: Duration = .milliseconds(250)
     ) {
         self.commandBus = commandBus
         self.activationHub = activationHub
-        self.searchDebounceNanoseconds = searchDebounceNanoseconds
+        self.searchDebounceDuration = searchDebounceDuration
         activationObserverID = activationHub.addObserver { [weak self] state in
             Task { @MainActor [weak self] in
                 self?.handleActivationState(state)
@@ -667,7 +667,7 @@ final class FileBrowserViewModel {
             }
 
             if !immediate {
-                try? await Task.sleep(nanoseconds: self.searchDebounceNanoseconds)
+                try? await Task.sleep(for: self.searchDebounceDuration)
             }
 
             guard !Task.isCancelled else { return }
@@ -1059,7 +1059,7 @@ final class FileBrowserViewModel {
         for _ in 0..<60 {
             guard !Task.isCancelled else { return }
             if isLoadingRoot {
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                try? await Task.sleep(for: .milliseconds(50))
                 continue
             }
             break
@@ -1080,7 +1080,7 @@ final class FileBrowserViewModel {
                 if !isLoadingDirectory(currentPath) {
                     break
                 }
-                try? await Task.sleep(nanoseconds: 25_000_000)
+                try? await Task.sleep(for: .milliseconds(25))
             }
             expandedPaths.insert(currentPath)
         }
@@ -1111,15 +1111,31 @@ final class FileBrowserViewModel {
 
 // MARK: - Markdown Reader
 
+private enum MarkdownBlock {
+    case header(text: String, level: Int)
+    case codeBlock(String)
+    case bullet(text: String, ordered: Bool, raw: String?)
+    case blockquote(String)
+    case tableRow(String)
+    case paragraph(String)
+    case divider
+    case spacer
+}
+
+private struct IndexedBlock: Identifiable {
+    let id: Int
+    let block: MarkdownBlock
+}
+
 struct MarkdownReaderView: View {
     let content: String
-    @State private var parsedBlocks: [AnyView] = []
+    @State private var parsedBlocks: [IndexedBlock] = []
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(parsedBlocks.enumerated()), id: \.offset) { _, block in
-                    block
+                ForEach(parsedBlocks) { item in
+                    renderBlock(item.block)
                 }
             }
             .padding(16)
@@ -1131,15 +1147,29 @@ struct MarkdownReaderView: View {
         }
     }
 
-    private func buildBlocks() -> [AnyView] {
-        var result: [AnyView] = []
+    @ViewBuilder
+    private func renderBlock(_ block: MarkdownBlock) -> some View {
+        switch block {
+        case .header(let text, let level): headerView(text, level: level)
+        case .codeBlock(let code): codeBlockView(code)
+        case .bullet(let text, let ordered, let raw): bulletView(text, ordered: ordered, raw: raw)
+        case .blockquote(let text): blockquoteView(text)
+        case .tableRow(let line): tableRowView(line)
+        case .paragraph(let text): paragraphView(text)
+        case .divider: Divider().padding(.vertical, 8)
+        case .spacer: Spacer().frame(height: 8)
+        }
+    }
+
+    private func buildBlocks() -> [IndexedBlock] {
+        var result: [IndexedBlock] = []
         var codeBlock: [String] = []
         var inCode = false
 
         for line in content.components(separatedBy: "\n") {
             if line.hasPrefix("```") {
                 if inCode {
-                    result.append(AnyView(codeBlockView(codeBlock.joined(separator: "\n"))))
+                    result.append(IndexedBlock(id: result.count, block: .codeBlock(codeBlock.joined(separator: "\n"))))
                     codeBlock = []
                     inCode = false
                 } else {
@@ -1154,33 +1184,33 @@ struct MarkdownReaderView: View {
             }
 
             if line.hasPrefix("# ") {
-                result.append(AnyView(headerView(String(line.dropFirst(2)), level: 1)))
+                result.append(IndexedBlock(id: result.count, block: .header(text: String(line.dropFirst(2)), level: 1)))
             } else if line.hasPrefix("## ") {
-                result.append(AnyView(headerView(String(line.dropFirst(3)), level: 2)))
+                result.append(IndexedBlock(id: result.count, block: .header(text: String(line.dropFirst(3)), level: 2)))
             } else if line.hasPrefix("### ") {
-                result.append(AnyView(headerView(String(line.dropFirst(4)), level: 3)))
+                result.append(IndexedBlock(id: result.count, block: .header(text: String(line.dropFirst(4)), level: 3)))
             } else if line.hasPrefix("#### ") {
-                result.append(AnyView(headerView(String(line.dropFirst(5)), level: 4)))
+                result.append(IndexedBlock(id: result.count, block: .header(text: String(line.dropFirst(5)), level: 4)))
             } else if line.hasPrefix("---") || line.hasPrefix("***") || line.hasPrefix("___") {
-                result.append(AnyView(Divider().padding(.vertical, 8)))
+                result.append(IndexedBlock(id: result.count, block: .divider))
             } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                result.append(AnyView(bulletView(String(line.dropFirst(2)))))
+                result.append(IndexedBlock(id: result.count, block: .bullet(text: String(line.dropFirst(2)), ordered: false, raw: nil)))
             } else if let match = line.wholeMatch(of: /^\d+\.\s+(.*)/) {
-                result.append(AnyView(bulletView(String(match.1), ordered: true, raw: line)))
+                result.append(IndexedBlock(id: result.count, block: .bullet(text: String(match.1), ordered: true, raw: line)))
             } else if line.hasPrefix("| ") {
-                result.append(AnyView(tableRowView(line)))
+                result.append(IndexedBlock(id: result.count, block: .tableRow(line)))
             } else if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                result.append(AnyView(Spacer().frame(height: 8)))
+                result.append(IndexedBlock(id: result.count, block: .spacer))
             } else if line.hasPrefix("> ") {
-                result.append(AnyView(blockquoteView(String(line.dropFirst(2)))))
+                result.append(IndexedBlock(id: result.count, block: .blockquote(String(line.dropFirst(2)))))
             } else {
-                result.append(AnyView(paragraphView(line)))
+                result.append(IndexedBlock(id: result.count, block: .paragraph(line)))
             }
         }
 
         // Flush any unterminated code block
         if inCode && !codeBlock.isEmpty {
-            result.append(AnyView(codeBlockView(codeBlock.joined(separator: "\n"))))
+            result.append(IndexedBlock(id: result.count, block: .codeBlock(codeBlock.joined(separator: "\n"))))
         }
 
         return result

@@ -140,6 +140,11 @@ impl TmuxCompatBackend {
 
         // Send non-shell commands as literal keystrokes
         if !command.trim().is_empty() && explicit_shell.is_none() {
+            tracing::warn!(
+                session_id = %session_id,
+                command = %command.trim(),
+                "tmux send-keys fallback: command not in recognized shell allowlist"
+            );
             let send_out = self
                 .tmux_command()
                 .args(["send-keys", "-t", &name, "-l", command])
@@ -444,7 +449,7 @@ pub(crate) fn explicit_shell_command(command: &str) -> Option<String> {
         .file_name()
         .and_then(|name| name.to_str())?;
 
-    ["zsh", "bash", "sh", "fish"]
+    ["zsh", "bash", "sh", "fish", "claude", "codex"]
         .contains(&shell_name)
         .then(|| trimmed.to_string())
 }

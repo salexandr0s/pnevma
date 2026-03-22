@@ -20,7 +20,7 @@ struct BranchesTabView: View {
                         BranchFilterToggle(
                             filter: $viewModel.branchFilter,
                             totalCount: viewModel.branches.count,
-                            worktreeCount: viewModel.branches.filter(\.hasWorktree).count
+                            worktreeCount: viewModel.branches.count(where: \.hasWorktree)
                         )
                     }
 

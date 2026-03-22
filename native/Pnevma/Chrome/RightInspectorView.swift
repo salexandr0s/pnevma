@@ -1148,7 +1148,7 @@ private struct InspectorReviewSection: View {
                         GroupBox("Changed Files") {
                             VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
                                 if !viewModel.diffFiles.isEmpty {
-                                    ScrollView(.horizontal, showsIndicators: false) {
+                                    ScrollView(.horizontal) {
                                         HStack(spacing: DesignTokens.Spacing.sm) {
                                             ForEach(viewModel.diffFiles) { file in
                                                 Button(file.path) {
@@ -1160,6 +1160,7 @@ private struct InspectorReviewSection: View {
                                             }
                                         }
                                     }
+                                    .scrollIndicators(.hidden)
                                 }
 
                                 if let diffFile = viewModel.selectedDiffFile {
@@ -1602,7 +1603,7 @@ private struct InspectorReviewOverlay: View {
                     GroupBox("Changed Files") {
                         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
                             if !viewModel.diffFiles.isEmpty {
-                                ScrollView(.horizontal, showsIndicators: false) {
+                                ScrollView(.horizontal) {
                                     HStack(spacing: DesignTokens.Spacing.sm) {
                                         ForEach(viewModel.diffFiles) { file in
                                             Button(file.path) {
@@ -1614,6 +1615,7 @@ private struct InspectorReviewOverlay: View {
                                         }
                                     }
                                 }
+                                .scrollIndicators(.hidden)
                             }
 
                             if let diffFile = viewModel.selectedDiffFile {
@@ -1862,9 +1864,9 @@ final class WorkspaceChangesViewModel {
 
     var summaryLabel: String {
         guard !changes.isEmpty else { return "No local changes" }
-        let stagedCount = changes.filter(\.staged).count
-        let modifiedCount = changes.filter(\.modified).count
-        let untrackedCount = changes.filter(\.untracked).count
+        let stagedCount = changes.count(where: \.staged)
+        let modifiedCount = changes.count(where: \.modified)
+        let untrackedCount = changes.count(where: \.untracked)
         var segments: [String] = ["\(changes.count) paths"]
         if stagedCount > 0 { segments.append("\(stagedCount) staged") }
         if modifiedCount > 0 { segments.append("\(modifiedCount) modified") }

@@ -15,3 +15,7 @@ ignore = [
     # Transitive via pnevma-core. No untrusted YAML is parsed.
     "RUSTSEC-2025-0068",
 ]
+
+# Migration reminder: serde_yml 0.0.12 (RUSTSEC-2025-0067, RUSTSEC-2025-0068)
+# should be replaced when a maintained YAML serde alternative is available.
+# Next review: 2026-Q3.
