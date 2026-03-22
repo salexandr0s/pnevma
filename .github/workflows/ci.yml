@@ -90,7 +90,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace --exclude pnevma-bridge
+          cargo test -p pnevma-bridge -- --test-threads=1
 
       - name: Install cargo-audit
         run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked
