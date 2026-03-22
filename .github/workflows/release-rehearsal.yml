@@ -164,6 +164,10 @@ jobs:
         run: |
           APP_PATH="$(find "$RUNNER_TEMP/release-package-preflight" -type d -name 'Pnevma.app' -print -quit)"
           test -n "$APP_PATH"
+          # GitHub artifact upload/download strips executable permissions.
+          # Restore them on all Mach-O binaries before signing.
+          find "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Helpers" \
+            -type f -exec chmod +x {} + 2>/dev/null || true
           VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
           mkdir -p "$RUNNER_TEMP/release-sign"
           {
