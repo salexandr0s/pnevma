@@ -82,7 +82,8 @@ remote-helper-build-release:
     @echo "Remote helper artifacts built (release)"
 
 rust-test:
-    {{rust_tool}} cargo test --workspace
+    {{rust_tool}} cargo test --workspace --exclude pnevma-bridge
+    {{rust_tool}} cargo test -p pnevma-bridge -- --test-threads=1
 
 rust-audit:
     @if command -v cargo-audit >/dev/null 2>&1 || {{rust_tool}} cargo audit --version >/dev/null 2>&1; then \
