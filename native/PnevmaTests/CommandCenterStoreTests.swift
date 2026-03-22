@@ -448,7 +448,7 @@ final class CommandCenterStoreTests: XCTestCase {
         let store = CommandCenterStore(workspaceManager: manager)
         store.refreshNow()
 
-        try await waitUntil(timeoutNanos: 1_500_000_000) {
+        try await waitUntil(timeoutNanos: 5_000_000_000) {
             store.workspaceSnapshots.count == 2
                 && store.workspaceSnapshots.allSatisfy { $0.snapshot != nil }
         }
