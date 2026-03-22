@@ -565,6 +565,33 @@ final class WorkspaceManager {
                 checkoutPath: checkoutPath
             )
 
+            // Remote workspaces skip the local project.open RPC — the remote path
+            // only exists on the SSH host, so canonicalize() would fail locally.
+            if workspace.location == .remote {
+                let syntheticProjectID = "remote-\(workspace.id.uuidString)"
+                workspace.activationFailureMessage = nil
+                workspaceProjectIDs[workspace.id] = syntheticProjectID
+                runtime.markOpen(
+                    projectID: syntheticProjectID,
+                    projectPath: path,
+                    checkoutPath: checkoutPath
+                )
+
+                if activeWorkspaceID == workspace.id {
+                    activationHub.update(
+                        .open(workspaceID: workspace.id, projectID: syntheticProjectID)
+                    )
+                }
+
+                if seedInitialTerminalIfNeeded(for: workspace), activeWorkspaceID == workspace.id {
+                    onActiveWorkspaceChanged?(workspace.layoutEngine)
+                }
+                // Skip refreshMetadata — the Rust backend has no open ProjectContext
+                // for remote workspaces, so project.summary would fail. Remote sidebar
+                // metadata will require remote-aware project context in a future change.
+                return
+            }
+
             let response = try await openOrTrust(
                 path: path,
                 checkoutPath: checkoutPath,
@@ -757,7 +784,7 @@ final class WorkspaceManager {
             handleProjectOpened(event)
         case "task_updated", "cost_updated", "notification_created",
              "notification_cleared", "notification_updated":
-            for workspace in workspaces where workspace.supportsBackendProject {
+            for workspace in workspaces where workspace.supportsBackendProject && workspace.location == .local {
                 refreshMetadata(for: workspace)
             }
         default:

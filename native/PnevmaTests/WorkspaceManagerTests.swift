@@ -855,15 +855,19 @@ final class WorkspaceManagerTests: XCTestCase {
             terminalMode: .persistent
         )
 
+        // Remote workspaces skip the project.open RPC and use a synthetic ID
+        let expectedProjectID = "remote-\(workspace.id.uuidString)"
         try await waitUntil {
             return activationHub.currentState == .open(
                 workspaceID: workspace.id,
-                projectID: "project-remote"
-            ) && manager.runtime(for: workspace.id)?.projectID == "project-remote"
+                projectID: expectedProjectID
+            ) && manager.runtime(for: workspace.id)?.projectID == expectedProjectID
         }
 
         XCTAssertEqual(workspace.projectPath, mountPath)
         XCTAssertTrue(workspace.supportsProjectTools)
+        let openCalls = await bus.openCount(for: mountPath)
+        XCTAssertEqual(openCalls, 0, "project.open should not be called for remote workspaces")
     }
 
     func testRemoteWorkspaceShellCommandExpandsHomeRelativePaths() {

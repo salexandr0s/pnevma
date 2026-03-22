@@ -95,10 +95,10 @@ extension ShortcutSheetView {
             ShortcutGroup(title: "Workspaces", shortcuts: [
                 ShortcutEntry(label: "New Workspace", keys: "⌘N"),
                 ShortcutEntry(label: "Close Workspace", keys: "⌘W"),
-                ShortcutEntry(label: "Navigate Back", keys: "⌘["),
-                ShortcutEntry(label: "Navigate Forward", keys: "⌘]"),
-                ShortcutEntry(label: "Next Workspace", keys: "⌃⇥"),
-                ShortcutEntry(label: "Previous Workspace", keys: "⌃⇧⇥"),
+                ShortcutEntry(label: "Next Workspace", keys: "⇧⌘]"),
+                ShortcutEntry(label: "Previous Workspace", keys: "⇧⌘["),
+                ShortcutEntry(label: "Jump to Workspace 1–8", keys: "⇧⌘1–8"),
+                ShortcutEntry(label: "Last Workspace", keys: "⇧⌘9"),
             ]),
             ShortcutGroup(title: "Panes", shortcuts: [
                 ShortcutEntry(label: "Split Horizontal", keys: "⌘D"),
@@ -110,8 +110,10 @@ extension ShortcutSheetView {
             ShortcutGroup(title: "Tabs", shortcuts: [
                 ShortcutEntry(label: "New Tab", keys: "⌘T"),
                 ShortcutEntry(label: "Close Tab", keys: "⌥⌘W"),
-                ShortcutEntry(label: "Next Tab", keys: "⌘}"),
-                ShortcutEntry(label: "Previous Tab", keys: "⌘{"),
+                ShortcutEntry(label: "Next Tab", keys: "⌃⇥"),
+                ShortcutEntry(label: "Previous Tab", keys: "⌃⇧⇥"),
+                ShortcutEntry(label: "Jump to Tab 1–8", keys: "⌃1–8"),
+                ShortcutEntry(label: "Last Tab", keys: "⌃9"),
             ]),
             ShortcutGroup(title: "Tools", shortcuts: [
                 ShortcutEntry(label: "Toggle Tool Dock", keys: "⌘J"),

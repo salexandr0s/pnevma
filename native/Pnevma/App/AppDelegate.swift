@@ -1671,6 +1671,37 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         paneMenuItem.submenu = paneMenu
         mainMenu.addItem(paneMenuItem)
 
+        // Tab menu
+        let tabMenu = NSMenu(title: "Tab")
+
+        let nextTabItem = NSMenuItem(title: "Next Tab", action: #selector(nextTab), keyEquivalent: "\t")
+        nextTabItem.keyEquivalentModifierMask = [.control]
+        nextTabItem.identifier = NSUserInterfaceItemIdentifier("menu.next_tab")
+        tabMenu.addItem(nextTabItem)
+
+        let prevTabItem = NSMenuItem(title: "Previous Tab", action: #selector(previousTab), keyEquivalent: "\t")
+        prevTabItem.keyEquivalentModifierMask = [.control, .shift]
+        prevTabItem.identifier = NSUserInterfaceItemIdentifier("menu.previous_tab")
+        tabMenu.addItem(prevTabItem)
+
+        tabMenu.addItem(.separator())
+
+        for i in 1...8 {
+            let item = NSMenuItem(title: "Tab \(i)", action: #selector(gotoTabByTag(_:)), keyEquivalent: "\(i)")
+            item.keyEquivalentModifierMask = [.control]
+            item.tag = i
+            item.identifier = NSUserInterfaceItemIdentifier("menu.goto_tab_\(i)")
+            tabMenu.addItem(item)
+        }
+        let lastTabItem = NSMenuItem(title: "Last Tab", action: #selector(gotoLastTab), keyEquivalent: "9")
+        lastTabItem.keyEquivalentModifierMask = [.control]
+        lastTabItem.identifier = NSUserInterfaceItemIdentifier("menu.goto_last_tab")
+        tabMenu.addItem(lastTabItem)
+
+        let tabMenuItem = NSMenuItem()
+        tabMenuItem.submenu = tabMenu
+        mainMenu.addItem(tabMenuItem)
+
         // Window menu
         let windowMenu = NSMenu(title: "Window")
         let minimizeItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
@@ -1691,6 +1722,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         prevWS.keyEquivalentModifierMask = [.command, .shift]
         prevWS.identifier = NSUserInterfaceItemIdentifier("menu.previous_workspace")
         windowMenu.addItem(prevWS)
+
+        windowMenu.addItem(.separator())
+
+        for i in 1...8 {
+            let item = NSMenuItem(title: "Workspace \(i)", action: #selector(gotoWorkspaceByTag(_:)), keyEquivalent: "\(i)")
+            item.keyEquivalentModifierMask = [.command, .shift]
+            item.tag = i
+            item.identifier = NSUserInterfaceItemIdentifier("menu.goto_workspace_\(i)")
+            windowMenu.addItem(item)
+        }
+        let lastWSItem = NSMenuItem(title: "Last Workspace", action: #selector(gotoLastWorkspace), keyEquivalent: "9")
+        lastWSItem.keyEquivalentModifierMask = [.command, .shift]
+        lastWSItem.identifier = NSUserInterfaceItemIdentifier("menu.goto_last_workspace")
+        windowMenu.addItem(lastWSItem)
 
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
@@ -2742,6 +2787,43 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         mgr.switchToWorkspace(prev)
     }
 
+    @objc private func gotoWorkspaceByTag(_ sender: NSMenuItem) {
+        guard let mgr = workspaceManager,
+              sender.tag >= 1, sender.tag <= mgr.workspaces.count else { return }
+        mgr.switchToWorkspace(mgr.workspaces[sender.tag - 1].id)
+    }
+
+    @objc private func gotoLastWorkspace() {
+        guard let mgr = workspaceManager, let last = mgr.workspaces.last else { return }
+        mgr.switchToWorkspace(last.id)
+    }
+
+    @objc private func nextTab() {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              workspace.tabs.count > 1 else { return }
+        let next = (workspace.activeTabIndex + 1) % workspace.tabs.count
+        switchToTab(next)
+    }
+
+    @objc private func previousTab() {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              workspace.tabs.count > 1 else { return }
+        let prev = (workspace.activeTabIndex - 1 + workspace.tabs.count) % workspace.tabs.count
+        switchToTab(prev)
+    }
+
+    @objc private func gotoTabByTag(_ sender: NSMenuItem) {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              sender.tag >= 1, sender.tag <= workspace.tabs.count else { return }
+        switchToTab(sender.tag - 1)
+    }
+
+    @objc private func gotoLastTab() {
+        guard let workspace = workspaceManager?.activeWorkspace,
+              !workspace.tabs.isEmpty else { return }
+        switchToTab(workspace.tabs.count - 1)
+    }
+
     @objc private func showKeyboardShortcuts() {
         // Open command palette pre-filtered — doubles as keyboard shortcut reference
         commandPalette?.show()
@@ -2859,6 +2941,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             CommandItem(id: "workspace.prev", title: "Previous Workspace", category: "view", shortcut: "Shift+Cmd+[", description: "Switch to the previous workspace") { [weak self] in
                 self?.previousWorkspace()
+            },
+            CommandItem(id: "tab.next", title: "Next Tab", category: "pane", shortcut: "Ctrl+Tab", description: "Switch to the next tab") { [weak self] in
+                self?.nextTab()
+            },
+            CommandItem(id: "tab.prev", title: "Previous Tab", category: "pane", shortcut: "Ctrl+Shift+Tab", description: "Switch to the previous tab") { [weak self] in
+                self?.previousTab()
             },
         ]
 
