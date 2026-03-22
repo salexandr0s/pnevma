@@ -63,8 +63,11 @@ jobs:
       - name: Cache cargo tools
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-tools-audit-deny-v1
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: ${{ runner.os }}-cargo-tools-audit-deny-v2
 
       - name: Install cargo-audit
         run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked

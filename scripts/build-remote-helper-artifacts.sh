@@ -46,11 +46,11 @@ ensure_cmd() {
 }
 
 ensure_cargo_zigbuild() {
-  if "$RUST_TOOL" cargo zigbuild --version >/dev/null 2>&1; then
+  if command -v cargo-zigbuild >/dev/null 2>&1; then
     return 0
   fi
   echo "Installing cargo-zigbuild..." >&2
-  "$RUST_TOOL" cargo install cargo-zigbuild --locked
+  "$RUST_TOOL" cargo install cargo-zigbuild --locked --force
 }
 
 ensure_targets() {

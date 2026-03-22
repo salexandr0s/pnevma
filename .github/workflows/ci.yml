@@ -77,8 +77,11 @@ jobs:
       - name: Cache cargo tools
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-tools-audit-deny-cyclonedx-v1
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: ${{ runner.os }}-cargo-tools-audit-deny-cyclonedx-v2
 
       - name: Check formatting
         run: cargo fmt --check
@@ -147,8 +150,11 @@ jobs:
       - name: Cache cargo tools
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-tools-zigbuild-v1
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: ${{ runner.os }}-cargo-tools-zigbuild-v2
 
       - name: Install native build tools
         run: brew install just
