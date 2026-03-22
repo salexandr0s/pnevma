@@ -2,8 +2,8 @@ import XCTest
 @testable import Pnevma
 
 final class WorkspaceOpenerPanelLayoutTests: XCTestCase {
-    func testPromptPanelSizeIsStableAcrossPromptStateChanges() {
-        let baseline = WorkspaceOpenerPanelLayout.preferredSize(
+    func testPromptPanelGrowsWhenAdvancedExpands() {
+        let collapsed = WorkspaceOpenerPanelLayout.preferredSize(
             for: .prompt,
             promptHasText: false,
             showAdvancedOptions: false,
@@ -12,16 +12,41 @@ final class WorkspaceOpenerPanelLayoutTests: XCTestCase {
             hasErrorMessage: false
         )
 
-        let expanded = WorkspaceOpenerPanelLayout.preferredSize(
+        let advanced = WorkspaceOpenerPanelLayout.preferredSize(
             for: .prompt,
-            promptHasText: true,
+            promptHasText: false,
+            showAdvancedOptions: true,
+            sshEnabled: false,
+            isCreatingNewBranch: false,
+            hasErrorMessage: false
+        )
+
+        let ssh = WorkspaceOpenerPanelLayout.preferredSize(
+            for: .prompt,
+            promptHasText: false,
             showAdvancedOptions: true,
             sshEnabled: true,
             isCreatingNewBranch: false,
-            hasErrorMessage: true
+            hasErrorMessage: false
         )
 
-        XCTAssertEqual(baseline, expanded)
+        XCTAssertGreaterThan(advanced.height, collapsed.height)
+        XCTAssertGreaterThan(ssh.height, advanced.height)
+        XCTAssertEqual(collapsed.width, advanced.width)
+        XCTAssertEqual(advanced.width, ssh.width)
+    }
+
+    func testPromptPanelCollapsesBackToBaseline() {
+        let collapsed = WorkspaceOpenerPanelLayout.preferredSize(
+            for: .prompt,
+            promptHasText: false,
+            showAdvancedOptions: false,
+            sshEnabled: false,
+            isCreatingNewBranch: false,
+            hasErrorMessage: false
+        )
+
+        XCTAssertEqual(collapsed.height, 420)
     }
 
     func testBranchPanelSizeIsStableAcrossCreationStateChanges() {

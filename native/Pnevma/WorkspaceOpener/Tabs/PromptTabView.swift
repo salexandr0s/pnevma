@@ -65,41 +65,64 @@ struct PromptTabView: View {
                     .stroke(Color.primary.opacity(0.06), lineWidth: 1)
             )
 
-            DisclosureGroup(isExpanded: $viewModel.showAdvancedOptions) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Terminal")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Picker("", selection: $viewModel.terminalMode) {
-                            Text("Persistent").tag(WorkspaceTerminalMode.persistent)
-                            Text("Non-Persistent").tag(WorkspaceTerminalMode.nonPersistent)
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 188)
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.showAdvancedOptions.toggle()
                     }
-
-                    Toggle("Remote SSH", isOn: $viewModel.sshEnabled)
-                        .font(.system(size: 12))
-
-                    if viewModel.sshEnabled {
-                        sshFields
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .rotationEffect(.degrees(viewModel.showAdvancedOptions ? 90 : 0))
+                            .animation(.easeInOut(duration: 0.2), value: viewModel.showAdvancedOptions)
+                        Text("Advanced")
+                            .font(.system(size: 12, weight: .medium))
                     }
-
-                    HStack {
-                        Text("Name")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        TextField("Auto", text: $viewModel.workspaceNameOverride)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.pointingHand.push()
+                    } else {
+                        NSCursor.pop()
                     }
                 }
-                .padding(.top, 8)
-            } label: {
-                Text("Advanced")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
+
+                if viewModel.showAdvancedOptions {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Terminal")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Picker("", selection: $viewModel.terminalMode) {
+                                Text("Persistent").tag(WorkspaceTerminalMode.persistent)
+                                Text("Non-Persistent").tag(WorkspaceTerminalMode.nonPersistent)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 188)
+                        }
+
+                        Toggle("Remote SSH", isOn: $viewModel.sshEnabled)
+                            .font(.system(size: 12))
+
+                        if viewModel.sshEnabled {
+                            sshFields
+                        }
+
+                        HStack {
+                            Text("Name")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            TextField("Auto", text: $viewModel.workspaceNameOverride)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12))
+                        }
+                    }
+                    .padding(.top, 8)
+                }
             }
         }
         .padding(.horizontal, DesignTokens.Spacing.md)

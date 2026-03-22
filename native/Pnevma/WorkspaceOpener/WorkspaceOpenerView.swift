@@ -95,6 +95,12 @@ struct WorkspaceOpenerView: View {
         .onChange(of: viewModel.selectedTab) { _, _ in
             onPreferredSizeChange(viewModel.preferredPanelSize)
         }
+        .onChange(of: viewModel.showAdvancedOptions) { _, _ in
+            onPreferredSizeChange(viewModel.preferredPanelSize)
+        }
+        .onChange(of: viewModel.sshEnabled) { _, _ in
+            onPreferredSizeChange(viewModel.preferredPanelSize)
+        }
         .onChange(of: viewModel.selectedProjectPath) { _, _ in
             viewModel.onProjectChanged(using: commandBus)
         }

@@ -207,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_cycle_with_state_transitions() {
-        let mut item_todo = sample_item(); // state = Todo
+        let item_todo = sample_item(); // state = Todo
         let mut item_in_progress = sample_item();
         item_in_progress.state = ExternalState::InProgress;
         let mut item_done = sample_item();

@@ -13,7 +13,10 @@ enum WorkspaceOpenerPanelLayout {
     ) -> CGSize {
         switch selectedTab {
         case .prompt:
-            return CGSize(width: 620, height: 420)
+            var height: CGFloat = 420
+            if showAdvancedOptions { height += 80 }
+            if showAdvancedOptions && sshEnabled { height += 120 }
+            return CGSize(width: 620, height: height)
         case .issues, .pullRequests:
             return CGSize(width: 720, height: 520)
         case .branches:
