@@ -285,9 +285,7 @@ fn spawn_pty_child(
 
     // Inject a safe PATH for GUI-launched processes
     cmd.env("PATH", super::tmux_compat::gui_safe_path());
-    if std::env::var_os("TERM").is_none() {
-        cmd.env("TERM", "xterm-256color");
-    }
+    cmd.env("TERM", "xterm-256color");
 
     cmd.spawn()
 }
