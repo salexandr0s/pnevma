@@ -1,3 +1,8 @@
+// Security note: WebSocket upgrade tokens inherit the same TTL as regular API
+// tokens (configured via `remote.token_ttl_hours`). Current mitigations for
+// token-in-URL exposure: Referrer-Policy: no-referrer, WS-upgrade-only gate,
+// and IP-bound tokens.
+
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{

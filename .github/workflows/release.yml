@@ -24,6 +24,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify tag is on main branch
+        run: |
+          git fetch origin main --depth=1
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "ERROR: Tagged commit is not on the main branch"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
@@ -64,7 +72,8 @@ jobs:
           EXPECTED_XCODEGEN="$(cat .xcodegen-version)"
           ACTUAL_XCODEGEN="$(xcodegen version 2>/dev/null || echo unknown)"
           if [[ "$ACTUAL_XCODEGEN" != *"$EXPECTED_XCODEGEN"* ]]; then
-            echo "WARNING: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
+            echo "ERROR: xcodegen version mismatch: expected $EXPECTED_XCODEGEN, got $ACTUAL_XCODEGEN"
+            exit 1
           fi
 
       - name: Check generated Xcode project parity

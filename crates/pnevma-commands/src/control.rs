@@ -209,9 +209,7 @@ pub fn resolve_control_plane_settings(
                         crate::auth_secret::SOCKET_KEYCHAIN_ACCOUNT
                     )
                 })?;
-            ControlAuthMode::Password {
-                password: SecretString::from(password),
-            }
+            ControlAuthMode::Password { password }
         }
     };
 

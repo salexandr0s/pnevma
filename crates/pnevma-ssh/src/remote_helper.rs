@@ -1181,6 +1181,14 @@ fn remote_command_arg(remote_command: &str) -> String {
     format!("sh -lc {}", shell_escape_arg(remote_command))
 }
 
+/// Resolve the SSH binary to use for remote connections.
+///
+/// # Security note
+///
+/// The `PNEVMA_SSH_BIN` environment variable allows overriding the SSH binary
+/// path. This is intended for testing. In production, the binary is resolved
+/// from a hardcoded search path. A compromised environment variable could
+/// redirect SSH operations to a malicious binary.
 pub(crate) fn ssh_binary_path() -> PathBuf {
     std::env::var_os("PNEVMA_SSH_BIN")
         .map(PathBuf::from)

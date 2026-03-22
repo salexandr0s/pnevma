@@ -23,6 +23,16 @@ fn sanitize_slug(slug: &str) -> String {
     s.chars().take(100).collect()
 }
 
+/// Reject git ref names that start with `-` to prevent argument injection.
+fn validate_git_ref(refspec: &str) -> Result<(), GitError> {
+    if refspec.starts_with('-') {
+        return Err(GitError::Command(format!(
+            "invalid git ref: ref name must not start with '-': {refspec}"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct GitService {
     repo_root: PathBuf,
@@ -158,6 +168,8 @@ impl GitService {
         start_point: &str,
         slug: &str,
     ) -> Result<WorktreeLease, GitError> {
+        validate_git_ref(start_point)?;
+
         // Insert a placeholder lease under the mutex lock BEFORE doing I/O
         // to prevent TOCTOU race conditions.
         {
@@ -191,9 +203,15 @@ impl GitService {
 
         // Perform git I/O without holding the lock
         let result = async {
-            self.git(["branch", &branch, start_point]).await?;
-            self.git(["worktree", "add", path.to_string_lossy().as_ref(), &branch])
-                .await?;
+            self.git(["branch", "--", &branch, start_point]).await?;
+            self.git([
+                "worktree",
+                "add",
+                "--",
+                path.to_string_lossy().as_ref(),
+                &branch,
+            ])
+            .await?;
             Ok::<_, GitError>(())
         }
         .await;
@@ -245,7 +263,7 @@ impl GitService {
         // Lock is dropped here -- safe to perform git operations.
 
         if let Err(e) = self
-            .git(["worktree", "remove", "--force", &lease.path])
+            .git(["worktree", "remove", "--force", "--", &lease.path])
             .await
         {
             // Re-insert lease on failure so it's not orphaned
@@ -253,7 +271,7 @@ impl GitService {
             return Err(e);
         }
         if delete_branch {
-            if let Err(e) = self.git(["branch", "-D", &lease.branch]).await {
+            if let Err(e) = self.git(["branch", "-D", "--", &lease.branch]).await {
                 // Worktree is already removed; lease stays removed but log the branch error
                 tracing::warn!(%task_id, error = %e, "failed to delete branch after worktree removal");
             }
@@ -292,7 +310,9 @@ impl GitService {
             )));
         }
 
-        let remove_res = self.git(["worktree", "remove", "--force", path]).await;
+        let remove_res = self
+            .git(["worktree", "remove", "--force", "--", path])
+            .await;
         if let Err(err) = remove_res {
             // The path may already be gone after a manual cleanup or failed run.
             // NOTE: sync exists() is acceptable — this is a single-call error-path
@@ -304,7 +324,7 @@ impl GitService {
         let _ = self.git(["worktree", "prune", "--expire", "now"]).await;
         if delete_branch {
             if let Some(branch) = branch {
-                if let Err(err) = self.git(["branch", "-D", branch]).await {
+                if let Err(err) = self.git(["branch", "-D", "--", branch]).await {
                     self.git(["update-ref", "-d", &format!("refs/heads/{branch}")])
                         .await
                         .map_err(|fallback_err| {
@@ -351,12 +371,12 @@ impl GitService {
         for (task_id, lease) in stale_leases {
             // Best-effort git cleanup — worktree may already be gone.
             if let Err(e) = self
-                .git(["worktree", "remove", "--force", &lease.path])
+                .git(["worktree", "remove", "--force", "--", &lease.path])
                 .await
             {
                 tracing::warn!(%task_id, error = %e, "failed to remove stale worktree directory");
             }
-            if let Err(e) = self.git(["branch", "-D", &lease.branch]).await {
+            if let Err(e) = self.git(["branch", "-D", "--", &lease.branch]).await {
                 tracing::warn!(%task_id, error = %e, "failed to delete stale worktree branch");
             }
             tracing::info!(%task_id, "reaped stale worktree");
@@ -826,6 +846,20 @@ mod tests {
     }
 
     // ── cleanup_worktree failure reinstates lease ───────────────────────────
+
+    #[test]
+    fn validate_git_ref_rejects_dash_prefix() {
+        assert!(validate_git_ref("--delete").is_err());
+        assert!(validate_git_ref("-f").is_err());
+    }
+
+    #[test]
+    fn validate_git_ref_accepts_normal_refs() {
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("origin/main").is_ok());
+        assert!(validate_git_ref("v1.0.0").is_ok());
+        assert!(validate_git_ref("feature/my-branch").is_ok());
+    }
 
     #[tokio::test]
     async fn cleanup_worktree_failure_reinstates_lease() {

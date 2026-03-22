@@ -11,6 +11,23 @@ fail() {
   exit 1
 }
 
+verify_checksum() {
+  local file="$1" expected="$2"
+  local actual
+  actual="$(shasum -a 256 "$file" | cut -d' ' -f1)"
+  if [ "$actual" != "$expected" ]; then
+    echo "ERROR: SHA256 checksum mismatch for $file" >&2
+    echo "  Expected: $expected" >&2
+    echo "  Got:      $actual" >&2
+    exit 1
+  fi
+  echo "Checksum verified: $file" >&2
+}
+
+# SHA256 checksum for XcodeGen release archive. Update when changing XCODEGEN_VERSION.
+# Obtain by downloading xcodegen.zip from the release and running: shasum -a 256 xcodegen.zip
+XCODEGEN_SHA256="b1c92c5213884ed3c4282d99126832feb9a36e9e036b93ca4b47261833faed90"
+
 usage() {
   cat <<'EOF'
 Usage: install-xcodegen-ci.sh [--verify-only]
@@ -55,6 +72,7 @@ install_xcodegen() {
 
   echo "Downloading XcodeGen from $url" >&2
   curl -sSfL "$url" -o "$archive_path"
+  verify_checksum "$archive_path" "$XCODEGEN_SHA256"
   unzip -q "$archive_path" -d "$tmpdir"
   extracted_root="$tmpdir/xcodegen"
   [[ -d "$extracted_root" ]] || fail "unexpected XcodeGen archive layout"

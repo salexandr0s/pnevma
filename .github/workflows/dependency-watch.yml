@@ -61,3 +61,28 @@ jobs:
           else
             gh issue create --title "$title" --body "$body"
           fi
+
+  ghostty-pin:
+    name: Ghostty pin freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check Ghostty pin against latest tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PINNED_REF="$(grep -oP 'GHOSTTY_REF="\K[^"]+' scripts/fetch-ghostty.sh)"
+          LATEST_TAG="$(gh api repos/ghostty-org/ghostty/releases/latest --jq '.tag_name' 2>/dev/null || echo 'unknown')"
+          if [[ "$LATEST_TAG" == "unknown" ]]; then
+            echo "WARNING: could not fetch latest Ghostty release tag"
+            exit 0
+          fi
+          if [[ "$PINNED_REF" != "$LATEST_TAG" ]]; then
+            echo "::warning::Ghostty pin ($PINNED_REF) is behind latest release ($LATEST_TAG)"
+          else
+            echo "Ghostty pin ($PINNED_REF) matches latest release"
+          fi

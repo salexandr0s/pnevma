@@ -54,6 +54,11 @@ typedef void (*SessionOutputCallback)(const char *session_id,
  * `ctx` is an opaque pointer forwarded to every callback invocation.
  *
  * Returns NULL on failure. The caller must eventually call `pnevma_destroy`.
+ *
+ * # Safety
+ *
+ * `ctx` must be valid for the lifetime of the returned handle (until
+ * `pnevma_destroy` is called). `cb` must be safe to call from any thread.
  */
  struct PnevmaHandle *pnevma_create(EventCallback cb, void *ctx);
 
@@ -61,6 +66,11 @@ typedef void (*SessionOutputCallback)(const char *session_id,
  * Destroy a Pnevma handle, shutting down all background tasks.
  *
  * After this call, the handle pointer is invalid.
+ *
+ * # Safety
+ *
+ * `handle` must be a pointer returned by `pnevma_create` that has not yet been
+ * destroyed, or NULL (which is a no-op).
  */
  void pnevma_destroy(struct PnevmaHandle *handle);
 
@@ -74,6 +84,12 @@ typedef void (*SessionOutputCallback)(const char *session_id,
  * `params_json` must point to a valid allocation of at least `params_len`
  * bytes. Passing a length exceeding the allocation is undefined behavior.
  * NULL is valid when `params_len` is 0 (treated as empty params).
+ *
+ * # Safety
+ *
+ * `handle` must be a live pointer returned by `pnevma_create`. `method` must
+ * be a valid null-terminated C string. `params_json` must point to at least
+ * `params_len` valid bytes, or be NULL when `params_len` is 0.
  */
 
 struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
@@ -99,6 +115,14 @@ struct PnevmaResult *pnevma_call(struct PnevmaHandle *handle,
  * `release_cb` exactly once for each pending callback. `release_cb` must be a
  * valid function pointer; use a no-op function when `cb_ctx` requires no
  * cleanup. Passing NULL is valid only if both callbacks handle NULL context.
+ *
+ * # Safety
+ *
+ * `handle` must be a live pointer returned by `pnevma_create`. `method` must
+ * be a valid null-terminated C string. `params_json` must point to at least
+ * `params_len` valid bytes, or be NULL when `params_len` is 0. `cb`,
+ * `release_cb` must be valid function pointers. `cb_ctx` must remain valid
+ * until `cb` or `release_cb` is invoked.
  */
 
 void pnevma_call_async(struct PnevmaHandle *handle,
@@ -132,6 +156,12 @@ void pnevma_call_async(struct PnevmaHandle *handle,
  * in-flight callback snapshots to finish before returning. The caller must
  * NOT free or mutate the context while the callback may be invoked from a
  * background thread.
+ *
+ * # Safety
+ *
+ * `handle` must be a live pointer returned by `pnevma_create`. `cb` must be a
+ * valid function pointer (or zero to unregister). `ctx` must remain valid for
+ * the lifetime of the registration.
  */
 
 void pnevma_set_session_output_callback(struct PnevmaHandle *handle,

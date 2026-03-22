@@ -1646,7 +1646,14 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
 
         row.status = status_to_str(&next_status).to_string();
         row.updated_at = Utc::now();
-        let _ = db.update_task(&row).await;
+        if let Err(e) = db.update_task(&row).await {
+            tracing::error!(
+                task_id = %row.id,
+                status = %row.status,
+                error = %e,
+                "failed to persist task status transition — dependents may not unblock"
+            );
+        }
         notify_task_status_transition(
             &db,
             &emitter,

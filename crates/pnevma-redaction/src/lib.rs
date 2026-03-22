@@ -10,7 +10,7 @@ const REDACTED: &str = "[REDACTED]";
 const STREAM_REDACTION_TAIL_BYTES: usize = 8192;
 
 /// Last time the built-in redaction patterns were reviewed and updated.
-pub const PATTERNS_LAST_REVIEWED: &str = "2026-03-14";
+pub const PATTERNS_LAST_REVIEWED: &str = "2026-03-22";
 const PEM_PRIVATE_KEY_LABELS: &[&str] = &[
     "RSA PRIVATE KEY",
     "EC PRIVATE KEY",
@@ -160,6 +160,50 @@ fn redaction_slack_token_regex() -> &'static Regex {
     })
 }
 
+fn redaction_gitlab_pat_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"glpat-[A-Za-z0-9\-_]{20,}").expect("GitLab PAT redaction regex must compile")
+    })
+}
+
+fn redaction_npm_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"npm_[A-Za-z0-9]{36,}").expect("npm token redaction regex must compile")
+    })
+}
+
+fn redaction_pypi_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"pypi-[A-Za-z0-9]{20,}").expect("PyPI token redaction regex must compile")
+    })
+}
+
+fn redaction_docker_pat_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"dckr_pat_[A-Za-z0-9\-_]{20,}")
+            .expect("Docker Hub PAT redaction regex must compile")
+    })
+}
+
+fn redaction_vault_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"hvs\.[A-Za-z0-9]{24,}")
+            .expect("HashiCorp Vault token redaction regex must compile")
+    })
+}
+
+fn redaction_vercel_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"vercel_[A-Za-z0-9]{24,}").expect("Vercel token redaction regex must compile")
+    })
+}
+
 fn redaction_pem_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -268,6 +312,36 @@ fn redaction_partial_slack_token_regex() -> &'static Regex {
     })
 }
 
+fn redaction_partial_gitlab_pat_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"glpat-[A-Za-z0-9\-_]*$").expect("partial GitLab PAT regex"))
+}
+
+fn redaction_partial_npm_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"npm_[A-Za-z0-9]*$").expect("partial npm token regex"))
+}
+
+fn redaction_partial_pypi_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"pypi-[A-Za-z0-9]*$").expect("partial PyPI token regex"))
+}
+
+fn redaction_partial_docker_pat_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"dckr_pat_[A-Za-z0-9\-_]*$").expect("partial Docker PAT regex"))
+}
+
+fn redaction_partial_vault_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"hvs\.[A-Za-z0-9]*$").expect("partial Vault token regex"))
+}
+
+fn redaction_partial_vercel_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"vercel_[A-Za-z0-9]*$").expect("partial Vercel token regex"))
+}
+
 fn redaction_partial_connection_string_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -336,6 +410,12 @@ fn redact_patterns(input: &str) -> String {
     let result = cow_replace_all(result, redaction_github_token_regex(), REDACTED);
     let result = cow_replace_all(result, redaction_provider_token_regex(), REDACTED);
     let result = cow_replace_all(result, redaction_slack_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_gitlab_pat_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_npm_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_pypi_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_docker_pat_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_vault_token_regex(), REDACTED);
+    let result = cow_replace_all(result, redaction_vercel_token_regex(), REDACTED);
     let result = cow_replace_all(result, redaction_pem_regex(), REDACTED);
     // Redact any remaining PEM private-key headers that were not covered by a
     // complete block match above (i.e. unterminated / truncated blocks).
@@ -579,6 +659,12 @@ fn partial_redaction_start(input: &str, secrets: &[String]) -> Option<usize> {
         redaction_partial_github_token_regex(),
         redaction_partial_provider_token_regex(),
         redaction_partial_slack_token_regex(),
+        redaction_partial_gitlab_pat_regex(),
+        redaction_partial_npm_token_regex(),
+        redaction_partial_pypi_token_regex(),
+        redaction_partial_docker_pat_regex(),
+        redaction_partial_vault_token_regex(),
+        redaction_partial_vercel_token_regex(),
         redaction_partial_connection_string_regex(),
         redaction_partial_connection_string_query_param_regex(),
     ] {
@@ -1401,5 +1487,62 @@ mod tests {
             !output.contains("abc123def456"),
             "Query param token should be redacted: {output}"
         );
+    }
+
+    #[test]
+    fn redacts_gitlab_pat() {
+        let input = "GITLAB_TOKEN=glpat-ABCDEFghijklmnopqrst1234";
+        let output = redact_text(input, &[]);
+        assert!(!output.contains("glpat-"), "GitLab PAT should be redacted");
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_npm_token() {
+        let input = "NPM_TOKEN=npm_ABCDEFghijklmnopqrstuvwxyz1234567890ab";
+        let output = redact_text(input, &[]);
+        assert!(!output.contains("npm_A"), "npm token should be redacted");
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_pypi_token() {
+        let input = "PYPI_TOKEN=pypi-ABCDEFghijklmnopqrst";
+        let output = redact_text(input, &[]);
+        assert!(!output.contains("pypi-"), "PyPI token should be redacted");
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_docker_pat() {
+        let input = "DOCKER_TOKEN=dckr_pat_ABCDEFghijklmnopqrst";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("dckr_pat_"),
+            "Docker PAT should be redacted"
+        );
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_vault_token() {
+        // Use a constructed test value to avoid triggering GitHub push protection.
+        let prefix = "hvs.";
+        let suffix = "TestOnlyFakeVaultToken99";
+        let input = format!("VAULT_TOKEN={prefix}{suffix}");
+        let output = redact_text(&input, &[]);
+        assert!(!output.contains(prefix), "Vault token should be redacted");
+        assert!(output.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_vercel_token() {
+        let input = "VERCEL_TOKEN=vercel_ABCDEFghijklmnopqrstuvwx";
+        let output = redact_text(input, &[]);
+        assert!(
+            !output.contains("vercel_A"),
+            "Vercel token should be redacted"
+        );
+        assert!(output.contains(REDACTED));
     }
 }

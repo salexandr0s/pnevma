@@ -3,6 +3,7 @@ use crate::control::route_method;
 use crate::state::AppState;
 use async_trait::async_trait;
 use pnevma_remote::CommandRouter;
+use secrecy::ExposeSecret;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -77,7 +78,7 @@ pub async fn maybe_start_remote(state: Arc<AppState>) -> Option<pnevma_remote::R
         remote_config,
         router,
         state.remote_events.clone(),
-        &password,
+        password.expose_secret(),
         None,
     )
     .await

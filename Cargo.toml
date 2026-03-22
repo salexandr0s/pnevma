@@ -60,14 +60,16 @@ base64 = "0.22"
 hex = "0.4"
 secrecy = { version = "0.10", features = ["serde"] }
 security-framework = "2"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 shell-words = "1"
 sysinfo = "0.32"
 
 [profile.dev]
 debug = true
+panic = "abort"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
+panic = "abort"
