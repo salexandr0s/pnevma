@@ -1,0 +1,7 @@
+# Gitleaks configuration — allowlist for false positives.
+
+[allowlist]
+  description = "Allow dummy test patterns in the redaction engine test suite"
+  paths = [
+    '''crates/pnevma-redaction/src/lib\.rs''',
+  ]
