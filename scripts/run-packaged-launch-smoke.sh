@@ -50,7 +50,10 @@ if [[ -n "$DMG_PATH" ]]; then
 
   mounted_dir="$(mktemp -d -t pnevma-dmg-mount.XXXXXX)"
   copied_app_dir="$(mktemp -d -t pnevma-dmg-copy.XXXXXX)"
-  hdiutil attach "$DMG_PATH" -mountpoint "$mounted_dir" -nobrowse -readonly -quiet
+  if ! hdiutil attach "$DMG_PATH" -mountpoint "$mounted_dir" -nobrowse -readonly; then
+    echo "error: failed to mount DMG at $DMG_PATH" >&2
+    exit 1
+  fi
 
   mounted_app="$(find "$mounted_dir" -maxdepth 1 -type d -name 'Pnevma.app' -print -quit)"
   if [[ -z "$mounted_app" ]]; then

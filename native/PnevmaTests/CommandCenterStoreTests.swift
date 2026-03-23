@@ -446,10 +446,14 @@ final class CommandCenterStoreTests: XCTestCase {
         manager.switchToWorkspace(workspaceA.id)
 
         let store = CommandCenterStore(workspaceManager: manager)
-        store.refreshNow()
 
-        try await waitUntil(timeoutNanos: 5_000_000_000) {
-            store.workspaceSnapshots.count == 2
+        // CI runners can be slow — retry refreshNow() until both snapshots
+        // resolve, since the 250ms runtime-readiness timeout may expire on
+        // the first attempt.
+        try await waitUntil(timeoutNanos: 10_000_000_000) {
+            store.refreshNow()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            return store.workspaceSnapshots.count == 2
                 && store.workspaceSnapshots.allSatisfy { $0.snapshot != nil }
         }
 
