@@ -60,6 +60,10 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     private let closeCoordinator = TerminalCloseCoordinator()
     nonisolated(unsafe) private var chromeTransitionObserver: NSObjectProtocol?
     private var pendingSurfaceLayout: PendingSurfaceLayout?
+
+    /// Non-nil during `keyDown` — accumulates text from `insertText` so we
+    /// dispatch to ghostty exactly once after `interpretKeyEvents` returns.
+    private var keyTextAccumulator: [String]?
     private var lastAppliedSurfaceLayout: PendingSurfaceLayout?
 
     // MARK: - Init
@@ -298,14 +302,27 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
             return
         }
 
-        // interpretKeyEvents FIRST. This drives NSTextInputClient for IME, dead keys,
-        // and key equivalents. Raw key events still go to ghostty for non-printable keys.
         #if canImport(GhosttyKit)
-        let consumed = withGhosttyKeyEvent(from: event, action: GHOSTTY_ACTION_PRESS) {
-            terminalSurface?.sendKey($0) ?? false
-        }
-        if !consumed {
-            interpretKeyEvents([event])
+        // Accumulator pattern (matches upstream Ghostty SurfaceView_AppKit):
+        // 1. interpretKeyEvents first — drives NSTextInputClient for IME / dead keys
+        // 2. insertText accumulates into keyTextAccumulator instead of sending
+        // 3. After interpretKeyEvents returns, dispatch to ghostty exactly once
+        keyTextAccumulator = []
+        defer { keyTextAccumulator = nil }
+
+        interpretKeyEvents([event])
+
+        let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        if let list = keyTextAccumulator, list.count > 0 {
+            for text in list {
+                withGhosttyKeyEvent(from: event, action: action, text: text) {
+                    terminalSurface?.sendKey($0)
+                }
+            }
+        } else {
+            withGhosttyKeyEvent(from: event, action: action) {
+                terminalSurface?.sendKey($0)
+            }
         }
         #else
         interpretKeyEvents([event])
@@ -418,6 +435,14 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
 
     func insertText(_ string: Any, replacementRange: NSRange) {
         guard let text = extractText(string) else { return }
+
+        // If we're inside keyDown, accumulate for single-path dispatch.
+        if var acc = keyTextAccumulator {
+            acc.append(text)
+            keyTextAccumulator = acc
+            return
+        }
+
         terminalSurface?.sendText(text)
     }
 
@@ -854,6 +879,36 @@ private func withGhosttyKeyEvent<T>(
     if action != GHOSTTY_ACTION_RELEASE,
        let chars = eventText(for: event), !chars.isEmpty {
         return chars.withCString { ptr in
+            key.text = ptr
+            applyUnshiftedCodepoint(to: &key, event: event)
+            return execute(key)
+        }
+    }
+
+    key.text = nil
+    applyUnshiftedCodepoint(to: &key, event: event)
+    return execute(key)
+}
+
+/// Overload that uses explicitly provided text (from keyTextAccumulator)
+/// instead of reading from the NSEvent. Skips control characters (< 0x20)
+/// to match upstream Ghostty's keyAction behaviour.
+@discardableResult
+private func withGhosttyKeyEvent<T>(
+    from event: NSEvent,
+    action: ghostty_input_action_e,
+    text: String,
+    execute: (ghostty_input_key_s) -> T
+) -> T {
+    var key = ghostty_input_key_s()
+    key.action = action
+    key.mods = ghosttyMods(from: event.modifierFlags)
+    key.consumed_mods = computeConsumedMods(from: event)
+    key.keycode = UInt32(event.keyCode)
+    key.composing = false
+
+    if !text.isEmpty, let codepoint = text.utf8.first, codepoint >= 0x20 {
+        return text.withCString { ptr in
             key.text = ptr
             applyUnshiftedCodepoint(to: &key, event: event)
             return execute(key)
