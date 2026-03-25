@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import Cocoa
+import Quartz
 
 // MARK: - Data Models
 
@@ -29,6 +30,7 @@ struct FileBrowserView: View {
     @State private var isViewerVisible = true
     @State private var showDiscardAlert = false
     @State private var pendingNode: FileNode?
+    var qlBridge: FileBrowserQLBridge?
 
     private var isMarkdownFile: Bool {
         guard let path = viewModel.selectedFilePath else { return false }
@@ -55,7 +57,15 @@ struct FileBrowserView: View {
             }
             .buttonStyle(.plain)
 
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isViewerVisible.toggle() } }) {
+            if let path = viewModel.selectedFilePath {
+                ShareLink(item: URL(fileURLWithPath: path)) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.plain)
+                .help("Share selected file")
+            }
+
+            Button(action: { withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.2))) { isViewerVisible.toggle() } }) {
                 Image(systemName: "sidebar.right")
                     .foregroundStyle(isViewerVisible ? .primary : .secondary)
             }
@@ -99,6 +109,9 @@ struct FileBrowserView: View {
             Text("You have unsaved changes. What would you like to do?")
         }
         .task { await viewModel.activate() }
+        .onChange(of: viewModel.selectedFilePath) { _, newPath in
+            qlBridge?.selectedFileURL = newPath.flatMap { URL(fileURLWithPath: $0) }
+        }
         .accessibilityIdentifier("pane.fileBrowser")
     }
 
@@ -458,6 +471,7 @@ final class FileBrowserViewModel {
     var expandedPaths: Set<String> = []
     var selectedPath: String?
     private(set) var selectedFilePath: String?
+    var selectedPaths: Set<String> = []
     var previewContent: String?
     /// The original content as loaded — used for dirty tracking.
     private(set) var originalContent: String?
@@ -571,6 +585,14 @@ final class FileBrowserViewModel {
 
         selectedFilePath = node.path
         loadPreview(path: node.path)
+    }
+
+    func toggleMultiSelection(_ path: String) {
+        if selectedPaths.contains(path) {
+            selectedPaths.remove(path)
+        } else {
+            selectedPaths.insert(path)
+        }
     }
 
     func clearSelection() {
@@ -1307,6 +1329,14 @@ struct MarkdownReaderView: View {
     }
 }
 
+// MARK: - Quick Look Bridge
+
+/// Shared between SwiftUI FileBrowserView and AppKit FileBrowserPaneView for Quick Look.
+@MainActor
+final class FileBrowserQLBridge {
+    var selectedFileURL: URL?
+}
+
 // MARK: - NSView Wrapper
 
 final class FileBrowserPaneView: NSView, PaneContent {
@@ -1314,11 +1344,54 @@ final class FileBrowserPaneView: NSView, PaneContent {
     let paneType = "file_browser"
     let shouldPersist = true
     var title: String { "Files" }
+    let qlBridge = FileBrowserQLBridge()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        _ = addSwiftUISubview(FileBrowserView())
+        _ = addSwiftUISubview(FileBrowserView(qlBridge: qlBridge))
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " ", qlBridge.selectedFileURL != nil {
+            QLPreviewPanel.shared().makeKeyAndOrderFront(nil)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    // MARK: - Quick Look Panel (HIG §5.6)
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { qlBridge.selectedFileURL != nil }
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = self
+            panel.delegate = self
+        }
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = nil
+            panel.delegate = nil
+        }
+    }
 }
+
+extension FileBrowserPaneView: @preconcurrency QLPreviewPanelDataSource {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        MainActor.assumeIsolated { qlBridge.selectedFileURL != nil ? 1 : 0 }
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        MainActor.assumeIsolated { qlBridge.selectedFileURL as? NSURL }
+    }
+}
+
+extension FileBrowserPaneView: QLPreviewPanelDelegate {}

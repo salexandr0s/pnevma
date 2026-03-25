@@ -149,6 +149,18 @@ class TerminalSurface {
         }
     }
 
+    /// Tear down all live surfaces before shutting down the ghostty app.
+    /// Must be called on MainActor before `shutdownGhostty()`.
+    @MainActor
+    static func teardownAllSurfaces() {
+        surfaceRegistryLock.lock()
+        let liveSurfaces = surfaceRegistry.allObjects
+        surfaceRegistryLock.unlock()
+        for surface in liveSurfaces {
+            surface.teardown()
+        }
+    }
+
     @MainActor
     static func shutdownGhostty() {
         if let app = ghosttyApp {
@@ -279,6 +291,20 @@ class TerminalSurface {
         guard let ptr = retainedSelfPtr else { return }
         retainedSelfPtr = nil
         Unmanaged<TerminalSurface>.fromOpaque(ptr).release()
+    }
+
+    /// Deterministically free the ghostty surface. Called during global shutdown
+    /// to ensure all surfaces are freed before `ghostty_app_free()`.
+    /// Safe to call multiple times — subsequent calls are no-ops.
+    func teardown() {
+        releaseRetainedSelfIfNeeded()
+        if let s = surface {
+            ghostty_surface_free(s)
+            surface = nil
+        }
+        Self.surfaceRegistryLock.lock()
+        Self.surfaceRegistry.remove(self)
+        Self.surfaceRegistryLock.unlock()
     }
 
     deinit {
@@ -708,7 +734,12 @@ class TerminalSurface {
     }
 
     @MainActor
+    static func teardownAllSurfaces() {}
+
+    @MainActor
     static func shutdownGhostty() {}
+
+    func teardown() {}
 
     @MainActor
     static func applyGhosttyConfig(_ owner: TerminalConfig) {

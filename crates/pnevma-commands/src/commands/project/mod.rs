@@ -190,6 +190,43 @@ async fn terminate_project_owned_helpers(project_path: &Path) {
     }
 }
 
+/// Kill tmux sessions left over from a prior app instance that are not tracked
+/// as reattachable in the current database.
+async fn kill_orphaned_tmux_sessions(project_path: &Path, tracked_waiting_ids: &HashSet<String>) {
+    let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
+    if tokio::fs::create_dir_all(&tmux_tmpdir).await.is_err() {
+        return;
+    }
+    let tmux_bin = pnevma_session::resolve_binary("tmux");
+    let output = match TokioCommand::new(&tmux_bin)
+        .env("TMUX_TMPDIR", &tmux_tmpdir)
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return, // no tmux server or no sessions — nothing to clean
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for name in stdout.lines() {
+        let Some(uuid_part) = name.strip_prefix("pnevma_") else {
+            continue;
+        };
+        if tracked_waiting_ids.contains(uuid_part) {
+            continue; // legitimately waiting for reattach
+        }
+        let _ = TokioCommand::new(&tmux_bin)
+            .env("TMUX_TMPDIR", &tmux_tmpdir)
+            .args(["kill-session", "-t", name])
+            .output()
+            .await;
+        tracing::info!(
+            session = name,
+            "killed orphaned tmux session from prior run"
+        );
+    }
+}
+
 async fn shutdown_project_sessions(
     db: &Db,
     sessions: &SessionSupervisor,
@@ -506,6 +543,15 @@ pub async fn open_project(
 
     let session_rows =
         reconcile_persisted_sessions(&db, project_id, path_buf.as_path(), state).await?;
+
+    // Kill tmux sessions orphaned by prior crash or incomplete shutdown.
+    let tracked_waiting: HashSet<String> = session_rows
+        .iter()
+        .filter(|r| r.status == "waiting")
+        .map(|r| r.id.replace('-', ""))
+        .collect();
+    kill_orphaned_tmux_sessions(path_buf.as_path(), &tracked_waiting).await;
+
     let restore_root = path_buf.join(".pnevma/data");
     for row in session_rows {
         if row.status == "complete" || row.status == "error" {

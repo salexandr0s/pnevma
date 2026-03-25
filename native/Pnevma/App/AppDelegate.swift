@@ -109,6 +109,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionBridge: SessionBridge?
     private var sessionStore: SessionStore?
     private var workspaceManager: WorkspaceManager?
+
+    /// Read-only accessor for App Intents to query workspace state.
+    var workspaceManagerForIntents: WorkspaceManager? { workspaceManager }
     private var commandCenterStore: CommandCenterStore?
     private var commandCenterWindowController: CommandCenterWindowController?
     private var contentAreaView: ContentAreaView?
@@ -482,6 +485,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.observeActiveWorkspaceForTitlebar()
             self?.refreshTitlebarChromeState()
             self?.updateNotificationBadge()
+            // VoiceOver: announce workspace switch
+            if let name = self?.workspaceManager?.activeWorkspace?.name,
+               NSWorkspace.shared.isVoiceOverEnabled {
+                NSAccessibility.post(
+                    element: NSApp.mainWindow as Any,
+                    notification: .announcementRequested,
+                    userInfo: [.announcement: "Switched to workspace \(name)", .priority: NSAccessibilityPriorityLevel.high.rawValue]
+                )
+            }
         }
         workspaceManager?.onNotificationCountChanged = { [weak self] _ in
             self?.updateNotificationBadge()
@@ -593,6 +605,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionBridge = nil
 
         if ownsGhosttyAppLifecycle {
+            TerminalSurface.teardownAllSurfaces()
             TerminalSurface.shutdownGhostty()
             ownsGhosttyAppLifecycle = false
         }
@@ -707,6 +720,41 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         !AppLaunchContext.isTesting
+    }
+
+    // MARK: - Spotlight Continuation (HIG §8.2)
+
+    public func application(_ application: NSApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void) -> Bool {
+        guard userActivity.activityType == "com.apple.corespotlightitem",
+              let identifier = userActivity.userInfo?["kCSSearchableItemActivityIdentifier"] as? String,
+              identifier.hasPrefix("workspace."),
+              let uuidString = identifier.split(separator: ".").last.map(String.init),
+              let uuid = UUID(uuidString: uuidString) else {
+            return false
+        }
+        workspaceManager?.switchToWorkspace(uuid)
+        return true
+    }
+
+    // MARK: - Dock Menu (HIG §8.1)
+
+    public func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "New Workspace", action: #selector(openWorkspaceAction), keyEquivalent: "")
+        menu.addItem(.separator())
+        if let workspaces = workspaceManager?.workspaces {
+            for workspace in workspaces.prefix(8) {
+                let item = NSMenuItem(title: workspace.name, action: #selector(dockMenuSwitchWorkspace(_:)), keyEquivalent: "")
+                item.representedObject = workspace.id
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    @objc private func dockMenuSwitchWorkspace(_ sender: NSMenuItem) {
+        guard let workspaceID = sender.representedObject as? UUID else { return }
+        workspaceManager?.switchToWorkspace(workspaceID)
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -827,6 +875,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.updateToolDockState()
             self.persistence?.markDirty()
+        }
+
+        contentAreaView?.onDroppedDirectory = { [weak self] url in
+            let name = url.lastPathComponent
+            self?.workspaceManager?.createWorkspace(name: name, projectPath: url.path)
         }
 
         titlebarStatusView = TitlebarStatusView()
@@ -1491,6 +1544,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Edit menu
         let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(.separator())
         editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
@@ -1870,6 +1926,35 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             contentAreaView?.replaceActivePane(with: pane)
         } else {
             contentAreaView?.splitActivePane(direction: .horizontal, newPaneView: pane)
+        }
+    }
+
+    // MARK: - Menu Item Validation (HIG §1.3)
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let hasPanes = (contentAreaView?.paneCount ?? 0) > 0
+        let hasMultiplePanes = (contentAreaView?.paneCount ?? 0) > 1
+        let tabCount = workspaceManager?.activeWorkspace?.tabs.count ?? 0
+        let workspaceCount = workspaceManager?.workspaces.count ?? 0
+
+        switch menuItem.action {
+        case #selector(closePaneAction):
+            return hasPanes
+        case #selector(splitRightAction), #selector(splitDownAction):
+            return hasPanes
+        case #selector(nextPane), #selector(previousPane):
+            return hasMultiplePanes
+        case #selector(equalizeSplitsAction), #selector(toggleSplitZoom):
+            return hasMultiplePanes
+        case #selector(navigateLeft), #selector(navigateRight),
+             #selector(navigateUp), #selector(navigateDown):
+            return hasMultiplePanes
+        case #selector(nextWorkspace), #selector(previousWorkspace):
+            return workspaceCount > 1
+        case #selector(nextTab), #selector(previousTab):
+            return tabCount > 1
+        default:
+            return true
         }
     }
 
@@ -4969,9 +5054,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateNotificationBadge() {
         guard let workspace = workspaceManager?.activeWorkspace else {
             notificationBadge?.count = 0
+            NSApp.dockTile.badgeLabel = nil
             return
         }
-        notificationBadge?.count = workspace.unreadNotifications + workspace.terminalNotificationCount
+        let count = workspace.unreadNotifications + workspace.terminalNotificationCount
+        notificationBadge?.count = count
+        NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
         updateToolDockState()
     }
 

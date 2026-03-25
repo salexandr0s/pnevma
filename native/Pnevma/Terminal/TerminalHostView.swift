@@ -82,8 +82,7 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
 
     deinit {
         MainActor.assumeIsolated {
-            removeWindowObservers()
-            removeActionObservers()
+            teardownSurface()
         }
         if let chromeTransitionObserver {
             NotificationCenter.default.removeObserver(chromeTransitionObserver)
