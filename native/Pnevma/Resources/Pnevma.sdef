@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="Pnevma Terminology">
+    <suite name="Standard Suite" code="????" description="Common classes and commands for all applications.">
+        <command name="count" code="corecnte" description="Return the number of elements of a particular type in an object.">
+            <cocoa class="NSCountCommand"/>
+            <access-group identifier="*"/>
+            <direct-parameter type="specifier" description="The objects to be counted."/>
+            <parameter name="each" code="kocl" type="type" optional="yes" description="The type of object to count.">
+                <cocoa key="ObjectClass"/>
+            </parameter>
+            <result type="integer" description="The count."/>
+        </command>
+    </suite>
+
+    <suite name="Pnevma Suite" code="Pnvm" description="Commands and classes for controlling Pnevma.">
+
+        <class name="application" code="capp" description="The Pnevma application." plural="applications">
+            <cocoa class="NSApplication"/>
+            <element type="workspace" access="r">
+                <cocoa key="orderedWorkspaces"/>
+            </element>
+        </class>
+
+        <class name="workspace" code="PWks" description="A Pnevma workspace." plural="workspaces">
+            <cocoa class="Pnevma.ScriptableWorkspace"/>
+            <property name="id" code="ID  " type="text" access="r" description="The unique identifier.">
+                <cocoa key="uniqueID"/>
+            </property>
+            <property name="name" code="pnam" type="text" access="r" description="The workspace name.">
+                <cocoa key="scriptingName"/>
+            </property>
+            <property name="project path" code="pPth" type="text" access="r" description="The project directory path.">
+                <cocoa key="scriptingProjectPath"/>
+            </property>
+        </class>
+
+        <command name="create workspace" code="Pnvmcrws" description="Create a new workspace.">
+            <cocoa class="Pnevma.CreateWorkspaceScriptCommand"/>
+            <parameter name="with name" code="wNam" type="text" description="The name for the new workspace.">
+                <cocoa key="workspaceName"/>
+            </parameter>
+            <parameter name="at path" code="wPth" type="text" optional="yes" description="The project directory path.">
+                <cocoa key="projectPath"/>
+            </parameter>
+        </command>
+
+        <command name="switch workspace" code="Pnvmswws" description="Switch to a workspace by name.">
+            <cocoa class="Pnevma.SwitchWorkspaceScriptCommand"/>
+            <parameter name="named" code="wNam" type="text" description="The workspace name to switch to.">
+                <cocoa key="workspaceName"/>
+            </parameter>
+        </command>
+
+    </suite>
+</dictionary>

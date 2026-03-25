@@ -12,7 +12,7 @@ settings:
     SWIFT_VERSION: "6.1"
     MACOSX_DEPLOYMENT_TARGET: "15.0"
     ENABLE_HARDENED_RUNTIME: YES
-    ENABLE_APP_INTENTS_METADATA_GENERATION: NO
+    ENABLE_APP_INTENTS_METADATA_GENERATION: YES
 
 schemes:
   Pnevma:
@@ -115,6 +115,7 @@ targets:
       - sdk: AppIntents.framework
       - sdk: Carbon.framework
       - sdk: Cocoa.framework
+      - sdk: CoreSpotlight.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
       - sdk: WebKit.framework
