@@ -2,14 +2,14 @@ import XCTest
 
 final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     func testLaunchShowsWorkspaceSidebarAndToolDock() {
-        requireExists(identifiedElement("sidebar.addWorkspace"))
+        requireExists(identifiedElement("sidebar.newWorkspace"))
         requireExists(identifiedElement("tool-dock.view"))
         requireExists(toolDockItem("terminal"))
         XCTAssertFalse(app.buttons["Task Board"].exists)
     }
 
     func testTerminalWorkspaceKeepsProjectOnlyToolsOutOfDock() {
-        requireExists(identifiedElement("sidebar.addWorkspace"))
+        requireExists(identifiedElement("sidebar.newWorkspace"))
         requireExists(identifiedElement("tool-dock.view"))
         XCTAssertFalse(app.buttons["Task Board"].exists)
         XCTAssertFalse(app.buttons["tool-dock.item.tasks"].exists)
@@ -42,7 +42,7 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     }
 
     func testOpenWorkspaceDialogShowsVisibleActionsImmediately() {
-        identifiedElement("sidebar.addWorkspace").click()
+        identifiedElement("sidebar.newWorkspace").click()
 
         requireExists(app.staticTexts["Open Workspace"])
         requireExists(app.buttons["Local Folder"])

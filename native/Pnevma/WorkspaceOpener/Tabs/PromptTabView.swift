@@ -67,7 +67,7 @@ struct PromptTabView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.2))) {
                         viewModel.showAdvancedOptions.toggle()
                     }
                 } label: {
@@ -75,7 +75,7 @@ struct PromptTabView: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
                             .rotationEffect(.degrees(viewModel.showAdvancedOptions ? 90 : 0))
-                            .animation(.easeInOut(duration: 0.2), value: viewModel.showAdvancedOptions)
+                            .animation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.2)), value: viewModel.showAdvancedOptions)
                         Text("Advanced")
                             .font(.system(size: 12, weight: .medium))
                     }

@@ -62,6 +62,7 @@ struct SidebarToolButton: View {
             }
         }
         .accessibilityLabel(tool.title + (tool.isStub ? ", coming soon" : ""))
+        .accessibilityHint(tool.isStub ? "This tool is not yet available" : "Opens tool in current pane. Right-click for more options.")
         .accessibilityIdentifier(accessibilityID ?? "sidebar.tool.\(tool.id)")
     }
 }

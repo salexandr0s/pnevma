@@ -123,6 +123,7 @@ final class TitlebarIconButton: NSButton {
         imageScaling = .scaleProportionallyDown
         self.toolTip = toolTip
         setAccessibilityLabel(accessibilityDescription)
+        setAccessibilityHelp(toolTip)
         updateAppearance()
     }
 
@@ -243,6 +244,7 @@ final class CapsuleButton: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         setAccessibilityLabel(label)
+        setAccessibilityHelp("Activates \(label)")
         toolTip = label
         themeObserver = NotificationCenter.default.addObserver(
             forName: GhosttyThemeProvider.didChangeNotification,

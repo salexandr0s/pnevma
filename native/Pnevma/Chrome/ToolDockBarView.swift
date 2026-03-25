@@ -106,6 +106,7 @@ struct ToolDockBarView: View {
         .onHover { isHovering in
             onHoverChanged?(isHovering)
         }
+        .accessibilitySortPriority(0)
     }
 
     private func badgeCount(for tool: SidebarToolItem) -> Int {
@@ -123,20 +124,47 @@ struct ToolDockBarView: View {
             + totalSpacing
     }
 
+    /// Tools grouped by ToolGroup with separators between groups.
+    private var groupedTools: [[SidebarToolItem]] {
+        var groups: [[SidebarToolItem]] = []
+        var currentGroup: [SidebarToolItem] = []
+        var currentGroupID: ToolGroup?
+        for tool in tools {
+            if let current = currentGroupID, tool.group != current {
+                if !currentGroup.isEmpty {
+                    groups.append(currentGroup)
+                }
+                currentGroup = [tool]
+            } else {
+                currentGroup.append(tool)
+            }
+            currentGroupID = tool.group
+        }
+        if !currentGroup.isEmpty {
+            groups.append(currentGroup)
+        }
+        return groups
+    }
+
     @ViewBuilder
     private func centeredDockContent(minWidth: CGFloat) -> some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: dockButtonSpacing) {
-                ForEach(tools) { tool in
-                    ToolDockItemButton(
-                        tool: tool,
-                        isActive: dockState.activeToolID == tool.id,
-                        badgeCount: badgeCount(for: tool),
-                        onOpenAsTab: { onOpenToolAsTab?(tool.id) },
-                        onOpenAsPane: { onOpenToolAsPane?(tool.id) }
-                    ) {
-                        onOpenTool?(tool.id)
+                ForEach(Array(groupedTools.enumerated()), id: \.offset) { groupIndex, group in
+                    if groupIndex > 0 {
+                        DockGroupSeparator()
+                    }
+                    ForEach(group) { tool in
+                        ToolDockItemButton(
+                            tool: tool,
+                            isActive: dockState.activeToolID == tool.id,
+                            badgeCount: badgeCount(for: tool),
+                            onOpenAsTab: { onOpenToolAsTab?(tool.id) },
+                            onOpenAsPane: { onOpenToolAsPane?(tool.id) }
+                        ) {
+                            onOpenTool?(tool.id)
+                        }
                     }
                 }
             }
@@ -198,48 +226,36 @@ private struct ToolDockItemButton: View {
         return .clear
     }
 
-    private var symbolPointSize: CGFloat {
-        switch tool.id {
-        case "resource_monitor", "ports":
-            return 14
-        case "analytics", "browser", "ssh", "rules":
-            return 15
-        case "workflow", "tasks", "replay", "brief":
-            return 16
-        default:
-            return 17
-        }
-    }
-
-    private var symbolWeight: Font.Weight {
-        switch tool.id {
-        case "terminal", "tasks", "workflow":
-            return .semibold
-        default:
-            return .medium
-        }
-    }
+    private var symbolPointSize: CGFloat { 15 }
+    private var symbolWeight: Font.Weight { .medium }
 
     var body: some View {
         Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: tool.icon)
-                    .font(.system(size: symbolPointSize, weight: symbolWeight))
-                    .foregroundStyle(iconColor)
-                    .frame(width: 24, height: 24)
-
+            VStack(spacing: 2) {
                 ZStack(alignment: .topTrailing) {
-                    if badgeCount > 0 {
-                        Text(badgeText)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, badgeCount > 9 ? 5 : 4)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.red))
-                            .offset(x: 12, y: -7)
-                            .accessibilityLabel("\(badgeCount) unread")
+                    Image(systemName: tool.icon)
+                        .font(.system(size: symbolPointSize, weight: symbolWeight))
+                        .foregroundStyle(iconColor)
+                        .frame(width: 24, height: 24)
+
+                    ZStack(alignment: .topTrailing) {
+                        if badgeCount > 0 {
+                            Text(badgeText)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, badgeCount > 9 ? 5 : 4)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Color.red))
+                                .offset(x: 12, y: -7)
+                                .accessibilityLabel("\(badgeCount) unread")
+                        }
                     }
                 }
+
+                // Active pill indicator
+                Capsule()
+                    .fill(isActive ? Color.accentColor : .clear)
+                    .frame(width: 16, height: 3)
             }
             .frame(width: 50, height: 40)
             .background(
@@ -283,6 +299,7 @@ private struct ToolDockItemButton: View {
             }
         }
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Opens tool panel")
         .accessibilityValue(isActive ? "Selected" : "")
         .accessibilityIdentifier("tool-dock.item.\(tool.id)")
     }
@@ -296,6 +313,16 @@ private struct ToolDockItemButton: View {
             return "\(tool.title), \(badgeCount) unread"
         }
         return tool.title
+    }
+}
+
+/// Thin vertical separator between tool groups in the dock.
+private struct DockGroupSeparator: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 0.5)
+            .fill(Color.primary.opacity(0.10))
+            .frame(width: 1, height: 22)
+            .padding(.horizontal, 4)
     }
 }
 

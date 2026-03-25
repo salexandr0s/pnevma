@@ -28,5 +28,7 @@
 	<string></string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>OSAScriptingDefinition</key>
+	<string>Pnevma.sdef</string>
 </dict>
 </plist>

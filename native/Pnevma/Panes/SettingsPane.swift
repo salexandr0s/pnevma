@@ -1400,7 +1400,7 @@ private struct GhosttyCompactFieldRow: View {
                     .buttonStyle(.plain)
                     .disabled(!viewModel.isChanged(descriptor.key) && viewModel.origin(for: descriptor.key) != .managed)
                 }
-                .transition(.opacity.animation(.easeInOut(duration: DesignTokens.Motion.fast)))
+                .transition(.opacity.animation(ChromeMotion.animation(for: .hover) ?? .default))
             }
         }
         .onHover { isHovering = $0 }
@@ -1607,7 +1607,7 @@ private struct GhosttyKeybindRow: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .transition(.opacity.animation(.easeInOut(duration: DesignTokens.Motion.fast)))
+                    .transition(.opacity.animation(ChromeMotion.animation(for: .hover) ?? .default))
                 }
 
                 Button(role: .destructive, action: onRemove) {

@@ -2110,7 +2110,9 @@ private struct AgentLauncherOverlay: View {
         .accessibilityIdentifier("terminal.agentLauncher.overlay")
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(.ultraThinMaterial)
+                .fill(AccessibilityCheck.prefersReducedTransparency
+                    ? AnyShapeStyle(ChromeSurfaceStyle.pane.color)
+                    : AnyShapeStyle(.ultraThinMaterial))
         )
     }
 }
@@ -2134,7 +2136,7 @@ private struct AgentLogoButton: View {
                         .fill(isHovered ? Color.white.opacity(0.15) : Color.clear)
                 )
                 .scaleEffect(isHovered ? 1.1 : 1.0)
-                .animation(.easeInOut(duration: 0.15), value: isHovered)
+                .animation(ChromeMotion.animation(for: .hover), value: isHovered)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())

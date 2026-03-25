@@ -376,7 +376,7 @@ private final class TabButton: NSView {
         titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: DesignTokens.Font.caption, weight: isActive ? .semibold : .regular)
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(
-            isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary
+            isActive ? 1.0 : DesignTokens.TextOpacity.inactive
         )
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
@@ -396,6 +396,7 @@ private final class TabButton: NSView {
         closeButton.imageScaling = .scaleProportionallyDown
         closeButton.contentTintColor = theme.foregroundColor.withAlphaComponent(normalCloseAlpha)
         closeButton.setAccessibilityLabel("Close tab")
+        closeButton.setAccessibilityHelp("Closes this tab and its contents")
         closeButton.isHidden = !showClose || isRenaming
 
         renameField = TabRenameField(frame: .zero)
@@ -480,11 +481,11 @@ private final class TabButton: NSView {
         )
 
         if isActive {
-            theme.foregroundColor.withAlphaComponent(0.08).setFill()
+            theme.foregroundColor.withAlphaComponent(0.10).setFill()
             tabPath.fill()
 
             let strokeColor = theme.splitDividerColor ?? theme.foregroundColor.withAlphaComponent(0.16)
-            strokeColor.withAlphaComponent(0.55).setStroke()
+            strokeColor.withAlphaComponent(0.65).setStroke()
             tabPath.lineWidth = 1
             tabPath.stroke()
         } else if isHovering {
@@ -545,7 +546,7 @@ private final class TabButton: NSView {
 
     func applyTheme(_ theme: GhosttyThemeProvider) {
         titleLabel.textColor = theme.foregroundColor.withAlphaComponent(
-            isActive ? DesignTokens.TextOpacity.primary : DesignTokens.TextOpacity.secondary
+            isActive ? 1.0 : DesignTokens.TextOpacity.inactive
         )
         renameField.textColor = titleLabel.textColor
         needsDisplay = true

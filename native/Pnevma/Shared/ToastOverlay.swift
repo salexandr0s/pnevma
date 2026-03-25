@@ -65,6 +65,15 @@ final class ToastManager {
         lastShownText = text
         lastShownTime = Date.now
 
+        // VoiceOver: announce toast content
+        if NSWorkspace.shared.isVoiceOverEnabled {
+            NSAccessibility.post(
+                element: NSApp.mainWindow as Any,
+                notification: .announcementRequested,
+                userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue]
+            )
+        }
+
         let duration = action != nil
             ? DesignTokens.Motion.toastActionDuration
             : 2.5
@@ -72,7 +81,7 @@ final class ToastManager {
         dismissTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: DesignTokens.Motion.normal)) {
+            withAnimation(DesignTokens.Motion.resolved(.easeOut(duration: DesignTokens.Motion.normal))) {
                 self.currentToast = nil
             }
         }
@@ -113,7 +122,7 @@ struct ToastOverlayView: View {
             }
 
             Text(toast.text)
-                .font(.body.weight(.medium))
+                .font(.body.weight(DesignTokens.AccessibleFont.weight(SwiftUI.Font.Weight.medium)))
                 .foregroundStyle(.primary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -137,7 +146,9 @@ struct ToastOverlayView: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.regularMaterial)
+                .fill(AccessibilityCheck.prefersReducedTransparency
+                    ? AnyShapeStyle(ChromeSurfaceStyle.window.color)
+                    : AnyShapeStyle(.regularMaterial))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .strokeBorder(borderColor(toast.style), lineWidth: 1)

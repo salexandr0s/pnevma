@@ -47,6 +47,7 @@ struct SidebarView: View {
         }
         .frame(minWidth: 0, maxWidth: DesignTokens.Layout.sidebarMaxWidth)
         .background(sidebarBackground)
+        .accessibilitySortPriority(4)
     }
 
     // MARK: - Workspaces Content
@@ -111,14 +112,14 @@ struct SidebarView: View {
                             }
                         }
                     )
-                    .padding(.top, 6)
+                    .padding(.top, 14)
 
                     if !collapsed {
-                        VStack(alignment: .leading, spacing: 0) {
-                            subgroupSection("Needs Attention", workspaces: group.attention)
-                            subgroupSection("Active", workspaces: group.active)
-                            subgroupSection("In Review", workspaces: group.review)
-                            subgroupSection("Idle", workspaces: group.idle)
+                        // Sorted by state (attention → active → review → idle)
+                        // Color-coded indicators replace explicit subgroup labels
+                        let sorted = group.workspaces.sorted { $0.operationalState.sortOrder < $1.operationalState.sortOrder }
+                        ForEach(sorted) { workspace in
+                            workspaceRow(workspace)
                         }
                         .transition(.opacity)
                     }
@@ -129,7 +130,9 @@ struct SidebarView: View {
                     EmptyStateView(
                         icon: "square.stack.3d.up",
                         title: "No workspaces",
-                        message: "Create a workspace to get started."
+                        message: "Create a workspace to get started.",
+                        actionTitle: "New Workspace",
+                        action: { onAddWorkspace?(.generic) }
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.top, 32)
@@ -159,13 +162,4 @@ struct SidebarView: View {
         )
     }
 
-    @ViewBuilder
-    private func subgroupSection(_ label: String, workspaces: [Workspace]) -> some View {
-        if !workspaces.isEmpty {
-            SmallSubgroupLabel(label)
-            ForEach(workspaces) { workspace in
-                workspaceRow(workspace)
-            }
-        }
-    }
 }

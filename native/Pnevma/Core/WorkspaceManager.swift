@@ -191,6 +191,7 @@ final class WorkspaceManager {
             _ = ensureRuntime(for: workspace)
         }
         activateWorkspace(id: workspace.id)
+        SpotlightIndexer.shared.indexWorkspace(workspace)
         Log.workspace.info("Created workspace '\(name)' id=\(workspace.id)")
         return workspace
     }
@@ -323,6 +324,7 @@ final class WorkspaceManager {
         let workspace = workspaces.remove(at: index)
         teardownRuntime(for: id)
         invalidateRequestState(for: id)
+        SpotlightIndexer.shared.removeWorkspace(id)
         Log.workspace.info("Closed workspace '\(workspace.name)'")
 
         if workspaces.isEmpty {

@@ -28,7 +28,7 @@ struct BrowserView: View {
                     }
                     .frame(height: 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .animation(.easeInOut(duration: 0.2), value: viewModel.estimatedProgress)
+                    .animation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.2)), value: viewModel.estimatedProgress)
             }
 
             Divider()
@@ -55,7 +55,9 @@ struct BrowserView: View {
                         .padding(20)
                         .background(
                             RoundedRectangle(cornerRadius: 10)
-                                .fill(.ultraThinMaterial)
+                                .fill(AccessibilityCheck.prefersReducedTransparency
+                                    ? AnyShapeStyle(ChromeSurfaceStyle.pane.color)
+                                    : AnyShapeStyle(.ultraThinMaterial))
                         )
                 }
 
@@ -186,6 +188,16 @@ struct BrowserView: View {
             .disabled(!viewModel.shouldRenderWebView)
             .opacity(viewModel.shouldRenderWebView ? 1 : 0.4)
             .accessibilityLabel("Reader mode")
+
+            // Share current page URL
+            if let url = viewModel.webView.url {
+                ShareLink(item: url) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Share page")
+            }
 
             Menu {
                 Button("Copy Selection with Source URL", action: copySelectionWithSource)

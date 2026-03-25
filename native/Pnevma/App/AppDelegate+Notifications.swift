@@ -21,6 +21,14 @@ final class NativeNotificationManager: NSObject, UNUserNotificationCenterDelegat
 
     /// Post a native notification. Suppressed when app is active (frontmost).
     func postNotification(title: String, body: String, identifier: String? = nil) {
+        // VoiceOver: announce notification content regardless of app focus
+        if NSWorkspace.shared.isVoiceOverEnabled, let window = NSApp.mainWindow {
+            NSAccessibility.post(
+                element: window as Any,
+                notification: .announcementRequested,
+                userInfo: [.announcement: "\(title): \(body)", .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        }
         guard !NSApplication.shared.isActive else { return }
 
         let content = UNMutableNotificationContent()

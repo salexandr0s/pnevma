@@ -31,6 +31,7 @@ final class CommandPalette: NSPanel {
     private let searchField = NSSearchField()
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
+    private let hintLabel = NSTextField(labelWithString: "")
 
     private var allCommands: [CommandItem] = []
     private var filteredCommands: [CommandItem] = []
@@ -102,13 +103,29 @@ final class CommandPalette: NSPanel {
         scrollView.borderType = .noBorder
         contentView.addSubview(scrollView)
 
+        // Hint label for prefix shortcuts
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+        hintLabel.isEditable = false
+        hintLabel.isBordered = false
+        hintLabel.drawsBackground = false
+        hintLabel.font = .systemFont(ofSize: 11)
+        hintLabel.alignment = .center
+        let fg = GhosttyThemeProvider.shared.foregroundColor
+        hintLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
+        hintLabel.stringValue = ">  Commands     :  Files     @  Workspaces     #  Tasks"
+        contentView.addSubview(hintLabel)
+
         NSLayoutConstraint.activate([
             searchField.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
             searchField.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
             searchField.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
             searchField.heightAnchor.constraint(equalToConstant: 32),
 
-            scrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            hintLabel.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
+            hintLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            hintLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+
+            scrollView.topAnchor.constraint(equalTo: hintLabel.bottomAnchor, constant: 4),
             scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -181,6 +198,7 @@ final class CommandPalette: NSPanel {
 
     @objc private func searchChanged() {
         let query = searchField.stringValue
+        hintLabel.isHidden = !query.isEmpty
         if query.isEmpty {
             filteredCommands = allCommands
         } else if let firstChar = query.first,
@@ -220,17 +238,26 @@ final class CommandPalette: NSPanel {
 
     // MARK: - Fuzzy Match
 
-    private func fuzzyMatch(query: String, target: String) -> Bool {
+    /// Returns indices of matched characters in `target`, or nil if no match.
+    private func fuzzyMatchIndices(query: String, target: String) -> [Int]? {
         var queryIndex = query.startIndex
         var targetIndex = target.startIndex
+        var matches: [Int] = []
+        var position = 0
 
         while queryIndex < query.endIndex && targetIndex < target.endIndex {
             if query[queryIndex] == target[targetIndex] {
+                matches.append(position)
                 queryIndex = query.index(after: queryIndex)
             }
             targetIndex = target.index(after: targetIndex)
+            position += 1
         }
-        return queryIndex == query.endIndex
+        return queryIndex == query.endIndex ? matches : nil
+    }
+
+    private func fuzzyMatch(query: String, target: String) -> Bool {
+        fuzzyMatchIndices(query: query, target: target) != nil
     }
 }
 
@@ -260,7 +287,31 @@ extension CommandPalette: NSTableViewDelegate {
         let cell = tableView.makeView(withIdentifier: cellID, owner: nil) as? CommandCellView
             ?? CommandCellView(identifier: cellID)
 
-        cell.configure(title: item.title, category: item.category, shortcut: item.shortcut, description: item.description)
+        // Compute match indices for highlighting
+        let query = searchField.stringValue.lowercased()
+        let matchIndices: [Int]?
+        if query.isEmpty {
+            matchIndices = nil
+        } else if let first = query.first,
+                  PaletteCategory.allCases.contains(where: { $0.filterPrefix == first }) {
+            let stripped = String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
+            matchIndices = stripped.isEmpty ? nil : fuzzyMatchIndices(query: stripped, target: item.title.lowercased())
+        } else {
+            matchIndices = fuzzyMatchIndices(query: query, target: item.title.lowercased())
+        }
+
+        // Map category to icon
+        let categoryIcon = PaletteCategory.allCases
+            .first { $0.commandItemKey == item.category }?.icon ?? "terminal"
+
+        cell.configure(
+            title: item.title,
+            category: item.category,
+            shortcut: item.shortcut,
+            description: item.description,
+            categoryIcon: categoryIcon,
+            matchIndices: matchIndices
+        )
         return cell
     }
 }
@@ -268,6 +319,7 @@ extension CommandPalette: NSTableViewDelegate {
 // MARK: - CommandCellView
 
 private final class CommandCellView: NSTableCellView {
+    private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let categoryLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
@@ -276,6 +328,9 @@ private final class CommandCellView: NSTableCellView {
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.font = .systemFont(ofSize: 13)
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -295,6 +350,7 @@ private final class CommandCellView: NSTableCellView {
             }
         }
 
+        addSubview(iconView)
         for label in [titleLabel, categoryLabel, shortcutLabel, descriptionLabel] {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.isEditable = false
@@ -304,11 +360,16 @@ private final class CommandCellView: NSTableCellView {
         }
 
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
+
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: categoryLabel.leadingAnchor, constant: -4),
 
-            descriptionLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            descriptionLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             descriptionLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
             descriptionLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
 
@@ -328,10 +389,46 @@ private final class CommandCellView: NSTableCellView {
         categoryLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
         shortcutLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
         descriptionLabel.textColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
+        iconView.contentTintColor = fg.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
     }
 
-    func configure(title: String, category: String, shortcut: String?, description: String? = nil) {
-        titleLabel.stringValue = title
+    func configure(
+        title: String,
+        category: String,
+        shortcut: String?,
+        description: String? = nil,
+        categoryIcon: String = "terminal",
+        matchIndices: [Int]? = nil
+    ) {
+        // Category icon
+        iconView.image = NSImage(
+            systemSymbolName: categoryIcon,
+            accessibilityDescription: category
+        )?.withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
+
+        // Title with fuzzy match highlighting
+        if let matchIndices, !matchIndices.isEmpty {
+            let fg = GhosttyThemeProvider.shared.foregroundColor
+            let attributed = NSMutableAttributedString(
+                string: title,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 13),
+                    .foregroundColor: fg.withAlphaComponent(0.85),
+                ]
+            )
+            let matchSet = Set(matchIndices)
+            for i in 0..<title.count where matchSet.contains(i) {
+                let range = NSRange(location: i, length: 1)
+                attributed.addAttributes([
+                    .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                    .foregroundColor: NSColor.controlAccentColor,
+                ], range: range)
+            }
+            titleLabel.attributedStringValue = attributed
+        } else {
+            titleLabel.stringValue = title
+        }
+
         categoryLabel.stringValue = category
         shortcutLabel.stringValue = shortcut ?? ""
         descriptionLabel.stringValue = description ?? ""

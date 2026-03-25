@@ -25,14 +25,16 @@ struct FocusModeEscapeHatch: View {
                     .padding(.vertical, 6)
                     .background(
                         Capsule()
-                            .fill(.ultraThinMaterial)
+                            .fill(AccessibilityCheck.prefersReducedTransparency
+                                ? AnyShapeStyle(ChromeSurfaceStyle.window.color)
+                                : AnyShapeStyle(.ultraThinMaterial))
                             .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
                     )
                     .opacity(isHovering ? 1.0 : 0.3)
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovering = $0 }
-                .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: isHovering)
+                .animation(ChromeMotion.animation(for: .hover), value: isHovering)
                 .padding(12)
             }
             Spacer()

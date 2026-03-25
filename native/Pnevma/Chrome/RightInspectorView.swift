@@ -5,9 +5,18 @@ import Observation
 private enum RightInspectorLayout {
     static let railMinWidth: CGFloat = DesignTokens.Layout.rightInspectorMinWidth
     static let railContentInset: CGFloat = DesignTokens.Spacing.sm
-    static let overlayMaxWidth: CGFloat = 920
-    static let overlayMaxHeight: CGFloat = 760
+    static let overlayAbsoluteMaxWidth: CGFloat = 920
+    static let overlayAbsoluteMaxHeight: CGFloat = 760
     static let overlayPadding: CGFloat = 32
+
+    /// Cap overlay at 70% of window dimensions for smaller screens.
+    static func overlayMaxWidth(for windowWidth: CGFloat) -> CGFloat {
+        min(overlayAbsoluteMaxWidth, windowWidth * 0.7)
+    }
+
+    static func overlayMaxHeight(for windowHeight: CGFloat) -> CGFloat {
+        min(overlayAbsoluteMaxHeight, windowHeight * 0.7)
+    }
 }
 
 private func inspectorIdentifierComponent(_ value: String) -> String {
@@ -318,8 +327,8 @@ struct RightInspectorOverlayView: View {
 
     @ViewBuilder
     private func overlayCard(in size: CGSize) -> some View {
-        let width = max(520, min(RightInspectorLayout.overlayMaxWidth, size.width - RightInspectorLayout.overlayPadding * 2))
-        let height = max(420, min(RightInspectorLayout.overlayMaxHeight, size.height - RightInspectorLayout.overlayPadding * 2))
+        let width = max(520, min(RightInspectorLayout.overlayMaxWidth(for: size.width), size.width - RightInspectorLayout.overlayPadding * 2))
+        let height = max(420, min(RightInspectorLayout.overlayMaxHeight(for: size.height), size.height - RightInspectorLayout.overlayPadding * 2))
         let cardBackgroundOpacity = min(1.0, max(0.96, theme.backgroundOpacity))
         let cardBackgroundColor = Color(nsColor: theme.backgroundColor).opacity(cardBackgroundOpacity)
 

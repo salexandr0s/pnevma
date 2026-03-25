@@ -279,9 +279,11 @@ final class TitlebarStatusView: NSView {
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = theme.foregroundColor.withAlphaComponent(0.09).cgColor
 
+        // Branch button is the primary navigation anchor — higher opacity
+        let branchColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.primary)
         let secondaryColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.secondary)
         let disabledColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
-        applyButtonTitle(branchButton, color: branchButton.isEnabled ? secondaryColor : disabledColor)
+        applyButtonTitle(branchButton, color: branchButton.isEnabled ? branchColor : disabledColor)
         applyButtonTitle(sessionsButton, color: sessionsButton.isEnabled ? secondaryColor : disabledColor)
         agentsLabel.textColor = secondaryColor
         separator1.wantsLayer = true

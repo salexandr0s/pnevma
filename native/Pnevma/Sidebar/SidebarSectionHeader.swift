@@ -9,20 +9,23 @@ struct SidebarSectionHeader: View {
     var onToggle: (() -> Void)?
     var onAdd: (() -> Void)?
 
-    @Environment(GhosttyThemeProvider.self) private var theme
     @State private var isHoveringAdd = false
+
+    private var projectColor: Color {
+        ProjectColorPalette.color(for: title)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            // Project initial circle
+            // Project initial circle — colored per project
             let initial = title.prefix(1).uppercased()
             ZStack {
                 Circle()
-                    .fill(Color(nsColor: theme.foregroundColor).opacity(0.12))
+                    .fill(projectColor.opacity(0.20))
                     .frame(width: 24, height: 24)
                 Text(initial)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(projectColor.opacity(0.85))
             }
 
             Text(title)
@@ -69,20 +72,3 @@ struct SidebarSectionHeader: View {
     }
 }
 
-/// Small label for sub-groups within a project (Attention, Active, Review, Idle).
-struct SmallSubgroupLabel: View {
-    let text: String
-
-    init(_ text: String) {
-        self.text = text
-    }
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.tertiary)
-            .padding(.leading, 20)
-            .padding(.top, 4)
-            .padding(.bottom, 1)
-    }
-}

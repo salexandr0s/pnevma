@@ -46,6 +46,25 @@ enum ChromeSurfaceStyle {
     }
 }
 
+// MARK: - Accessibility Checks
+
+enum AccessibilityCheck {
+    static var prefersReducedTransparency: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    }
+
+    static var prefersHighContrast: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+    }
+
+    static var prefersBoldText: Bool {
+        // Bold Text preference is exposed via UIAccessibility on iOS;
+        // on macOS we use the NSWorkspace font-smoothing threshold as a proxy,
+        // or check the user default directly.
+        UserDefaults.standard.bool(forKey: "com.apple.accessibility.BoldTextEnabled")
+    }
+}
+
 enum PanePresentationRole: Equatable {
     case document
     case manager
@@ -100,14 +119,14 @@ private struct NativePaneTitleBlock: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Spacing.sm) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13, weight: DesignTokens.AccessibleFont.weight(SwiftUI.Font.Weight.semibold)))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13, weight: DesignTokens.AccessibleFont.weight(SwiftUI.Font.Weight.semibold)))
 
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)

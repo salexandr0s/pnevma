@@ -93,7 +93,7 @@ private struct GroupedEventRow: View {
             .padding(.vertical, 4)
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
+                Button(action: { withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.15))) { isExpanded.toggle() } }) {
                     HStack(spacing: 6) {
                         Circle()
                             .fill(group.level.color)

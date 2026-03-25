@@ -33,6 +33,7 @@ struct AddButton: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel("Add workspace")
+        .accessibilityHint("Creates a new workspace")
         .help("Add workspace")
         .accessibilityIdentifier("sidebar.addWorkspace")
     }
@@ -55,6 +56,7 @@ struct CloseButton: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .accessibilityLabel("Close workspace")
+        .accessibilityHint("Closes this workspace")
         .help("Close workspace")
     }
 }

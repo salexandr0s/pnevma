@@ -70,20 +70,23 @@ enum DesignTokens {
         static let utilityShelfCornerRadius: CGFloat = 0
     }
 
-    // MARK: - Opacity
+    // MARK: - Opacity (contrast-aware)
     enum Opacity {
-        static let subtle: CGFloat = 0.06
-        static let light: CGFloat = 0.10
-        static let medium: CGFloat = 0.15
-        static let strong: CGFloat = 0.30
-        static let prominent: CGFloat = 0.50
+        private static var high: Bool { AccessibilityCheck.prefersHighContrast }
+        static var subtle: CGFloat { high ? 0.12 : 0.06 }
+        static var light: CGFloat { high ? 0.18 : 0.10 }
+        static var medium: CGFloat { high ? 0.25 : 0.15 }
+        static var strong: CGFloat { high ? 0.45 : 0.30 }
+        static var prominent: CGFloat { high ? 0.65 : 0.50 }
     }
 
-    // MARK: - Text Opacity (WCAG AA compliant)
+    // MARK: - Text Opacity (WCAG AA compliant, contrast-aware)
     enum TextOpacity {
-        static let primary: CGFloat = 0.92
-        static let secondary: CGFloat = 0.70
-        static let tertiary: CGFloat = 0.50
+        private static var high: Bool { AccessibilityCheck.prefersHighContrast }
+        static var primary: CGFloat { high ? 1.0 : 0.92 }
+        static var secondary: CGFloat { high ? 0.85 : 0.70 }
+        static var inactive: CGFloat { high ? 0.70 : 0.50 }
+        static var tertiary: CGFloat { high ? 0.70 : 0.50 }
     }
 
     // MARK: - Font Sizes

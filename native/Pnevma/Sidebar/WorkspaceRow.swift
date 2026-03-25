@@ -17,19 +17,25 @@ struct WorkspaceRow: View {
     @State private var renameText = ""
     @FocusState private var isRenameFieldFocused: Bool
 
-    private var themeAccentColor: Color {
-        Color(nsColor: GhosttyThemeProvider.shared.foregroundColor)
-    }
-
     private var totalNotifications: Int {
         workspace.unreadNotifications + workspace.terminalNotificationCount
     }
 
-    private var indicatorColor: Color {
+    /// Resolved project color: user override → automatic from project name → fallback.
+    private var projectColor: Color {
         if let hex = workspace.customColor, let nsColor = NSColor(hexString: hex) {
             return Color(nsColor: nsColor)
         }
-        return isActive ? themeAccentColor : Color.secondary.opacity(0.3)
+        if let root = workspace.projectRoot {
+            return ProjectColorPalette.color(for: root)
+        }
+        return Color(nsColor: GhosttyThemeProvider.shared.foregroundColor)
+    }
+
+    /// Indicator color modulated by operational state.
+    private var indicatorColor: Color {
+        let stateOpacity = ProjectColorPalette.stateOpacity(workspace.operationalState)
+        return isActive ? projectColor.opacity(stateOpacity) : projectColor.opacity(0.20)
     }
 
     private var modeLabel: String {
@@ -63,10 +69,10 @@ struct WorkspaceRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 0) {
-                // Left indicator bar (active only)
-                RoundedRectangle(cornerRadius: 1)
+                // Left indicator bar — project color, modulated by state
+                RoundedRectangle(cornerRadius: 1.5)
                     .fill(isActive ? indicatorColor : .clear)
-                    .frame(width: 2)
+                    .frame(width: 3)
                     .padding(.vertical, 2)
 
                 HStack(spacing: 10) {
@@ -98,6 +104,7 @@ struct WorkspaceRow: View {
                             Text(workspace.name)
                                 .font(.system(size: 13))
                                 .fontWeight(isActive ? .semibold : .regular)
+                                .foregroundStyle(isActive ? .primary : .secondary)
                                 .lineLimit(1)
                         }
 
@@ -109,12 +116,9 @@ struct WorkspaceRow: View {
                                 .lineLimit(1)
                         }
 
-                        // Failure detail
+                        // Failure chip (replaces inline 10pt orange text)
                         if let failureMessage {
-                            Text(failureMessage)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.orange)
-                                .lineLimit(2)
+                            StatusChipView(failureMessage, icon: "exclamationmark.triangle.fill", style: .error)
                         }
                     }
 
@@ -137,7 +141,7 @@ struct WorkspaceRow: View {
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActive ? indicatorColor.opacity(0.12) : Color.clear)
+                .fill(isActive ? projectColor.opacity(0.10) : Color.clear)
         )
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
@@ -157,16 +161,19 @@ struct WorkspaceRow: View {
             }
 
             Menu("Tab Color") {
-                ForEach(WorkspaceColor.allCases) { color in
-                    Button {
-                        onSetColor?(color.hex)
-                    } label: {
-                        HStack {
-                            Circle()
-                                .fill(color.swiftUIColor)
-                                .frame(width: 10, height: 10)
-                            Text(color.name)
-                        }
+                Section("Warm") {
+                    ForEach(WorkspaceColor.warm) { color in
+                        colorMenuItem(color)
+                    }
+                }
+                Section("Cool") {
+                    ForEach(WorkspaceColor.cool) { color in
+                        colorMenuItem(color)
+                    }
+                }
+                Section("Neutral") {
+                    ForEach(WorkspaceColor.neutral) { color in
+                        colorMenuItem(color)
                     }
                 }
                 Divider()
@@ -184,6 +191,7 @@ struct WorkspaceRow: View {
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
                     }
+                    ShareLink("Share Project Path", item: URL(fileURLWithPath: path))
                 }
             }
             Divider()
@@ -194,6 +202,19 @@ struct WorkspaceRow: View {
             }
         }
         .accessibilityLabel("Workspace: \(workspace.name)\(workspace.isPinned ? ", pinned" : "")")
+    }
+
+    private func colorMenuItem(_ color: WorkspaceColor) -> some View {
+        Button {
+            onSetColor?(color.hex)
+        } label: {
+            HStack {
+                Circle()
+                    .fill(color.swiftUIColor)
+                    .frame(width: 10, height: 10)
+                Text(color.name)
+            }
+        }
     }
 }
 
@@ -230,5 +251,17 @@ enum WorkspaceColor: String, CaseIterable, Identifiable {
 
     var swiftUIColor: Color {
         Color(nsColor: NSColor(hexString: hex) ?? .labelColor)
+    }
+
+    static var warm: [WorkspaceColor] {
+        [.red, .crimson, .orange, .amber, .rose, .magenta, .brown]
+    }
+
+    static var cool: [WorkspaceColor] {
+        [.blue, .navy, .indigo, .purple, .teal, .aqua, .green]
+    }
+
+    static var neutral: [WorkspaceColor] {
+        [.olive, .charcoal]
     }
 }

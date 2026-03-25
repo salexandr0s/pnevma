@@ -35,6 +35,9 @@ final class ContentAreaView: NSView {
     /// Called when a terminal notification fires on a pane.
     var onTerminalNotification: (() -> Void)?
 
+    /// Called when a directory is dropped from Finder onto the content area.
+    var onDroppedDirectory: ((URL) -> Void)?
+
     /// Supplies backend-managed sessions that can be attached to empty terminals.
     var availableLiveSessionsProvider: (() -> [LiveSession])?
 
@@ -118,6 +121,31 @@ final class ContentAreaView: NSView {
         // Layer may not exist yet during init; apply the background once the
         // view is installed in the window and the backing layer is guaranteed.
         if window != nil { updateOwnBackground() }
+        // Register for file drops from Finder (HIG §6.3)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    // MARK: - Drag and Drop (HIG §6.3)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard sender.draggingPasteboard.canReadObject(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) else { return [] }
+        return .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] else { return false }
+        var handled = false
+        for url in urls where url.hasDirectoryPath {
+            onDroppedDirectory?(url)
+            handled = true
+        }
+        return handled
     }
 
     // MARK: - Layout
