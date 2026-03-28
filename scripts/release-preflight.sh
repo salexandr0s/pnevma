@@ -44,7 +44,7 @@ resolve_release_app_path() {
 }
 
 resolve_release_version() {
-  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$NATIVE_DIR/Info.plist"
+  "$ROOT_DIR/scripts/release-version.sh" check
 }
 
 print_check() {
@@ -160,6 +160,10 @@ check_cmd zig
 
 check_git_clean
 check_git_sync
+
+# ── Release metadata alignment ──────────────────────────────────────────────
+
+run_in_dir "$ROOT_DIR" "release metadata alignment" ./scripts/release-version.sh check
 
 # ── Rust quality gates ───────────────────────────────────────────────────────
 

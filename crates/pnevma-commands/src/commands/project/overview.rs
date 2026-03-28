@@ -30,6 +30,10 @@ pub struct GitHubRepoStatusView {
     pub message: String,
     pub detail: Option<String>,
     pub resolved_repo: Option<String>,
+    pub active_login: Option<String>,
+    pub account_count: usize,
+    pub auth_job_state: Option<String>,
+    pub git_helper_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,36 +207,6 @@ async fn workspace_opener_auxiliary_worktrees_by_branch(
     Ok(worktrees_by_branch)
 }
 
-async fn gh_cli_available() -> bool {
-    let mut command = crate::github_cli::command();
-    command.arg("--version");
-    command
-        .output()
-        .await
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-async fn gh_auth_ready() -> Result<(), String> {
-    let mut command = crate::github_cli::command();
-    command.args(["auth", "status", "--hostname", "github.com"]);
-    let output = command
-        .output()
-        .await
-        .map_err(|e| format!("failed to run gh: {e}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if stderr.is_empty() {
-        Err("GitHub CLI is not authenticated.".to_string())
-    } else {
-        Err(stderr)
-    }
-}
-
 fn parse_github_remote_spec(remote_url: &str) -> Option<String> {
     let trimmed = remote_url.trim().trim_end_matches('/');
     let suffix = [
@@ -319,6 +293,7 @@ async fn gh_repo_view(project_path: &Path, repo_spec: &str) -> Result<GhRepoView
 
 async fn workspace_opener_repo_context_for_input(
     input: &WorkspaceOpenerPathInput,
+    auth: Option<&crate::github_auth::GitHubAuthStatusView>,
 ) -> Result<WorkspaceOpenerRepoContext, GitHubRepoStatusView> {
     let requested_path = match project_path_from_input(input) {
         Ok(path) => path,
@@ -327,6 +302,7 @@ async fn workspace_opener_repo_context_for_input(
                 "error",
                 "Invalid project path.",
                 Some(message),
+                None,
                 None,
             ));
         }
@@ -340,23 +316,15 @@ async fn workspace_opener_repo_context_for_input(
                 "This folder is not a git repository.",
                 Some(message),
                 None,
+                None,
             ));
         }
     };
 
-    if !gh_cli_available().await {
-        return Err(github_status_view(
-            "missing_gh_cli",
-            "GitHub CLI (`gh`) is not installed.",
-            Some("Install GitHub CLI to browse issues and pull requests.".to_string()),
-            None,
-        ));
-    }
-
     let Some(repo_spec) = github_remote_spec_for_path(&repo_root)
         .await
         .map_err(|detail| {
-            github_status_view("error", "GitHub is unavailable.", Some(detail), None)
+            github_status_view("error", "GitHub is unavailable.", Some(detail), None, None)
         })?
     else {
         return Err(github_status_view(
@@ -364,15 +332,37 @@ async fn workspace_opener_repo_context_for_input(
             "This repository has no GitHub remote.",
             Some("Add a GitHub remote before browsing issues or pull requests.".to_string()),
             None,
+            None,
         ));
     };
 
-    if let Err(detail) = gh_auth_ready().await {
+    let owned_auth;
+    let auth = if let Some(auth) = auth {
+        auth
+    } else {
+        owned_auth = crate::github_auth::inspect_github_auth_status().await;
+        &owned_auth
+    };
+    if !auth.cli_available {
+        return Err(github_status_view(
+            "missing_gh_cli",
+            "GitHub CLI (`gh`) is not installed.",
+            Some("Install GitHub CLI to browse issues and pull requests.".to_string()),
+            Some(repo_spec),
+            Some(auth),
+        ));
+    }
+
+    if crate::github_auth::authenticated_account(auth).is_none() {
+        let detail = auth.error.clone().unwrap_or_else(|| {
+            "Run `gh auth login --hostname github.com` to connect an account.".to_string()
+        });
         return Err(github_status_view(
             "not_authenticated",
             "GitHub CLI is not authenticated.",
             Some(detail),
             Some(repo_spec),
+            Some(auth),
         ));
     }
 
@@ -385,9 +375,12 @@ async fn workspace_opener_repo_context_for_input(
 async fn workspace_opener_repo_context_from_path(
     path: &str,
 ) -> Result<WorkspaceOpenerRepoContext, String> {
-    workspace_opener_repo_context_for_input(&WorkspaceOpenerPathInput {
-        path: path.to_string(),
-    })
+    workspace_opener_repo_context_for_input(
+        &WorkspaceOpenerPathInput {
+            path: path.to_string(),
+        },
+        None,
+    )
     .await
     .map_err(|status| status.detail.unwrap_or(status.message))
 }
@@ -816,19 +809,50 @@ fn github_status_view(
     message: impl Into<String>,
     detail: Option<String>,
     resolved_repo: Option<String>,
+    auth_status: Option<&crate::github_auth::GitHubAuthStatusView>,
 ) -> GitHubRepoStatusView {
+    let git_helper_warning = auth_status.and_then(|status| {
+        (status.git_helper.state == "warning").then(|| {
+            status
+                .git_helper
+                .detail
+                .clone()
+                .unwrap_or_else(|| status.git_helper.message.clone())
+        })
+    });
     GitHubRepoStatusView {
         state: state.to_string(),
         message: message.into(),
         detail,
         resolved_repo,
+        active_login: auth_status.and_then(|status| status.active_login.clone()),
+        account_count: auth_status.map(|status| status.accounts.len()).unwrap_or(0),
+        auth_job_state: auth_status
+            .and_then(|status| status.auth_job.as_ref().map(|job| job.state.clone())),
+        git_helper_warning,
     }
 }
 
 pub async fn github_status_for_path(
     input: WorkspaceOpenerPathInput,
 ) -> Result<GitHubRepoStatusView, String> {
-    let context = match workspace_opener_repo_context_for_input(&input).await {
+    let auth = crate::github_auth::inspect_github_auth_status().await;
+    github_status_for_path_with_auth(input, &auth).await
+}
+
+pub async fn github_status_for_path_with_state(
+    input: WorkspaceOpenerPathInput,
+    state: &AppState,
+) -> Result<GitHubRepoStatusView, String> {
+    let auth = crate::github_auth::get_github_auth_status(state).await;
+    github_status_for_path_with_auth(input, &auth).await
+}
+
+async fn github_status_for_path_with_auth(
+    input: WorkspaceOpenerPathInput,
+    auth: &crate::github_auth::GitHubAuthStatusView,
+) -> Result<GitHubRepoStatusView, String> {
+    let context = match workspace_opener_repo_context_for_input(&input, Some(auth)).await {
         Ok(context) => context,
         Err(status) => return Ok(status),
     };
@@ -839,12 +863,14 @@ pub async fn github_status_for_path(
             "GitHub is connected for this repository.",
             None,
             Some(repo.name_with_owner),
+            Some(auth),
         )),
         Err(detail) => Ok(github_status_view(
             "error",
             "Could not access the GitHub repository for this folder.",
             Some(detail),
             Some(context.repo_spec),
+            Some(auth),
         )),
     }
 }
@@ -3360,4 +3386,90 @@ pub async fn list_github_issues(state: &AppState) -> Result<Vec<GitHubIssueView>
             author: i.author.login,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github_auth::{GitHubAuthJobView, GitHubAuthStatusView, GitHubGitHelperStatusView};
+    use chrono::{TimeZone, Utc};
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn make_auth_status(
+        active_login: Option<&str>,
+        auth_job_state: Option<&str>,
+    ) -> GitHubAuthStatusView {
+        GitHubAuthStatusView {
+            host: "github.com".to_string(),
+            cli_available: true,
+            active_login: active_login.map(ToString::to_string),
+            accounts: Vec::new(),
+            git_helper: GitHubGitHelperStatusView {
+                state: "warning".to_string(),
+                message: "Git HTTPS auth is not currently managed by GitHub CLI.".to_string(),
+                detail: Some("Run `gh auth setup-git --hostname github.com`.".to_string()),
+            },
+            auth_job: auth_job_state.map(|state| GitHubAuthJobView {
+                state: state.to_string(),
+                message: Some("Waiting for browser sign-in.".to_string()),
+                started_at: Utc
+                    .timestamp_opt(1_710_000_000, 0)
+                    .single()
+                    .expect("valid timestamp"),
+                finished_at: None,
+            }),
+            error: Some(
+                "Run `gh auth login --hostname github.com` to connect an account.".to_string(),
+            ),
+            last_refreshed_at: Some(
+                Utc.timestamp_opt(1_710_000_000, 0)
+                    .single()
+                    .expect("valid timestamp"),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn github_status_for_path_with_auth_preserves_cached_auth_job_state() {
+        let repo = tempdir().expect("create temp repo");
+        let git_dir = repo.path();
+
+        let init = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(git_dir)
+            .status()
+            .expect("git init");
+        assert!(init.success());
+
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/repo.git",
+            ])
+            .current_dir(git_dir)
+            .status()
+            .expect("git remote add");
+        assert!(remote.success());
+
+        let status = github_status_for_path_with_auth(
+            WorkspaceOpenerPathInput {
+                path: git_dir.to_string_lossy().to_string(),
+            },
+            &make_auth_status(None, Some("running")),
+        )
+        .await
+        .expect("github status result");
+
+        assert_eq!(status.state, "not_authenticated");
+        assert_eq!(status.auth_job_state.as_deref(), Some("running"));
+        assert_eq!(status.account_count, 0);
+        assert_eq!(status.resolved_repo.as_deref(), Some("example/repo"));
+        assert_eq!(
+            status.git_helper_warning.as_deref(),
+            Some("Run `gh auth setup-git --hostname github.com`.")
+        );
+    }
 }

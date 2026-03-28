@@ -50,6 +50,10 @@ private struct ToolbarGitPushResult: Decodable, Sendable {
     let errorMessage: String?
 }
 
+private struct GitHubAuthBridgePayload: Decodable {
+    let snapshot: GitHubAuthSnapshot
+}
+
 @MainActor
 protocol TitlebarGitActionWorkspaceManaging: AnyObject {
     var activeWorkspaceID: UUID? { get }
@@ -83,17 +87,151 @@ func resolveTitlebarGitActionCommandBus(
 struct TitlebarStatusControlAvailability: Equatable {
     let branchEnabled: Bool
     let sessionsEnabled: Bool
+    let gitHubEnabled: Bool
 }
 
 func resolveTitlebarStatusControlAvailability(
     hasProject: Bool,
     hasGitBranch: Bool,
-    hasSessionStore: Bool
+    hasSessionStore: Bool,
+    hasCommandBus: Bool
 ) -> TitlebarStatusControlAvailability {
     TitlebarStatusControlAvailability(
         branchEnabled: hasProject || hasGitBranch,
-        sessionsEnabled: hasSessionStore
+        sessionsEnabled: hasSessionStore,
+        gitHubEnabled: hasCommandBus
     )
+}
+
+@MainActor
+final class TitlebarGitHubController {
+    private let commandBusProvider: () -> (any CommandCalling)?
+    private let openURL: (URL) -> Void
+    private let showToast: (_ text: String, _ icon: String?, _ style: ToastMessage.ToastStyle) -> Void
+    private weak var titlebarStatusView: TitlebarStatusView?
+
+    var onSnapshotChanged: ((GitHubAuthSnapshot?) -> Void)?
+
+    private(set) var snapshot: GitHubAuthSnapshot? {
+        didSet {
+            applySnapshotToTitlebar()
+            onSnapshotChanged?(snapshot)
+        }
+    }
+
+    init(
+        commandBusProvider: @escaping () -> (any CommandCalling)? = { nil },
+        openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
+        showToast: @escaping (_ text: String, _ icon: String?, _ style: ToastMessage.ToastStyle) -> Void = {
+            text,
+            icon,
+            style in
+            ToastManager.shared.show(text, icon: icon, style: style)
+        }
+    ) {
+        self.commandBusProvider = commandBusProvider
+        self.openURL = openURL
+        self.showToast = showToast
+    }
+
+    func attachTitlebarStatusView(_ view: TitlebarStatusView?) {
+        titlebarStatusView = view
+        applySnapshotToTitlebar()
+    }
+
+    func clear() {
+        snapshot = nil
+    }
+
+    func applySnapshotToTitlebar() {
+        let isAuthenticating = snapshot?.authJob?.state == "running"
+        titlebarStatusView?.updateGitHub(
+            snapshot?.activeLogin,
+            isAuthenticating: isAuthenticating && snapshot?.activeLogin == nil
+        )
+    }
+
+    func handleBridgePayload(_ payloadJSON: String) async {
+        guard let data = payloadJSON.data(using: .utf8) else { return }
+        do {
+            let payload = try PnevmaJSON.decoder().decode(GitHubAuthBridgePayload.self, from: data)
+            snapshot = payload.snapshot
+        } catch {
+            Log.general.warning("Failed to decode github_auth_changed payload: \(error.localizedDescription)")
+            await refresh()
+        }
+    }
+
+    func refresh(force: Bool = false) async {
+        guard let bus = commandBusProvider() else {
+            snapshot = nil
+            titlebarStatusView?.updateGitHubEnabled(false)
+            return
+        }
+
+        do {
+            let method = force ? "github.auth.refresh" : "github.auth.status"
+            let refreshedSnapshot: GitHubAuthSnapshot = try await bus.call(
+                method: method,
+                params: nil as String?
+            )
+            snapshot = refreshedSnapshot
+        } catch {
+            Log.general.warning("GitHub auth status refresh failed: \(error.localizedDescription)")
+            snapshot = nil
+        }
+    }
+
+    func switchAccount(login: String) async {
+        guard let bus = commandBusProvider() else { return }
+
+        do {
+            let switchedSnapshot: GitHubAuthSnapshot = try await bus.call(
+                method: "github.auth.switch",
+                params: GitHubAuthSwitchRequest(login: login)
+            )
+            snapshot = switchedSnapshot
+            showToast(
+                "Using GitHub account @\(login)",
+                "person.crop.circle.badge.checkmark",
+                .success
+            )
+        } catch {
+            showToast(
+                error.localizedDescription,
+                "exclamationmark.triangle",
+                .error
+            )
+        }
+    }
+
+    func addAccount() async {
+        guard let bus = commandBusProvider() else { return }
+
+        do {
+            let addedSnapshot: GitHubAuthSnapshot = try await bus.call(
+                method: "github.auth.add_account",
+                params: nil as String?
+            )
+            snapshot = addedSnapshot
+            showToast(
+                "Continue GitHub sign-in in your browser",
+                "person.crop.circle.badge.plus",
+                .info
+            )
+        } catch {
+            showToast(
+                error.localizedDescription,
+                "exclamationmark.triangle",
+                .error
+            )
+        }
+    }
+
+    func installCLI() {
+        guard let url = URL(string: "https://cli.github.com/") else { return }
+        openURL(url)
+    }
 }
 
 @MainActor
@@ -209,6 +347,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var previousPaneFactorySessionBridge: (any SessionBridging)?
     private var previousPaneFactoryActiveWorkspaceProvider: (() -> Workspace?)?
     private var previousPaneFactoryBrowserSessionProvider: ((Workspace) -> BrowserWorkspaceSession)?
+    private lazy var titlebarGitHubController: TitlebarGitHubController = {
+        let controller = TitlebarGitHubController(
+            commandBusProvider: { [weak self] in
+                self?.commandBus
+            }
+        )
+        controller.onSnapshotChanged = { [weak self] snapshot in
+            guard let self,
+                  let popover = self.gitHubAccountsPopover,
+                  popover.isShown else { return }
+            self.configureGitHubAccountsPopover(popover, snapshot: snapshot)
+        }
+        return controller
+    }()
 
     private var activeWorkspaceSupportsRightInspector: Bool {
         workspaceManager?.activeWorkspace?.showsProjectToolsInUI == true
@@ -511,21 +663,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Forward bridge notification_created events to native macOS notifications
-        nativeNotificationBridgeObserverID = BridgeEventHub.shared.addObserver { event in
-            guard event.name == "notification_created" else { return }
-            struct NotificationPayload: Decodable {
-                let title: String?
-                let body: String?
-            }
-            if let data = event.payloadJSON.data(using: .utf8),
-               let payload = try? JSONDecoder().decode(NotificationPayload.self, from: data) {
-                Task { @MainActor in
-                    NativeNotificationManager.shared.postNotification(
-                        title: payload.title ?? "Pnevma",
-                        body: payload.body ?? ""
-                    )
+        // Forward bridge notifications to native UI integrations.
+        nativeNotificationBridgeObserverID = BridgeEventHub.shared.addObserver { [weak self] event in
+            switch event.name {
+            case "notification_created":
+                struct NotificationPayload: Decodable {
+                    let title: String?
+                    let body: String?
                 }
+                if let data = event.payloadJSON.data(using: .utf8),
+                   let payload = try? JSONDecoder().decode(NotificationPayload.self, from: data) {
+                    Task { @MainActor in
+                        NativeNotificationManager.shared.postNotification(
+                            title: payload.title ?? "Pnevma",
+                            body: payload.body ?? ""
+                        )
+                    }
+                }
+            case "github_auth_changed":
+                Task { @MainActor [weak self] in
+                    await self?.titlebarGitHubController.handleBridgePayload(event.payloadJSON)
+                }
+            default:
+                break
             }
         }
 
@@ -586,6 +746,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaceManager?.shutdown()
         workspaceManager = nil
         sessionStore = nil
+        titlebarGitHubController.clear()
+        titlebarGitHubController.attachTitlebarStatusView(nil)
+        gitHubAccountsPopover?.performClose(nil)
+        gitHubAccountsPopover = nil
         browserSessions.removeAll()
         browserToolBridge = nil
         commandCenterStore = nil
@@ -885,10 +1049,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarStatusView = TitlebarStatusView()
         titlebarStatusView?.onSessionsClicked = { [weak self] in self?.showSessionManager() }
         titlebarStatusView?.onBranchClicked = { [weak self] in self?.showBranchPicker() }
+        titlebarStatusView?.onGitHubClicked = { [weak self] in self?.showGitHubAccountPicker() }
         titlebarStatusView?.onPRClicked = { [weak self] in self?.openLinkedPRInBrowser() }
+        titlebarGitHubController.attachTitlebarStatusView(titlebarStatusView)
         if let sessionStore {
             titlebarStatusView?.bindSessionStore(sessionStore)
         }
+        titlebarStatusView?.updateGitHubEnabled(commandBus != nil)
+        titlebarGitHubController.applySnapshotToTitlebar()
 
         // Sidebar
         guard let workspaceManager else {
@@ -1377,6 +1545,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         updateUsageToolbarStatus()
         observeActiveWorkspaceForTitlebar()
         refreshTitlebarChromeState()
+        refreshGitHubAuthForTitlebar()
         updateToolDockState()
         refreshToolDockAutoHide(animated: false)
 
@@ -2639,7 +2808,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let controlAvailability = resolveTitlebarStatusControlAvailability(
             hasProject: hasProject,
             hasGitBranch: workspace?.gitBranch != nil,
-            hasSessionStore: sessionStore != nil
+            hasSessionStore: sessionStore != nil,
+            hasCommandBus: commandBus != nil
         )
 
         titlebarStatusView?.updateBranch(workspace?.gitBranch)
@@ -2648,9 +2818,86 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         titlebarStatusView?.updateAttentionDot(visible: workspace?.attentionReason != nil)
         titlebarStatusView?.updateBranchEnabled(controlAvailability.branchEnabled)
         titlebarStatusView?.updateSessionsEnabled(controlAvailability.sessionsEnabled)
+        titlebarStatusView?.updateGitHubEnabled(controlAvailability.gitHubEnabled)
+        titlebarGitHubController.applySnapshotToTitlebar()
 
         titlebarOpenBtn?.isEnabled = hasProject
         titlebarCommitBtn?.isEnabled = hasProject
+    }
+
+    private func refreshGitHubAuthForTitlebar(force: Bool = false) {
+        Task { @MainActor [weak self] in
+            await self?.titlebarGitHubController.refresh(force: force)
+        }
+    }
+
+    private func installGitHubCLIFromTitlebar() {
+        titlebarGitHubController.installCLI()
+    }
+
+    private func switchGitHubAccountFromTitlebar(login: String) {
+        Task { @MainActor [weak self] in
+            await self?.titlebarGitHubController.switchAccount(login: login)
+        }
+    }
+
+    private func addGitHubAccountFromTitlebar() {
+        Task { @MainActor [weak self] in
+            await self?.titlebarGitHubController.addAccount()
+        }
+    }
+
+    private func configureGitHubAccountsPopover(
+        _ popover: NSPopover,
+        snapshot: GitHubAuthSnapshot?
+    ) {
+        configureToolbarAttachmentPopover(
+            popover,
+            contentSize: NSSize(width: 320, height: 360)
+        ) {
+            GitHubAccountPickerPopover(
+                snapshot: snapshot,
+                onSelect: { [weak self] login in
+                    self?.switchGitHubAccountFromTitlebar(login: login)
+                },
+                onAddAccount: { [weak self] in
+                    self?.addGitHubAccountFromTitlebar()
+                },
+                onInstallCLI: { [weak self] in
+                    self?.installGitHubCLIFromTitlebar()
+                },
+                onDismiss: { [weak popover] in
+                    popover?.performClose(nil)
+                }
+            )
+        }
+    }
+
+    private func showGitHubAccountPicker() {
+        if let popover = gitHubAccountsPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let titlebarStatusView else { return }
+
+        let popover = NSPopover()
+        configureGitHubAccountsPopover(popover, snapshot: titlebarGitHubController.snapshot)
+        popover.show(
+            relativeTo: titlebarStatusView.gitHubButtonFrame,
+            of: titlebarStatusView,
+            preferredEdge: .minY
+        )
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.willCloseNotification,
+            object: popover,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.gitHubAccountsPopover = nil
+            }
+        }
+        gitHubAccountsPopover = popover
+        refreshGitHubAuthForTitlebar()
     }
 
     private func openLinkedPRInBrowser() {
@@ -5005,6 +5252,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var resourceMonitorPopover: NSPopover?
     private var branchPopover: NSPopover?
     private var sessionsPopover: NSPopover?
+    private var gitHubAccountsPopover: NSPopover?
     private weak var notificationToolbarButton: NSButton?
     private weak var notificationBadge: BadgeOverlayView?
     private weak var usageToolbarButton: NSButton?

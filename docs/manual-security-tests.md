@@ -37,6 +37,15 @@ WS_URL="wss://${TAILSCALE_IP}:8443/api/ws"
 TOKEN="<paste valid token here>"
 ```
 
+Set the evidence directory before you start and record the final outcome in:
+
+- `$EVIDENCE_DIR/manual/manual-security-results.md`
+- `$EVIDENCE_DIR/manual/remote-validation-results.md` when remote validation is in scope
+
+```bash
+EVIDENCE_DIR="${EVIDENCE_DIR:-$PWD/release-evidence}"
+```
+
 ---
 
 ## G4: Latency Validation
@@ -204,20 +213,15 @@ Verify that recognizable provider credentials are redacted before persistence an
 
 ```bash
 # 1. Sign app
-APP_PATH=/path/to/Pnevma.app bash scripts/release-macos-sign.sh
+APP_PATH=/path/to/Pnevma.app \
+DMG_PATH=/path/to/Pnevma.dmg \
+EVIDENCE_DIR="${EVIDENCE_DIR:-$PWD/release-evidence}" \
+bash scripts/release-signed-candidate.sh
 
-# 2. Package DMG
-APP_PATH=/path/to/Pnevma.app DMG_PATH=/path/to/Pnevma.dmg \
-  bash scripts/release-macos-package-dmg.sh
-
-# 3. Sign DMG
-TARGET_PATH=/path/to/Pnevma.dmg bash scripts/release-macos-sign.sh
-
-# 4. Verify codesign
-codesign --verify --deep --strict /path/to/Pnevma.app && echo "PASS" || echo "FAIL"
-codesign --verify --verbose=2 /path/to/Pnevma.dmg && echo "PASS" || echo "FAIL"
-
-# 5. Optional informational Gatekeeper output
+# Optional entitlement probe
+APP_PATH=/path/to/Pnevma.app \
+EVIDENCE_DIR="${EVIDENCE_DIR:-$PWD/release-evidence}" \
+bash scripts/probe-disable-library-validation.sh
 spctl --assess --type open --context context:primary-signature --verbose=4 /path/to/Pnevma.dmg || true
 ```
 

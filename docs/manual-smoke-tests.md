@@ -30,6 +30,7 @@ Set up the fixture repo and helper variables first:
 
 ```bash
 export DMG_PATH="$PWD/Pnevma-0.2.0-macos-arm64.dmg"
+export EVIDENCE_DIR="${EVIDENCE_DIR:-$PWD/release-evidence}"
 export APP_COPY="/Applications/Pnevma.app"
 export TEST_REPO="$HOME/tmp/pnevma-smoke-repo"
 export GLOBAL_DB="$HOME/.local/share/pnevma/global.db"
@@ -66,6 +67,11 @@ Useful DB helpers:
 sql_global() { sqlite3 -header -box "$GLOBAL_DB" "$1"; }
 sql_project() { sqlite3 -header -box "$PROJECT_DB" "$1"; }
 ```
+
+When you finish the run, record the result in:
+
+- `$EVIDENCE_DIR/manual/manual-smoke-results.md`
+- `$EVIDENCE_DIR/manual/clean-machine-install-notes.md`
 
 ## 1. Launch and first run
 

@@ -99,6 +99,10 @@ struct WorkspaceOpenerGitHubStatus: Decodable {
     let message: String
     let detail: String?
     let resolvedRepo: String?
+    let activeLogin: String?
+    let accountCount: Int?
+    let authJobState: String?
+    let gitHelperWarning: String?
 }
 
 struct WorkspaceOpenerIssueLaunchParams: Encodable, Sendable {

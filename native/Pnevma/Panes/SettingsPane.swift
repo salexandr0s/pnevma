@@ -7,6 +7,7 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
     case appShortcuts
     case terminal
     case ghostty
+    case github
     case usage
     case telemetry
 
@@ -18,6 +19,7 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
         case .appShortcuts: "App Shortcuts"
         case .terminal: "Terminal"
         case .ghostty: "Ghostty"
+        case .github: "GitHub"
         case .usage: "Usage"
         case .telemetry: "Telemetry"
         }
@@ -29,6 +31,7 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
         case .appShortcuts: "keyboard"
         case .terminal: "terminal"
         case .ghostty: "slider.horizontal.3"
+        case .github: "person.crop.circle.badge.checkmark"
         case .usage: "chart.line.uptrend.xyaxis"
         case .telemetry: "chart.bar.xaxis"
         }
@@ -44,6 +47,8 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
             Color(nsColor: .labelColor)
         case .ghostty:
             Color(nsColor: .systemOrange)
+        case .github:
+            Color(nsColor: .systemBlue)
         case .usage:
             Color(nsColor: .systemGreen)
         case .telemetry:
@@ -61,6 +66,8 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
             Color(nsColor: .secondaryLabelColor)
         case .ghostty:
             Color(nsColor: .systemOrange)
+        case .github:
+            Color(nsColor: .systemBlue)
         case .usage:
             Color(nsColor: .systemGreen)
         case .telemetry:
@@ -78,6 +85,8 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
             "Default shell, typography, and scrollback behavior for new terminal sessions."
         case .ghostty:
             "Embedded terminal rendering, config-backed Ghostty options, and terminal keybindings."
+        case .github:
+            "See the active GitHub CLI account, switch users, add accounts, and check Git auth alignment."
         case .usage:
             "Provider usage sources, refresh cadence, and dashboard integration settings."
         case .telemetry:
@@ -95,6 +104,8 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
             ["shell", "font", "scrollback", "terminal defaults"]
         case .ghostty:
             ["terminal config", "themes", "rendering", "keybinds"]
+        case .github:
+            ["github", "gh", "accounts", "switch", "login", "git helper"]
         case .usage:
             ["providers", "codex", "claude", "quota", "dashboard"]
         case .telemetry:
@@ -134,6 +145,7 @@ enum SettingsNavigationSection: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @State private var appViewModel = SettingsViewModel()
     @State private var ghosttyViewModel = GhosttySettingsViewModel()
+    @State private var gitHubAuthViewModel = GitHubAuthSettingsViewModel()
     @State private var providerUsageViewModel = ProviderUsageSettingsViewModel()
     @State private var searchText = ""
     @State private var selectedSection: SettingsNavigationSection? = .general
@@ -168,6 +180,7 @@ struct SettingsView: View {
         .task {
             appViewModel.load()
             ghosttyViewModel.load()
+            gitHubAuthViewModel.load()
             providerUsageViewModel.load()
             syncSelectionToSearch()
         }
@@ -188,6 +201,8 @@ struct SettingsView: View {
             TerminalSettingsTab(viewModel: appViewModel)
         case .ghostty:
             GhosttySettingsTab(viewModel: ghosttyViewModel)
+        case .github:
+            GitHubSettingsTab(viewModel: gitHubAuthViewModel)
         case .usage:
             ProviderUsageSettingsTab(viewModel: providerUsageViewModel)
         case .telemetry:

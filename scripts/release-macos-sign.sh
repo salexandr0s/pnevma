@@ -25,7 +25,11 @@ if [[ ! -e "$SIGN_TARGET_PATH" ]]; then
   exit 1
 fi
 
-CODESIGN_ARGS=(--force --timestamp --sign "$APPLE_SIGNING_IDENTITY")
+TIMESTAMP_FLAG="${CODESIGN_TIMESTAMP:-1}"
+CODESIGN_ARGS=(--force --sign "$APPLE_SIGNING_IDENTITY")
+if [[ "$TIMESTAMP_FLAG" == "1" ]]; then
+  CODESIGN_ARGS+=(--timestamp)
+fi
 if [[ -n "$SIGNING_KEYCHAIN_PATH" ]]; then
   CODESIGN_ARGS+=(--keychain "$SIGNING_KEYCHAIN_PATH")
 fi

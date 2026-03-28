@@ -10,7 +10,11 @@ enum UITestFixtureData {
         state: .ready,
         message: "UI test fixture GitHub data is active.",
         detail: "Seeded issues and pull requests are shown to keep opener coverage deterministic.",
-        resolvedRepo: "pnevma/ui-test-fixture"
+        resolvedRepo: "pnevma/ui-test-fixture",
+        activeLogin: "fixture-bot",
+        accountCount: 2,
+        authJobState: nil,
+        gitHelperWarning: nil
     )
 
     static let workspaceOpenerIssues: [GitHubIssueItem] = [

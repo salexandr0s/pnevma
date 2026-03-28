@@ -1,6 +1,6 @@
 use std::{
     ffi::{OsStr, OsString},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use tokio::process::Command as TokioCommand;
@@ -11,6 +11,22 @@ pub(crate) fn command() -> TokioCommand {
     let mut command = TokioCommand::new(resolve_github_cli_binary());
     command.env("PATH", github_cli_path());
     command
+}
+
+pub(crate) fn binary_path() -> PathBuf {
+    resolve_github_cli_binary()
+}
+
+pub(crate) fn config_dir() -> PathBuf {
+    resolve_config_dir(
+        std::env::var_os("GH_CONFIG_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+pub(crate) fn hosts_file_path() -> PathBuf {
+    config_dir().join("hosts.yml")
 }
 
 fn resolve_github_cli_binary() -> PathBuf {
@@ -44,6 +60,26 @@ fn find_binary_on_path(binary: &str, path_var: Option<&OsStr>) -> Option<PathBuf
     std::env::split_paths(path_var)
         .map(|dir| dir.join(binary))
         .find(|candidate| candidate.is_file())
+}
+
+fn resolve_config_dir(
+    gh_config_dir: Option<OsString>,
+    xdg_config_home: Option<OsString>,
+    home: Option<OsString>,
+) -> PathBuf {
+    if let Some(dir) = gh_config_dir.filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
+    }
+
+    if let Some(base) = xdg_config_home.filter(|value| !value.is_empty()) {
+        return PathBuf::from(base).join("gh");
+    }
+
+    if let Some(home) = home.filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join(".config").join("gh");
+    }
+
+    Path::new(".").join(".config").join("gh")
 }
 
 fn github_cli_path() -> String {
@@ -174,5 +210,31 @@ mod tests {
         );
         assert!(segments.contains(&"/usr/bin"));
         assert!(segments.contains(&"/bin"));
+    }
+
+    #[test]
+    fn resolve_config_dir_prefers_gh_config_dir() {
+        let path = resolve_config_dir(
+            Some(OsString::from("/tmp/custom-gh")),
+            Some(OsString::from("/tmp/xdg")),
+            Some(OsString::from("/tmp/home")),
+        );
+        assert_eq!(path, PathBuf::from("/tmp/custom-gh"));
+    }
+
+    #[test]
+    fn resolve_config_dir_uses_xdg_home_when_set() {
+        let path = resolve_config_dir(
+            None,
+            Some(OsString::from("/tmp/xdg")),
+            Some(OsString::from("/tmp/home")),
+        );
+        assert_eq!(path, PathBuf::from("/tmp/xdg").join("gh"));
+    }
+
+    #[test]
+    fn resolve_config_dir_falls_back_to_home_config() {
+        let path = resolve_config_dir(None, None, Some(OsString::from("/tmp/home")));
+        assert_eq!(path, PathBuf::from("/tmp/home/.config/gh"));
     }
 }

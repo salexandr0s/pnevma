@@ -79,6 +79,9 @@ jobs:
       - name: Check generated Xcode project parity
         run: just xcodegen-check
 
+      - name: Check release metadata alignment
+        run: ./scripts/release-version.sh check "$GITHUB_REF_NAME"
+
       - name: Quality gates
         run: |
           command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked
@@ -100,12 +103,7 @@ jobs:
         run: |
           APP_PATH="$GITHUB_WORKSPACE/native/build/Release/Pnevma.app"
           test -d "$APP_PATH"
-          VERSION="${GITHUB_REF_NAME#v}"
-          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$GITHUB_WORKSPACE/native/Info.plist")"
-          if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
-            echo "Tag version $VERSION does not match Info.plist version $PLIST_VERSION"
-            exit 1
-          fi
+          VERSION="$(./scripts/release-version.sh check "$GITHUB_REF_NAME")"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Run packaged launch smoke before signing
@@ -135,8 +133,8 @@ jobs:
           path: ./**/*.cdx.json
           retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
-  sign-notarize-package:
-    name: Sign, notarize, and package
+  sign-package:
+    name: Sign and prove candidate package
     runs-on: macos-26
     needs: build
     steps:
@@ -158,7 +156,7 @@ jobs:
           # Restore them on all Mach-O binaries before signing.
           find "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Helpers" \
             -type f -exec chmod +x {} + 2>/dev/null || true
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$(./scripts/release-version.sh check "$GITHUB_REF_NAME")"
           {
             echo "APP_PATH=$APP_PATH"
             echo "VERSION=$VERSION"
@@ -171,10 +169,6 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
-          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
-          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           CERT_PATH="$RUNNER_TEMP/certificate.p12"
@@ -186,56 +180,19 @@ jobs:
           security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
-          xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
-            --apple-id "$APPLE_NOTARY_APPLE_ID" \
-            --team-id "$APPLE_NOTARY_TEAM_ID" \
-            --password "$APPLE_NOTARY_PASSWORD" \
-            --keychain "$KEYCHAIN_PATH"
-          echo "APPLE_NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
-      - name: Sign app
+      - name: Produce signed candidate and evidence bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          SIGNING_KEYCHAIN_PATH: ${{ env.APPLE_NOTARY_KEYCHAIN }}
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh | tee release-evidence/app-sign.txt
-
-      - name: Check signed app entitlements
-        run: APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh | tee release-evidence/app-entitlements-check.txt
-
-      - name: Package signed DMG
+          SIGNING_KEYCHAIN_PATH: ${{ env.SIGNING_KEYCHAIN_PATH }}
         run: |
+          EVIDENCE_DIR="$GITHUB_WORKSPACE/release-evidence" \
           APP_PATH="$APP_PATH" \
           DMG_PATH="$DMG_PATH" \
           CHECKSUM_PATH="$CHECKSUM_PATH" \
-          ./scripts/release-macos-package-dmg.sh | tee release-evidence/dmg-package.txt
-
-      - name: Sign DMG
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          SIGNING_KEYCHAIN_PATH: ${{ env.APPLE_NOTARY_KEYCHAIN }}
-        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-sign.sh | tee release-evidence/dmg-sign.txt
-
-      - name: Notarize DMG
-        env:
-          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
-        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-notarize.sh | tee release-evidence/dmg-notarize.txt
-
-      - name: Staple and verify DMG
-        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-staple-verify.sh | tee release-evidence/dmg-staple-verify.txt
-
-      - name: Run packaged launch smoke after stapling
-        run: |
-          DMG_PATH="$DMG_PATH" \
-          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-launch-dmg.log" \
-          ./scripts/run-packaged-launch-smoke.sh
-
-      - name: Collect release security evidence
-        run: |
-          codesign -d --entitlements :- "$APP_PATH" > release-evidence/app-entitlements.plist 2>/dev/null
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH" > release-evidence/app-codesign-verify.txt 2>&1
-          codesign --verify --verbose=2 "$DMG_PATH" > release-evidence/dmg-codesign-verify.txt 2>&1
-          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" > release-evidence/dmg-spctl.txt 2>&1 || echo "spctl exited $? (CI runners may lack updated Gatekeeper policy)" >> release-evidence/dmg-spctl.txt
-          cp "$CHECKSUM_PATH" release-evidence/
+          RUN_PREFLIGHT=0 \
+          ./scripts/release-signed-candidate.sh
 
       - name: Upload release evidence
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -265,7 +222,7 @@ jobs:
   publish:
     name: Attest and publish release
     runs-on: macos-26
-    needs: sign-notarize-package
+    needs: sign-package
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -285,7 +242,7 @@ jobs:
 
       - name: Resolve artifact paths
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$(./scripts/release-version.sh check "$GITHUB_REF_NAME")"
           DMG_PATH="$(find "$RUNNER_TEMP/release-evidence" -name '*.dmg' -print -quit)"
           CHECKSUM_PATH="$(find "$RUNNER_TEMP/release-evidence" -name '*.sha256' -print -quit)"
           SBOM_PATH="$(find "$RUNNER_TEMP/sbom" -name '*.cdx.json' -print -quit)"

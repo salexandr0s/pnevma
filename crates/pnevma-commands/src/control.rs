@@ -997,7 +997,7 @@ pub async fn route_method(
             let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
                 .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
             serde_json::to_value(
-                commands::github_status_for_path(input)
+                commands::github_status_for_path_with_state(input, state)
                     .await
                     .map_err(|e| ("internal_error".to_string(), e))?,
             )
@@ -1033,6 +1033,35 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "github.auth.status" => {
+            serde_json::to_value(crate::github_auth::get_github_auth_status(state).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.refresh" => {
+            serde_json::to_value(crate::github_auth::refresh_github_auth_status(state).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.switch" => {
+            let input: crate::github_auth::GitHubAuthSwitchInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                crate::github_auth::switch_github_auth_account(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.add_account" => {
+            serde_json::to_value(crate::github_auth::start_github_auth_login(state).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.fix_git_helper" => serde_json::to_value(
+            crate::github_auth::fix_github_git_helper(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "workspace_opener.create_from_issue" => {
             let input: commands::WorkspaceOpenerIssueLaunchInput =
                 serde_json::from_value(params.clone())
@@ -2897,6 +2926,206 @@ pub async fn route_method(
                 .map_err(|e| ("internal_error".to_string(), e))?,
         )
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+
+        // ── Harness Catalog ─────────────────────────────────────────────
+        "harness.catalog.snapshot" => serde_json::to_value(
+            commands::snapshot_harness_catalog(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "harness.catalog.list" => serde_json::to_value(
+            commands::list_harness_catalog_items(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "harness.catalog.read" => {
+            let source_key = parse_string_param(params, "source_key")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::read_harness_catalog_item(
+                    commands::ReadHarnessCatalogItemInput { source_key },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.write" => {
+            let source_key = parse_string_param(params, "source_key")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let content = parse_string_param(params, "content")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                commands::write_harness_catalog_item(
+                    commands::WriteHarnessCatalogItemInput {
+                        source_key,
+                        content,
+                    },
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.favorite" => {
+            let input: commands::ToggleHarnessFavoriteInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::toggle_harness_favorite(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.collections.list" => serde_json::to_value(
+            commands::list_harness_collections(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "harness.catalog.collections.create" => {
+            let input: commands::CreateHarnessCollectionInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::create_harness_collection(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.collections.rename" => {
+            let input: commands::RenameHarnessCollectionInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::rename_harness_collection(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.collections.delete" => {
+            let id =
+                parse_string_param(params, "id").map_err(|e| ("invalid_params".to_string(), e))?;
+            commands::delete_harness_collection(id, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "ok": true })
+        }
+        "harness.catalog.collections.set_membership" => {
+            let input: commands::SetHarnessCollectionMembershipInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::set_harness_collection_membership(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.scan_roots.list" => serde_json::to_value(
+            commands::list_harness_scan_roots(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "harness.catalog.scan_roots.upsert" => {
+            let input: commands::UpsertHarnessScanRootInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::upsert_harness_scan_root(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.scan_roots.set_enabled" => {
+            let input: commands::SetHarnessScanRootEnabledInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::set_harness_scan_root_enabled(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.scan_roots.delete" => {
+            let input: commands::DeleteHarnessScanRootInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            commands::delete_harness_scan_root(input, state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?;
+            json!({ "ok": true })
+        }
+        "harness.catalog.analytics" => serde_json::to_value(
+            commands::get_harness_catalog_analytics(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "harness.catalog.create.plan" => {
+            let input: commands::PlanCreateHarnessItemInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::plan_create_harness_item(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.create.apply" => {
+            let input: commands::ApplyCreateHarnessItemInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::apply_create_harness_item(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.install.plan" => {
+            let input: commands::PlanInstallHarnessItemInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::plan_install_harness_item(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.install.apply" => {
+            let input: commands::ApplyInstallHarnessItemInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::apply_install_harness_item(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "harness.catalog.install.remove" => {
+            let input: commands::RemoveHarnessInstallInput = serde_json::from_value(params.clone())
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                commands::remove_harness_install(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
 
         // ── Harness Config ──────────────────────────────────────────────
         "harness.config.list" => serde_json::to_value(

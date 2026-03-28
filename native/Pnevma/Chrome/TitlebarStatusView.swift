@@ -15,10 +15,10 @@ struct TitlebarStatusLayoutState: Equatable {
     let showsAgents: Bool
 
     static func resolved(for width: CGFloat, hasPullRequest: Bool) -> Self {
-        if width >= 360 {
+        if width >= 440 {
             return Self(showsPullRequest: hasPullRequest, showsAgents: true)
         }
-        if width >= 280 {
+        if width >= 340 {
             return Self(showsPullRequest: false, showsAgents: true)
         }
         return Self(showsPullRequest: false, showsAgents: false)
@@ -38,17 +38,20 @@ final class TitlebarStatusView: NSView {
     private let branchButton = TitlebarStatusButton(frame: .zero)
     private let agentsLabel = NSTextField(labelWithString: "")
     let sessionsButton = TitlebarStatusButton(frame: .zero)
+    private let gitHubButton = TitlebarStatusButton(frame: .zero)
     private let sessionsContainer = NSView(frame: .zero)
     private let prPill = NSButton(frame: .zero)
     private let attentionDot = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
     private let separator1 = NSView(frame: .zero)
     private let separator2 = NSView(frame: .zero)
+    private let separator3 = NSView(frame: .zero)
     nonisolated(unsafe) var themeObserver: NSObjectProtocol?
     private var sessionObservationGeneration: UInt64 = 0
     private var appliedLayoutState = TitlebarStatusLayoutState(showsPullRequest: false, showsAgents: true)
 
     var onSessionsClicked: (() -> Void)?
     var onBranchClicked: (() -> Void)?
+    var onGitHubClicked: (() -> Void)?
     var onPRClicked: (() -> Void)?
 
     var branchButtonFrame: NSRect {
@@ -57,6 +60,38 @@ final class TitlebarStatusView: NSView {
 
     var sessionsButtonFrame: NSRect {
         popoverAnchorRect(for: sessionsContainer)
+    }
+
+    var gitHubButtonFrame: NSRect {
+        popoverAnchorRect(for: gitHubButton)
+    }
+
+    var branchButtonRect: NSRect {
+        convert(branchButton.bounds, from: branchButton)
+    }
+
+    var sessionsButtonRect: NSRect {
+        convert(sessionsContainer.bounds, from: sessionsContainer)
+    }
+
+    var gitHubButtonRect: NSRect {
+        convert(gitHubButton.bounds, from: gitHubButton)
+    }
+
+    var gitHubTitle: String {
+        gitHubButton.title
+    }
+
+    var isGitHubEnabled: Bool {
+        gitHubButton.isEnabled
+    }
+
+    var showsAgents: Bool {
+        !agentsLabel.isHidden
+    }
+
+    var showsPullRequest: Bool {
+        !prPill.isHidden
     }
 
     /// Thin anchor rect at the bottom edge of a subview, matching the
@@ -107,12 +142,15 @@ final class TitlebarStatusView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let branchRect = convert(branchButton.bounds, from: branchButton)
         let sessionsRect = convert(sessionsContainer.bounds, from: sessionsContainer)
+        let gitHubRect = convert(gitHubButton.bounds, from: gitHubButton)
         let prRect = convert(prPill.bounds, from: prPill)
 
         if branchButton.isEnabled && branchRect.contains(point) {
             onBranchClicked?()
         } else if sessionsButton.isEnabled && sessionsRect.contains(point) {
             onSessionsClicked?()
+        } else if gitHubButton.isEnabled && gitHubRect.contains(point) {
+            onGitHubClicked?()
         } else if !prPill.isHidden && prPill.isEnabled && prRect.contains(point) {
             if let url = currentPRURL, let nsURL = URL(string: url) {
                 NSWorkspace.shared.open(nsURL)
@@ -151,10 +189,12 @@ final class TitlebarStatusView: NSView {
         configureBranchButton()
         configureAgentsLabel()
         configureSessionsButton()
+        configureGitHubButton()
         configurePullRequestPill()
         configureAttentionDot()
         configureSeparator(separator1)
         configureSeparator(separator2)
+        configureSeparator(separator3)
 
         sessionsContainer.translatesAutoresizingMaskIntoConstraints = false
         sessionsContainer.addSubview(sessionsButton)
@@ -177,6 +217,8 @@ final class TitlebarStatusView: NSView {
             agentsLabel,
             separator2,
             sessionsContainer,
+            separator3,
+            gitHubButton,
         ].forEach { contentStack.addArrangedSubview($0) }
 
         NSLayoutConstraint.activate([
@@ -190,6 +232,7 @@ final class TitlebarStatusView: NSView {
         updateBranch(nil)
         updateAgents(0)
         updateSessions(0)
+        updateGitHub(nil)
         updatePR(number: nil, url: nil)
 
         themeObserver = NotificationCenter.default.addObserver(
@@ -217,6 +260,7 @@ final class TitlebarStatusView: NSView {
         branchButton.imageHugsTitle = true
         branchButton.cell?.lineBreakMode = .byTruncatingTail
         branchButton.setAccessibilityLabel("Git branch")
+        branchButton.setAccessibilityIdentifier("titlebar.status.branch")
         branchButton.toolTip = "Switch branch"
         branchButton.translatesAutoresizingMaskIntoConstraints = false
         branchButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -239,7 +283,30 @@ final class TitlebarStatusView: NSView {
         sessionsButton.font = .systemFont(ofSize: 11, weight: .medium)
         sessionsButton.title = "0 sessions"
         sessionsButton.setAccessibilityLabel("Sessions")
+        sessionsButton.setAccessibilityIdentifier("titlebar.status.sessions")
+        sessionsButton.cell?.lineBreakMode = .byTruncatingTail
+        sessionsButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         sessionsButton.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    private func configureGitHubButton() {
+        gitHubButton.bezelStyle = .inline
+        gitHubButton.isBordered = false
+        gitHubButton.font = .systemFont(ofSize: 11, weight: .medium)
+        gitHubButton.title = "GitHub"
+        gitHubButton.image = NSImage(
+            systemSymbolName: "person.crop.circle",
+            accessibilityDescription: "GitHub account"
+        )?.withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        gitHubButton.imageScaling = .scaleProportionallyDown
+        gitHubButton.imagePosition = .imageLeading
+        gitHubButton.imageHugsTitle = true
+        gitHubButton.cell?.lineBreakMode = .byTruncatingTail
+        gitHubButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        gitHubButton.setAccessibilityLabel("GitHub account")
+        gitHubButton.setAccessibilityIdentifier("titlebar.status.github")
+        gitHubButton.toolTip = "Switch GitHub account"
+        gitHubButton.translatesAutoresizingMaskIntoConstraints = false
     }
 
     private func configurePullRequestPill() {
@@ -285,11 +352,14 @@ final class TitlebarStatusView: NSView {
         let disabledColor = theme.foregroundColor.withAlphaComponent(DesignTokens.TextOpacity.tertiary)
         applyButtonTitle(branchButton, color: branchButton.isEnabled ? branchColor : disabledColor)
         applyButtonTitle(sessionsButton, color: sessionsButton.isEnabled ? secondaryColor : disabledColor)
+        applyButtonTitle(gitHubButton, color: gitHubButton.isEnabled ? secondaryColor : disabledColor)
         agentsLabel.textColor = secondaryColor
         separator1.wantsLayer = true
         separator1.layer?.backgroundColor = theme.foregroundColor.withAlphaComponent(0.10).cgColor
         separator2.wantsLayer = true
         separator2.layer?.backgroundColor = theme.foregroundColor.withAlphaComponent(0.10).cgColor
+        separator3.wantsLayer = true
+        separator3.layer?.backgroundColor = theme.foregroundColor.withAlphaComponent(0.10).cgColor
         prPill.contentTintColor = .controlAccentColor
         prPill.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
         attentionDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
@@ -313,6 +383,7 @@ final class TitlebarStatusView: NSView {
         agentsLabel.isHidden = !state.showsAgents
         separator1.isHidden = !state.showsLeadingSeparator
         separator2.isHidden = !state.showsTrailingSeparator
+        separator3.isHidden = false
     }
 
     func updateBranch(_ branch: String?) {
@@ -329,6 +400,17 @@ final class TitlebarStatusView: NSView {
         applyThemeColors()
     }
 
+    func updateGitHub(_ login: String?, isAuthenticating: Bool = false) {
+        if let login, !login.isEmpty {
+            gitHubButton.title = "@\(login)"
+        } else if isAuthenticating {
+            gitHubButton.title = "Signing in…"
+        } else {
+            gitHubButton.title = "GitHub"
+        }
+        applyThemeColors()
+    }
+
     func updateBranchEnabled(_ enabled: Bool) {
         branchButton.isEnabled = enabled
         applyThemeColors()
@@ -336,6 +418,11 @@ final class TitlebarStatusView: NSView {
 
     func updateSessionsEnabled(_ enabled: Bool) {
         sessionsButton.isEnabled = enabled
+        applyThemeColors()
+    }
+
+    func updateGitHubEnabled(_ enabled: Bool) {
+        gitHubButton.isEnabled = enabled
         applyThemeColors()
     }
 

@@ -1398,6 +1398,7 @@ if [ "$1" = "--version" ]; then
     exit 0
 fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+    echo '{{"hosts":{{"github.com":[{{"active":true,"login":"octocat","state":"success","tokenSource":"/tmp/hosts.yml","gitProtocol":"https","scopes":["repo"]}}]}}}}'
     exit 0
 fi
 if [ "$1" = "repo" ] && [ "$2" = "view" ]; then

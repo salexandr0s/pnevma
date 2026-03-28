@@ -97,6 +97,18 @@ rust-audit:
 migration-checksums:
     ./scripts/check-migration-checksums.sh
 
+release-version-check:
+    ./scripts/release-version.sh check
+
+release-signed-candidate:
+    ./scripts/release-signed-candidate.sh
+
+release-entitlement-probe:
+    ./scripts/probe-disable-library-validation.sh
+
+release-remote-validation:
+    ./scripts/release-remote-validation.sh
+
 migration-checksums-update:
     ./scripts/update-migration-checksums.sh
 
@@ -208,6 +220,7 @@ workflow-check:
     fi
     actionlint
     ./scripts/install-zig-ci.sh --verify-only
+    just release-version-check
     just check
     @echo "Workflow parity checks passed"
 

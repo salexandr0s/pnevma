@@ -22,9 +22,9 @@ For the first public `v0.2.0` DMG, notarization and stapling are explicitly defe
 - `CI / Rust checks`
 - `CI / Native app build`
 - `Release Rehearsal / Release package preflight`
-- `Release Rehearsal / Release sign/notarize dry run`
+- `Release Rehearsal / Sign and prove candidate DMG`
 
-The rehearsal lanes are expected to validate the public `v0.2.0` DMG release path, not a legacy `tar.gz` archive path. The sign/notarize dry run remains useful for the future notarized release path but is non-blocking for the first signed-only public DMG.
+The rehearsal lanes are expected to validate the public `v0.2.0` signed-only DMG release path, not a legacy `tar.gz` archive path. The notarized follow-up path remains useful later, but it is non-blocking for the first signed-only public DMG.
 
 ## Smoke Commands
 

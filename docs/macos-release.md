@@ -16,6 +16,9 @@ cut.
 This repository ships the following release helpers:
 
 - `scripts/release-preflight.sh`
+- `scripts/release-signed-candidate.sh`
+- `scripts/release-evidence.sh`
+- `scripts/probe-disable-library-validation.sh`
 - `scripts/release-macos-sign.sh`
 - `scripts/release-macos-package-dmg.sh`
 - `scripts/release-macos-notarize.sh` (optional for the later notarized path)
@@ -40,6 +43,7 @@ perform in-app self-update.
 - `VERSION` (optional override for DMG naming)
 - `DMG_PATH` (optional override for DMG output path)
 - `CHECKSUM_PATH` (optional override for checksum output path)
+- `EVIDENCE_DIR` (optional override for the structured release evidence bundle)
 - `APPLE_NOTARY_PROFILE`, `APPLE_NOTARY_KEYCHAIN`, and `ZIP_PATH` only if you are also attempting notarization
 
 ## Current `v0.2.0` Signed-Only Release Flow
@@ -61,35 +65,20 @@ entitlements because local release builds use `CODE_SIGNING_ALLOWED=NO`. That
 means `APP_PATH=... ./scripts/check-entitlements.sh` is expected to fail until
 after you sign the app bundle.
 
-Sign the `.app`, verify entitlements, and verify the app signature:
+Produce the signed candidate DMG plus a structured evidence bundle:
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
 export APP_PATH="$PWD/native/build/Release/Pnevma.app"
-
-./scripts/check-entitlements.sh
-APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
-APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-```
-
-Package the DMG and sign it:
-
-```bash
-export VERSION="0.2.0"
+export VERSION="$(./scripts/release-version.sh check)"
 export DMG_PATH="$PWD/Pnevma-${VERSION}-macos-arm64.dmg"
+export EVIDENCE_DIR="$PWD/release-evidence"
 
-APP_PATH="$APP_PATH" VERSION="$VERSION" DMG_PATH="$DMG_PATH" \
-  ./scripts/release-macos-package-dmg.sh
-
-TARGET_PATH="$DMG_PATH" ./scripts/release-macos-sign.sh
-codesign --verify --verbose=2 "$DMG_PATH"
-```
-
-Run packaged launch smoke on the actual release artifact:
-
-```bash
-DMG_PATH="$DMG_PATH" ./scripts/run-packaged-launch-smoke.sh
+APP_PATH="$APP_PATH" \
+VERSION="$VERSION" \
+DMG_PATH="$DMG_PATH" \
+EVIDENCE_DIR="$EVIDENCE_DIR" \
+./scripts/release-signed-candidate.sh
 ```
 
 `spctl` output is still useful to capture for evidence, but for this signed-only
@@ -98,6 +87,15 @@ artifact is not notarized yet:
 
 ```bash
 spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" || true
+```
+
+Probe the open `disable-library-validation` question on a signed build when you
+need a reproducible Ghostty entitlement answer:
+
+```bash
+APP_PATH="$APP_PATH" \
+EVIDENCE_DIR="$EVIDENCE_DIR" \
+./scripts/probe-disable-library-validation.sh
 ```
 
 ## User Install Instructions For This Release
@@ -138,6 +136,23 @@ smoke flows against the signed app or signed DMG:
 - [`manual-remote-durable-lifecycle-tests.md`](./manual-remote-durable-lifecycle-tests.md)
 
 Real-host remote helper validation for remote-enabled candidates:
+
+Recommended one-shot wrapper:
+
+```bash
+export REMOTE_USER="pnevma"
+export REMOTE_PORT="22"
+export REMOTE_IDENTITY_FILE="$HOME/.ssh/pnevma-smoke"
+export REMOTE_LINUX_X86_64_HOST="linux-x64.example.internal"
+export REMOTE_LINUX_AARCH64_HOST="linux-arm64.example.internal"
+export REMOTE_MAC_AARCH64_HOST="mac-studio.example.internal"
+
+DMG_PATH="$DMG_PATH" \
+EVIDENCE_DIR="$EVIDENCE_DIR" \
+./scripts/release-remote-validation.sh
+```
+
+Equivalent per-scenario commands:
 
 ```bash
 export REMOTE_USER="pnevma"
@@ -218,6 +233,15 @@ workflow gate.
 
 ## Evidence bundle
 
+`scripts/release-signed-candidate.sh` creates a structured bundle at
+`$EVIDENCE_DIR` with:
+
+- `automated/` for collected signing, entitlement, checksum, and smoke outputs
+- `manual/` for maintainer-filled release notes templates
+- `remote/` for copied packaged remote helper and durable lifecycle log directories
+- `manifest.json` describing the bundle contents
+- `CHECKLIST.md` showing which automated/manual items are still missing
+
 Each release should preserve:
 
 - SBOM output
@@ -289,6 +313,7 @@ Optional notarization archive path:
 Default public artifact path:
 
 - `Pnevma-0.2.0-macos-arm64.dmg`
+- `release-evidence/`
 
 ## Version checking and update status
 

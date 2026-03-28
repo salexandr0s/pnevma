@@ -61,7 +61,7 @@ ensure_targets() {
 }
 
 workspace_version() {
-  sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/Cargo.toml" | head -n 1
+  "$ROOT_DIR/scripts/release-version.sh" workspace
 }
 
 protocol_version() {
