@@ -1780,7 +1780,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnevma-agents"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-bridge"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cbindgen",
  "futures",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-commands"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-context"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "pnevma-core",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1898,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-db"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "pnevma-redaction",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-git"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "pnevma-core",
@@ -1930,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-redaction"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "regex",
@@ -1940,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-remote"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -1975,7 +1975,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-remote-helper"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-session"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-session-protocol"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-ssh"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "pnevma-tracker"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",

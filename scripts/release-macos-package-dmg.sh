@@ -12,7 +12,7 @@ VOLUME_NAME="${DMG_VOLUME_NAME:-Pnevma}"
 ARCH_SUFFIX="${ARCH_SUFFIX:-arm64}"
 
 resolve_version() {
-  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT_DIR/native/Info.plist"
+  "$ROOT_DIR/scripts/release-version.sh" check
 }
 
 if [[ -z "$APP_PATH" ]]; then

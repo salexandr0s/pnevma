@@ -40,7 +40,7 @@ Pnevma already has significant release infrastructure in place:
 Current known gaps:
 
 - the `disable-library-validation` entitlement decision is still open; the checked-in allowlist keeps it removed until a signed Ghostty-backed candidate proves it is needed or proves it can stay out,
-- the public release target is `v0.2.0`, but the repository and bundle metadata still need to stay aligned on every candidate,
+- release metadata alignment is now enforced in automation, but every candidate still needs the tag, DMG name, release notes, and website copy to match,
 - release workflows use DMG packaging; clean-machine website download flow validation is pending,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
 - rehearsal lanes must be green and stable on `main`.
@@ -99,15 +99,14 @@ Make versioning and product identity internally consistent across the bundle, re
 Tasks:
 
 - ship `v0.2.0` as the first public notarized release,
-- align `Cargo.toml` workspace version with the app release versioning approach,
-- align `CFBundleShortVersionString`,
+- keep `Cargo.toml`, `CFBundleShortVersionString`, and release tags aligned through automated checks,
 - align `CFBundleVersion` with a monotonically increasing build number or release build sequence,
 - verify bundle identifier, app name, copyright, minimum OS, and icon asset,
 - decide the canonical public product name and release title format.
 
 Checks:
 
-- Rust workspace version matches the intended release train,
+- automated release-version checks pass for the workspace, bundle, and release tag,
 - app bundle metadata matches the release notes and website download page,
 - tags, release names, and bundle metadata no longer disagree.
 

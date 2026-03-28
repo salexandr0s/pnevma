@@ -124,6 +124,18 @@ fn infer_access_level(id: &str) -> AccessLevel {
         "review.approve_task",
         "review.reject_task",
         // Config / secrets / settings
+        "harness.catalog.write",
+        "harness.catalog.favorite",
+        "harness.catalog.collections.create",
+        "harness.catalog.collections.rename",
+        "harness.catalog.collections.delete",
+        "harness.catalog.collections.set_membership",
+        "harness.catalog.scan_roots.upsert",
+        "harness.catalog.scan_roots.set_enabled",
+        "harness.catalog.scan_roots.delete",
+        "harness.catalog.create.apply",
+        "harness.catalog.install.apply",
+        "harness.catalog.install.remove",
         "harness.config.write",
         "plan.write",
         "plan.delete",
@@ -542,6 +554,7 @@ pub fn default_registry() -> &'static CommandRegistry {
         let registry = register_task_commands(registry);
         let registry = register_tracker_commands(registry);
         let registry = register_github_auth_commands(registry);
+        let registry = register_harness_catalog_commands(registry);
         let registry = register_harness_config_commands(registry);
         register_plan_commands(registry)
     })
@@ -585,6 +598,336 @@ fn register_github_auth_commands(registry: CommandRegistry) -> CommandRegistry {
             "Fix GitHub Git Helper",
             "Configure GitHub CLI as the Git credential helper for github.com.",
             vec![],
+        ))
+}
+
+fn register_harness_catalog_commands(registry: CommandRegistry) -> CommandRegistry {
+    registry
+        .register(RegisteredCommand::new(
+            "harness.catalog.snapshot",
+            "Harness Catalog Snapshot",
+            "Return the harness catalog snapshot including items, collections, analytics, scan roots, and capabilities.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.list",
+            "List Harness Catalog",
+            "List discovered harness items across Claude, Codex, and global scan roots.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.read",
+            "Read Harness Catalog Item",
+            "Read the content of a discovered harness catalog item.",
+            vec![arg(
+                "source_key",
+                "Source Key",
+                true,
+                None,
+                None,
+                Some("Stable item identifier derived from the canonical source path."),
+            )],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.write",
+            "Write Harness Catalog Item",
+            "Write content to a discovered harness catalog item.",
+            vec![
+                arg(
+                    "source_key",
+                    "Source Key",
+                    true,
+                    None,
+                    None,
+                    Some("Stable item identifier."),
+                ),
+                arg(
+                    "content",
+                    "Content",
+                    true,
+                    None,
+                    None,
+                    Some("Updated file content."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.favorite",
+            "Toggle Harness Favorite",
+            "Set or toggle the favorite state for a harness catalog item.",
+            vec![
+                arg(
+                    "source_key",
+                    "Source Key",
+                    true,
+                    None,
+                    None,
+                    Some("Stable item identifier."),
+                ),
+                arg(
+                    "favorite",
+                    "Favorite",
+                    false,
+                    None,
+                    None,
+                    Some("Optional explicit favorite state."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.collections.list",
+            "List Harness Collections",
+            "List saved harness collections and their item counts.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.collections.create",
+            "Create Harness Collection",
+            "Create a new named harness collection.",
+            vec![arg(
+                "name",
+                "Name",
+                true,
+                None,
+                None,
+                Some("Collection name."),
+            )],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.collections.rename",
+            "Rename Harness Collection",
+            "Rename an existing harness collection.",
+            vec![
+                arg(
+                    "id",
+                    "Collection ID",
+                    true,
+                    None,
+                    None,
+                    Some("Collection identifier."),
+                ),
+                arg(
+                    "name",
+                    "Name",
+                    true,
+                    None,
+                    None,
+                    Some("New collection name."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.collections.delete",
+            "Delete Harness Collection",
+            "Delete a harness collection.",
+            vec![arg(
+                "id",
+                "Collection ID",
+                true,
+                None,
+                None,
+                Some("Collection identifier."),
+            )],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.collections.set_membership",
+            "Set Harness Collection Membership",
+            "Add or remove a harness item from a collection.",
+            vec![
+                arg(
+                    "collection_id",
+                    "Collection ID",
+                    true,
+                    None,
+                    None,
+                    Some("Collection identifier."),
+                ),
+                arg(
+                    "source_key",
+                    "Source Key",
+                    true,
+                    None,
+                    None,
+                    Some("Harness item identifier."),
+                ),
+                arg(
+                    "present",
+                    "Present",
+                    true,
+                    None,
+                    None,
+                    Some("True to add, false to remove."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.scan_roots.list",
+            "List Harness Scan Roots",
+            "List configured custom harness scan roots.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.scan_roots.upsert",
+            "Upsert Harness Scan Root",
+            "Create or update a custom harness scan root.",
+            vec![
+                arg("path", "Path", true, None, None, Some("Directory to scan.")),
+                arg(
+                    "label",
+                    "Label",
+                    false,
+                    None,
+                    None,
+                    Some("Optional display label."),
+                ),
+                arg(
+                    "enabled",
+                    "Enabled",
+                    false,
+                    None,
+                    None,
+                    Some("Optional enabled state."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.scan_roots.set_enabled",
+            "Set Harness Scan Root Enabled",
+            "Enable or disable a custom harness scan root.",
+            vec![
+                arg(
+                    "id",
+                    "Scan Root ID",
+                    true,
+                    None,
+                    None,
+                    Some("Scan root identifier."),
+                ),
+                arg(
+                    "enabled",
+                    "Enabled",
+                    true,
+                    None,
+                    None,
+                    Some("True to enable, false to disable."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.scan_roots.delete",
+            "Delete Harness Scan Root",
+            "Delete a custom harness scan root.",
+            vec![arg(
+                "id",
+                "Scan Root ID",
+                true,
+                None,
+                None,
+                Some("Scan root identifier."),
+            )],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.analytics",
+            "Harness Catalog Analytics",
+            "Return summary analytics for the current harness catalog.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.create.plan",
+            "Plan Harness Create",
+            "Plan creation of a new harness item and its install targets.",
+            vec![
+                arg("kind", "Kind", true, None, None, Some("Harness item kind.")),
+                arg("name", "Name", true, None, None, Some("Display name.")),
+                arg("targets", "Targets", true, None, None, Some("Install targets.")),
+                arg(
+                    "replace_existing",
+                    "Replace Existing",
+                    false,
+                    None,
+                    None,
+                    Some("Allow replacing existing target content."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.create.apply",
+            "Create Harness Item",
+            "Create a new harness item and install it to one or more targets.",
+            vec![
+                arg("kind", "Kind", true, None, None, Some("Harness item kind.")),
+                arg("name", "Name", true, None, None, Some("Display name.")),
+                arg("slug", "Slug", false, None, None, Some("Optional slug override.")),
+                arg("content", "Content", true, None, None, Some("Initial primary file content.")),
+                arg("targets", "Targets", true, None, None, Some("Install targets.")),
+                arg(
+                    "replace_existing",
+                    "Replace Existing",
+                    false,
+                    None,
+                    None,
+                    Some("Allow replacing existing target content."),
+                ),
+                arg(
+                    "allow_copy_fallback",
+                    "Allow Copy Fallback",
+                    false,
+                    None,
+                    None,
+                    Some("Allow copy fallback if symlink creation fails."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.install.plan",
+            "Plan Harness Install",
+            "Plan installation of an existing harness item to additional targets.",
+            vec![
+                arg("source_key", "Source Key", true, None, None, Some("Harness item identifier.")),
+                arg("targets", "Targets", true, None, None, Some("Install targets.")),
+                arg(
+                    "replace_existing",
+                    "Replace Existing",
+                    false,
+                    None,
+                    None,
+                    Some("Allow replacing existing target content."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.install.apply",
+            "Install Harness Item",
+            "Install an existing harness item to additional targets.",
+            vec![
+                arg("source_key", "Source Key", true, None, None, Some("Harness item identifier.")),
+                arg("targets", "Targets", true, None, None, Some("Install targets.")),
+                arg(
+                    "replace_existing",
+                    "Replace Existing",
+                    false,
+                    None,
+                    None,
+                    Some("Allow replacing existing target content."),
+                ),
+                arg(
+                    "allow_copy_fallback",
+                    "Allow Copy Fallback",
+                    false,
+                    None,
+                    None,
+                    Some("Allow copy fallback if symlink creation fails."),
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "harness.catalog.install.remove",
+            "Remove Harness Install",
+            "Remove or forget a managed harness install target.",
+            vec![
+                arg("source_key", "Source Key", true, None, None, Some("Harness item identifier.")),
+                arg("target_path", "Target Path", true, None, None, Some("Installed target primary path.")),
+            ],
         ))
 }
 

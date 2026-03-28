@@ -168,6 +168,10 @@ Ghostty integration: if a signed candidate cannot launch, render, and accept
 input without it under the hardened runtime, it must be reintroduced together
 with written rationale and captured failure evidence.
 
+Use `scripts/probe-disable-library-validation.sh` to generate a reproducible
+baseline-vs-probe comparison on a signed app before changing the shipping
+allowlist.
+
 **Compensating control:** `scripts/check-entitlements.sh` runs in CI and fails
 if any entitlement is added beyond the approved checked-in set. This prevents
 entitlement creep while keeping the signed-build Ghostty decision explicit.

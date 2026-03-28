@@ -4,6 +4,7 @@ Run these checks from a packaged `Pnevma.app` or release DMG against real remote
 
 This document complements:
 
+- `scripts/release-remote-validation.sh` for the release-matrix wrapper that copies passing logs into the release evidence bundle
 - `scripts/run-packaged-remote-helper-smoke.sh` for packaged-app remote helper validation
 - `scripts/run-packaged-remote-durable-lifecycle-smoke.sh` and [`manual-remote-durable-lifecycle-tests.md`](./manual-remote-durable-lifecycle-tests.md) for packaged remote durable reconnect, relaunch, and reattach validation
 - `scripts/seed-remote-helper-fixture.sh` for deterministic upgrade fixture setup
@@ -62,6 +63,16 @@ If you are validating a candidate DMG instead of a loose app bundle, replace `AP
 ```bash
 export DMG_PATH="$PWD/Pnevma-0.2.0-macos-arm64.dmg"
 unset APP_PATH
+```
+
+If you want the full required release matrix plus evidence copying in one step,
+set the host variables below using the `REMOTE_LINUX_X86_64_*`,
+`REMOTE_LINUX_AARCH64_*`, and `REMOTE_MAC_AARCH64_*` prefixes and run:
+
+```bash
+DMG_PATH="$DMG_PATH" \
+EVIDENCE_DIR="$EVIDENCE_DIR" \
+./scripts/release-remote-validation.sh
 ```
 
 ## Fresh Install Matrix

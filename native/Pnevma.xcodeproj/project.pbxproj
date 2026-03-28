@@ -16,6 +16,7 @@
 		03D7C347F2A9A3C4B7F27DE9 /* NotificationsPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0F8F30B2834C839A23EF433 /* NotificationsPaneTests.swift */; };
 		0478C676BA381D7378E1A0A5 /* NativeContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B130BE9A4E1C7023F066CC2 /* NativeContractDecodingTests.swift */; };
 		05F0F974E55AA38AB470D415 /* ReducedMotionHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7346602A015C29FE6E91355 /* ReducedMotionHelper.swift */; };
+		070045842A3F6E38BEF1B18B /* HarnessConfigPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D169D5B534CC50A856CC7890 /* HarnessConfigPaneTests.swift */; };
 		0D8104A38269DA8025B98478 /* GhosttyConfigController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13398913ACB6EB8AD6478CC /* GhosttyConfigController.swift */; };
 		0DED0C6E1DE3714F98F69C2B /* TaskBoardViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8FF3A04AD8A016C8B349A55 /* TaskBoardViewModel.swift */; };
 		0EC98D898141D3C930C232EA /* ShortcutSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA483F3DA9F1A665DB3D9AD6 /* ShortcutSheetView.swift */; };
@@ -450,6 +451,7 @@
 		CFF51BE5D6F04A6833C8EA9B /* ScriptingSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptingSupport.swift; sourceTree = "<group>"; };
 		D0ADEB2EFF3E043B42BC94FE /* SidebarComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarComponents.swift; sourceTree = "<group>"; };
 		D13398913ACB6EB8AD6478CC /* GhosttyConfigController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyConfigController.swift; sourceTree = "<group>"; };
+		D169D5B534CC50A856CC7890 /* HarnessConfigPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessConfigPaneTests.swift; sourceTree = "<group>"; };
 		D2732335A78269A4A1F787AF /* PullRequestsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PullRequestsTabView.swift; sourceTree = "<group>"; };
 		D37B08BF2B77B07B0CAC8A54 /* NotificationsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsModels.swift; sourceTree = "<group>"; };
 		D4A55570E2FEC1C956983131 /* AppKeybindingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKeybindingManager.swift; sourceTree = "<group>"; };
@@ -791,6 +793,7 @@
 				5102701F8777ED8EDFD2770F /* FileBrowserPaneTests.swift */,
 				802CF982509179B391EB498F /* FirstMouseHostingViewTests.swift */,
 				0B57120FF8B7163541E32134 /* GhosttyConfigControllerTests.swift */,
+				D169D5B534CC50A856CC7890 /* HarnessConfigPaneTests.swift */,
 				1C98402C76522B792C477AF9 /* InspectorViewModelTests.swift */,
 				3542380B276C48DCE3B8BF1B /* NativeChromeTests.swift */,
 				9B130BE9A4E1C7023F066CC2 /* NativeContractDecodingTests.swift */,
@@ -1150,6 +1153,7 @@
 				3A31CDC8BA234E1B645BC4C2 /* FileBrowserPaneTests.swift in Sources */,
 				95BA0B41D84F58F5750116C0 /* FirstMouseHostingViewTests.swift in Sources */,
 				4C029313ABD69B3403F43194 /* GhosttyConfigControllerTests.swift in Sources */,
+				070045842A3F6E38BEF1B18B /* HarnessConfigPaneTests.swift in Sources */,
 				AFC13A6082639973215EEB3D /* InspectorViewModelTests.swift in Sources */,
 				6A93CB1E7FC63DBC6721A914 /* NativeChromeTests.swift in Sources */,
 				0478C676BA381D7378E1A0A5 /* NativeContractDecodingTests.swift in Sources */,

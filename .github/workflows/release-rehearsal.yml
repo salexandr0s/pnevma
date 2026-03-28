@@ -82,11 +82,14 @@ jobs:
       - name: Run release preflight
         run: ./scripts/release-preflight.sh
 
+      - name: Check release metadata alignment
+        run: ./scripts/release-version.sh check
+
       - name: Package release DMG
         run: |
           APP_PATH="$GITHUB_WORKSPACE/native/build/Release/Pnevma.app"
           test -d "$APP_PATH"
-          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$GITHUB_WORKSPACE/native/Info.plist")"
+          VERSION="$(./scripts/release-version.sh check)"
           DMG_PATH="$GITHUB_WORKSPACE/Pnevma-${VERSION}-macos-arm64.dmg"
           CHECKSUM_PATH="${DMG_PATH}.sha256"
           APP_PATH="$APP_PATH" \
@@ -146,7 +149,7 @@ jobs:
           fi
 
   release-sign-package:
-    name: Sign and package DMG
+    name: Sign and prove candidate DMG
     runs-on: macos-26
     needs: [release-package-preflight, check-signing-secrets]
     if: github.event_name != 'pull_request' && needs.check-signing-secrets.outputs.available == 'true'
@@ -169,7 +172,7 @@ jobs:
           # Restore them on all Mach-O binaries before signing.
           find "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Helpers" \
             -type f -exec chmod +x {} + 2>/dev/null || true
-          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
+          VERSION="$(./scripts/release-version.sh check)"
           mkdir -p "$RUNNER_TEMP/release-sign"
           {
             echo "APP_PATH=$APP_PATH"
@@ -196,38 +199,17 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
-      - name: Sign app
+      - name: Produce signed candidate and evidence bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh | tee release-evidence/app-sign.txt
-
-      - name: Check signed app entitlements
-        run: APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh | tee release-evidence/app-entitlements-check.txt
-
-      - name: Package signed DMG
+          SIGNING_KEYCHAIN_PATH: ${{ env.SIGNING_KEYCHAIN_PATH }}
         run: |
+          EVIDENCE_DIR="$GITHUB_WORKSPACE/release-evidence" \
           APP_PATH="$APP_PATH" \
           DMG_PATH="$DMG_PATH" \
           CHECKSUM_PATH="$CHECKSUM_PATH" \
-          ./scripts/release-macos-package-dmg.sh | tee release-evidence/dmg-package.txt
-
-      - name: Sign DMG
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: TARGET_PATH="$DMG_PATH" ./scripts/release-macos-sign.sh | tee release-evidence/dmg-sign.txt
-
-      - name: Run packaged launch smoke
-        run: |
-          DMG_PATH="$DMG_PATH" \
-          LOG_PATH="$GITHUB_WORKSPACE/native/build/logs/release-rehearsal-dmg-launch.log" \
-          ./scripts/run-packaged-launch-smoke.sh
-
-      - name: Collect release evidence
-        run: |
-          codesign -d --entitlements :- "$APP_PATH" > release-evidence/app-entitlements.plist 2>/dev/null
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH" > release-evidence/app-codesign-verify.txt 2>&1
-          codesign --verify --verbose=2 "$DMG_PATH" > release-evidence/dmg-codesign-verify.txt 2>&1
-          cp "$CHECKSUM_PATH" release-evidence/
+          RUN_PREFLIGHT=0 \
+          ./scripts/release-signed-candidate.sh
 
       - name: Upload signed DMG
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

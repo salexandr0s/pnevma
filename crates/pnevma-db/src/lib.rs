@@ -6,7 +6,10 @@ pub mod models;
 pub mod store;
 
 pub use error::DbError;
-pub use global_store::{sha256_hex, GlobalDb, RecentProjectRow, TrustRecord};
+pub use global_store::{
+    sha256_hex, GlobalDb, HarnessCollectionItemRow, HarnessCollectionRow, HarnessFavoriteRow,
+    HarnessInstallRecordRow, HarnessScanRootRow, RecentProjectRow, TrustRecord,
+};
 pub use models::{
     AgentHookRow, AgentPerformanceRow, AgentProfileRow, ArtifactRow, AttentionRuleRow,
     AutomationRetryRow, AutomationRunRow, CheckResultRow, CheckRunRow, CheckpointRow, CiJobRow,

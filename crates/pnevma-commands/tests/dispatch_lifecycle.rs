@@ -338,6 +338,27 @@ async fn wait_for_manual_run_status(db: &Db, project_id: &str, status: &str) -> 
     }
 }
 
+async fn wait_for_recent_events(
+    db: &Db,
+    project_id: &str,
+    min_count: usize,
+) -> Vec<pnevma_db::EventRow> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = db
+                .list_recent_events(project_id, 100)
+                .await
+                .expect("list recent events");
+            if events.len() >= min_count {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("recent events should be available")
+}
+
 async fn open_test_db() -> Db {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -494,6 +515,83 @@ async fn dispatch_returns_before_completion_and_streams_output() {
         .find(|session| session.r#type.as_deref() == Some("agent"))
         .expect("agent session exists");
     assert_eq!(agent_session.status, "completed");
+
+    let recent_events = wait_for_recent_events(&harness.db, &harness.project_id, 4).await;
+    let event_types: Vec<&str> = recent_events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert!(
+        event_types.contains(&"AgentOutputChunk"),
+        "expected AgentOutputChunk in recent events, got {event_types:?}"
+    );
+    assert!(
+        event_types.contains(&"TaskStatusChanged"),
+        "expected TaskStatusChanged in recent events, got {event_types:?}"
+    );
+    assert!(
+        event_types.contains(&"AgentComplete"),
+        "expected AgentComplete in recent events, got {event_types:?}"
+    );
+
+    let first_output_index = recent_events
+        .iter()
+        .position(|event| event.event_type == "AgentOutputChunk")
+        .expect("AgentOutputChunk event index");
+    let completion_index = recent_events
+        .iter()
+        .position(|event| event.event_type == "AgentComplete")
+        .expect("AgentComplete event index");
+    assert!(
+        first_output_index < completion_index,
+        "output event must precede completion event"
+    );
+
+    let status_transitions: Vec<(Option<String>, Option<String>)> = recent_events
+        .iter()
+        .filter(|event| event.event_type == "TaskStatusChanged")
+        .map(|event| {
+            let payload: Value =
+                serde_json::from_str(&event.payload_json).expect("task status change payload json");
+            (
+                payload
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                payload
+                    .get("to")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+            )
+        })
+        .collect();
+    assert!(
+        status_transitions.contains(&(Some("InProgress".to_string()), Some("Review".to_string())))
+            || status_transitions
+                .contains(&(Some("InProgress".to_string()), Some("Done".to_string()))),
+        "expected InProgress -> Review|Done transition, got {status_transitions:?}"
+    );
+
+    let completion_event = recent_events
+        .iter()
+        .find(|event| event.event_type == "AgentComplete")
+        .expect("AgentComplete event");
+    let completion_payload: Value =
+        serde_json::from_str(&completion_event.payload_json).expect("AgentComplete payload json");
+    assert_eq!(
+        completion_payload.get("task_id").and_then(Value::as_str),
+        Some(harness.task_id.as_str())
+    );
+    assert_eq!(
+        completion_payload.get("failed").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        completion_payload
+            .get("handoff_summary")
+            .and_then(Value::as_str),
+        Some("fake adapter finished")
+    );
 }
 
 #[tokio::test]
@@ -552,6 +650,24 @@ async fn launch_failure_marks_task_failed_and_releases_permit() {
         .find(|session| session.r#type.as_deref() == Some("agent"))
         .expect("agent session exists");
     assert_eq!(agent_session.status, "failed");
+
+    let recent_events = wait_for_recent_events(&harness.db, &harness.project_id, 1).await;
+    let launch_failed_event = recent_events
+        .iter()
+        .find(|event| event.event_type == "AgentLaunchFailed")
+        .expect("AgentLaunchFailed event should be recorded");
+    let launch_failed_payload: Value = serde_json::from_str(&launch_failed_event.payload_json)
+        .expect("AgentLaunchFailed payload json");
+    assert_eq!(
+        launch_failed_payload.get("error").and_then(Value::as_str),
+        Some("spawn failed: simulated launch failure")
+    );
+    assert!(
+        recent_events
+            .iter()
+            .all(|event| event.event_type != "AgentComplete"),
+        "launch failure should not emit AgentComplete"
+    );
 }
 
 #[tokio::test]

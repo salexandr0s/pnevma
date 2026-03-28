@@ -24,6 +24,54 @@ pub struct RecentProjectRow {
     pub opened_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct HarnessFavoriteRow {
+    pub source_key: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct HarnessCollectionRow {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct HarnessCollectionItemRow {
+    pub collection_id: String,
+    pub source_key: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct HarnessScanRootRow {
+    pub id: String,
+    pub path: String,
+    pub label: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct HarnessInstallRecordRow {
+    pub id: String,
+    pub source_key: String,
+    pub source_path: String,
+    pub source_root_path: String,
+    pub target_path: String,
+    pub target_root_path: String,
+    pub tool: String,
+    pub scope: String,
+    pub backing_mode: String,
+    pub removal_policy: String,
+    pub last_synced_fingerprint: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct GlobalDb {
     pool: SqlitePool,
@@ -88,6 +136,71 @@ impl GlobalDb {
             "CREATE TABLE IF NOT EXISTS app_metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS harness_favorites (
+                source_key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS harness_collections (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS harness_collection_items (
+                collection_id TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (collection_id, source_key),
+                FOREIGN KEY (collection_id) REFERENCES harness_collections(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS harness_scan_roots (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                label TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS harness_install_records (
+                id TEXT PRIMARY KEY,
+                source_key TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                source_root_path TEXT NOT NULL,
+                target_path TEXT NOT NULL UNIQUE,
+                target_root_path TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                backing_mode TEXT NOT NULL,
+                removal_policy TEXT NOT NULL,
+                last_synced_fingerprint TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )",
         )
         .execute(&pool)
@@ -594,6 +707,279 @@ impl GlobalDb {
             .await?;
         Ok(())
     }
+
+    pub async fn list_harness_favorites(&self) -> Result<Vec<HarnessFavoriteRow>, DbError> {
+        let rows = sqlx::query_as::<_, HarnessFavoriteRow>(
+            "SELECT source_key, created_at
+             FROM harness_favorites
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn set_harness_favorite(
+        &self,
+        source_key: &str,
+        favorite: bool,
+    ) -> Result<(), DbError> {
+        if favorite {
+            sqlx::query(
+                "INSERT INTO harness_favorites (source_key, created_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(source_key) DO NOTHING",
+            )
+            .bind(source_key)
+            .bind(Utc::now())
+            .execute(&self.pool)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM harness_favorites WHERE source_key = ?1")
+                .bind(source_key)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn list_harness_collections(&self) -> Result<Vec<HarnessCollectionRow>, DbError> {
+        let rows = sqlx::query_as::<_, HarnessCollectionRow>(
+            "SELECT id, name, created_at, updated_at
+             FROM harness_collections
+             ORDER BY lower(name) ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn create_harness_collection(
+        &self,
+        row: &HarnessCollectionRow,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO harness_collections (id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(&row.id)
+        .bind(&row.name)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn rename_harness_collection(&self, id: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE harness_collections
+             SET name = ?1, updated_at = ?2
+             WHERE id = ?3",
+        )
+        .bind(name)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_harness_collection(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM harness_collections WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_harness_collection_items(
+        &self,
+    ) -> Result<Vec<HarnessCollectionItemRow>, DbError> {
+        let rows = sqlx::query_as::<_, HarnessCollectionItemRow>(
+            "SELECT collection_id, source_key, created_at
+             FROM harness_collection_items
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn add_harness_collection_item(
+        &self,
+        collection_id: &str,
+        source_key: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO harness_collection_items (collection_id, source_key, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(collection_id, source_key) DO NOTHING",
+        )
+        .bind(collection_id)
+        .bind(source_key)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_harness_collection_item(
+        &self,
+        collection_id: &str,
+        source_key: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "DELETE FROM harness_collection_items
+             WHERE collection_id = ?1 AND source_key = ?2",
+        )
+        .bind(collection_id)
+        .bind(source_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_harness_scan_roots(&self) -> Result<Vec<HarnessScanRootRow>, DbError> {
+        let rows = sqlx::query_as::<_, HarnessScanRootRow>(
+            "SELECT id, path, label, enabled, created_at, updated_at
+             FROM harness_scan_roots
+             ORDER BY lower(path) ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn upsert_harness_scan_root(
+        &self,
+        row: &HarnessScanRootRow,
+    ) -> Result<HarnessScanRootRow, DbError> {
+        let stored = sqlx::query_as::<_, HarnessScanRootRow>(
+            "INSERT INTO harness_scan_roots (id, path, label, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(path) DO UPDATE SET
+                label = excluded.label,
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+             RETURNING id, path, label, enabled, created_at, updated_at",
+        )
+        .bind(&row.id)
+        .bind(&row.path)
+        .bind(&row.label)
+        .bind(row.enabled)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(stored)
+    }
+
+    pub async fn set_harness_scan_root_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE harness_scan_roots
+             SET enabled = ?1, updated_at = ?2
+             WHERE id = ?3",
+        )
+        .bind(enabled)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_harness_scan_root(&self, id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM harness_scan_roots WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_harness_install_records(
+        &self,
+    ) -> Result<Vec<HarnessInstallRecordRow>, DbError> {
+        let rows = sqlx::query_as::<_, HarnessInstallRecordRow>(
+            "SELECT id, source_key, source_path, source_root_path, target_path, target_root_path,
+                    tool, scope, backing_mode, removal_policy, last_synced_fingerprint,
+                    created_at, updated_at
+             FROM harness_install_records
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn upsert_harness_install_record(
+        &self,
+        row: &HarnessInstallRecordRow,
+    ) -> Result<HarnessInstallRecordRow, DbError> {
+        let stored = sqlx::query_as::<_, HarnessInstallRecordRow>(
+            "INSERT INTO harness_install_records
+                (id, source_key, source_path, source_root_path, target_path, target_root_path,
+                 tool, scope, backing_mode, removal_policy, last_synced_fingerprint,
+                 created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(target_path) DO UPDATE SET
+                source_key = excluded.source_key,
+                source_path = excluded.source_path,
+                source_root_path = excluded.source_root_path,
+                target_root_path = excluded.target_root_path,
+                tool = excluded.tool,
+                scope = excluded.scope,
+                backing_mode = excluded.backing_mode,
+                removal_policy = excluded.removal_policy,
+                last_synced_fingerprint = excluded.last_synced_fingerprint,
+                updated_at = excluded.updated_at
+             RETURNING id, source_key, source_path, source_root_path, target_path, target_root_path,
+                       tool, scope, backing_mode, removal_policy, last_synced_fingerprint,
+                       created_at, updated_at",
+        )
+        .bind(&row.id)
+        .bind(&row.source_key)
+        .bind(&row.source_path)
+        .bind(&row.source_root_path)
+        .bind(&row.target_path)
+        .bind(&row.target_root_path)
+        .bind(&row.tool)
+        .bind(&row.scope)
+        .bind(&row.backing_mode)
+        .bind(&row.removal_policy)
+        .bind(&row.last_synced_fingerprint)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(stored)
+    }
+
+    pub async fn delete_harness_install_record_by_target_path(
+        &self,
+        target_path: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM harness_install_records WHERE target_path = ?1")
+            .bind(target_path)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_harness_install_records_by_source_key(
+        &self,
+        source_key: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM harness_install_records WHERE source_key = ?1")
+            .bind(source_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -782,6 +1168,137 @@ mod tests {
         assert_eq!(persisted.host, updated.host);
         assert_eq!(persisted.port, updated.port);
         assert_eq!(persisted.user, updated.user);
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn harness_scan_roots_roundtrip() {
+        let root = std::env::temp_dir().join(format!("pnevma-gdb-harness-root-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let db = GlobalDb::open_in_dir(db_dir).await.expect("open global db");
+        let now = Utc::now();
+        let row = HarnessScanRootRow {
+            id: "root-1".to_string(),
+            path: "/tmp/skills".to_string(),
+            label: Some("Temp".to_string()),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let stored = db
+            .upsert_harness_scan_root(&row)
+            .await
+            .expect("upsert harness scan root");
+        assert_eq!(stored.path, row.path);
+
+        db.set_harness_scan_root_enabled(&row.id, false)
+            .await
+            .expect("disable scan root");
+
+        let rows = db
+            .list_harness_scan_roots()
+            .await
+            .expect("list harness scan roots");
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].enabled);
+
+        db.delete_harness_scan_root(&row.id)
+            .await
+            .expect("delete scan root");
+        assert!(db
+            .list_harness_scan_roots()
+            .await
+            .expect("list after delete")
+            .is_empty());
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn harness_favorites_roundtrip() {
+        let root = std::env::temp_dir().join(format!("pnevma-gdb-harness-fav-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let db = GlobalDb::open_in_dir(db_dir).await.expect("open global db");
+        db.set_harness_favorite("abc123", true)
+            .await
+            .expect("favorite item");
+        let rows = db.list_harness_favorites().await.expect("list favorites");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_key, "abc123");
+
+        db.set_harness_favorite("abc123", false)
+            .await
+            .expect("unfavorite item");
+        assert!(db
+            .list_harness_favorites()
+            .await
+            .expect("list empty favorites")
+            .is_empty());
+
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn harness_install_records_roundtrip() {
+        let root =
+            std::env::temp_dir().join(format!("pnevma-gdb-harness-install-{}", Uuid::new_v4()));
+        let db_dir = root.join(".local/share/pnevma");
+        tokio::fs::create_dir_all(&root)
+            .await
+            .expect("create temp root");
+
+        let db = GlobalDb::open_in_dir(db_dir).await.expect("open global db");
+        let now = Utc::now();
+        let row = HarnessInstallRecordRow {
+            id: "install-1".to_string(),
+            source_key: "source-1".to_string(),
+            source_path: "/tmp/source/SKILL.md".to_string(),
+            source_root_path: "/tmp/source".to_string(),
+            target_path: "/tmp/target/SKILL.md".to_string(),
+            target_root_path: "/tmp/target".to_string(),
+            tool: "codex".to_string(),
+            scope: "user".to_string(),
+            backing_mode: "copy".to_string(),
+            removal_policy: "delete_target".to_string(),
+            last_synced_fingerprint: Some("abc".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let stored = db
+            .upsert_harness_install_record(&row)
+            .await
+            .expect("upsert install record");
+        assert_eq!(stored.target_path, row.target_path);
+
+        let rows = db
+            .list_harness_install_records()
+            .await
+            .expect("list install records");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].removal_policy, "delete_target");
+
+        db.delete_harness_install_record_by_target_path(&row.target_path)
+            .await
+            .expect("delete install record");
+        assert!(db
+            .list_harness_install_records()
+            .await
+            .expect("list after delete")
+            .is_empty());
 
         drop(db);
         let _ = tokio::fs::remove_dir_all(&root).await;
