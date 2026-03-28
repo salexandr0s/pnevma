@@ -33,6 +33,9 @@ private struct WorkspaceOpenerPathParams: Encodable, Sendable {
 @Observable
 @MainActor
 final class WorkspaceOpenerViewModel {
+    @ObservationIgnored
+    private let bridgeEventHub: BridgeEventHub
+
     // Tab state
     var selectedTab: WorkspaceOpenerTab = .prompt
 
@@ -82,7 +85,28 @@ final class WorkspaceOpenerViewModel {
     var isConnectingGitHub: Bool = false
 
     // Data loading tasks
+    @ObservationIgnored
     private var loadTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var bridgeObserverID: UUID?
+    @ObservationIgnored
+    private var commandBusForEvents: (any CommandCalling)?
+
+    init(bridgeEventHub: BridgeEventHub = .shared) {
+        self.bridgeEventHub = bridgeEventHub
+        bridgeObserverID = bridgeEventHub.addObserver { [weak self] event in
+            guard event.name == "github_auth_changed" else { return }
+            self?.reloadGitHubFromEvent()
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            if let bridgeObserverID {
+                bridgeEventHub.removeObserver(bridgeObserverID)
+            }
+        }
+    }
 
     var promptHasText: Bool {
         !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -186,6 +210,18 @@ final class WorkspaceOpenerViewModel {
         gitHubStatus?.state == .ready
     }
 
+    var gitHubConnectionLabel: String? {
+        gitHubStatus?.activeLogin.map { "@\($0)" }
+    }
+
+    var gitHubHelperWarning: String? {
+        gitHubStatus?.gitHelperWarning?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var gitHubAuthJobRunning: Bool {
+        gitHubStatus?.authJobState == "running"
+    }
+
     var gitHubEmptyStateIcon: String {
         switch gitHubStatus?.state {
         case .missingGhCLI:
@@ -223,6 +259,10 @@ final class WorkspaceOpenerViewModel {
             return "Select a project to browse issues and pull requests."
         }
 
+        if gitHubStatus.authJobState == "running" {
+            return "Complete the GitHub browser sign-in flow. Pnevma will refresh automatically when it finishes."
+        }
+
         if let detail = gitHubStatus.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
            !detail.isEmpty {
             return "\(gitHubStatus.message)\n\(detail)"
@@ -232,6 +272,9 @@ final class WorkspaceOpenerViewModel {
     }
 
     var gitHubActionTitle: String? {
+        if gitHubAuthJobRunning {
+            return nil
+        }
         switch gitHubStatus?.state {
         case .missingGhCLI:
             return "Install GitHub CLI"
@@ -281,6 +324,7 @@ final class WorkspaceOpenerViewModel {
     }
 
     func onProjectChanged(using bus: any CommandCalling) {
+        commandBusForEvents = bus
         loadTask?.cancel()
         errorMessage = nil
         selectedBranchName = nil
@@ -372,7 +416,11 @@ final class WorkspaceOpenerViewModel {
                 state: .error,
                 message: "Could not check GitHub status for this folder.",
                 detail: error.localizedDescription,
-                resolvedRepo: nil
+                resolvedRepo: nil,
+                activeLogin: nil,
+                accountCount: nil,
+                authJobState: nil,
+                gitHelperWarning: nil
             )
         }
     }
@@ -457,6 +505,7 @@ final class WorkspaceOpenerViewModel {
 
     func connectGitHub(using bus: any CommandCalling) {
         guard selectedProjectPath != nil else { return }
+        commandBusForEvents = bus
 
         loadTask?.cancel()
         loadTask = Task { [weak self] in
@@ -496,8 +545,9 @@ final class WorkspaceOpenerViewModel {
 
         case .notAuthenticated:
             do {
-                try launchGitHubLogin(for: selectedProjectPath)
-                errorMessage = "Complete GitHub login in Terminal, then press Connect GitHub again."
+                let _: GitHubAuthSnapshot = try await bus.call(method: "github.auth.add_account", params: nil)
+                errorMessage = "Complete the GitHub browser sign-in flow. Pnevma will refresh automatically when it finishes."
+                await refreshGitHubStatus(using: bus)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -507,47 +557,50 @@ final class WorkspaceOpenerViewModel {
         }
     }
 
-    private func launchGitHubLogin(for path: String) throws {
-        let command = "cd -- \(shellEscaped(path)) && gh auth login --hostname github.com --web --git-protocol https"
-        let script = """
-        tell application "Terminal"
-            activate
-            do script "\(appleScriptEscaped(command))"
-        end tell
-        """
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        let stderr = Pipe()
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw NSError(
-                domain: "WorkspaceOpenerGitHubLogin",
-                code: Int(process.terminationStatus),
-                userInfo: [
-                    NSLocalizedDescriptionKey: errorOutput?.isEmpty == false
-                        ? errorOutput!
-                        : "Could not launch GitHub login in Terminal."
-                ]
-            )
+    func addGitHubAccount(using bus: any CommandCalling) {
+        commandBusForEvents = bus
+        Task {
+            do {
+                let _: GitHubAuthSnapshot = try await bus.call(method: "github.auth.add_account", params: nil)
+                errorMessage = "Complete the GitHub browser sign-in flow. Pnevma will refresh automatically when it finishes."
+                await refreshGitHubStatus(using: bus)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
-    private func shellEscaped(_ value: String) -> String {
-        guard !value.isEmpty else { return "''" }
-        return "'\(value.replacing("'", with: "'\\''"))'"
+    func fixGitHubHelper(using bus: any CommandCalling) {
+        commandBusForEvents = bus
+        Task {
+            do {
+                let _: GitHubAuthSnapshot = try await bus.call(method: "github.auth.fix_git_helper", params: nil)
+                await refreshGitHubStatus(using: bus)
+                if gitHubStatus?.state == .ready {
+                    await fetchIssues(using: bus)
+                    await fetchPullRequests(using: bus)
+                }
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
-    private func appleScriptEscaped(_ value: String) -> String {
-        value
-            .replacing("\\", with: "\\\\")
-            .replacing("\"", with: "\\\"")
+    private func reloadGitHubFromEvent() {
+        guard let bus = commandBusForEvents, selectedProjectPath != nil else { return }
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshGitHubStatus(using: bus)
+            guard self.gitHubStatus?.state == .ready else {
+                self.issues = []
+                self.pullRequests = []
+                return
+            }
+            await self.fetchIssues(using: bus)
+            await self.fetchPullRequests(using: bus)
+        }
     }
 
     func reset() {

@@ -997,7 +997,7 @@ pub async fn route_method(
             let input: commands::WorkspaceOpenerPathInput = serde_json::from_value(params.clone())
                 .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
             serde_json::to_value(
-                commands::github_status_for_path(input)
+                commands::github_status_for_path_with_state(input, state)
                     .await
                     .map_err(|e| ("internal_error".to_string(), e))?,
             )
@@ -1033,6 +1033,35 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "github.auth.status" => {
+            serde_json::to_value(crate::github_auth::get_github_auth_status(state).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.refresh" => {
+            serde_json::to_value(crate::github_auth::refresh_github_auth_status(state).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.switch" => {
+            let input: crate::github_auth::GitHubAuthSwitchInput =
+                serde_json::from_value(params.clone())
+                    .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
+            serde_json::to_value(
+                crate::github_auth::switch_github_auth_account(input, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.add_account" => {
+            serde_json::to_value(crate::github_auth::start_github_auth_login(state).await)
+                .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "github.auth.fix_git_helper" => serde_json::to_value(
+            crate::github_auth::fix_github_git_helper(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "workspace_opener.create_from_issue" => {
             let input: commands::WorkspaceOpenerIssueLaunchInput =
                 serde_json::from_value(params.clone())

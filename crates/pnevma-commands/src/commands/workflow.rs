@@ -891,6 +891,7 @@ mod tests {
             remote_handle: Mutex::new(None),
             remote_events,
             emitter: Arc::new(NullEmitter),
+            github_auth: crate::github_auth::GitHubAuthRuntimeState::default(),
             self_arc: std::sync::OnceLock::new(),
             browser_tool_pending: crate::commands::browser_tools::new_browser_tool_pending(),
         };

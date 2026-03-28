@@ -10,6 +10,8 @@ struct PullRequestsTabView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewModel.githubAvailable {
+                WorkspaceOpenerGitHubBanner(viewModel: viewModel, commandBus: commandBus)
+
                 WorkspaceOpenerSearchField(
                     "Search by title or number",
                     text: $viewModel.prSearchText,

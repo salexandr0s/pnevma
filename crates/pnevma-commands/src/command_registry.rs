@@ -541,9 +541,51 @@ pub fn default_registry() -> &'static CommandRegistry {
         let registry = register_pane_commands(registry);
         let registry = register_task_commands(registry);
         let registry = register_tracker_commands(registry);
+        let registry = register_github_auth_commands(registry);
         let registry = register_harness_config_commands(registry);
         register_plan_commands(registry)
     })
+}
+
+fn register_github_auth_commands(registry: CommandRegistry) -> CommandRegistry {
+    registry
+        .register(RegisteredCommand::new(
+            "github.auth.status",
+            "GitHub Account Status",
+            "Return GitHub CLI account status for github.com.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "github.auth.refresh",
+            "Refresh GitHub Accounts",
+            "Refresh GitHub CLI account status for github.com.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "github.auth.switch",
+            "Switch GitHub Account",
+            "Switch the active GitHub CLI account for github.com.",
+            vec![arg(
+                "login",
+                "Login",
+                true,
+                None,
+                None,
+                Some("The GitHub login to switch to."),
+            )],
+        ))
+        .register(RegisteredCommand::new(
+            "github.auth.add_account",
+            "Add GitHub Account",
+            "Start a background GitHub CLI browser login for github.com.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "github.auth.fix_git_helper",
+            "Fix GitHub Git Helper",
+            "Configure GitHub CLI as the Git credential helper for github.com.",
+            vec![],
+        ))
 }
 
 fn register_harness_config_commands(registry: CommandRegistry) -> CommandRegistry {

@@ -2,6 +2,7 @@ use crate::automation::coordinator::AutomationCoordinator;
 use crate::automation::workflow_store::WorkflowStore;
 use crate::control::ControlServerHandle;
 use crate::event_emitter::{BroadcastingEmitter, EventEmitter, NullEmitter};
+use crate::github_auth::GitHubAuthRuntimeState;
 use pnevma_agents::{AdapterRegistry, DispatchPool};
 use pnevma_core::{GlobalConfig, ProjectConfig};
 use pnevma_db::{Db, GlobalDb};
@@ -94,6 +95,7 @@ pub struct AppState {
     pub remote_handle: Mutex<Option<ManagedService<pnevma_remote::RemoteServerHandle>>>,
     pub remote_events: tokio::sync::broadcast::Sender<pnevma_remote::RemoteEventEnvelope>,
     pub emitter: Arc<dyn EventEmitter>,
+    pub github_auth: GitHubAuthRuntimeState,
     /// Set immediately after Arc<AppState> is created so internal code can get a clone.
     pub self_arc: std::sync::OnceLock<Arc<AppState>>,
     /// Pending browser tool calls awaiting Swift-side completion.
@@ -115,6 +117,7 @@ impl Default for AppState {
             remote_handle: Mutex::new(None),
             remote_events,
             emitter: Arc::new(NullEmitter),
+            github_auth: GitHubAuthRuntimeState::default(),
             self_arc: std::sync::OnceLock::new(),
             browser_tool_pending: crate::commands::browser_tools::new_browser_tool_pending(),
         }
