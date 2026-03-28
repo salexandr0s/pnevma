@@ -8,11 +8,25 @@ final class SidebarToolItemTests: XCTestCase {
 
         let tools = sidebarTools(for: workspace).map(\.id)
 
-        XCTAssertTrue(tools.contains("harness"))
-        XCTAssertEqual(tools.firstIndex(of: "ssh"), 4)
-        XCTAssertEqual(tools.firstIndex(of: "harness"), 5)
-        XCTAssertEqual(tools.firstIndex(of: "replay"), 6)
-        XCTAssertTrue(tools.contains("secrets"))
+        XCTAssertEqual(
+            tools,
+            [
+                "terminal",
+                "tasks",
+                "workflow",
+                "notifications",
+                "ssh",
+                "harness",
+                "replay",
+                "browser",
+                "analytics",
+                "resource_monitor",
+                "brief",
+                "rules",
+                "secrets",
+                "ports",
+            ]
+        )
         XCTAssertFalse(tools.contains("settings"))
     }
 
@@ -40,6 +54,19 @@ final class SidebarToolItemTests: XCTestCase {
         XCTAssertEqual(sidebarToolDefinition(id: "files")?.paneType, "file_browser")
         XCTAssertEqual(sidebarToolDefinition(id: "brief")?.paneType, "daily_brief")
         XCTAssertNil(sidebarToolDefinition(paneType: "merge_queue"), "merge_queue moved to right inspector")
+    }
+
+    func testSidebarToolsOnlyExposePaneTypesAvailableForWorkspaceMode() {
+        let project = Workspace(name: "Project", projectPath: "/tmp/project")
+        let terminal = Workspace(name: "Terminal")
+
+        for workspace in [project, terminal] {
+            let tools = sidebarTools(for: workspace)
+            let availablePaneTypes = PaneFactory.availablePaneTypes(for: workspace)
+
+            XCTAssertEqual(Set(tools.map(\.id)).count, tools.count)
+            XCTAssertTrue(tools.allSatisfy { availablePaneTypes.contains($0.paneType) })
+        }
     }
 
     func testSingleTerminalWorkspaceDoesNotNeedSectionHeader() {

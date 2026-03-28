@@ -20,6 +20,16 @@ Primary remaining release work:
 - execute manual smoke and security tests against the candidate DMG artifact
 - assemble final release evidence bundle and complete sign-off
 
+Most recent local verification on March 27, 2026:
+
+- `just check` green
+- `just xcode-test` green
+- `just ghostty-smoke` green
+- `just xcode-build-release` green
+- `APP_PATH="$PWD/native/build/Release/Pnevma.app" ./scripts/run-packaged-launch-smoke.sh` green
+- `./scripts/check-entitlements.sh` green for the checked-in source allowlist
+- effective entitlements on the app bundle remain a signed-build-only check because unsigned local release builds do not embed them
+
 ## Confirmed In-Tree Capabilities
 
 - native Swift/AppKit app linked to Rust through `pnevma-bridge`

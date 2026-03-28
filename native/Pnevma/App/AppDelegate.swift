@@ -1396,6 +1396,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         updateWindowMinWidth()
         if showWindow {
             win.makeKeyAndOrderFront(nil)
+            if AppLaunchContext.isUITesting {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         } else {
             win.orderOut(nil)
         }

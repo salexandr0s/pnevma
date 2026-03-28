@@ -39,6 +39,10 @@ final class BrowserWorkspaceSession {
 
     deinit {
         pendingDrawerRestoreTask?.cancel()
+        let viewModel = self.viewModel
+        Task { @MainActor in
+            viewModel.prepareForTeardown()
+        }
     }
 
     var currentURL: URL? {

@@ -468,6 +468,7 @@ final class WorkspaceTabTests: XCTestCase {
         let session = BrowserWorkspaceSession(
             restoredURL: URL(string: "https://example.com/docs")!
         )
+        defer { session.prepareForTeardown() }
 
         session.showDrawer()
 
@@ -486,6 +487,7 @@ final class WorkspaceTabTests: XCTestCase {
         let session = BrowserWorkspaceSession(
             restoredURL: URL(string: "https://example.com/docs")!
         )
+        defer { session.prepareForTeardown() }
 
         session.showDrawer()
         session.scheduleDrawerRestoreIfNeeded(after: .milliseconds(40))

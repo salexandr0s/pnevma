@@ -791,6 +791,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         self.currentSessionID = sessionID
         self.activationHub = activationHub
         super.init(frame: .zero)
+        setAccessibilityIdentifier("pane.terminal")
         showState(
             title: initialStateTitle,
             message: initialStateMessage,

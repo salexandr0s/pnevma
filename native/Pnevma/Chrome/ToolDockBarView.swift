@@ -298,6 +298,7 @@ private struct ToolDockItemButton: View {
                 }
             }
         }
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("Opens tool panel")
         .accessibilityValue(isActive ? "Selected" : "")

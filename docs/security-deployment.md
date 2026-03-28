@@ -155,11 +155,22 @@ A `ReadOnly` token holder cannot send session input even if the config allows it
 
 ## Entitlements
 
+### Current checked-in allowlist
+
+The checked-in entitlement policy currently retains only
+`com.apple.security.network.client`.
+
 ### `disable-library-validation`
 
-The `com.apple.security.cs.disable-library-validation` entitlement is required because Pnevma loads GhosttyKit as an xcframework at runtime. Without this entitlement, macOS rejects the unsigned dynamic library load. Ghostty's own macOS application retains the same entitlement for the same reason.
+`com.apple.security.cs.disable-library-validation` is not currently approved in
+the checked-in allowlist. It remains a signed-build validation question for the
+Ghostty integration: if a signed candidate cannot launch, render, and accept
+input without it under the hardened runtime, it must be reintroduced together
+with written rationale and captured failure evidence.
 
-**Compensating control:** `scripts/check-entitlements.sh` runs in CI on every build and fails if any entitlement is added beyond the approved set. This prevents entitlement creep while retaining the one exception needed for Ghostty integration.
+**Compensating control:** `scripts/check-entitlements.sh` runs in CI and fails
+if any entitlement is added beyond the approved checked-in set. This prevents
+entitlement creep while keeping the signed-build Ghostty decision explicit.
 
 ## See also
 

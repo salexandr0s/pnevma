@@ -173,6 +173,7 @@ struct SettingsView: View {
         }
         .onAppear(perform: syncSelectionToSearch)
         .onChange(of: searchText) { syncSelectionToSearch() }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.root")
     }
 
@@ -314,6 +315,7 @@ struct SettingsSidebarSearchField: View {
             TextField("Search", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
+                .accessibilityIdentifier("settings.sidebar.search.input")
 
             if !text.isEmpty {
                 Button {
@@ -323,6 +325,7 @@ struct SettingsSidebarSearchField: View {
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.sidebar.search.clear")
             }
         }
         .padding(.horizontal, 10)
@@ -374,6 +377,7 @@ struct SettingsSidebarRow: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { isHovering = $0 }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var rowBackground: Color {
@@ -414,6 +418,7 @@ struct SettingsSearchEmptyState: View {
             title: "No Matching Settings",
             message: "No settings matched “\(query)”. Try a broader term."
         )
+        .accessibilityIdentifier("settings.search.empty")
     }
 }
 
@@ -435,6 +440,7 @@ struct SettingsDetailPage<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .top)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("settings.detail.\(section.id)")
     }
 }
 
@@ -453,6 +459,7 @@ struct SettingsFramedDetailPage<Content: View>: View {
         .padding(.bottom, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("settings.detail.\(section.id)")
     }
 }
 

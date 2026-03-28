@@ -139,7 +139,7 @@ xcode-test: xcodegen rust-build
     {{native_lock_tool}} xcode-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && rm -rf native/build/Debug && {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test'
 
 xcode-ui-test: xcodegen rust-build
-    {{native_lock_tool}} xcode-ui-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-ui-test.log -- xcodebuild -project {{xcode_project}} -scheme PnevmaUITests -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test'
+    {{native_lock_tool}} xcode-ui-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-ui-test.log -- caffeinate -dimu -t 7200 xcodebuild -project {{xcode_project}} -scheme PnevmaUITests -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test'
 
 # SPM build path (alternative to xcodebuild)
 spm-build: rust-build

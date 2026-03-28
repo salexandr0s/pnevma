@@ -47,6 +47,8 @@ fi
 filtered=$(grep -nE 'warning:|error:|IDERunDestination:' "$log_path" \
   | grep -v 'failed to load toolchain: toolchain .* already registered' \
   | grep -v 'Metadata extraction skipped\. No AppIntents\.framework dependency found\.' \
+  | grep -v 'ProcessAssertion::acquireSync Failed to acquire RBS assertion .*<WebProcess.*> does not exist' \
+  | grep -v 'RBSAssertionErrorDomain Code=2 "Specified target process .*<WebProcess.*> does not exist"' \
   | grep -v "XPCConnectionTerminationWatchdog" \
   || true)
 

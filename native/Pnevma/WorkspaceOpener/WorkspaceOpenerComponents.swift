@@ -3,15 +3,18 @@ import SwiftUI
 struct WorkspaceOpenerSearchField<TrailingContent: View>: View {
     let placeholder: String
     @Binding var text: String
+    private let accessibilityIdentifier: String?
     private let trailingContent: TrailingContent
 
     init(
         _ placeholder: String,
         text: Binding<String>,
+        accessibilityIdentifier: String? = nil,
         @ViewBuilder trailingContent: () -> TrailingContent
     ) {
         self.placeholder = placeholder
         _text = text
+        self.accessibilityIdentifier = accessibilityIdentifier
         self.trailingContent = trailingContent()
     }
 
@@ -24,6 +27,7 @@ struct WorkspaceOpenerSearchField<TrailingContent: View>: View {
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
+                .accessibilityIdentifier(accessibilityIdentifier ?? "workspaceOpener.search")
 
             trailingContent
         }
@@ -41,8 +45,16 @@ struct WorkspaceOpenerSearchField<TrailingContent: View>: View {
 }
 
 extension WorkspaceOpenerSearchField where TrailingContent == EmptyView {
-    init(_ placeholder: String, text: Binding<String>) {
-        self.init(placeholder, text: text) { EmptyView() }
+    init(
+        _ placeholder: String,
+        text: Binding<String>,
+        accessibilityIdentifier: String? = nil
+    ) {
+        self.init(
+            placeholder,
+            text: text,
+            accessibilityIdentifier: accessibilityIdentifier
+        ) { EmptyView() }
     }
 }
 

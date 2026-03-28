@@ -39,6 +39,7 @@
 		29609375F183A598B96D19D3 /* CommandCenterRunCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 125F063997BFE90A7A8F0183 /* CommandCenterRunCard.swift */; };
 		2B56E96E019CFE60E762B804 /* WorkflowBuilderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10F582ABE3CADAC449BA9E8E /* WorkflowBuilderView.swift */; };
 		2C9853485E1DBE4364B0EC80 /* SidebarNavigationHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FF1B6AC31D7241243B2DF1 /* SidebarNavigationHeader.swift */; };
+		302F7993117DBC24FCB77C17 /* UITestFixtureData.swift in Sources */ = {isa = PBXBuildFile; fileRef = B095140AD3B55DE375019E74 /* UITestFixtureData.swift */; };
 		32FC0B25ACB7193B6201EC89 /* TerminalConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5CF35C36EC51718FA8D0DAE /* TerminalConfig.swift */; };
 		33A117D494A9C287DD36996F /* SessionManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C87E39B08B92FB4B9C0E7C5 /* SessionManagerView.swift */; };
 		38485C4F6488209AA05624E4 /* PnevmaIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC6CC1223E1000D291FA4F73 /* PnevmaIntents.swift */; };
@@ -90,6 +91,7 @@
 		6C4CA666946EA722CBC80A9E /* AppDelegateTabBarIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B25FAE9D350AB036606B91F3 /* AppDelegateTabBarIntegrationTests.swift */; };
 		6C59F86DEE0BD552874B3297 /* IssuesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E94D0D55FD837EFD5ADEA92C /* IssuesTabView.swift */; };
 		6FB2CBA75A034D792DEF1FFE /* PortsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89E6B9E90C75E6AD8842877 /* PortsViewModel.swift */; };
+		70982FFEFA6EAE334C6B0F32 /* PnevmaUIExplorationHarnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB400C19FF8CC168AEE1CCC0 /* PnevmaUIExplorationHarnessTests.swift */; };
 		70DA668AC08F26BFFD6F9CD5 /* ContentAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BED0A7EA733BC5EE1F7459A2 /* ContentAreaView.swift */; };
 		716015A1807DAC28C1F8B4F0 /* SettingsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8113B2AB1F27450612F293E9 /* SettingsViewModelTests.swift */; };
 		72769A5FC156B79E5B2EFF71 /* TaskBoardModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33144636D34279689CD4BE76 /* TaskBoardModels.swift */; };
@@ -409,6 +411,7 @@
 		AB524B1D4F6CF562179D357F /* CommandCenterStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandCenterStoreTests.swift; sourceTree = "<group>"; };
 		AC189336BEE185BB13D2ED00 /* SidebarToolButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarToolButton.swift; sourceTree = "<group>"; };
 		B0038E0CFBF83A217D8CD6F5 /* ProviderUsageUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageUI.swift; sourceTree = "<group>"; };
+		B095140AD3B55DE375019E74 /* UITestFixtureData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestFixtureData.swift; sourceTree = "<group>"; };
 		B0F8F30B2834C839A23EF433 /* NotificationsPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsPaneTests.swift; sourceTree = "<group>"; };
 		B1694906609036ADB79C1BA0 /* BrowserReaderDocumentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserReaderDocumentView.swift; sourceTree = "<group>"; };
 		B25FAE9D350AB036606B91F3 /* AppDelegateTabBarIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateTabBarIntegrationTests.swift; sourceTree = "<group>"; };
@@ -479,6 +482,7 @@
 		F71A723330D8BA616AB2DF79 /* DiffViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffViewModel.swift; sourceTree = "<group>"; };
 		FA483F3DA9F1A665DB3D9AD6 /* ShortcutSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutSheetView.swift; sourceTree = "<group>"; };
 		FAB3A9FD21A3B4DDE1B3EB9B /* SshManagerModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshManagerModelsTests.swift; sourceTree = "<group>"; };
+		FB400C19FF8CC168AEE1CCC0 /* PnevmaUIExplorationHarnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnevmaUIExplorationHarnessTests.swift; sourceTree = "<group>"; };
 		FBA0CB4E50F6B5BF2AE464D0 /* TaskBoardPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskBoardPane.swift; sourceTree = "<group>"; };
 		FBB027B14198CDD249E6ABFB /* DrawerSizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawerSizing.swift; sourceTree = "<group>"; };
 		FC5D26809E2B3DA48A1A4A0B /* NativeChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChrome.swift; sourceTree = "<group>"; };
@@ -598,6 +602,7 @@
 				4BA73B60A890BD28D762EF33 /* StatusChipView.swift */,
 				A2BACC1D571547055E703921 /* ToastOverlay.swift */,
 				669D40EF8412660B4D694050 /* ToolbarAttachmentScaffold.swift */,
+				B095140AD3B55DE375019E74 /* UITestFixtureData.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -853,6 +858,7 @@
 			isa = PBXGroup;
 			children = (
 				A0F9C0F5681E6F09BD7F4713 /* PnevmaSidebarSmokeTests.swift */,
+				FB400C19FF8CC168AEE1CCC0 /* PnevmaUIExplorationHarnessTests.swift */,
 				9487127BAE20CEC7D51CF580 /* PnevmaUITestCase.swift */,
 				B5D8FC8DBADB4B622B4C3B09 /* RightInspectorOverlayUITests.swift */,
 			);
@@ -1302,6 +1308,7 @@
 				D7EA0950D2F4F857711EB708 /* ToolDockBarView.swift in Sources */,
 				D32BF83C942F708D43D29763 /* ToolDrawer.swift in Sources */,
 				BF6EFF1A1FED4DC9AB186BEA /* ToolbarAttachmentScaffold.swift in Sources */,
+				302F7993117DBC24FCB77C17 /* UITestFixtureData.swift in Sources */,
 				A97FE8193DB7871ABDE7B0D7 /* WorkflowAgentsView.swift in Sources */,
 				2B56E96E019CFE60E762B804 /* WorkflowBuilderView.swift in Sources */,
 				814A8D45A056D95FB4F60CF7 /* WorkflowComponents.swift in Sources */,
@@ -1332,6 +1339,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F654AAB4E1A33521B8298545 /* PnevmaSidebarSmokeTests.swift in Sources */,
+				70982FFEFA6EAE334C6B0F32 /* PnevmaUIExplorationHarnessTests.swift in Sources */,
 				AD25C411AC088C7FBFDB6BAA /* PnevmaUITestCase.swift in Sources */,
 				CF9C3D3C0D01EAFB479346A6 /* RightInspectorOverlayUITests.swift in Sources */,
 			);
@@ -1436,6 +1444,7 @@
 				PRODUCT_MODULE_NAME = PnevmaUITests;
 				PRODUCT_NAME = PnevmaUITests;
 				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				TEST_TARGET_NAME = Pnevma;
 			};
 			name = Debug;
@@ -1649,6 +1658,7 @@
 				PRODUCT_MODULE_NAME = PnevmaUITests;
 				PRODUCT_NAME = PnevmaUITests;
 				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				TEST_TARGET_NAME = Pnevma;
 			};
 			name = Release;

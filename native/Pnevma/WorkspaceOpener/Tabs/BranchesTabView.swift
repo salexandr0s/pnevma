@@ -15,7 +15,8 @@ struct BranchesTabView: View {
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
                     WorkspaceOpenerSearchField(
                         "Search by branch name",
-                        text: $viewModel.branchSearchText
+                        text: $viewModel.branchSearchText,
+                        accessibilityIdentifier: "workspaceOpener.branches.search"
                     ) {
                         BranchFilterToggle(
                             filter: $viewModel.branchFilter,
@@ -39,6 +40,7 @@ struct BranchesTabView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .accessibilityIdentifier("workspaceOpener.branches.toggleCreate")
 
                         if viewModel.isCreatingNewBranch {
                             Text("Name the branch, then use the primary action below.")
@@ -84,6 +86,7 @@ struct BranchesTabView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -98,6 +101,7 @@ private struct NewBranchComposer: View {
 
             TextField("feature/my-branch", text: $viewModel.newBranchName)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("workspaceOpener.branches.newBranchName")
 
             Text("Pnevma will create the branch in the selected repository checkout and open the workspace on it.")
                 .font(.system(size: 11))
@@ -152,6 +156,9 @@ private struct BranchFilterToggle: View {
                 )
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(filter == value ? .isSelected : [])
+        .accessibilityIdentifier("workspaceOpener.branches.filter.\(value.rawValue.lowercased())")
     }
 }
 
@@ -215,7 +222,10 @@ private struct BranchRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
         .onHover { isHovering = $0 }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("workspaceOpener.branch.\(workspaceOpenerIdentifierComponent(branch.name))")
     }
 
     private func branchTag(_ title: String, color: Color) -> some View {

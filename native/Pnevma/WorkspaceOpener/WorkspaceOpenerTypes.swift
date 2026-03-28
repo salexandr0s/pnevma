@@ -30,6 +30,15 @@ enum WorkspaceOpenerTab: String, CaseIterable, Identifiable {
         case .branches: "arrow.triangle.branch"
         }
     }
+
+    var accessibilityID: String {
+        switch self {
+        case .prompt: "prompt"
+        case .issues: "issues"
+        case .pullRequests: "pullRequests"
+        case .branches: "branches"
+        }
+    }
 }
 
 struct ProjectEntry: Identifiable, Hashable {
@@ -118,4 +127,20 @@ struct WorkspaceOpenerLaunchResult: Decodable, Sendable {
     let workingDirectory: String?
     let taskID: String?
     let branch: String?
+}
+
+func workspaceOpenerIdentifierComponent(_ value: String) -> String {
+    let mapped = value.lowercased().unicodeScalars.map { scalar -> String in
+        switch scalar {
+        case "a"..."z", "0"..."9":
+            return String(scalar)
+        default:
+            return "_"
+        }
+    }
+
+    let collapsed = mapped.joined()
+        .replacingOccurrences(of: "_+", with: "_", options: .regularExpression)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+    return collapsed.isEmpty ? "item" : collapsed
 }

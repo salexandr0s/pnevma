@@ -79,14 +79,17 @@ struct WorkspaceOpenerView: View {
                 Spacer()
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("workspaceOpener.action.cancel")
                 Button(viewModel.submitButtonTitle) { onSubmit(viewModel) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!viewModel.canSubmit || viewModel.isLoading)
+                    .accessibilityIdentifier("workspaceOpener.action.submit")
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
             .padding(.vertical, DesignTokens.Spacing.md)
         }
         .background(ChromeSurfaceStyle.window.color)
+        .accessibilityElement(children: .contain)
         .frame(
             minWidth: WorkspaceOpenerPanelLayout.minimumSize.width,
             minHeight: WorkspaceOpenerPanelLayout.minimumSize.height,

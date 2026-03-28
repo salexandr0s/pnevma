@@ -56,12 +56,18 @@ Build the release app:
 just release
 ```
 
+Unsigned local Release builds created by `just release` do not embed effective
+entitlements because local release builds use `CODE_SIGNING_ALLOWED=NO`. That
+means `APP_PATH=... ./scripts/check-entitlements.sh` is expected to fail until
+after you sign the app bundle.
+
 Sign the `.app`, verify entitlements, and verify the app signature:
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
 export APP_PATH="$PWD/native/build/Release/Pnevma.app"
 
+./scripts/check-entitlements.sh
 APP_PATH="$APP_PATH" ./scripts/release-macos-sign.sh
 APP_PATH="$APP_PATH" ./scripts/check-entitlements.sh
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"

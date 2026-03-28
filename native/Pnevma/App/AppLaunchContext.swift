@@ -29,6 +29,10 @@ enum AppLaunchContext {
         isUITesting && ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_LIGHTWEIGHT_MODE"] == "1"
     }
 
+    static var uiTestSeedFixtures: Bool {
+        isUITesting && ProcessInfo.processInfo.environment["PNEVMA_UI_TEST_SEED_FIXTURES"] == "1"
+    }
+
     static var isTesting: Bool {
         isUITesting || isUnitTesting
     }

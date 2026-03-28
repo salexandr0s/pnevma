@@ -14,6 +14,7 @@ struct WorkspaceOpenerTabBar: View {
             }
         }
         .padding(4)
+        .accessibilityElement(children: .contain)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color.primary.opacity(0.04))
@@ -54,6 +55,7 @@ private struct OpenerTabButton: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("opener.tab.\(tab.rawValue)")
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityIdentifier("opener.tab.\(tab.accessibilityID)")
     }
 }

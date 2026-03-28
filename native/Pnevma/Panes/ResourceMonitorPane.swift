@@ -76,6 +76,7 @@ struct ResourceMonitorDetailView: View {
         .task {
             await store.activate()
         }
+        .accessibilityIdentifier("pane.resourceMonitor")
     }
 
     // MARK: - Host Info Section

@@ -289,6 +289,13 @@ final class WorkspaceOpenerViewModel {
         loadTask = Task { [weak self] in
             guard let self else { return }
             await self.fetchBranches(using: bus)
+            if UITestFixtureData.isEnabled {
+                self.gitHubStatus = UITestFixtureData.workspaceOpenerGitHubStatus
+                self.issues = UITestFixtureData.workspaceOpenerIssues
+                self.pullRequests = UITestFixtureData.workspaceOpenerPullRequests
+                self.errorMessage = nil
+                return
+            }
             await self.refreshGitHubStatus(using: bus)
             guard self.gitHubStatus?.state == .ready else {
                 self.issues = []
@@ -343,6 +350,12 @@ final class WorkspaceOpenerViewModel {
             return
         }
 
+        if UITestFixtureData.isEnabled {
+            _ = selectedProjectPath
+            gitHubStatus = UITestFixtureData.workspaceOpenerGitHubStatus
+            return
+        }
+
         isLoadingGitHubStatus = true
         defer { isLoadingGitHubStatus = false }
 
@@ -368,6 +381,14 @@ final class WorkspaceOpenerViewModel {
         guard let selectedProjectPath, gitHubStatus?.state == .ready else {
             issues = []
             selectedIssueNumber = nil
+            return
+        }
+
+        if UITestFixtureData.isEnabled {
+            _ = selectedProjectPath
+            issues = UITestFixtureData.workspaceOpenerIssues
+            selectedIssueNumber = nil
+            errorMessage = nil
             return
         }
 
@@ -399,6 +420,14 @@ final class WorkspaceOpenerViewModel {
         guard let selectedProjectPath, gitHubStatus?.state == .ready else {
             pullRequests = []
             selectedPRNumber = nil
+            return
+        }
+
+        if UITestFixtureData.isEnabled {
+            _ = selectedProjectPath
+            pullRequests = UITestFixtureData.workspaceOpenerPullRequests
+            selectedPRNumber = nil
+            errorMessage = nil
             return
         }
 
@@ -438,6 +467,15 @@ final class WorkspaceOpenerViewModel {
 
     private func performGitHubConnect(using bus: any CommandCalling) async {
         guard let selectedProjectPath else { return }
+
+        if UITestFixtureData.isEnabled {
+            _ = selectedProjectPath
+            gitHubStatus = UITestFixtureData.workspaceOpenerGitHubStatus
+            issues = UITestFixtureData.workspaceOpenerIssues
+            pullRequests = UITestFixtureData.workspaceOpenerPullRequests
+            errorMessage = nil
+            return
+        }
 
         isConnectingGitHub = true
         defer { isConnectingGitHub = false }

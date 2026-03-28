@@ -46,6 +46,7 @@ struct SidebarToolButton: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 5))
         .onHover { isHovering = $0 }
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityElement(children: .ignore)
         .contextMenu {
             if !tool.isStub {

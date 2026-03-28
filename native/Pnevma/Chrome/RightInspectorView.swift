@@ -225,6 +225,7 @@ struct RightInspectorView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(sectionBinding.wrappedValue == section ? .isSelected : [])
                 .accessibilityIdentifier("right-inspector-tab-\(section.rawValue)")
             }
 

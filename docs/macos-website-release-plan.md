@@ -39,7 +39,7 @@ Pnevma already has significant release infrastructure in place:
 
 Current known gaps:
 
-- the remaining hardened-runtime exception is `com.apple.security.cs.disable-library-validation` (required for GhosttyKit); entitlement necessity must be validated against a signed release build before ship,
+- the `disable-library-validation` entitlement decision is still open; the checked-in allowlist keeps it removed until a signed Ghostty-backed candidate proves it is needed or proves it can stay out,
 - the public release target is `v0.2.0`, but the repository and bundle metadata still need to stay aligned on every candidate,
 - release workflows use DMG packaging; clean-machine website download flow validation is pending,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
@@ -186,18 +186,22 @@ Evidence to record for each retained entitlement:
 - observed failure mode when removed,
 - test command or smoke procedure that reproduces the failure.
 
-Current retained entitlements and rationale:
+Current checked-in entitlement allowlist:
 
-- `com.apple.security.cs.disable-library-validation`
-  GhosttyKit must load under the hardened runtime, and the checked-in
-  entitlement file already records that Ghostty's own macOS app retains the
-  same exception. Keep it until a signed release build proves GhosttyKit can
-  launch, render, and accept interactive input without it.
 - `com.apple.security.network.client`
   The shipping app initiates outbound connections for GitHub release version
   checks and optionally for remote access, Tailscale discovery, provider CLI
   traffic, and other maintainer-triggered network paths. Removing it would
   knowingly break supported release behavior.
+
+Signed-build entitlement decision still pending:
+
+- `com.apple.security.cs.disable-library-validation`
+  Do not treat this as approved by default. Validate it on a signed candidate
+  build: if GhosttyKit launches, renders, and accepts input under the hardened
+  runtime without it, keep it removed; if the signed candidate fails without
+  it, reintroduce it and record the exact failure evidence in the release
+  bundle.
 
 Exit criteria:
 

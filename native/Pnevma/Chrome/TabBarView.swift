@@ -159,6 +159,7 @@ final class TabBarView: NSView {
         plusBtn.target = self
         plusBtn.action = #selector(addButtonClicked)
         plusBtn.setAccessibilityLabel("New tab")
+        plusBtn.setAccessibilityIdentifier("tabbar.add")
         addSubview(plusBtn)
         addButton = plusBtn
 
@@ -201,6 +202,7 @@ final class TabBarView: NSView {
 
     override func accessibilityRole() -> NSAccessibility.Role? { .tabGroup }
     override func accessibilityLabel() -> String? { "Tab bar" }
+    override func accessibilityIdentifier() -> String { "tabbar.root" }
 
     private func beginRenamingTab(id: UUID, index: Int) {
         renamingTabID = id
@@ -397,6 +399,7 @@ private final class TabButton: NSView {
         closeButton.contentTintColor = theme.foregroundColor.withAlphaComponent(normalCloseAlpha)
         closeButton.setAccessibilityLabel("Close tab")
         closeButton.setAccessibilityHelp("Closes this tab and its contents")
+        closeButton.setAccessibilityIdentifier("tabbar.close")
         closeButton.isHidden = !showClose || isRenaming
 
         renameField = TabRenameField(frame: .zero)

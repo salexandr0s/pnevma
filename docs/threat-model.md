@@ -117,6 +117,6 @@ Release SBOMs are generated (CycloneDX JSON) and attested via GitHub Actions bui
 
 ## Residual risks to track
 
-- the hardened-runtime exception set is `com.apple.security.cs.disable-library-validation` (required for GhosttyKit dynamic library loading) and `com.apple.security.network.client`; the library-validation exception is validated against signed release builds
+- the checked-in hardened-runtime entitlement allowlist currently keeps only `com.apple.security.network.client`; `disable-library-validation` remains a signed-build Ghostty validation decision before public release
 - project-level data retention can prune stale review packs, knowledge artifacts, feedback attachments, telemetry exports, and completed session scrollback when enabled in `pnevma.toml`
 - no supported native auto-updater exists yet, so release distribution remains manual

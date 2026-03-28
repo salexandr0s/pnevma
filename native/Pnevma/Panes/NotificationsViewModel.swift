@@ -91,6 +91,10 @@ final class NotificationsViewModel {
     }
 
     func load() {
+        if UITestFixtureData.isEnabled {
+            finishLoading(UITestFixtureData.notifications)
+            return
+        }
         guard let bus = commandBus else {
             viewState = .failed("Notification loading is unavailable because the command bus is not configured.")
             return
@@ -129,6 +133,9 @@ final class NotificationsViewModel {
         if let idx = notifications.firstIndex(where: { $0.id == id }) {
             notifications[idx].isRead = true
         }
+        if UITestFixtureData.isEnabled {
+            return
+        }
         guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
@@ -151,6 +158,12 @@ final class NotificationsViewModel {
 
     func markAllRead() {
         guard !isMarkingAllRead else { return }
+        if UITestFixtureData.isEnabled {
+            for i in notifications.indices where !notifications[i].isRead {
+                notifications[i].isRead = true
+            }
+            return
+        }
         guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
@@ -187,6 +200,9 @@ final class NotificationsViewModel {
 
     func clearAll() {
         notifications.removeAll()
+        if UITestFixtureData.isEnabled {
+            return
+        }
         guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()

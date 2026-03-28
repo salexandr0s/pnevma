@@ -707,6 +707,15 @@ final class GhosttyConfigController {
 
     private func resolveConfigPath() -> URL? {
         #if canImport(GhosttyKit)
+        // `ghostty_config_open_path()` relies on the Ghostty process runtime being
+        // initialized. In lightweight UI-test mode we intentionally skip
+        // `ghostty_init()`, so calling into the C runtime here can hard-crash the
+        // app while merely opening the App Shortcuts settings tab. Fall back to the
+        // standard user config location whenever the runtime is unavailable.
+        guard GhosttyRuntime.isInitialized else {
+            return Self.defaultConfigPath()
+        }
+
         let path = ghostty_config_open_path()
         defer { ghostty_string_free(path) }
         if let ptr = path.ptr, path.len > 0 {

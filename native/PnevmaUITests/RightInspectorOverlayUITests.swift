@@ -1,63 +1,60 @@
 import XCTest
 
-final class RightInspectorOverlayUITests: PnevmaUITestCase {
-    private var projectURL: URL?
-
-    override var expectedLaunchReadinessState: String { "project-ready" }
-
-    override func configureApp(_ app: XCUIApplication) throws {
-        let projectURL = try makeFixtureRepository()
-        self.projectURL = projectURL
-        app.launchEnvironment["PNEVMA_UI_TEST_PROJECT_PATH"] = projectURL.path
-    }
-
-    override func tearDownWithError() throws {
-        try super.tearDownWithError()
-        if let projectURL {
-            try? FileManager.default.removeItem(at: projectURL)
-        }
-        projectURL = nil
-    }
-
+@MainActor
+final class RightInspectorOverlayUITests: PnevmaProjectUITestCase {
     func testRightInspectorAllowsTabAndChangeSwitchingWhileOverlayIsOpen() throws {
-        var changesTab = app.descendants(matching: .any)["right-inspector-tab-changes"]
-        if !changesTab.waitForExistence(timeout: 1) {
-            app.typeKey("B", modifierFlags: [.command, .shift])
+        runStep("show right inspector") {
+            var changesTab = element("right-inspector-tab-changes")
+            if !changesTab.waitForExistence(timeout: 1) {
+                app.typeKey("B", modifierFlags: [.command, .shift])
+            }
+            changesTab = identifiedElement("right-inspector-tab-changes")
+            _ = identifiedElement("right-inspector-tab-files")
+            _ = attachScreenshot(surface: "right-inspector", phase: "visible")
         }
-        changesTab = identifiedElement("right-inspector-tab-changes")
+
+        let changesTab = identifiedElement("right-inspector-tab-changes")
         let filesTab = identifiedElement("right-inspector-tab-files")
-        changesTab.click()
+        let overlayTitle = staticText("right-inspector-overlay-title")
 
-        let alphaChange = identifiedElement("right-inspector-change-row-alpha_txt")
-        alphaChange.click()
+        runStep("open diff overlay") {
+            changesTab.click()
+            waitForSelection(changesTab)
+            let alphaChange = identifiedElement("right-inspector-change-row-alpha_txt")
+            alphaChange.click()
+            XCTAssertTrue(waitForDisplayedText(overlayTitle, toEqual: "alpha.txt"))
+            _ = attachScreenshot(surface: "right-inspector", phase: "change_alpha")
+        }
 
-        let overlayTitle = identifiedStaticText("right-inspector-overlay-title")
-        XCTAssertTrue(
-            overlayTitle.waitForExistence(timeout: defaultTimeout),
-            "Expected the change overlay to appear after selecting alpha.txt."
-        )
+        runStep("switch change row with overlay open") {
+            let betaChange = identifiedElement("right-inspector-change-row-beta_txt")
+            betaChange.click()
+            XCTAssertTrue(waitForDisplayedText(overlayTitle, toEqual: "beta.txt"))
+            _ = attachScreenshot(surface: "right-inspector", phase: "change_beta")
+        }
 
-        let betaChange = identifiedElement("right-inspector-change-row-beta_txt")
-        betaChange.click()
-        XCTAssertTrue(
-            overlayTitle.waitForExistence(timeout: defaultTimeout),
-            "Expected overlay title to remain visible after selecting a second change."
-        )
+        runStep("switch to files tab and keep overlay open") {
+            filesTab.click()
+            waitForSelection(filesTab)
+            let notesFile = identifiedElement("right-inspector-file-row-notes_md")
+            notesFile.click()
+            XCTAssertTrue(waitForDisplayedText(overlayTitle, toEqual: "notes.md"))
+            _ = attachScreenshot(surface: "right-inspector", phase: "file_notes")
+        }
 
-        filesTab.click()
+        runStep("switch back to changes tab") {
+            changesTab.click()
+            waitForSelection(changesTab)
+            let betaChange = identifiedElement("right-inspector-change-row-beta_txt")
+            betaChange.click()
+            XCTAssertTrue(waitForDisplayedText(overlayTitle, toEqual: "beta.txt"))
+            _ = attachScreenshot(surface: "right-inspector", phase: "return_to_changes")
+        }
 
-        let notesFile = identifiedElement("right-inspector-file-row-notes_md")
-        notesFile.click()
-        XCTAssertTrue(
-            overlayTitle.waitForExistence(timeout: defaultTimeout),
-            "Expected file overlay title to appear after selecting notes.md."
-        )
-
-        changesTab.click()
-        betaChange.click()
-        XCTAssertTrue(
-            overlayTitle.waitForExistence(timeout: defaultTimeout),
-            "Expected diff overlay title to remain accessible after switching back to Changes."
+        markExercised(
+            "right-inspector.overlay",
+            detail: "Changes/files tabs and overlay transitions remained interactive.",
+            evidence: []
         )
     }
 }

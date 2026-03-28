@@ -34,6 +34,7 @@ struct PromptTabView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                    .accessibilityIdentifier("workspaceOpener.prompt.agent")
                 }
 
                 TextEditor(text: $viewModel.promptText)
@@ -45,6 +46,7 @@ struct PromptTabView: View {
                             .fill(Color.primary.opacity(DesignTokens.Opacity.subtle))
                     )
                     .frame(height: viewModel.promptEditorHeight, alignment: .top)
+                    .accessibilityIdentifier("workspaceOpener.prompt.editor")
                     .overlay(alignment: .topLeading) {
                         if viewModel.promptText.isEmpty {
                             Text("What do you want to do?")
@@ -83,6 +85,7 @@ struct PromptTabView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("workspaceOpener.prompt.advanced")
                 .onHover { hovering in
                     if hovering {
                         NSCursor.pointingHand.push()
@@ -103,10 +106,12 @@ struct PromptTabView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 188)
+                            .accessibilityIdentifier("workspaceOpener.prompt.terminalMode")
                         }
 
                         Toggle("Remote SSH", isOn: $viewModel.sshEnabled)
                             .font(.system(size: 12))
+                            .accessibilityIdentifier("workspaceOpener.prompt.remoteSSH")
 
                         if viewModel.sshEnabled {
                             sshFields
@@ -119,6 +124,7 @@ struct PromptTabView: View {
                             TextField("Auto", text: $viewModel.workspaceNameOverride)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12))
+                                .accessibilityIdentifier("workspaceOpener.prompt.workspaceName")
                         }
                     }
                     .padding(.top, 8)
@@ -127,6 +133,7 @@ struct PromptTabView: View {
         }
         .padding(.horizontal, DesignTokens.Spacing.md)
         .padding(.top, 12)
+        .accessibilityElement(children: .contain)
         .padding(.bottom, DesignTokens.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -138,22 +145,26 @@ struct PromptTabView: View {
                 TextField("hostname or IP", text: $viewModel.sshHost)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
+                    .accessibilityIdentifier("workspaceOpener.prompt.ssh.host")
             }
             LabeledContent("User") {
                 TextField("username", text: $viewModel.sshUser)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
+                    .accessibilityIdentifier("workspaceOpener.prompt.ssh.user")
             }
             LabeledContent("Port") {
                 TextField("22", text: $viewModel.sshPort)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
                     .frame(width: 80)
+                    .accessibilityIdentifier("workspaceOpener.prompt.ssh.port")
             }
             LabeledContent("Path") {
                 TextField("~/project", text: $viewModel.sshRemotePath)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
+                    .accessibilityIdentifier("workspaceOpener.prompt.ssh.path")
             }
         }
         .font(.system(size: 12))

@@ -184,6 +184,16 @@ func sidebarToolDefinition(paneType: String) -> SidebarToolItem? {
     allSidebarTools.first { $0.paneType == paneType }
 }
 
+private func orderedSidebarTools(ids: [String]) -> [SidebarToolItem] {
+    ids.compactMap { id in
+        guard let tool = sidebarToolDefinition(id: id) else {
+            assertionFailure("Unknown sidebar tool id: \(id)")
+            return nil
+        }
+        return tool
+    }
+}
+
 @MainActor
 func sidebarTool(id: String, in workspace: Workspace?) -> SidebarToolItem? {
     sidebarTools(for: workspace).first { $0.id == id }
@@ -191,9 +201,8 @@ func sidebarTool(id: String, in workspace: Workspace?) -> SidebarToolItem? {
 
 @MainActor
 func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
-    let allowedIDs: Set<String>
     if let workspace, workspace.showsProjectToolsInUI {
-        allowedIDs = [
+        return orderedSidebarTools(ids: [
             "terminal",
             "tasks",
             "workflow",
@@ -208,10 +217,17 @@ func sidebarTools(for workspace: Workspace?) -> [SidebarToolItem] {
             "rules",
             "secrets",
             "ports",
-        ]
-    } else {
-        allowedIDs = ["terminal", "workflow", "notifications", "ssh", "harness", "browser", "analytics", "resource_monitor"]
+        ])
     }
 
-    return allSidebarTools.filter { allowedIDs.contains($0.id) }
+    return orderedSidebarTools(ids: [
+        "terminal",
+        "workflow",
+        "notifications",
+        "ssh",
+        "harness",
+        "browser",
+        "analytics",
+        "resource_monitor",
+    ])
 }

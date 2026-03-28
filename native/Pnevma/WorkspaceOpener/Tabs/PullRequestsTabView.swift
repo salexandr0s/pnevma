@@ -12,7 +12,8 @@ struct PullRequestsTabView: View {
             } else if viewModel.githubAvailable {
                 WorkspaceOpenerSearchField(
                     "Search by title or number",
-                    text: $viewModel.prSearchText
+                    text: $viewModel.prSearchText,
+                    accessibilityIdentifier: "workspaceOpener.pullRequests.search"
                 )
                 .padding(.horizontal, DesignTokens.Spacing.md)
                 .padding(.vertical, DesignTokens.Spacing.sm)
@@ -22,6 +23,7 @@ struct PullRequestsTabView: View {
                     .font(.system(size: 12))
                     .padding(.horizontal, DesignTokens.Spacing.md)
                     .padding(.bottom, DesignTokens.Spacing.sm)
+                    .accessibilityIdentifier("workspaceOpener.pullRequests.linkedTask")
 
                 Divider()
 
@@ -58,6 +60,7 @@ struct PullRequestsTabView: View {
                 )
             }
         }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -115,6 +118,9 @@ private struct PRRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
         .onHover { isHovering = $0 }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("workspaceOpener.pullRequest.\(pr.number)")
     }
 }

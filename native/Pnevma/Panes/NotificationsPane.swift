@@ -34,17 +34,20 @@ struct NotificationsView: View {
             .pickerStyle(.segmented)
             .frame(width: 200)
             .accessibilityLabel("Filter notifications")
+            .accessibilityIdentifier("pane.notifications.filter")
 
             Button("Mark All Read") { viewModel.markAllRead() }
                 .buttonStyle(.borderless)
                 .foregroundStyle(Color.accentColor)
                 .accessibilityLabel("Mark all notifications as read")
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                .accessibilityIdentifier("pane.notifications.markAllRead")
 
             Button("Clear") { showClearAllAlert = true }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Clear all notifications")
+                .accessibilityIdentifier("pane.notifications.clear")
         } content: {
             if let statusMessage = viewModel.statusMessage {
                 EmptyStateView(
@@ -62,6 +65,7 @@ struct NotificationsView: View {
                             NotificationRow(notification: notification)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("pane.notifications.row.\(notification.id)")
                     }
                     .listStyle(.inset)
                     .scrollContentBackground(.hidden)

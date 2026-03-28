@@ -80,18 +80,21 @@ struct ReplayView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Step backward")
+            .accessibilityIdentifier("pane.replay.backward")
 
             Button(action: { viewModel.togglePlayback() }) {
                 Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
             }
             .buttonStyle(.plain)
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
+            .accessibilityIdentifier("pane.replay.playPause")
 
             Button(action: { viewModel.stepForward() }) {
                 Image(systemName: "forward.frame.fill")
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Step forward")
+            .accessibilityIdentifier("pane.replay.forward")
 
             Picker("Speed", selection: $viewModel.playbackSpeed) {
                 Text("0.5x").tag(0.5)
@@ -101,6 +104,7 @@ struct ReplayView: View {
             }
             .frame(width: 100)
             .accessibilityLabel("Playback speed")
+            .accessibilityIdentifier("pane.replay.speed")
         } content: {
             VStack(spacing: 0) {
                 ZStack {

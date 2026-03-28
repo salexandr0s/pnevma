@@ -1,5 +1,6 @@
 import XCTest
 
+@MainActor
 final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     func testLaunchShowsWorkspaceSidebarAndToolDock() {
         requireExists(identifiedElement("sidebar.newWorkspace"))
@@ -16,21 +17,18 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     }
 
     func testSettingsWindowOpensFromSidebarFooterButton() {
-        identifiedElement("sidebar.settings").click()
-
-        requireExists(identifiedElement("settings.root"))
+        _ = openSettingsWindow()
         requireExists(app.staticTexts["Auto-save workspace on quit"])
         requireExists(app.staticTexts["Auto-hide bottom tool bar"])
     }
 
     func testGhosttySettingsDoesNotResizeSettingsWindow() {
-        identifiedElement("sidebar.settings").click()
-
-        requireExists(identifiedElement("settings.root"))
+        _ = openSettingsWindow()
         let initialWindow = requireExists(app.windows.element(boundBy: max(0, app.windows.count - 1)))
         let initialFrame = initialWindow.frame
 
-        identifiedElement("settings.sidebar.ghostty").click()
+        let ghosttyButton = requireHittable(requireExists(app.buttons.matching(identifier: "settings.sidebar.ghostty").firstMatch))
+        ghosttyButton.click()
 
         requireExists(app.staticTexts["Embedded terminal rendering, config-backed Ghostty options, and terminal keybindings."])
 
@@ -42,20 +40,20 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
     }
 
     func testOpenWorkspaceDialogShowsVisibleActionsImmediately() {
-        identifiedElement("sidebar.newWorkspace").click()
+        let opener = openWorkspaceOpener()
 
-        requireExists(app.staticTexts["Open Workspace"])
-        requireExists(app.buttons["Local Folder"])
-        requireExists(app.buttons["Remote SSH"])
-        requireExists(app.buttons["Cancel"])
+        requireExists(opener)
+        requireExists(identifiedElement("opener.tab.prompt"))
+        requireExists(identifiedElement("workspaceOpener.prompt.agent"))
+        requireExists(identifiedElement("workspaceOpener.action.cancel"))
+        requireExists(identifiedElement("workspaceOpener.action.submit"))
     }
 
     func testWorkspaceTabBarButtonsRemainClickable() {
         app.typeKey("t", modifierFlags: .command)
 
-        let tabBar = requireExists(app.tabGroups["Tab bar"])
-        let addButton = requireHittable(app.buttons["New tab"])
-        let closeButtons = app.buttons.matching(identifier: "Close tab")
+        let addButton = requireHittable(app.buttons["tabbar.add"])
+        let closeButtons = app.buttons.matching(identifier: "tabbar.close")
 
         XCTAssertGreaterThanOrEqual(closeButtons.count, 2)
 
@@ -66,7 +64,7 @@ final class PnevmaSidebarSmokeTests: PnevmaUITestCase {
         closeButton.click()
         waitForCount(closeButtons, count: 2)
 
-        XCTAssertTrue(tabBar.exists)
+        XCTAssertTrue(addButton.exists)
     }
 
     func testToolDockSwapReplacesDrawerContent() {

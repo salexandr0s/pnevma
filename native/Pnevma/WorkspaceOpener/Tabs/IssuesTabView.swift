@@ -12,7 +12,8 @@ struct IssuesTabView: View {
             } else if viewModel.issuesAvailable {
                 WorkspaceOpenerSearchField(
                     "Search by title, number, or author",
-                    text: $viewModel.issueSearchText
+                    text: $viewModel.issueSearchText,
+                    accessibilityIdentifier: "workspaceOpener.issues.search"
                 )
                 .padding(.horizontal, DesignTokens.Spacing.md)
                 .padding(.vertical, DesignTokens.Spacing.sm)
@@ -22,6 +23,7 @@ struct IssuesTabView: View {
                     .font(.system(size: 12))
                     .padding(.horizontal, DesignTokens.Spacing.md)
                     .padding(.bottom, DesignTokens.Spacing.sm)
+                    .accessibilityIdentifier("workspaceOpener.issues.linkedTask")
 
                 Divider()
 
@@ -58,6 +60,7 @@ struct IssuesTabView: View {
                 )
             }
         }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -124,6 +127,9 @@ private struct IssueRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
         .onHover { isHovering = $0 }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("workspaceOpener.issue.\(issue.number)")
     }
 }

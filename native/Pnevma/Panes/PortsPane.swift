@@ -39,7 +39,7 @@ struct PortsView: View {
                 }
             }
         }
-        .accessibilityIdentifier("portsPane")
+        .accessibilityIdentifier("pane.ports")
     }
 }
 

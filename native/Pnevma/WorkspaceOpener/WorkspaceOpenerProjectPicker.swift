@@ -72,6 +72,8 @@ struct WorkspaceOpenerProjectPicker: View {
                     .stroke(Color.primary.opacity(0.06), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("workspaceOpener.projectPicker")
         }
         .menuStyle(.borderlessButton)
         .accessibilityIdentifier("workspaceOpener.projectPicker")
