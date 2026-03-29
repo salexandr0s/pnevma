@@ -635,4 +635,35 @@ final class TerminalPaneViewTests: XCTestCase {
         XCTAssertTrue(firstPane.hasAgentLauncherOverlay)
         XCTAssertTrue(secondPane.hasAgentLauncherOverlay)
     }
+
+    func testAgentLauncherOverlayHostCapturesPointerHitsWithinOverlayFrame() throws {
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: ActiveWorkspaceActivationHub()
+        )
+        defer { pane.dispose() }
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        pane.frame = container.bounds
+        container.addSubview(pane)
+
+        pane.installAgentLauncherForTesting()
+        container.layoutSubtreeIfNeeded()
+        pane.layoutSubtreeIfNeeded()
+
+        let overlayHost = try XCTUnwrap(
+            pane.subviews.first { String(describing: type(of: $0)).contains("AgentLauncherOverlayHostingView") }
+        )
+        let insidePoint = NSPoint(x: overlayHost.bounds.midX, y: overlayHost.bounds.midY)
+        let outsidePoint = NSPoint(x: -1, y: overlayHost.bounds.midY)
+
+        XCTAssertNotNil(overlayHost.hitTest(insidePoint))
+        XCTAssertNil(overlayHost.hitTest(outsidePoint))
+    }
 }

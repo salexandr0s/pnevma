@@ -41,4 +41,13 @@ final class FirstMouseHostingViewTests: XCTestCase {
         XCTAssertNil(view.hitTest(NSPoint(x: 10, y: 10)))
     }
 
+    func testAgentLauncherOverlayHostingViewCapturesHitsInsideBounds() {
+        let view = AgentLauncherOverlayHostingView(rootView: AnyView(Text("Launcher")))
+        view.frame = NSRect(x: 0, y: 0, width: 96, height: 32)
+
+        XCTAssertTrue(view.acceptsFirstMouse(for: nil))
+        XCTAssertFalse(view.mouseDownCanMoveWindow)
+        XCTAssertNil(view.hitTest(NSPoint(x: -1, y: 8)))
+        XCTAssertNotNil(view.hitTest(NSPoint(x: 12, y: 12)))
+    }
 }

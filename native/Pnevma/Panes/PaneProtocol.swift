@@ -756,7 +756,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     private var hostView: TerminalHostView?
     private var stateHostView: NSHostingView<TerminalStateView>?
-    private var agentLauncherView: NSHostingView<AgentLauncherOverlay>?
+    private var agentLauncherView: AgentLauncherOverlayHostingView<AgentLauncherOverlay>?
     private var agentLauncherKeyMonitor: Any?
     private let autoStartIfNeeded: Bool
     private var launchMetadata: TerminalLaunchMetadata
@@ -1509,7 +1509,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         let overlay = AgentLauncherOverlay { [weak self] agent in
             self?.launchAgent(agent)
         }
-        let hosting = NSHostingView(rootView: overlay)
+        let hosting = AgentLauncherOverlayHostingView(rootView: overlay)
         hosting.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hosting)
         NSLayoutConstraint.activate([
@@ -2132,10 +2132,12 @@ private struct AgentLogoButton: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 14, height: 14)
                 .padding(4)
+                .frame(minWidth: 24, minHeight: 24)
                 .background(
-                    RoundedRectangle(cornerRadius: 4)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(isHovered ? Color.white.opacity(0.15) : Color.clear)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 .scaleEffect(isHovered ? 1.1 : 1.0)
                 .animation(ChromeMotion.animation(for: .hover), value: isHovered)
         }
