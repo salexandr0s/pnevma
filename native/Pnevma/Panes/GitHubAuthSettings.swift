@@ -168,7 +168,9 @@ struct GitHubSettingsTab: View {
             Spacer()
 
             Button("Refresh") { viewModel.refresh() }
-            Button("Add Account") { viewModel.addAccount() }
+            Button(viewModel.snapshot?.accounts.isEmpty == false ? "Add Another Account" : "Add Account") {
+                viewModel.addAccount()
+            }
                 .disabled(
                     viewModel.isAuthJobRunning
                         || viewModel.isLoading
@@ -193,7 +195,7 @@ struct GitHubSettingsTab: View {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text(authJob.message ?? "Waiting for GitHub browser authentication to complete.")
+                            Text(authJob.message ?? "Opening GitHub sign-in in your default browser.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

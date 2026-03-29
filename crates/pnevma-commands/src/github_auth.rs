@@ -1,7 +1,8 @@
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -97,8 +98,31 @@ struct GhAuthStatusAccountJson {
     token_source: Option<String>,
     #[serde(rename = "gitProtocol")]
     git_protocol: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_scopes")]
     scopes: Vec<String>,
+}
+
+fn deserialize_scopes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Scopes {
+        List(Vec<String>),
+        Csv(String),
+    }
+
+    Ok(match Option::<Scopes>::deserialize(deserializer)? {
+        Some(Scopes::List(scopes)) => scopes,
+        Some(Scopes::Csv(scopes)) => scopes
+            .split(',')
+            .map(str::trim)
+            .filter(|scope| !scope.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        None => Vec::new(),
+    })
 }
 
 fn helper_unknown_status() -> GitHubGitHelperStatusView {
@@ -138,7 +162,8 @@ fn gh_command_with_common_env() -> TokioCommand {
     let mut command = crate::github_cli::command();
     command
         .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1");
+        .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1")
+        .env("GH_BROWSER", "open");
     command
 }
 
@@ -444,6 +469,14 @@ async fn update_auth_job(
     store_snapshot(state, snapshot).await
 }
 
+fn account_logins(snapshot: &GitHubAuthStatusView) -> BTreeSet<String> {
+    snapshot
+        .accounts
+        .iter()
+        .map(|account| account.login.clone())
+        .collect()
+}
+
 async fn run_direct_login() -> Result<(), String> {
     let mut command = gh_command_with_common_env();
     command
@@ -541,10 +574,19 @@ pub async fn start_github_auth_login(state: &AppState) -> GitHubAuthStatusView {
             .unwrap_or_else(GitHubAuthStatusView::default);
     }
 
+    let previous_snapshot = if let Some(snapshot) = state.github_auth.snapshot.read().await.clone()
+    {
+        snapshot
+    } else {
+        let _guard = state.github_auth.refresh_lock.lock().await;
+        refresh_github_auth_status_locked(state).await
+    };
+    let previous_account_logins = account_logins(&previous_snapshot);
+
     let started_at = Utc::now();
     let running_job = GitHubAuthJobView {
         state: "running".to_string(),
-        message: Some("Waiting for GitHub CLI browser authentication to complete.".to_string()),
+        message: Some("Opening GitHub sign-in in your default browser.".to_string()),
         started_at,
         finished_at: None,
     };
@@ -578,8 +620,27 @@ pub async fn start_github_auth_login(state: &AppState) -> GitHubAuthStatusView {
             Ok(()) => {
                 let _guard = state_arc.github_auth.refresh_lock.lock().await;
                 let mut refreshed = inspect_github_auth_status().await;
-                refreshed.auth_job = None;
                 *state_arc.github_auth.last_hosts_mtime.lock().await = hosts_file_mtime();
+                let refreshed_account_logins = account_logins(&refreshed);
+                let added_accounts = refreshed_account_logins
+                    .difference(&previous_account_logins)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                refreshed.auth_job = if !previous_account_logins.is_empty()
+                    && added_accounts.is_empty()
+                {
+                    Some(GitHubAuthJobView {
+                        state: "failed".to_string(),
+                        message: Some(
+                            "No new GitHub account was added. Your browser likely reused the current GitHub session. Switch accounts in the opened browser, then try Add Account again."
+                                .to_string(),
+                        ),
+                        started_at,
+                        finished_at: Some(Utc::now()),
+                    })
+                } else {
+                    None
+                };
                 let _ = store_snapshot(state_arc.as_ref(), refreshed).await;
             }
             Err(message) => {
@@ -750,6 +811,47 @@ exit 1
     }
 
     #[tokio::test]
+    async fn inspect_github_auth_status_accepts_comma_delimited_scopes() {
+        let home = tempdir().expect("temp home");
+        let _env = EnvGuard::new(home.path(), None).await;
+        fs::create_dir_all(home.path().join(".config/gh")).expect("create gh config dir");
+        fs::write(home.path().join(".gitconfig"), b"").expect("write gitconfig");
+
+        let gh_path = home.path().join("gh");
+        write_fake_executable(
+            &gh_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.99.0"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{"hosts":{"github.com":[{"active":true,"login":"alpha","state":"success","tokenSource":"/tmp/hosts.yml","gitProtocol":"https","scopes":"gist, read:org, repo, workflow"}]}}
+JSON
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+        );
+        let _gh = TestGithubCliBinaryOverride::new(gh_path);
+
+        let snapshot = inspect_github_auth_status().await;
+        assert!(snapshot.cli_available);
+        assert_eq!(snapshot.active_login.as_deref(), Some("alpha"));
+        assert_eq!(
+            snapshot.accounts[0].scopes,
+            vec![
+                "gist".to_string(),
+                "read:org".to_string(),
+                "repo".to_string(),
+                "workflow".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn inspect_github_auth_status_reports_missing_helper() {
         let home = tempdir().expect("temp home");
         let _env = EnvGuard::new(home.path(), None).await;
@@ -826,5 +928,104 @@ exit 1
         assert_eq!(snapshot.active_login.as_deref(), Some("switched"));
         let log = fs::read_to_string(log_path).expect("read log");
         assert!(log.contains("auth switch --hostname github.com --user switched"));
+    }
+
+    #[tokio::test]
+    async fn perform_login_uses_open_for_browser_launch() {
+        let home = tempdir().expect("temp home");
+        let _env = EnvGuard::new(home.path(), None).await;
+        let log_path = home.path().join("gh.log");
+        let gh_path = home.path().join("gh");
+        write_fake_executable(
+            &gh_path,
+            &format!(
+                r#"#!/bin/sh
+echo "GH_BROWSER=$GH_BROWSER" >> "{}"
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.99.0"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+                log_path.display()
+            ),
+        );
+        let _gh = TestGithubCliBinaryOverride::new(gh_path);
+
+        perform_login().await.expect("login succeeds");
+
+        let log = fs::read_to_string(log_path).expect("read log");
+        assert!(log.contains("GH_BROWSER=open"));
+    }
+
+    #[tokio::test]
+    async fn start_login_reports_when_no_new_account_was_added() {
+        let home = tempdir().expect("temp home");
+        let _env = EnvGuard::new(home.path(), None).await;
+        fs::create_dir_all(home.path().join(".config/gh")).expect("create gh config dir");
+        fs::write(home.path().join(".gitconfig"), b"").expect("write gitconfig");
+
+        let gh_path = home.path().join("gh");
+        write_fake_executable(
+            &gh_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.99.0"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{"hosts":{"github.com":[{"active":true,"login":"alpha","state":"success","tokenSource":"/tmp/hosts.yml","gitProtocol":"https","scopes":"repo, read:org"}]}}
+JSON
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+        );
+        let _gh = TestGithubCliBinaryOverride::new(gh_path);
+
+        let state = std::sync::Arc::new(AppState::new(std::sync::Arc::new(crate::NullEmitter)));
+        let _ = state.self_arc.set(std::sync::Arc::clone(&state));
+
+        let initial = refresh_github_auth_status(state.as_ref()).await;
+        assert_eq!(initial.active_login.as_deref(), Some("alpha"));
+
+        let _running = start_github_auth_login(state.as_ref()).await;
+
+        let mut final_snapshot = None;
+        for _ in 0..50 {
+            let snapshot = get_github_auth_status(state.as_ref()).await;
+            if snapshot
+                .auth_job
+                .as_ref()
+                .and_then(|job| job.finished_at)
+                .is_some()
+            {
+                final_snapshot = Some(snapshot);
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        let snapshot = final_snapshot.expect("completed snapshot");
+        assert_eq!(snapshot.active_login.as_deref(), Some("alpha"));
+        assert_eq!(
+            snapshot.auth_job.as_ref().map(|job| job.state.as_str()),
+            Some("failed")
+        );
+        assert!(snapshot
+            .auth_job
+            .as_ref()
+            .and_then(|job| job.message.as_deref())
+            .unwrap_or_default()
+            .contains("No new GitHub account was added"));
     }
 }

@@ -260,7 +260,7 @@ final class WorkspaceOpenerViewModel {
         }
 
         if gitHubStatus.authJobState == "running" {
-            return "Complete the GitHub browser sign-in flow. Pnevma will refresh automatically when it finishes."
+            return "Finish GitHub sign-in in your browser. Pnevma refreshes automatically when it finishes."
         }
 
         if let detail = gitHubStatus.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -546,7 +546,7 @@ final class WorkspaceOpenerViewModel {
         case .notAuthenticated:
             do {
                 let _: GitHubAuthSnapshot = try await bus.call(method: "github.auth.add_account", params: nil)
-                errorMessage = "Complete the GitHub browser sign-in flow. Pnevma will refresh automatically when it finishes."
+                errorMessage = "Finish GitHub sign-in in your browser. Pnevma refreshes automatically when it finishes."
                 await refreshGitHubStatus(using: bus)
             } catch {
                 errorMessage = error.localizedDescription
@@ -562,7 +562,7 @@ final class WorkspaceOpenerViewModel {
         Task {
             do {
                 let _: GitHubAuthSnapshot = try await bus.call(method: "github.auth.add_account", params: nil)
-                errorMessage = "Complete the GitHub browser sign-in flow. Pnevma will refresh automatically when it finishes."
+                errorMessage = "Finish GitHub sign-in in your browser. Pnevma refreshes automatically when it finishes."
                 await refreshGitHubStatus(using: bus)
             } catch {
                 errorMessage = error.localizedDescription

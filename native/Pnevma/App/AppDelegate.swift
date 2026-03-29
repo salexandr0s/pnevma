@@ -215,7 +215,7 @@ final class TitlebarGitHubController {
             )
             snapshot = addedSnapshot
             showToast(
-                "Continue GitHub sign-in in your browser",
+                "Opening GitHub sign-in in your default browser",
                 "person.crop.circle.badge.plus",
                 .info
             )

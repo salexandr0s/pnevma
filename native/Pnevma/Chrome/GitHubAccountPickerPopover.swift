@@ -52,7 +52,7 @@ struct GitHubAccountPickerPopover: View {
         let primaryAction = GitHubAccountPickerPrimaryAction.resolve(snapshot: snapshot)
         ToolbarAttachmentScaffold(
             title: "GitHub Accounts",
-            subtitle: snapshotSubtitle,
+            subtitle: nil,
             headerActions: {
                 if let primaryAction {
                     Button {
@@ -103,7 +103,7 @@ struct GitHubAccountPickerPopover: View {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text(authJob.message ?? "Waiting for GitHub browser sign-in to complete.")
+                            Text(authJob.message ?? "Opening GitHub sign-in in your default browser.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer(minLength: 0)
@@ -157,17 +157,6 @@ struct GitHubAccountPickerPopover: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    private var snapshotSubtitle: String? {
-        guard let snapshot else { return "Checking GitHub CLI status…" }
-        if let activeLogin = snapshot.activeLogin {
-            return "Current account: @\(activeLogin)"
-        }
-        if let authJob = snapshot.authJob, authJob.state == "running" {
-            return "Complete the browser flow to finish signing in."
-        }
-        return "Switch the active github.com account used by GitHub CLI."
     }
 
     private var searchField: some View {

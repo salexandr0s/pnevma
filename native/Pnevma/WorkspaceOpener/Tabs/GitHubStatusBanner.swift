@@ -21,7 +21,7 @@ struct WorkspaceOpenerGitHubBanner: View {
                         HStack(spacing: 6) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("Waiting for GitHub browser sign-in to complete.")
+                            Text("Opening GitHub sign-in in your default browser.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -42,7 +42,7 @@ struct WorkspaceOpenerGitHubBanner: View {
                 Spacer(minLength: 10)
 
                 VStack(alignment: .trailing, spacing: 8) {
-                    Button("Add Account") {
+                    Button(viewModel.gitHubConnectionLabel == nil ? "Add Account" : "Add Another Account") {
                         viewModel.addGitHubAccount(using: commandBus)
                     }
                     .disabled(viewModel.gitHubAuthJobRunning)

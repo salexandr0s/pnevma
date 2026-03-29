@@ -769,7 +769,7 @@ final class TitlebarGitHubControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.snapshot?.authJob?.state, "running")
         XCTAssertEqual(statusView.gitHubTitle, "Signing in…")
-        XCTAssertEqual(toasts.last?.text, "Continue GitHub sign-in in your browser")
+        XCTAssertEqual(toasts.last?.text, "Opening GitHub sign-in in your default browser")
         XCTAssertEqual(toasts.last?.style, .info)
     }
 
