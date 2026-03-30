@@ -3,20 +3,17 @@ import SwiftUI
 // MARK: - AgentsSection
 
 struct AgentsSection: View {
-    var viewModel: AgentViewModel
+    @Bindable var viewModel: AgentViewModel
     @State private var showDeleteAgentAlert = false
     @State private var agentToDelete: String? = nil
 
     var body: some View {
-        if let editingAgent = viewModel.editingAgent {
-            AgentFormCard(agent: Binding(
-                get: { editingAgent },
-                set: { viewModel.editingAgent = $0 }
-            ), onSave: { agent in
-                viewModel.save(agent)
-            }, onCancel: {
-                viewModel.cancelEditing()
-            })
+        if let editingAgent = Binding($viewModel.editingAgent) {
+            AgentFormCard(
+                agent: editingAgent,
+                onSave: viewModel.save(_:),
+                onCancel: viewModel.cancelEditing
+            )
         } else if viewModel.isLoading {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -179,6 +176,7 @@ struct AgentFormCard: View {
     let onCancel: () -> Void
     @State private var showAdvanced = false
     @State private var stationsText: String = ""
+    @State private var systemPromptText: String = ""
 
     var body: some View {
         ScrollView {
@@ -231,7 +229,7 @@ struct AgentFormCard: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
-                        Picker("", selection: $agent.provider) {
+                        Picker("Provider", selection: $agent.provider) {
                             Label {
                                 Text("Anthropic")
                             } icon: {
@@ -259,10 +257,7 @@ struct AgentFormCard: View {
                     Text("System Prompt")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
-                    TextEditor(text: Binding(
-                        get: { agent.systemPrompt ?? "" },
-                        set: { agent.systemPrompt = $0.isEmpty ? nil : $0 }
-                    ))
+                    TextEditor(text: $systemPromptText)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 200)
                     .scrollContentBackground(.hidden)
@@ -290,20 +285,21 @@ struct AgentFormCard: View {
                         HStack {
                             Text("Token Budget")
                             Spacer()
-                            TextField("", value: $agent.tokenBudget, format: .number)
+                            TextField("Token Budget", value: $agent.tokenBudget, format: .number)
+                                .labelsHidden()
                                 .frame(width: 100)
                                 .multilineTextAlignment(.trailing)
                         }
                         HStack {
                             Text("Timeout (min)")
                             Spacer()
-                            TextField("", value: $agent.timeoutMinutes, format: .number)
+                            TextField("Timeout (min)", value: $agent.timeoutMinutes, format: .number)
+                                .labelsHidden()
                                 .frame(width: 80)
                                 .multilineTextAlignment(.trailing)
                         }
                         Stepper("Max Concurrent: \(agent.maxConcurrent)", value: $agent.maxConcurrent, in: 1...10)
                         TextField("Stations (comma-separated)", text: $stationsText)
-                            .onAppear { stationsText = agent.stations.joined(separator: ", ") }
                             .onChange(of: stationsText) {
                                 agent.stations = stationsText
                                     .split(separator: ",")
@@ -318,6 +314,13 @@ struct AgentFormCard: View {
                 .foregroundStyle(.secondary)
             }
             .padding(20)
+        }
+        .task(id: agent.id) {
+            stationsText = agent.stations.joined(separator: ", ")
+            systemPromptText = agent.systemPrompt ?? ""
+        }
+        .onChange(of: systemPromptText) {
+            agent.systemPrompt = systemPromptText.isEmpty ? nil : systemPromptText
         }
     }
 }

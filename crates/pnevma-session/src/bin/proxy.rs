@@ -11,9 +11,12 @@ use pnevma_session_protocol::frame::{
     decode_frame_header, encode_frame, BackendMessage, ProxyMessage,
 };
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use uuid::Uuid;
+
+const RAW_MODE_ATTACH_ERROR_MARKER: &str = "PNEVMA_PROXY_ATTACH_ERROR: raw-mode-unavailable";
 
 #[derive(Debug)]
 struct Args {
@@ -115,7 +118,10 @@ async fn run_local_proxy(
     // When launched inside an embedded terminal (e.g. Ghostty libghostty),
     // the PTY slave may not be fully initialized at exec time. We retry
     // briefly with back-off to handle this race.
-    let _raw_guard = enter_raw_mode_with_retry();
+    let _raw_guard = enter_raw_mode_with_retry().inspect_err(|error| {
+        eprintln!("{RAW_MODE_ATTACH_ERROR_MARKER}");
+        eprintln!("proxy: {error}");
+    })?;
 
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -242,32 +248,113 @@ fn stdin_is_tty() -> bool {
 
 /// Try to enter raw mode, retrying a few times if stdin is a TTY that
 /// isn't ready yet (common in embedded terminal contexts).
-fn enter_raw_mode_with_retry() -> Option<RawModeGuard> {
-    if !stdin_is_tty() {
-        eprintln!("proxy: stdin is not a TTY, skipping raw mode");
-        return None;
+fn enter_raw_mode_with_retry() -> Result<RawModeGuard, RawModeRetryError> {
+    let mut setup = SystemRawModeSetup;
+    enter_raw_mode_with_retry_using(&mut setup, RawModeRetryPolicy::default())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RawModeRetryPolicy {
+    timeout: Duration,
+    backoff: Duration,
+}
+
+impl Default for RawModeRetryPolicy {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(2),
+            backoff: Duration::from_millis(25),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawModeRetryError {
+    StdinNotTTY,
+    TimedOut { attempts: u32, last_error: String },
+}
+
+impl std::fmt::Display for RawModeRetryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StdinNotTTY => write!(f, "stdin is not a TTY"),
+            Self::TimedOut {
+                attempts,
+                last_error,
+            } => write!(
+                f,
+                "raw mode unavailable after {attempts} attempt(s): {last_error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RawModeRetryError {}
+
+trait RawModeSetup {
+    type Guard;
+
+    fn stdin_is_tty(&self) -> bool;
+    fn enter_raw_mode(&mut self) -> Result<Self::Guard, std::io::Error>;
+    fn now(&self) -> Instant;
+    fn sleep(&mut self, duration: Duration);
+}
+
+struct SystemRawModeSetup;
+
+impl RawModeSetup for SystemRawModeSetup {
+    type Guard = RawModeGuard;
+
+    fn stdin_is_tty(&self) -> bool {
+        stdin_is_tty()
     }
 
-    const MAX_ATTEMPTS: u32 = 10;
-    const RETRY_DELAY_MS: u64 = 15;
+    fn enter_raw_mode(&mut self) -> Result<Self::Guard, std::io::Error> {
+        RawModeGuard::enter()
+    }
 
-    for attempt in 1..=MAX_ATTEMPTS {
-        match RawModeGuard::enter() {
-            Ok(guard) => return Some(guard),
-            Err(e) if attempt < MAX_ATTEMPTS => {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+fn enter_raw_mode_with_retry_using<S: RawModeSetup>(
+    setup: &mut S,
+    policy: RawModeRetryPolicy,
+) -> Result<S::Guard, RawModeRetryError> {
+    if !setup.stdin_is_tty() {
+        return Err(RawModeRetryError::StdinNotTTY);
+    }
+
+    let started_at = setup.now();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match setup.enter_raw_mode() {
+            Ok(guard) => return Ok(guard),
+            Err(error) => {
+                let message = error.to_string();
+                let elapsed = setup.now().saturating_duration_since(started_at);
+                if elapsed >= policy.timeout {
+                    return Err(RawModeRetryError::TimedOut {
+                        attempts,
+                        last_error: message,
+                    });
+                }
+
+                let sleep_for = std::cmp::min(policy.backoff, policy.timeout - elapsed);
                 eprintln!(
-                    "proxy: raw mode attempt {attempt}/{MAX_ATTEMPTS} failed: {e}, retrying in {RETRY_DELAY_MS}ms"
+                    "proxy: raw mode attempt {attempts} failed: {message}, retrying in {}ms",
+                    sleep_for.as_millis()
                 );
-                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
-            }
-            Err(e) => {
-                eprintln!(
-                    "proxy: could not set raw mode after {MAX_ATTEMPTS} attempts ({e}), continuing without it"
-                );
+                setup.sleep(sleep_for);
             }
         }
     }
-    None
 }
 
 fn get_terminal_size() -> Option<(u16, u16)> {
@@ -354,5 +441,122 @@ impl Drop for RawModeGuard {
         if let Ok(mut global) = ORIGINAL_TERMIOS.lock() {
             *global = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MockGuard;
+
+    struct MockRawModeSetup {
+        stdin_is_tty: bool,
+        now: Instant,
+        results: VecDeque<Result<MockGuard, std::io::Error>>,
+        sleeps: Vec<Duration>,
+    }
+
+    impl MockRawModeSetup {
+        fn new(
+            stdin_is_tty: bool,
+            results: impl IntoIterator<Item = Result<MockGuard, std::io::Error>>,
+        ) -> Self {
+            Self {
+                stdin_is_tty,
+                now: Instant::now(),
+                results: results.into_iter().collect(),
+                sleeps: Vec::new(),
+            }
+        }
+    }
+
+    impl RawModeSetup for MockRawModeSetup {
+        type Guard = MockGuard;
+
+        fn stdin_is_tty(&self) -> bool {
+            self.stdin_is_tty
+        }
+
+        fn enter_raw_mode(&mut self) -> Result<Self::Guard, std::io::Error> {
+            self.results
+                .pop_front()
+                .unwrap_or_else(|| Err(std::io::Error::other("raw mode still unavailable")))
+        }
+
+        fn now(&self) -> Instant {
+            self.now
+        }
+
+        fn sleep(&mut self, duration: Duration) {
+            self.sleeps.push(duration);
+            self.now += duration;
+        }
+    }
+
+    #[test]
+    fn raw_mode_retry_succeeds_after_transient_failures() {
+        let mut setup = MockRawModeSetup::new(
+            true,
+            [
+                Err(std::io::Error::other("not ready")),
+                Err(std::io::Error::other("still racing")),
+                Ok(MockGuard),
+            ],
+        );
+
+        let result = enter_raw_mode_with_retry_using(&mut setup, RawModeRetryPolicy::default());
+
+        assert_eq!(result, Ok(MockGuard));
+        assert_eq!(
+            setup.sleeps,
+            [Duration::from_millis(25), Duration::from_millis(25)]
+        );
+    }
+
+    #[test]
+    fn raw_mode_retry_times_out_deterministically() {
+        let mut setup = MockRawModeSetup::new(true, [Err(std::io::Error::other("not ready"))]);
+        let policy = RawModeRetryPolicy {
+            timeout: Duration::from_millis(50),
+            backoff: Duration::from_millis(25),
+        };
+
+        let result = enter_raw_mode_with_retry_using(&mut setup, policy);
+
+        assert_eq!(
+            result,
+            Err(RawModeRetryError::TimedOut {
+                attempts: 3,
+                last_error: "raw mode still unavailable".to_string(),
+            })
+        );
+        assert_eq!(
+            setup.sleeps,
+            [Duration::from_millis(25), Duration::from_millis(25)]
+        );
+    }
+
+    #[test]
+    fn raw_mode_retry_never_reports_success_without_raw_mode() {
+        let mut setup = MockRawModeSetup::new(
+            true,
+            [
+                Err(std::io::Error::other("not ready")),
+                Err(std::io::Error::other("still not ready")),
+                Err(std::io::Error::other("unavailable")),
+            ],
+        );
+        let policy = RawModeRetryPolicy {
+            timeout: Duration::from_millis(50),
+            backoff: Duration::from_millis(25),
+        };
+
+        let result = enter_raw_mode_with_retry_using(&mut setup, policy);
+
+        assert!(result.is_err());
+        assert_eq!(setup.sleeps.len(), 2);
     }
 }

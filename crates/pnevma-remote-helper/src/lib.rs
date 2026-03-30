@@ -1270,6 +1270,7 @@ fn process_start_time(pid: u32) -> Option<i64> {
     Some(fnv1a_hash(lstart.as_bytes()) as i64)
 }
 
+#[cfg(not(target_os = "linux"))]
 /// FNV-1a 64-bit hash — deterministic, stable across Rust versions.
 fn fnv1a_hash(data: &[u8]) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;

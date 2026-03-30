@@ -29,7 +29,28 @@ struct PRChip: View {
 
     @State private var isHovering = false
 
+    private var destinationURL: URL? {
+        guard let url else { return nil }
+        return URL(string: url)
+    }
+
     var body: some View {
+        Group {
+            if let destinationURL {
+                Link(destination: destinationURL) {
+                    chipLabel
+                }
+            } else {
+                chipLabel
+            }
+        }
+        .onHover { isHovering = $0 }
+        .help(url ?? "PR #\(number)")
+        .fixedSize()
+        .accessibilityLabel("Pull request \(number)")
+    }
+
+    private var chipLabel: some View {
         Text("#\(number)")
             .font(.caption.weight(.medium))
             .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
@@ -38,16 +59,6 @@ struct PRChip: View {
             .background(
                 Capsule().fill(Color.accentColor.opacity(isHovering ? 0.15 : 0.08))
             )
-            .onHover { isHovering = $0 }
-            .onTapGesture {
-                if let url, let nsURL = URL(string: url) {
-                    NSWorkspace.shared.open(nsURL)
-                }
-            }
-            .accessibilityAddTraits(.isButton)
-            .help(url ?? "PR #\(number)")
-            .fixedSize()
-            .accessibilityLabel("Pull request \(number)")
     }
 }
 

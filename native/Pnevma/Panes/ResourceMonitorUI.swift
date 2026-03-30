@@ -281,22 +281,18 @@ private struct ResourceSessionRow: View {
 // MARK: - Formatting Helpers
 
 private func resourceFormatMemory(_ bytes: UInt64) -> String {
-    let mb = Double(bytes) / (1024 * 1024)
-    if mb >= 1024 {
-        return String(format: "%.1f GB", mb / 1024)
-    }
-    return String(format: "%.1f MB", mb)
+    ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
 }
 
 private func resourceFormatCpu(_ percent: Float) -> String {
-    String(format: "%.1f%%", percent)
+    percent.formatted(.number.precision(.fractionLength(1))) + "%"
 }
 
 private func resourceFormatPercent(_ percent: Float) -> String {
     if percent >= 10 {
-        return String(format: "%.0f%%", percent)
+        return percent.formatted(.number.precision(.fractionLength(0))) + "%"
     }
-    return String(format: "%.1f%%", percent)
+    return percent.formatted(.number.precision(.fractionLength(1))) + "%"
 }
 
 private func resourceSessionStatusColor(_ status: String) -> Color {

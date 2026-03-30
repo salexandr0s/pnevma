@@ -18,6 +18,12 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
         let scale: Double
     }
 
+    enum InputDispatch: Equatable {
+        case key(String?)
+        case text(String)
+        case preedit(String)
+    }
+
     // MARK: - Public
 
     /// The terminal surface managed by this view.
@@ -65,6 +71,8 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     /// dispatch to ghostty exactly once after `interpretKeyEvents` returns.
     private var keyTextAccumulator: [String]?
     private var lastAppliedSurfaceLayout: PendingSurfaceLayout?
+    var inputDispatchObserver: ((InputDispatch) -> Void)?
+    var interpretKeyEventsOverride: (([NSEvent]) -> Void)?
 
     // MARK: - Init
 
@@ -309,30 +317,24 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
         keyTextAccumulator = []
         defer { keyTextAccumulator = nil }
 
-        interpretKeyEvents([event])
+        interpretKeyEventsForInput([event])
 
         let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         if let list = keyTextAccumulator, list.count > 0 {
             for text in list {
-                withGhosttyKeyEvent(from: event, action: action, text: text) {
-                    terminalSurface?.sendKey($0)
-                }
+                dispatchKeyInput(from: event, action: action, text: text)
             }
         } else {
-            withGhosttyKeyEvent(from: event, action: action) {
-                terminalSurface?.sendKey($0)
-            }
+            dispatchKeyInput(from: event, action: action)
         }
         #else
-        interpretKeyEvents([event])
+        interpretKeyEventsForInput([event])
         #endif
     }
 
     override func keyUp(with event: NSEvent) {
         #if canImport(GhosttyKit)
-        withGhosttyKeyEvent(from: event, action: GHOSTTY_ACTION_RELEASE) {
-            terminalSurface?.sendKey($0)
-        }
+        dispatchKeyInput(from: event, action: GHOSTTY_ACTION_RELEASE)
         #endif
     }
 
@@ -341,9 +343,7 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
         let relevantFlags: NSEvent.ModifierFlags = [.shift, .control, .option, .command, .capsLock]
         let active = event.modifierFlags.intersection(relevantFlags)
         let action: ghostty_input_action_e = active.isEmpty ? GHOSTTY_ACTION_RELEASE : GHOSTTY_ACTION_PRESS
-        withGhosttyKeyEvent(from: event, action: action) {
-            terminalSurface?.sendKey($0)
-        }
+        dispatchKeyInput(from: event, action: action)
         #endif
     }
 
@@ -442,16 +442,16 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
             return
         }
 
-        terminalSurface?.sendText(text)
+        dispatchTextInput(text)
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         guard let text = extractText(string) else { return }
-        terminalSurface?.sendPreedit(text)
+        dispatchPreeditInput(text)
     }
 
     func unmarkText() {
-        terminalSurface?.sendPreedit("")
+        dispatchPreeditInput("")
     }
 
     func selectedRange() -> NSRange {
@@ -777,6 +777,45 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     private func extractText(_ string: Any) -> String? {
         (string as? NSAttributedString)?.string ?? (string as? String)
     }
+
+    private func interpretKeyEventsForInput(_ events: [NSEvent]) {
+        if let interpretKeyEventsOverride {
+            interpretKeyEventsOverride(events)
+            return
+        }
+        interpretKeyEvents(events)
+    }
+
+    private func dispatchTextInput(_ text: String) {
+        terminalSurface?.sendText(text)
+        inputDispatchObserver?(.text(text))
+    }
+
+    private func dispatchPreeditInput(_ text: String) {
+        terminalSurface?.sendPreedit(text)
+        inputDispatchObserver?(.preedit(text))
+    }
+
+    #if canImport(GhosttyKit)
+    private func dispatchKeyInput(
+        from event: NSEvent,
+        action: ghostty_input_action_e,
+        text: String? = nil
+    ) {
+        if let text {
+            withGhosttyKeyEvent(from: event, action: action, text: text) {
+                terminalSurface?.sendKey($0)
+            }
+            inputDispatchObserver?(.key(text))
+            return
+        }
+
+        withGhosttyKeyEvent(from: event, action: action) {
+            terminalSurface?.sendKey($0)
+        }
+        inputDispatchObserver?(.key(eventText(for: event)))
+    }
+    #endif
 
     @discardableResult
     private func claimFirstResponderIfNeeded() -> Bool {

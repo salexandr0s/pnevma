@@ -25,7 +25,7 @@ struct BuilderSection: View {
                 TextField("Description (optional)", text: $viewModel.builderDescription)
                     .textFieldStyle(.roundedBorder)
                 Spacer()
-                Picker("", selection: $mode) {
+                Picker("Builder Mode", selection: $mode) {
                     ForEach(BuilderMode.allCases, id: \.self) { m in
                         Text(m.rawValue).tag(m)
                     }
@@ -126,7 +126,7 @@ struct FormBuilder: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                ForEach(Array(viewModel.builderSteps.enumerated()), id: \.element.id) { idx, _ in
+                ForEach(viewModel.builderSteps.indices, id: \.self) { idx in
                     StepFormCard(
                         step: $viewModel.builderSteps[idx],
                         index: idx,
@@ -162,6 +162,8 @@ struct StepFormCard: View {
     var onDelete: () -> Void
     var onMoveUp: (() -> Void)?
     var onMoveDown: (() -> Void)?
+    @State private var selectedAgentProfile = ""
+    @State private var retryCount = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -176,7 +178,7 @@ struct StepFormCard: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13))
 
-                Picker("", selection: $step.priority) {
+                Picker("Priority", selection: $step.priority) {
                     Text("P0").tag("P0")
                     Text("P1").tag("P1")
                     Text("P2").tag("P2")
@@ -212,10 +214,7 @@ struct StepFormCard: View {
 
             // Row 3: Agent + Mode + Failure (inline labeled pickers)
             HStack(spacing: 8) {
-                Picker("Agent", selection: Binding(
-                    get: { step.agentProfile ?? "" },
-                    set: { step.agentProfile = $0.isEmpty ? nil : $0 }
-                )) {
+                Picker("Agent", selection: $selectedAgentProfile) {
                     Text("(default)").tag("")
                     ForEach(profiles) { p in
                         Text(p.displayName).tag(p.name)
@@ -250,10 +249,7 @@ struct StepFormCard: View {
                         .frame(width: 44)
                 }
 
-                Stepper("Retries: \(step.maxRetries ?? 0)", value: Binding(
-                    get: { step.maxRetries ?? 0 },
-                    set: { step.maxRetries = $0 == 0 ? nil : $0 }
-                ), in: 0...5)
+                Stepper("Retries: \(retryCount)", value: $retryCount, in: 0...5)
                 .frame(width: 120)
 
                 Toggle("Loop", isOn: loopEnabled)
@@ -327,6 +323,16 @@ struct StepFormCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
         )
+        .task(id: step.id) {
+            selectedAgentProfile = step.agentProfile ?? ""
+            retryCount = step.maxRetries ?? 0
+        }
+        .onChange(of: selectedAgentProfile) { _, newValue in
+            step.agentProfile = newValue.isEmpty ? nil : newValue
+        }
+        .onChange(of: retryCount) { _, newValue in
+            step.maxRetries = newValue == 0 ? nil : newValue
+        }
     }
 
     // MARK: - Loop Bindings
@@ -406,7 +412,8 @@ struct MiniDagPreview: View {
 
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(Array(layers.enumerated()), id: \.offset) { layerIdx, layer in
+                    ForEach(layers.indices, id: \.self) { layerIdx in
+                        let layer = layers[layerIdx]
                         let (_, layerSteps) = layer
                         VStack(spacing: 6) {
                             ForEach(layerSteps, id: \.offset) { idx, step in

@@ -74,12 +74,19 @@ struct RulesManagerView: View {
             } else {
                 NativeCollectionShell {
                     List {
-                        ForEach(viewModel.rules) { rule in
+                        ForEach(Array(viewModel.rules.indices), id: \.self) { index in
                             RuleRow(
-                                rule: rule,
-                                onToggle: { viewModel.toggleRule(rule: rule) },
+                                rule: $viewModel.rules[index],
+                                isToggling: viewModel.isTogglingRule(id: viewModel.rules[index].id),
+                                onToggle: { oldValue, newValue in
+                                    viewModel.toggleRule(
+                                        id: viewModel.rules[index].id,
+                                        oldActive: oldValue,
+                                        newActive: newValue
+                                    )
+                                },
                                 onDelete: {
-                                    ruleToDelete = rule.id
+                                    ruleToDelete = viewModel.rules[index].id
                                     showDeleteAlert = true
                                 }
                             )
@@ -119,18 +126,20 @@ struct RulesManagerView: View {
 // MARK: - RuleRow
 
 struct RuleRow: View {
-    let rule: ProjectRule
-    let onToggle: () -> Void
+    @Binding var rule: ProjectRule
+    let isToggling: Bool
+    let onToggle: (Bool, Bool) -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack {
-            Toggle("", isOn: Binding(
-                get: { rule.active },
-                set: { _ in onToggle() }
-            ))
+            Toggle("", isOn: $rule.active)
             .toggleStyle(.switch)
             .labelsHidden()
+            .disabled(isToggling)
+            .onChange(of: rule.active) { oldValue, newValue in
+                onToggle(oldValue, newValue)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -325,26 +334,33 @@ final class RulesManagerViewModel {
     private var togglingRuleIDs = Set<String>()
     private var rulesGeneration: UInt64 = 0
 
-    func toggleRule(rule: ProjectRule) {
+    func isTogglingRule(id: String) -> Bool {
+        togglingRuleIDs.contains(id)
+    }
+
+    func toggleRule(id: String, oldActive: Bool, newActive: Bool) {
         guard let bus = commandBus else {
             actionError = "Backend connection unavailable"
             scheduleDismissActionError()
+            if let idx = rules.firstIndex(where: { $0.id == id }) {
+                rules[idx].active = oldActive
+            }
             return
         }
-        guard togglingRuleIDs.insert(rule.id).inserted else { return }
-        let generation = rulesGeneration
-        // Optimistically flip the active state locally.
-        if let idx = rules.firstIndex(where: { $0.id == rule.id }) {
-            rules[idx].active.toggle()
+        guard togglingRuleIDs.insert(id).inserted else {
+            if let idx = rules.firstIndex(where: { $0.id == id }) {
+                rules[idx].active = oldActive
+            }
+            return
         }
-        let newActive = !rule.active
+        let generation = rulesGeneration
         Task { [weak self] in
             guard let self else { return }
-            defer { self.togglingRuleIDs.remove(rule.id) }
+            defer { self.togglingRuleIDs.remove(id) }
             do {
                 let updated: ProjectRule = try await bus.call(
                     method: "rules.toggle",
-                    params: ToggleRuleParams(id: rule.id, active: newActive)
+                    params: ToggleRuleParams(id: id, active: newActive)
                 )
                 guard self.rulesGeneration == generation else { return }
                 if let idx = self.rules.firstIndex(where: { $0.id == updated.id }) {
@@ -354,9 +370,8 @@ final class RulesManagerViewModel {
                 self.actionError = error.localizedDescription
                 self.scheduleDismissActionError()
                 guard self.rulesGeneration == generation else { return }
-                // Roll back the optimistic flip.
-                if let idx = self.rules.firstIndex(where: { $0.id == rule.id }) {
-                    self.rules[idx].active = rule.active
+                if let idx = self.rules.firstIndex(where: { $0.id == id }) {
+                    self.rules[idx].active = oldActive
                 }
             }
         }

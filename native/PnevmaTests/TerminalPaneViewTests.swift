@@ -507,6 +507,64 @@ final class TerminalPaneViewTests: XCTestCase {
         XCTAssertEqual(pane.currentStateSnapshot?.actionIDs, ["restore-previous"])
     }
 
+    func testTerminalPaneStopsAutoReattachLoopAfterRepeatedLiveAttachStartupFailures() async throws {
+        let bus = ExistingSessionTerminalPaneCommandBus()
+        let activationHub = ActiveWorkspaceActivationHub()
+        let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        activationHub.update(.open(workspaceID: UUID(), projectID: "project-1"))
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .localShell,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: activationHub
+        )
+        defer { pane.dispose() }
+
+        pane.loadSession(sessionID: "session-flaky", workingDirectory: "/tmp/project")
+
+        try await waitUntil {
+            await bus.bindingCallCount() == 1
+                && pane.subviews.contains(where: { $0 is TerminalHostView })
+        }
+
+        for expectedBindingCount in 2...3 {
+            let hostView = try XCTUnwrap(
+                pane.subviews.compactMap { $0 as? TerminalHostView }.first
+            )
+            hostView.onTerminalClose?(false)
+
+            try await waitUntil(timeoutNanos: 2_000_000_000) {
+                await bus.bindingCallCount() == expectedBindingCount
+                    && pane.subviews.contains(where: { $0 is TerminalHostView })
+            }
+        }
+
+        let unstableHostView = try XCTUnwrap(
+            pane.subviews.compactMap { $0 as? TerminalHostView }.first
+        )
+        unstableHostView.onTerminalClose?(false)
+
+        try await Task.sleep(for: .milliseconds(500))
+        let finalBindingCallCount = await bus.bindingCallCount()
+
+        XCTAssertEqual(finalBindingCallCount, 3)
+        XCTAssertEqual(pane.sessionID, "session-flaky")
+        XCTAssertEqual(pane.currentStateSnapshot?.title, "Terminal Attach Failed")
+        XCTAssertEqual(
+            pane.currentStateSnapshot?.actionIDs,
+            ["retry-attach"]
+        )
+    }
+
     func testActiveTerminalPaneFocusesHostViewAfterJoiningWindow() throws {
         let bus = TerminalPaneCommandBus()
         let bridge = SessionBridge(commandBus: bus) { "/tmp/project" }

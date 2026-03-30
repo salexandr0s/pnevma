@@ -377,8 +377,18 @@ final class UsageViewModel {
     var providerFilter = "All"
     var modelFilter = "All"
     var statusFilter = "All"
-    var searchQuery = ""
-    var pageSize = 25
+    var searchQuery = "" {
+        didSet {
+            guard searchQuery != oldValue else { return }
+            currentPage = 1
+        }
+    }
+    var pageSize = 25 {
+        didSet {
+            guard pageSize != oldValue else { return }
+            currentPage = 1
+        }
+    }
     var currentPage = 1
     var selectedQuickRangeDays: Int? = 30
 
@@ -1528,7 +1538,7 @@ private struct OverviewSegment: View {
 // MARK: - Explorer
 
 private struct ExplorerSegment: View {
-    let viewModel: UsageViewModel
+    @Bindable var viewModel: UsageViewModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1618,10 +1628,7 @@ private struct ExplorerSegment: View {
 
                 TextField(
                     "Search session, task, branch, provider, model...",
-                    text: Binding(
-                        get: { viewModel.searchQuery },
-                        set: { viewModel.setSearchQuery($0) }
-                    )
+                    text: $viewModel.searchQuery
                 )
                 .textFieldStyle(.roundedBorder)
             }
@@ -1649,10 +1656,7 @@ private struct ExplorerSegment: View {
 
                 TextField(
                     "Search session, task, branch, provider, model...",
-                    text: Binding(
-                        get: { viewModel.searchQuery },
-                        set: { viewModel.setSearchQuery($0) }
-                    )
+                    text: $viewModel.searchQuery
                 )
                 .textFieldStyle(.roundedBorder)
             }
@@ -1672,10 +1676,7 @@ private struct ExplorerSegment: View {
 
     private var explorerActions: some View {
         HStack(spacing: 8) {
-            Picker("Sort", selection: Binding(
-                get: { viewModel.explorerSort },
-                set: { viewModel.setSort($0) }
-            )) {
+            Picker("Sort", selection: $viewModel.explorerSort) {
                 ForEach(UsageExplorerSort.allCases) { sort in
                     Text(sort.label).tag(sort)
                 }
@@ -1683,10 +1684,7 @@ private struct ExplorerSegment: View {
             .pickerStyle(.menu)
             .frame(width: 110)
 
-            Picker("Page Size", selection: Binding(
-                get: { viewModel.pageSize },
-                set: { viewModel.setPageSize($0) }
-            )) {
+            Picker("Page Size", selection: $viewModel.pageSize) {
                 Text("25").tag(25)
                 Text("50").tag(50)
                 Text("100").tag(100)
@@ -2113,7 +2111,7 @@ private struct ProviderDiagnosticsCard: View {
                     if let topModel = snapshot.topModels.first {
                         DetailRow(
                             label: "Top Model",
-                            value: "\(topModel.model) • \(String(format: "%.1f", topModel.sharePercent))%"
+                            value: "\(topModel.model) • \(topModel.sharePercent.formatted(.number.precision(.fractionLength(1))))%"
                         )
                     }
 

@@ -259,7 +259,7 @@ final class CommandCenterStore {
         let total = scopedWorkspaceSnapshots.reduce(into: 0.0) { acc, ws in
             acc += ws.snapshot?.summary.costTodayUsd ?? 0
         }
-        return String(format: "$%.2f", total)
+        return total.formatted(.currency(code: "USD").precision(.fractionLength(2)))
     }
 
     /// Per-workspace health indicator for the command strip heat-map.

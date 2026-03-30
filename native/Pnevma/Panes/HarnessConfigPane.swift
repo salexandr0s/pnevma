@@ -791,7 +791,8 @@ private struct HarnessMetadataSection: View {
                     Text("Install paths")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.secondary)
-                    ForEach(Array(item.installs.enumerated()), id: \.offset) { _, install in
+                    ForEach(item.installs.indices, id: \.self) { index in
+                        let install = item.installs[index]
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(alignment: .top, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -972,7 +973,8 @@ private struct HarnessPlanOperationsView: View {
                 Text("Warnings")
                     .font(.headline)
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in
+                    ForEach(warnings.indices, id: \.self) { index in
+                        let warning = warnings[index]
                         Text("• \(warning)")
                             .font(.system(size: 11))
                             .foregroundStyle(.orange)
@@ -990,18 +992,7 @@ private struct HarnessTargetSelectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(options) { option in
-                Toggle(
-                    isOn: Binding(
-                        get: { selectedIDs.contains(option.id) },
-                        set: { enabled in
-                            if enabled {
-                                selectedIDs.insert(option.id)
-                            } else {
-                                selectedIDs.remove(option.id)
-                            }
-                        }
-                    )
-                ) {
+                Toggle(isOn: selectionBinding(for: option)) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(harnessToolLabel(option.tool)) · \(harnessScopeLabel(option.scope))")
                             .font(.system(size: 12, weight: .medium))
@@ -1015,6 +1006,19 @@ private struct HarnessTargetSelectionView: View {
                 .disabled(!option.enabled)
             }
         }
+    }
+
+    private func selectionBinding(for option: HarnessTargetOption) -> Binding<Bool> {
+        Binding(
+            get: { selectedIDs.contains(option.id) },
+            set: { enabled in
+                if enabled {
+                    selectedIDs.insert(option.id)
+                } else {
+                    selectedIDs.remove(option.id)
+                }
+            }
+        )
     }
 }
 
@@ -1243,7 +1247,6 @@ private struct HarnessStudioManagerSheet: View {
     @State private var newCollectionName = ""
     @State private var newScanRootPath = ""
     @State private var newScanRootLabel = ""
-    @State private var collectionNameDrafts: [String: String] = [:]
 
     var body: some View {
         ScrollView {
@@ -1273,40 +1276,7 @@ private struct HarnessStudioManagerSheet: View {
                     } else {
                         VStack(spacing: 10) {
                             ForEach(viewModel.collections) { collection in
-                                HStack(spacing: 10) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        TextField(
-                                            "Collection name",
-                                            text: Binding(
-                                                get: { collectionNameDrafts[collection.id] ?? collection.name },
-                                                set: { collectionNameDrafts[collection.id] = $0 }
-                                            )
-                                        )
-                                        .textFieldStyle(.roundedBorder)
-                                        .font(.system(size: 13, weight: .medium))
-                                        Text("\(collection.itemCount) items")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    Button("Save") {
-                                        let updatedName = (collectionNameDrafts[collection.id] ?? collection.name)
-                                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                                        guard !updatedName.isEmpty, updatedName != collection.name else { return }
-                                        viewModel.renameCollection(collection, name: updatedName)
-                                    }
-                                    .buttonStyle(.borderless)
-
-                                    Button(role: .destructive) {
-                                        viewModel.deleteCollection(collection)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                                .padding(.vertical, 4)
+                                HarnessCollectionRow(collection: collection, viewModel: viewModel)
                             }
                         }
                     }
@@ -1351,36 +1321,7 @@ private struct HarnessStudioManagerSheet: View {
                     } else {
                         VStack(spacing: 12) {
                             ForEach(viewModel.scanRoots) { root in
-                                HStack(spacing: 12) {
-                                    Toggle(
-                                        isOn: Binding(
-                                            get: { root.enabled },
-                                            set: { enabled in
-                                                viewModel.setScanRootEnabled(root, enabled: enabled)
-                                            }
-                                        )
-                                    ) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(root.label?.isEmpty == false ? root.label! : root.path)
-                                                .font(.system(size: 13, weight: .medium))
-                                            if root.label?.isEmpty == false {
-                                                Text(root.path)
-                                                    .font(.system(size: 11))
-                                                    .foregroundStyle(.secondary)
-                                                    .textSelection(.enabled)
-                                            }
-                                        }
-                                    }
-
-                                    Spacer()
-
-                                    Button(role: .destructive) {
-                                        viewModel.deleteScanRoot(root)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
+                                HarnessScanRootRow(root: root, viewModel: viewModel)
                             }
                         }
                     }
@@ -1389,6 +1330,103 @@ private struct HarnessStudioManagerSheet: View {
             .padding(20)
         }
         .frame(minWidth: 560, minHeight: 440)
+    }
+}
+
+private struct HarnessCollectionRow: View {
+    let collection: HarnessCollection
+    var viewModel: HarnessConfigViewModel
+    @State private var nameDraft: String
+
+    init(collection: HarnessCollection, viewModel: HarnessConfigViewModel) {
+        self.collection = collection
+        self.viewModel = viewModel
+        _nameDraft = State(initialValue: collection.name)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Collection name", text: $nameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13, weight: .medium))
+                Text("\(collection.itemCount) items")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button("Save") {
+                viewModel.renameCollection(collection, name: trimmedName)
+            }
+            .buttonStyle(.borderless)
+            .disabled(trimmedName.isEmpty || trimmedName == collection.name)
+
+            Button(role: .destructive) {
+                viewModel.deleteCollection(collection)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.vertical, 4)
+        .task(id: collection.name) {
+            guard nameDraft != collection.name else { return }
+            nameDraft = collection.name
+        }
+    }
+
+    private var trimmedName: String {
+        nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private struct HarnessScanRootRow: View {
+    let root: HarnessScanRoot
+    var viewModel: HarnessConfigViewModel
+    @State private var isEnabled: Bool
+    @State private var isSyncingFromModel = false
+
+    init(root: HarnessScanRoot, viewModel: HarnessConfigViewModel) {
+        self.root = root
+        self.viewModel = viewModel
+        _isEnabled = State(initialValue: root.enabled)
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Toggle(isOn: $isEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(root.label?.isEmpty == false ? root.label! : root.path)
+                        .font(.system(size: 13, weight: .medium))
+                    if root.label?.isEmpty == false {
+                        Text(root.path)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            Spacer()
+
+            Button(role: .destructive) {
+                viewModel.deleteScanRoot(root)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+        }
+        .task(id: root.enabled) {
+            isSyncingFromModel = true
+            isEnabled = root.enabled
+            isSyncingFromModel = false
+        }
+        .onChange(of: isEnabled) { oldValue, newValue in
+            guard !isSyncingFromModel, oldValue != newValue else { return }
+            viewModel.setScanRootEnabled(root, enabled: newValue)
+        }
     }
 }
 
