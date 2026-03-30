@@ -61,16 +61,17 @@ struct GhosttyThemeBrowserSheet: View {
                         spacing: DesignTokens.Spacing.md
                     ) {
                         ForEach(browser.filteredThemes) { theme in
-                            ThemeCard(
-                                theme: theme,
-                                isActive: theme.name == browser.currentThemeName
-                            )
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityLabel("Select theme: \(theme.name)")
-                            .onTapGesture {
+                            Button {
                                 browser.currentThemeName = theme.name
                                 onApply(theme.name)
+                            } label: {
+                                ThemeCard(
+                                    theme: theme,
+                                    isActive: theme.name == browser.currentThemeName
+                                )
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Select theme: \(theme.name)")
                         }
                     }
                     .padding(DesignTokens.Spacing.md)

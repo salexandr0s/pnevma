@@ -374,24 +374,38 @@ private struct FileTreeRow: View {
                         .frame(width: 12, height: 12)
                 }
 
-                Image(systemName: node.isDirectory ? "folder.fill" : fileIcon(node.name))
-                    .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
-                    .frame(width: 16)
+                Button(action: { onSelect(node) }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: node.isDirectory ? "folder.fill" : fileIcon(node.name))
+                            .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
+                            .frame(width: 16)
 
-                Text(node.name)
-                    .font(.body)
-                    .lineLimit(1)
+                        Text(node.name)
+                            .font(.body)
+                            .lineLimit(1)
 
-                Spacer(minLength: 8)
+                        Spacer(minLength: 8)
 
-                if viewModel.isLoadingDirectory(node.path) {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if let size = node.size, !node.isDirectory {
-                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        if viewModel.isLoadingDirectory(node.path) {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else if let size = node.size, !node.isDirectory {
+                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("file-browser-row-\(node.id)")
+                .simultaneousGesture(
+                    TapGesture(count: 2).onEnded {
+                        if node.isDirectory && !viewModel.hasActiveSearch {
+                            viewModel.toggleDirectory(node)
+                        }
+                    }
+                )
             }
             .padding(.leading, CGFloat(depth) * DesignTokens.Layout.treeIndent + 8)
             .padding(.trailing, 8)
@@ -399,15 +413,6 @@ private struct FileTreeRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(rowBackground)
             .contentShape(Rectangle())
-            .accessibilityAddTraits(.isButton)
-            .onTapGesture(count: 2) {
-                if node.isDirectory && !viewModel.hasActiveSearch {
-                    viewModel.toggleDirectory(node)
-                }
-            }
-            .onTapGesture {
-                onSelect(node)
-            }
 
             if node.isDirectory && viewModel.shouldShowChildren(for: node) {
                 if let children = node.children {

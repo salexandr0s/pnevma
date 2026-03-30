@@ -157,4 +157,22 @@ final class AnalyticsPaneTests: XCTestCase {
         XCTAssertFalse(viewModel.hasTrackedUsageInWindow)
         XCTAssertEqual(viewModel.diagnostics?.trackedCostRows, 0)
     }
+
+    func testSearchQueryChangeResetsExplorerPagination() {
+        let viewModel = UsageViewModel(commandBus: nil, activationHub: ActiveWorkspaceActivationHub())
+        viewModel.currentPage = 4
+
+        viewModel.searchQuery = "workflow"
+
+        XCTAssertEqual(viewModel.currentPage, 1)
+    }
+
+    func testPageSizeChangeResetsExplorerPagination() {
+        let viewModel = UsageViewModel(commandBus: nil, activationHub: ActiveWorkspaceActivationHub())
+        viewModel.currentPage = 3
+
+        viewModel.pageSize = 100
+
+        XCTAssertEqual(viewModel.currentPage, 1)
+    }
 }

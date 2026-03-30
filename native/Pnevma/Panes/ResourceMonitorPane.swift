@@ -466,15 +466,11 @@ private func monitorFlattenProcesses(snapshot: ResourceSnapshot) -> [MonitorProc
 }
 
 private func monitorFormatMemory(_ bytes: UInt64) -> String {
-    let mb = Double(bytes) / (1024 * 1024)
-    if mb >= 1024 {
-        return String(format: "%.2f GB", mb / 1024)
-    }
-    return String(format: "%.1f MB", mb)
+    ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
 }
 
 private func monitorFormatCpu(_ percent: Float) -> String {
-    String(format: "%.1f%%", percent)
+    percent.formatted(.number.precision(.fractionLength(1))) + "%"
 }
 
 /// Compute a Y-axis range for memory that fits the data with headroom, avoiding 0-origin when values are clustered high

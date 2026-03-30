@@ -25,7 +25,7 @@ struct BuilderSection: View {
                 TextField("Description (optional)", text: $viewModel.builderDescription)
                     .textFieldStyle(.roundedBorder)
                 Spacer()
-                Picker("", selection: $mode) {
+                Picker("Builder Mode", selection: $mode) {
                     ForEach(BuilderMode.allCases, id: \.self) { m in
                         Text(m.rawValue).tag(m)
                     }
@@ -178,7 +178,7 @@ struct StepFormCard: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13))
 
-                Picker("", selection: $step.priority) {
+                Picker("Priority", selection: $step.priority) {
                     Text("P0").tag("P0")
                     Text("P1").tag("P1")
                     Text("P2").tag("P2")
@@ -412,7 +412,8 @@ struct MiniDagPreview: View {
 
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(Array(layers.enumerated()), id: \.element.0) { layerIdx, layer in
+                    ForEach(layers.indices, id: \.self) { layerIdx in
+                        let layer = layers[layerIdx]
                         let (_, layerSteps) = layer
                         VStack(spacing: 6) {
                             ForEach(layerSteps, id: \.offset) { idx, step in

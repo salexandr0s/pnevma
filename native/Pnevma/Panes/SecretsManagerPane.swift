@@ -125,14 +125,6 @@ private struct ProjectSecretExportResult: Decodable {
     let count: Int
 }
 
-private struct SecretsHeaderWidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 enum SecretsHeaderActionLayout: Equatable {
     case expanded
     case compact
@@ -320,12 +312,6 @@ struct SecretsManagerView: View {
                 }
             }
         }
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: SecretsHeaderWidthPreferenceKey.self, value: proxy.size.width)
-            }
-        )
         .overlay(alignment: .bottom) {
             ErrorBanner(message: viewModel.actionError)
         }
@@ -351,7 +337,9 @@ struct SecretsManagerView: View {
         }
         .accessibilityIdentifier("pane.secrets")
         .task { await viewModel.activate() }
-        .onPreferenceChange(SecretsHeaderWidthPreferenceKey.self) { width in
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
             headerLayout = SecretsHeaderActionLayout.from(width: width)
         }
     }

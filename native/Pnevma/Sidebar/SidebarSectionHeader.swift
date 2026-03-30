@@ -17,29 +17,45 @@ struct SidebarSectionHeader: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Project initial circle — colored per project
-            let initial = title.prefix(1).uppercased()
-            ZStack {
-                Circle()
-                    .fill(projectColor.opacity(0.20))
-                    .frame(width: 24, height: 24)
-                Text(initial)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(projectColor.opacity(0.85))
+            Button(action: toggleSection) {
+                HStack(spacing: 8) {
+                    let initial = title.prefix(1).uppercased()
+                    ZStack {
+                        Circle()
+                            .fill(projectColor.opacity(0.20))
+                            .frame(width: 24, height: 24)
+                        Text(initial)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(projectColor.opacity(0.85))
+                    }
+
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    if let count {
+                        Text("(\(count))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+
+                    Spacer()
+
+                    if isCollapsible {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                            .frame(width: 12)
+                    }
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(!isCollapsible)
 
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.primary)
-
-            if let count {
-                Text("(\(count))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
-            }
-
-            Spacer()
+            Spacer(minLength: 0)
 
             if let onAdd {
                 Button(action: onAdd) {
@@ -53,22 +69,16 @@ struct SidebarSectionHeader: View {
                 .onHover { isHoveringAdd = $0 }
                 .help("Add workspace to \(title)")
             }
-
-            if isCollapsible {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                    .frame(width: 12)
-            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .onTapGesture { if isCollapsible { onToggle?() } }
         .accessibilityAddTraits(isCollapsible ? .isButton : [])
         .accessibilityLabel("\(title) section\(isCollapsed ? ", collapsed" : "")")
         .accessibilityIdentifier("sidebar.section.\(title.lowercased())")
     }
-}
 
+    private func toggleSection() {
+        guard isCollapsible else { return }
+        onToggle?()
+    }
+}

@@ -114,7 +114,22 @@ struct ToastOverlayView: View {
         .transaction { $0.disablesAnimations = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     }
 
+    @ViewBuilder
     private func toastCard(for toast: ToastMessage) -> some View {
+        if toast.action == nil {
+            Button(action: { manager.dismiss() }) {
+                toastCardContent(for: toast, showsDismissButton: false)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss notification")
+            .accessibilityValue(toast.text)
+        } else {
+            toastCardContent(for: toast, showsDismissButton: true)
+                .accessibilityElement(children: .contain)
+        }
+    }
+
+    private func toastCardContent(for toast: ToastMessage, showsDismissButton: Bool) -> some View {
         HStack(spacing: 10) {
             if let icon = toast.icon {
                 Image(systemName: icon)
@@ -132,13 +147,25 @@ struct ToastOverlayView: View {
                 Divider()
                     .frame(height: 18)
 
-                Button(action.title) {
-                    action.callback()
-                    manager.dismiss()
+                HStack(spacing: 10) {
+                    Button(action.title) {
+                        action.callback()
+                        manager.dismiss()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+
+                    if showsDismissButton {
+                        Button("Dismiss notification", systemImage: "xmark") {
+                            manager.dismiss()
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Dismiss notification")
+                    }
                 }
-                .buttonStyle(.plain)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
             }
         }
         .frame(maxWidth: 520, alignment: .leading)
@@ -155,13 +182,6 @@ struct ToastOverlayView: View {
                 }
                 .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onTapGesture {
-            manager.dismiss()
-        }
-        .accessibilityAddTraits(.isButton)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Notification")
     }
 
     private func iconColor(_ style: ToastMessage.ToastStyle) -> Color {

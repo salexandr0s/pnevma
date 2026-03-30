@@ -710,15 +710,28 @@ private struct InspectorFileTreeRow: View {
                         .accessibilityHidden(true)
                 }
 
-                Image(systemName: fileTypeIcon(for: node))
-                    .foregroundStyle(node.isDirectory ? Color.accentColor : fileTypeColor(for: node))
-                    .frame(width: 16)
+                Button {
+                    if node.isDirectory && !viewModel.hasActiveSearch {
+                        viewModel.toggleDirectory(node)
+                    } else {
+                        onSelect(node)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: fileTypeIcon(for: node))
+                            .foregroundStyle(node.isDirectory ? Color.accentColor : fileTypeColor(for: node))
+                            .frame(width: 16)
 
-                Text(node.name)
-                    .font(.system(.body, design: .monospaced))
-                    .lineLimit(1)
+                        Text(node.name)
+                            .font(.system(.body, design: .monospaced))
+                            .lineLimit(1)
 
-                Spacer(minLength: 8)
+                        Spacer(minLength: 8)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("right-inspector-file-row-\(inspectorIdentifierComponent(node.path))")
             }
             .padding(.leading, CGFloat(depth) * DesignTokens.Layout.treeIndent + DesignTokens.Spacing.sm)
             .padding(.trailing, DesignTokens.Spacing.sm)
@@ -729,14 +742,6 @@ private struct InspectorFileTreeRow: View {
             )
             .contentShape(Rectangle())
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("right-inspector-file-row-\(inspectorIdentifierComponent(node.path))")
-            .onTapGesture {
-                if node.isDirectory && !viewModel.hasActiveSearch {
-                    viewModel.toggleDirectory(node)
-                } else {
-                    onSelect(node)
-                }
-            }
 
             if node.isDirectory && viewModel.shouldShowChildren(for: node), let children = node.children {
                 ForEach(children) { child in

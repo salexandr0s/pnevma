@@ -2,13 +2,6 @@ import SwiftUI
 import Observation
 import Cocoa
 
-private struct WidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 private enum TaskBoardLayoutMode: Equatable {
     case expanded
     case compact
@@ -132,13 +125,9 @@ struct TaskBoardView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: WidthPreferenceKey.self, value: proxy.size.width)
-            }
-        )
-        .onPreferenceChange(WidthPreferenceKey.self) { width in
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
             layout = TaskBoardLayoutMode.from(width: width)
         }
         .background(TaskBoardBackdrop())
