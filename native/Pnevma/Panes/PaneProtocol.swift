@@ -749,10 +749,19 @@ private struct ProjectOpenFailureEventPayload: Decodable {
 final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, TerminalPaneControlling {
     private static let maxManagedSessionProjectNotReadyRetries = 5
     private static let managedSessionRetryDelay: Duration = .milliseconds(250)
+    private static let maxLiveAttachStartupRetries = 2
+    private static let liveAttachRetryDelay: Duration = .milliseconds(250)
+    private static let liveAttachStartupWindow: Duration = .seconds(2)
 
     let paneID = PaneID()
     let paneType = "terminal"
     var title: String { "Terminal" }
+
+    private struct LiveAttachStartupState {
+        let sessionID: String
+        var retryCount: Int
+        var deadline: ContinuousClock.Instant
+    }
 
     private var hostView: TerminalHostView?
     private var stateHostView: NSHostingView<TerminalStateView>?
@@ -773,6 +782,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private var isPaneActive = false
     private let activationHub: ActiveWorkspaceActivationHub
     private(set) var currentStateSnapshot: TerminalStateSnapshot?
+    private var liveAttachStartupState: LiveAttachStartupState?
     var onPersistedStateChange: ((PersistedPane) -> Void)?
 
     init(
@@ -1203,6 +1213,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private func handleSessionLoadFailure(_ error: Error) async {
+        liveAttachStartupState = nil
         if launchMetadata.remoteTarget == nil, PnevmaError.isProjectNotReady(error) {
             switch activationHub.currentState {
             case .opening:
@@ -1258,6 +1269,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     private func showEphemeralTerminal() {
         projectNotReadyRetryCount = 0
+        liveAttachStartupState = nil
         currentStateSnapshot = nil
         let hostView = TerminalHostView()
         hostView.launchConfiguration = .shell(
@@ -1304,6 +1316,63 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         showDeferredLaunchState()
     }
 
+    private func noteLiveAttachAttemptStarted(sessionID: String) {
+        if var state = liveAttachStartupState, state.sessionID == sessionID {
+            state.deadline = ContinuousClock.now + Self.liveAttachStartupWindow
+            liveAttachStartupState = state
+            return
+        }
+
+        liveAttachStartupState = LiveAttachStartupState(
+            sessionID: sessionID,
+            retryCount: 0,
+            deadline: ContinuousClock.now + Self.liveAttachStartupWindow
+        )
+    }
+
+    private func handleLiveAttachSurfaceClose(sessionID: String) {
+        guard var state = liveAttachStartupState,
+              state.sessionID == sessionID,
+              ContinuousClock.now <= state.deadline else {
+            liveAttachStartupState = nil
+            loadOrRestoreSession()
+            return
+        }
+
+        if state.retryCount < Self.maxLiveAttachStartupRetries {
+            state.retryCount += 1
+            liveAttachStartupState = state
+            showState(
+                title: "Reattaching Session",
+                message: "Retrying terminal attach for session \(sessionID)...",
+                detail: "The live terminal exited before it became stable. Pnevma will retry automatically.",
+                scrollback: nil,
+                actions: []
+            )
+            loadTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: Self.liveAttachRetryDelay)
+                } catch {
+                    return
+                }
+                guard let self, self.currentSessionID == sessionID else { return }
+                self.loadTask = nil
+                self.loadOrRestoreSession()
+            }
+            return
+        }
+
+        liveAttachStartupState = nil
+        showState(
+            title: "Terminal Attach Failed",
+            message: "Pnevma couldn't keep the live terminal attached.",
+            detail: "The backend session ID was preserved. Retry to reconnect to the existing session, or start a new one if the attach keeps failing.",
+            scrollback: nil,
+            actions: makeAttachFailureActions(),
+            isLoading: false
+        )
+    }
+
     private func apply(binding: SessionBindingDescriptor, isNewSession: Bool) async {
         projectNotReadyRetryCount = 0
         currentSessionID = binding.sessionID
@@ -1314,12 +1383,14 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         if binding.isLiveAttach {
             showLiveTerminal(binding, isNewSession: isNewSession)
         } else {
+            liveAttachStartupState = nil
             await showArchivedTerminal(binding)
         }
     }
 
     private func showLiveTerminal(_ binding: SessionBindingDescriptor, isNewSession: Bool) {
         currentStateSnapshot = nil
+        noteLiveAttachAttemptStarted(sessionID: binding.sessionID)
         let hostView = TerminalHostView()
         if let config = binding.makeLaunchConfiguration() {
             hostView.launchConfiguration = config
@@ -1327,7 +1398,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         hostView.attachedSessionID = binding.sessionID
         hostView.onTerminalClose = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.loadOrRestoreSession()
+                self?.handleLiveAttachSurfaceClose(sessionID: binding.sessionID)
             }
         }
         let sessionBridge = PaneFactory.sessionBridge
@@ -1369,6 +1440,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     }
 
     private func showArchivedTerminal(_ binding: SessionBindingDescriptor) async {
+        liveAttachStartupState = nil
         let stateCopy = archivedTerminalStateCopy(for: binding)
         let actions = recoveryActionButtons(preferRestorePrimary: true)
         showState(
@@ -1470,6 +1542,20 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 }
             }
         ]
+    }
+
+    private func makeAttachFailureActions() -> [TerminalStateAction] {
+        [
+            TerminalStateAction(
+                id: "retry-attach",
+                label: "Retry",
+                enabled: true
+            ) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.loadOrRestoreSession()
+                }
+            }
+        ] + makeFallbackActions()
     }
 
     private func restorePreviousActionButton() -> TerminalStateAction? {

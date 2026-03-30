@@ -150,6 +150,32 @@ final class TerminalHostViewTests: XCTestCase {
         XCTAssertNoThrow(hostView.flagsChanged(with: event))
     }
 
+    func testPrintableKeyDownDispatchesSingleKeyPathWhenInsertTextFires() throws {
+        let hostView = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        var dispatches: [TerminalHostView.InputDispatch] = []
+        hostView.inputDispatchObserver = { dispatches.append($0) }
+        hostView.interpretKeyEventsOverride = { [weak hostView] _ in
+            hostView?.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "h",
+            charactersIgnoringModifiers: "h",
+            isARepeat: false,
+            keyCode: 4
+        ))
+
+        hostView.keyDown(with: event)
+
+        XCTAssertEqual(dispatches, [.key("h")])
+    }
+
     func testMouseDownClaimsFirstResponder() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
