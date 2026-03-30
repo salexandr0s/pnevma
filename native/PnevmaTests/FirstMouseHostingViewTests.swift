@@ -41,13 +41,29 @@ final class FirstMouseHostingViewTests: XCTestCase {
         XCTAssertNil(view.hitTest(NSPoint(x: 10, y: 10)))
     }
 
-    func testAgentLauncherOverlayHostingViewCapturesHitsInsideBounds() {
-        let view = AgentLauncherOverlayHostingView(rootView: AnyView(Text("Launcher")))
+    func testAgentLauncherOverlayViewCapturesHitsInsideBounds() {
+        let view = AgentLauncherOverlayView { _ in }
         view.frame = NSRect(x: 0, y: 0, width: 96, height: 32)
 
         XCTAssertTrue(view.acceptsFirstMouse(for: nil))
         XCTAssertFalse(view.mouseDownCanMoveWindow)
         XCTAssertNil(view.hitTest(NSPoint(x: -1, y: 8)))
-        XCTAssertNotNil(view.hitTest(NSPoint(x: 12, y: 12)))
+        XCTAssertEqual(view.hitTest(NSPoint(x: 12, y: 12)), view)
+    }
+
+    func testAgentLauncherOverlayViewTriggersTrackedSelection() throws {
+        var selectedAgents: [AgentKind] = []
+        let view = AgentLauncherOverlayView { selectedAgents.append($0) }
+        view.frame = NSRect(x: 0, y: 0, width: 96, height: 32)
+        view.layoutSubtreeIfNeeded()
+
+        let stack = try XCTUnwrap(view.subviews.first as? NSStackView)
+        let button = try XCTUnwrap(stack.arrangedSubviews.first)
+        let point = view.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), from: button)
+
+        view.beginInteraction(at: point)
+        view.endInteraction(at: point)
+
+        XCTAssertEqual(selectedAgents, [.claude])
     }
 }

@@ -658,12 +658,17 @@ final class TerminalPaneViewTests: XCTestCase {
         pane.layoutSubtreeIfNeeded()
 
         let overlayHost = try XCTUnwrap(
-            pane.subviews.first { String(describing: type(of: $0)).contains("AgentLauncherOverlayHostingView") }
+            pane.subviews.first { String(describing: type(of: $0)).contains("AgentLauncherOverlayView") }
         )
         let insidePoint = NSPoint(x: overlayHost.bounds.midX, y: overlayHost.bounds.midY)
         let outsidePoint = NSPoint(x: -1, y: overlayHost.bounds.midY)
 
-        XCTAssertNotNil(overlayHost.hitTest(insidePoint))
+        XCTAssertEqual(overlayHost.hitTest(insidePoint), overlayHost)
         XCTAssertNil(overlayHost.hitTest(outsidePoint))
+
+        let paneInsidePoint = pane.convert(insidePoint, from: overlayHost)
+        let paneOutsidePoint = pane.convert(outsidePoint, from: overlayHost)
+        XCTAssertEqual(pane.hitTest(paneInsidePoint), pane)
+        XCTAssertNotEqual(pane.hitTest(paneOutsidePoint), pane)
     }
 }

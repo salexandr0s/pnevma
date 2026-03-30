@@ -756,8 +756,10 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     private var hostView: TerminalHostView?
     private var stateHostView: NSHostingView<TerminalStateView>?
-    private var agentLauncherView: AgentLauncherOverlayHostingView<AgentLauncherOverlay>?
+    private var agentLauncherView: AgentLauncherOverlayView?
     private var agentLauncherKeyMonitor: Any?
+    private var agentLauncherMouseMonitor: Any?
+    private var isTrackingAgentLauncherInteraction = false
     private let autoStartIfNeeded: Bool
     private var launchMetadata: TerminalLaunchMetadata
     private var currentWorkingDirectory: String?
@@ -832,6 +834,34 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let agentLauncherView, !agentLauncherView.isHidden, agentLauncherView.frame.contains(point) {
+            return self
+        }
+        return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard routeAgentLauncherPointerEvent(event, phase: .began) else {
+            super.mouseDown(with: event)
+            return
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard routeAgentLauncherPointerEvent(event, phase: .changed) else {
+            super.mouseDragged(with: event)
+            return
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard routeAgentLauncherPointerEvent(event, phase: .ended) else {
+            super.mouseUp(with: event)
+            return
+        }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1506,17 +1536,16 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     private func installAgentLauncher() {
         removeAgentLauncher()
-        let overlay = AgentLauncherOverlay { [weak self] agent in
+        let overlay = AgentLauncherOverlayView { [weak self] agent in
             self?.launchAgent(agent)
         }
-        let hosting = AgentLauncherOverlayHostingView(rootView: overlay)
-        hosting.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hosting)
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(overlay)
         NSLayoutConstraint.activate([
-            hosting.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            hosting.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            overlay.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            overlay.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
         ])
-        agentLauncherView = hosting
+        agentLauncherView = overlay
 
         agentLauncherKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.agentLauncherView != nil,
@@ -1527,14 +1556,32 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             self.removeAgentLauncher()
             return event
         }
+
+        agentLauncherMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            guard let self, self.agentLauncherView != nil, event.window == self.window else {
+                return event
+            }
+            guard let phase = Self.agentLauncherPointerPhase(for: event.type) else {
+                return event
+            }
+            return self.routeAgentLauncherPointerEvent(event, phase: phase) ? nil : event
+        }
     }
 
     private func removeAgentLauncher() {
+        isTrackingAgentLauncherInteraction = false
+        agentLauncherView?.cancelInteraction()
         agentLauncherView?.removeFromSuperview()
         agentLauncherView = nil
         if let monitor = agentLauncherKeyMonitor {
             NSEvent.removeMonitor(monitor)
             agentLauncherKeyMonitor = nil
+        }
+        if let monitor = agentLauncherMouseMonitor {
+            NSEvent.removeMonitor(monitor)
+            agentLauncherMouseMonitor = nil
         }
     }
 
@@ -1557,6 +1604,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         let surface = hostView?.terminalSurface
         surface?.sendText(agent.command)
         surface?.sendReturn()
+        syncHostViewFocus()
     }
 
     static func shouldDismissAgentLauncher(for event: NSEvent) -> Bool {
@@ -1572,6 +1620,51 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     func installAgentLauncherForTesting() {
         installAgentLauncher()
+    }
+
+    private enum AgentLauncherPointerPhase {
+        case began
+        case changed
+        case ended
+    }
+
+    private static func agentLauncherPointerPhase(for eventType: NSEvent.EventType) -> AgentLauncherPointerPhase? {
+        switch eventType {
+        case .leftMouseDown:
+            return .began
+        case .leftMouseDragged:
+            return .changed
+        case .leftMouseUp:
+            return .ended
+        default:
+            return nil
+        }
+    }
+
+    private func routeAgentLauncherPointerEvent(_ event: NSEvent, phase: AgentLauncherPointerPhase) -> Bool {
+        guard let agentLauncherView, !agentLauncherView.isHidden else {
+            isTrackingAgentLauncherInteraction = false
+            return false
+        }
+
+        let point = convert(event.locationInWindow, from: nil)
+        let isInsideOverlay = agentLauncherView.frame.contains(point)
+        guard isTrackingAgentLauncherInteraction || isInsideOverlay else {
+            return false
+        }
+
+        let overlayPoint = convert(point, to: agentLauncherView)
+        switch phase {
+        case .began:
+            isTrackingAgentLauncherInteraction = true
+            agentLauncherView.beginInteraction(at: overlayPoint)
+        case .changed:
+            agentLauncherView.continueInteraction(at: overlayPoint)
+        case .ended:
+            agentLauncherView.endInteraction(at: overlayPoint)
+            isTrackingAgentLauncherInteraction = false
+        }
+        return true
     }
 
     private func replaceContent(with view: NSView) {
@@ -2097,55 +2190,146 @@ enum AgentKind: String {
     }
 }
 
-private struct AgentLauncherOverlay: View {
-    let onSelect: (AgentKind) -> Void
+final class AgentLauncherOverlayView: NSVisualEffectView {
+    private let claudeButton: AgentLauncherLogoButton
+    private let codexButton: AgentLauncherLogoButton
+    private var trackedButton: AgentLauncherLogoButton?
 
-    var body: some View {
-        HStack(spacing: 4) {
-            AgentLogoButton(agent: .claude, onSelect: onSelect)
-            AgentLogoButton(agent: .codex, onSelect: onSelect)
+    init(onSelect: @escaping (AgentKind) -> Void) {
+        claudeButton = AgentLauncherLogoButton(agent: .claude, onSelect: onSelect)
+        codexButton = AgentLauncherLogoButton(agent: .codex, onSelect: onSelect)
+        super.init(frame: .zero)
+
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        if AccessibilityCheck.prefersReducedTransparency {
+            layer?.backgroundColor = ChromeSurfaceStyle.pane.baseColor.cgColor
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("terminal.agentLauncher.overlay")
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(AccessibilityCheck.prefersReducedTransparency
-                    ? AnyShapeStyle(ChromeSurfaceStyle.pane.color)
-                    : AnyShapeStyle(.ultraThinMaterial))
-        )
+        setAccessibilityIdentifier("terminal.agentLauncher.overlay")
+
+        let stack = NSStackView(views: [claudeButton, codexButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        beginInteraction(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        continueInteraction(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        endInteraction(at: convert(event.locationInWindow, from: nil))
+    }
+
+    func beginInteraction(at point: NSPoint) {
+        trackedButton = button(at: point)
+        updateButtonHighlight(at: point)
+    }
+
+    func continueInteraction(at point: NSPoint) {
+        updateButtonHighlight(at: point)
+    }
+
+    func endInteraction(at point: NSPoint) {
+        defer { cancelInteraction() }
+        guard let trackedButton, trackedButton === button(at: point) else { return }
+        trackedButton.triggerSelection()
+    }
+
+    func cancelInteraction() {
+        trackedButton = nil
+        claudeButton.setPressedAppearance(false)
+        codexButton.setPressedAppearance(false)
+    }
+
+    private func button(at point: NSPoint) -> AgentLauncherLogoButton? {
+        [claudeButton, codexButton].first { button in
+            let expandedFrame = button.frame.insetBy(dx: -4, dy: -4)
+            return expandedFrame.contains(point)
+        }
+    }
+
+    private func updateButtonHighlight(at point: NSPoint) {
+        claudeButton.setPressedAppearance(claudeButton === trackedButton && claudeButton === button(at: point))
+        codexButton.setPressedAppearance(codexButton === trackedButton && codexButton === button(at: point))
     }
 }
 
-private struct AgentLogoButton: View {
-    let agent: AgentKind
-    let onSelect: (AgentKind) -> Void
-    @State private var isHovered = false
+final class AgentLauncherLogoButton: NSButton {
+    private let agent: AgentKind
+    private let onSelect: (AgentKind) -> Void
 
-    var body: some View {
-        Button {
-            onSelect(agent)
-        } label: {
-            Image(agent.logoAsset)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 14, height: 14)
-                .padding(4)
-                .frame(minWidth: 24, minHeight: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(isHovered ? Color.white.opacity(0.15) : Color.clear)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                .scaleEffect(isHovered ? 1.1 : 1.0)
-                .animation(ChromeMotion.animation(for: .hover), value: isHovered)
-        }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
-        .onHover { hovering in isHovered = hovering }
-        .help("Launch \(agent.label)")
-        .accessibilityLabel("Launch \(agent.label)")
-        .accessibilityIdentifier("terminal.agentLauncher.\(agent.rawValue)")
+    init(agent: AgentKind, onSelect: @escaping (AgentKind) -> Void) {
+        self.agent = agent
+        self.onSelect = onSelect
+        super.init(frame: .zero)
+
+        bezelStyle = .regularSquare
+        isBordered = false
+        focusRingType = .none
+        image = NSImage(named: NSImage.Name(agent.logoAsset))
+        image?.size = NSSize(width: 14, height: 14)
+        imageScaling = .scaleProportionallyUpOrDown
+        imagePosition = .imageOnly
+        toolTip = "Launch \(agent.label)"
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.clear.cgColor
+        setAccessibilityLabel("Launch \(agent.label)")
+        setAccessibilityIdentifier("terminal.agentLauncher.\(agent.rawValue)")
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 22),
+            heightAnchor.constraint(equalToConstant: 22),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func setPressedAppearance(_ isPressed: Bool) {
+        layer?.backgroundColor = isPressed
+            ? NSColor.white.withAlphaComponent(0.15).cgColor
+            : NSColor.clear.cgColor
+    }
+
+    func triggerSelection() {
+        onSelect(agent)
     }
 }
