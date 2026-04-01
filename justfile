@@ -47,6 +47,9 @@ ghostty-build: ghostty-check
     python3 ./scripts/normalize-ghostty-modulemap.py vendor/ghostty/macos/GhosttyKit.xcframework/macos-arm64/Headers/module.modulemap
     @echo "Ghostty xcframework built at vendor/ghostty/macos/GhosttyKit.xcframework"
 
+ghostty-ensure:
+    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
+
 # ── Stage 2: Rust staticlib (Cargo) ──────────────────────────────────────────
 
 rust-check:
@@ -135,7 +138,7 @@ xcodegen-check: xcodegen
     @echo "Xcode project is in sync"
 
 # Note: xcode-build depends on rust-build completing first
-xcode-build: xcodegen rust-build
+xcode-build: xcodegen rust-build ghostty-ensure
     @echo "Building native macOS app..."
     {{native_lock_tool}} xcode-build zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-build.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Debug -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build'
     app_path="$PWD/native/build/Debug/Pnevma.app"; \
@@ -144,7 +147,7 @@ xcode-build: xcodegen rust-build
       ./scripts/build-remote-helper-artifacts.sh --bundle-app "$app_path"
     @echo "Native app built"
 
-xcode-build-release: xcodegen rust-build-release
+xcode-build-release: xcodegen rust-build-release ghostty-ensure
     @echo "Building native macOS app (release)..."
     {{native_lock_tool}} xcode-build-release zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-build-release.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_scheme}} -configuration Release -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES build'
     app_path="$PWD/native/build/Release/Pnevma.app"; \
@@ -153,28 +156,25 @@ xcode-build-release: xcodegen rust-build-release
       ./scripts/build-remote-helper-artifacts.sh --release --bundle-app "$app_path"
     @echo "Native app built (release)"
 
-xcode-test: xcodegen rust-build
+xcode-test: xcodegen rust-build ghostty-ensure
     {{native_lock_tool}} xcode-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && rm -rf native/build/Debug && {{clean_log}} --log {{native_log_dir}}/xcode-test.log -- xcodebuild -project {{xcode_project}} -scheme {{xcode_test_scheme}} -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} SYMROOT="$PWD/native/build" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES test'
 
-xcode-ui-test: xcodegen rust-build
+xcode-ui-test: xcodegen rust-build ghostty-ensure
     {{native_lock_tool}} xcode-ui-test zsh -lc '{{native_env_tool}} {{xcode_derived_data}} && {{clean_log}} --log {{native_log_dir}}/xcode-ui-test.log -- caffeinate -dimu -t 7200 xcodebuild -project {{xcode_project}} -scheme PnevmaUITests -destination {{xcode_destination}} -derivedDataPath {{xcode_derived_data}} CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test'
 
 # SPM build path (alternative to xcodebuild)
-spm-build: rust-build
+spm-build: rust-build ghostty-ensure
     @echo "Building via Swift Package Manager..."
-    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
     cd native && swift build -c debug
     @echo "SPM build complete"
 
-spm-test: rust-build
+spm-test: rust-build ghostty-ensure
     @echo "Running tests via Swift Package Manager..."
-    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
     cd native && swift test
     @echo "SPM tests complete"
 
-spm-test-clean: rust-build
+spm-test-clean: rust-build ghostty-ensure
     @echo "Running clean Swift Package Manager test gate..."
-    @if [ ! -d vendor/ghostty/macos/GhosttyKit.xcframework ]; then just ghostty-build; fi
     rm -rf native/.build
     mkdir -p {{native_log_dir}}
     {{clean_log}} --log {{native_log_dir}}/swift-test.log -- zsh -lc 'cd native && swift test'
