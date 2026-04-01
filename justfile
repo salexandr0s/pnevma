@@ -109,6 +109,9 @@ release-entitlement-probe:
 release-remote-validation:
     ./scripts/release-remote-validation.sh
 
+release-ci-green-runs:
+    ./scripts/release-ci-green-runs.sh
+
 migration-checksums-update:
     ./scripts/update-migration-checksums.sh
 

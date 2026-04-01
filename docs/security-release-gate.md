@@ -1,14 +1,19 @@
 # Security Release Gate
 
+For the first public `v0.2.0` DMG, notarization and stapling are explicitly
+deferred. They remain the target follow-up path, but they are not blocking
+conditions for this signed-only release cut.
+
 ## Blockers
 
 Do not ship a remote-enabled release if any of the following are true:
 
 - any Critical or High security finding is open
 - a required quality gate failed
-- notarization, stapling, `codesign`, or `spctl` verification failed
+- app or DMG `codesign` verification failed
 - entitlements differ from the checked-in allowlist without explicit review
 - required evidence artifacts are missing
+- the documented clean-machine Finder `Open` / `Open Anyway` flow has not been validated on the actual candidate DMG
 - release notes or operator docs claim unsupported updater behavior
 
 ## Required quality gates
@@ -33,10 +38,18 @@ Every release candidate must preserve:
 - entitlement check output
 - effective entitlements plist
 - `codesign --verify --deep --strict --verbose=2` output
-- `spctl --assess --type exec --verbose=4` output
-- notarization and stapling logs
+- app `spctl --assess --type execute --verbose=4` output
+- DMG `spctl --assess --type open --verbose=4` output
+- packaged launch smoke output from the candidate artifact
+- CI green-run report for the required `main` lanes
+- clean-machine install notes showing the documented first-launch flow
 - remote/manual security test results
 - latency validation notes
+
+Optional for the deferred notarized follow-up path:
+
+- notarization logs
+- stapling logs
 
 GitHub Actions retention policy:
 

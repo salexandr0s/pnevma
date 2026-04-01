@@ -1032,11 +1032,13 @@ struct UsageView: View {
         .accessibilityIdentifier("pane.analytics")
     }
 
+    @ViewBuilder
     private var toolbar: some View {
         if viewModel.segment == .providers {
-            return AnyView(providersToolbar)
+            providersToolbar
+        } else {
+            standardToolbar
         }
-        return AnyView(standardToolbar)
     }
 
     private var standardToolbar: some View {

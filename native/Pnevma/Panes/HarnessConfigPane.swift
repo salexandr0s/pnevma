@@ -499,7 +499,7 @@ private struct HarnessFilterBar: View {
     @Binding var filter: HarnessFilter
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(HarnessFilter.allCases) { option in
                     Button {
@@ -521,6 +521,7 @@ private struct HarnessFilterBar: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
+        .scrollIndicators(.hidden)
     }
 }
 
@@ -529,7 +530,7 @@ private struct HarnessCollectionBar: View {
     @Binding var selectedCollectionID: String?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 Button {
                     selectedCollectionID = nil
@@ -566,6 +567,7 @@ private struct HarnessCollectionBar: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
         }
+        .scrollIndicators(.hidden)
     }
 }
 
@@ -573,7 +575,7 @@ private struct HarnessAnalyticsStrip: View {
     let analytics: HarnessCatalogAnalytics
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 HarnessBadge(text: "\(analytics.totalItems) items", tone: .secondary)
 
@@ -603,6 +605,7 @@ private struct HarnessAnalyticsStrip: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
         }
+        .scrollIndicators(.hidden)
     }
 }
 
@@ -743,7 +746,7 @@ private struct HarnessDetailHeader: View {
                     .keyboardShortcut("s", modifiers: .command)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     HarnessBadge(text: harnessToolLabel(item.primaryTool), tone: toolTone)
                     HarnessBadge(text: harnessScopeLabel(item.primaryScope), tone: .secondary)
@@ -760,6 +763,7 @@ private struct HarnessDetailHeader: View {
                     }
                 }
             }
+            .scrollIndicators(.hidden)
         }
         .padding(.horizontal, DesignTokens.Spacing.md)
         .padding(.vertical, 10)

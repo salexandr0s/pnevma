@@ -282,11 +282,10 @@ struct BrowserReaderModeView: View {
         VStack(spacing: 0) {
             // Toolbar
             HStack(spacing: 8) {
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
+                Button("Close reader mode", systemImage: "xmark.circle.fill", action: onClose)
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
                 .buttonStyle(.plain)
 
                 Text("Reader Mode")

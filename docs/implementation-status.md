@@ -10,19 +10,22 @@ Current release target:
 
 - version: `v0.2.0`
 - artifact: Developer ID signed `arm64` macOS `.dmg` for the first public cut, with notarization deferred
-- evidence: SBOM, entitlement output, effective entitlements, `codesign` output, checksum, packaged launch smoke output, clean-machine install notes, and verified first-launch instructions
+- evidence: SBOM, entitlement output, effective entitlements, `codesign` output, app and DMG `spctl` output, checksum, packaged launch smoke output, CI green-run report, clean-machine install notes, remote validation evidence when remote ships, and verified first-launch instructions
 
 Primary remaining release work:
 
 - resolve `disable-library-validation` entitlement story (remove or retain with signed-build evidence)
 - keep native and release-rehearsal lanes green and stable
+- record the required consecutive green `main` runs and archive the CI report in the release evidence bundle
 - validate and document the Finder `Open` / `Open Anyway` first-launch path on a clean machine
 - execute manual smoke and security tests against the candidate DMG artifact
 - assemble final release evidence bundle and complete sign-off
 
-Most recent local verification on March 27, 2026:
+Most recent local verification:
 
-- `just check` green
+- April 1, 2026: `just check` green
+- March 27, 2026: full release-local verification green:
+
 - `just xcode-test` green
 - `just ghostty-smoke` green
 - `just xcode-build-release` green

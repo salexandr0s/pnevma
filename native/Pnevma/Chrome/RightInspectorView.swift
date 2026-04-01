@@ -369,13 +369,12 @@ private struct _OverlayCloseButton: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(isHovering ? Color.red : Color.secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
+        Button("Close", systemImage: "xmark", action: action)
+            .labelStyle(.iconOnly)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(isHovering ? Color.red : Color.secondary)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
     }
@@ -497,9 +496,8 @@ private struct InspectorFilesSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Button(action: viewModel.refresh) {
-                Image(systemName: "arrow.clockwise")
-            }
+            Button("Refresh files", systemImage: "arrow.clockwise", action: viewModel.refresh)
+                .labelStyle(.iconOnly)
             .buttonStyle(.plain)
             .help("Refresh files")
         }
@@ -605,11 +603,9 @@ private struct InspectorFilesSection: View {
                 .controlSize(.small)
                 .disabled(!viewModel.isDirty || viewModel.isSaving || isReadOnly)
 
-                Button(action: requestDismissPreview) {
-                    Image(systemName: "xmark")
-                }
+                Button("Close file preview", systemImage: "xmark", action: requestDismissPreview)
+                    .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close file preview")
                 .help("Close preview")
             }
         }
@@ -834,11 +830,9 @@ private struct InspectorChangesSection: View {
 
                 Spacer()
 
-                Button(action: viewModel.clearSelection) {
-                    Image(systemName: "xmark")
-                }
+                Button("Close diff preview", systemImage: "xmark", action: viewModel.clearSelection)
+                    .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close diff preview")
                 .help("Close diff")
             }
             .padding(.horizontal, DesignTokens.Spacing.md)
@@ -1256,11 +1250,9 @@ private struct InspectorReviewSection: View {
 
             Spacer()
 
-            Button(action: viewModel.clearSelection) {
-                Image(systemName: "xmark")
-            }
+            Button("Close review details", systemImage: "xmark", action: viewModel.clearSelection)
+                .labelStyle(.iconOnly)
             .buttonStyle(.plain)
-            .accessibilityLabel("Close review details")
             .help("Close review details")
         }
         .padding(.horizontal, DesignTokens.Spacing.md)
