@@ -16,6 +16,7 @@ cut.
 This repository ships the following release helpers:
 
 - `scripts/release-preflight.sh`
+- `scripts/release-prepare-signing-keychain.sh`
 - `scripts/release-signed-candidate.sh`
 - `scripts/release-evidence.sh`
 - `scripts/release-ci-green-runs.sh`
@@ -39,15 +40,33 @@ perform in-app self-update.
 ## Environment variables
 
 - `APPLE_SIGNING_IDENTITY` (required by the signing script)
+- `SIGNING_KEYCHAIN_PATH` (optional explicit keychain override for non-interactive signing)
 - `APP_PATH` (optional override for app bundle path)
 - `TARGET_PATH` (optional override for `.app` or `.dmg` sign target)
 - `VERSION` (optional override for DMG naming)
 - `DMG_PATH` (optional override for DMG output path)
 - `CHECKSUM_PATH` (optional override for checksum output path)
 - `EVIDENCE_DIR` (optional override for the structured release evidence bundle)
+- `SOURCE_KEYCHAIN_PATH` (optional local helper input when exporting an installed cert into a temporary signing keychain)
+- `OUTPUT_DIR` (optional helper output directory for `release-prepare-signing-keychain.sh`)
 - `REMOTE_VALIDATION_REQUIRED=1` (optional; make remote validation required in the evidence checklist)
 - `CI_STABILITY_REQUIRED=0` (optional; make CI streak evidence optional in the evidence checklist)
 - `APPLE_NOTARY_PROFILE`, `APPLE_NOTARY_KEYCHAIN`, and `ZIP_PATH` only if you are also attempting notarization
+
+If direct `codesign` access to an installed `Developer ID Application`
+certificate is unreliable on a maintainer machine, mirror the CI path and
+create a temporary signing keychain first:
+
+```bash
+export OUTPUT_DIR="$(mktemp -d /tmp/pnevma-signing.XXXXXX)"
+export SOURCE_KEYCHAIN_PATH="/Library/Keychains/System.keychain"
+
+./scripts/release-prepare-signing-keychain.sh
+source "$OUTPUT_DIR/signing-keychain.env"
+```
+
+That leaves `SIGNING_KEYCHAIN_PATH` set for the release helpers without
+requiring manual Keychain Access interaction during `codesign`.
 
 ## Current `v0.2.0` Signed-Only Release Flow
 
@@ -83,6 +102,10 @@ DMG_PATH="$DMG_PATH" \
 EVIDENCE_DIR="$EVIDENCE_DIR" \
 ./scripts/release-signed-candidate.sh
 ```
+
+When using the temporary-keychain helper above, keep the
+`source "$OUTPUT_DIR/signing-keychain.env"` line in the same shell before
+running `scripts/release-signed-candidate.sh`.
 
 `spctl` output is still useful to capture for evidence, but for this signed-only
 release it is informational rather than a blocking pass condition because the
