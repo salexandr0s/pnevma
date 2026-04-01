@@ -145,6 +145,7 @@ Tasks:
 Checks:
 
 - local signing succeeds,
+- local temporary-keychain signing succeeds via `scripts/release-prepare-signing-keychain.sh` when direct keychain access is unavailable,
 - local notarization succeeds,
 - CI can import the certificate into a temporary keychain,
 - the signing identity string used in scripts exactly matches the installed certificate.

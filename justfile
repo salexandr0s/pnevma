@@ -100,6 +100,9 @@ migration-checksums:
 release-version-check:
     ./scripts/release-version.sh check
 
+release-prepare-signing-keychain:
+    ./scripts/release-prepare-signing-keychain.sh
+
 release-signed-candidate:
     ./scripts/release-signed-candidate.sh
 
