@@ -65,15 +65,16 @@ struct WorkflowView: View {
             }
 
             if topLevel == .agents {
-                Button(action: { agentViewModel.startCreating() }) {
-                    Image(systemName: "plus")
-                }
+                Button("New Agent", systemImage: "plus", action: agentViewModel.startCreating)
+                    .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: .command)
             } else if workflowTab == .library {
-                Button(action: { workflowTab = .builder; viewModel.resetBuilder() }) {
-                    Image(systemName: "plus")
+                Button("New Workflow", systemImage: "plus") {
+                    workflowTab = .builder
+                    viewModel.resetBuilder()
                 }
+                .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: .command)
             }

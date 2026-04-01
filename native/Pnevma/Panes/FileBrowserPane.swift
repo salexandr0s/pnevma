@@ -52,9 +52,8 @@ struct FileBrowserView: View {
             systemImage: "folder",
             role: .document
         ) {
-            Button(action: { viewModel.refresh() }) {
-                Image(systemName: "arrow.clockwise")
-            }
+            Button("Refresh", systemImage: "arrow.clockwise", action: viewModel.refresh)
+                .labelStyle(.iconOnly)
             .buttonStyle(.plain)
 
             if let path = viewModel.selectedFilePath {
@@ -65,10 +64,13 @@ struct FileBrowserView: View {
                 .help("Share selected file")
             }
 
-            Button(action: { withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.2))) { isViewerVisible.toggle() } }) {
-                Image(systemName: "sidebar.right")
-                    .foregroundStyle(isViewerVisible ? .primary : .secondary)
+            Button(isViewerVisible ? "Hide file viewer" : "Show file viewer", systemImage: "sidebar.right") {
+                withAnimation(DesignTokens.Motion.resolved(.easeInOut(duration: 0.2))) {
+                    isViewerVisible.toggle()
+                }
             }
+            .labelStyle(.iconOnly)
+            .foregroundStyle(isViewerVisible ? .primary : .secondary)
             .buttonStyle(.plain)
             .help(isViewerVisible ? "Hide file viewer" : "Show file viewer")
         } content: {
@@ -1311,8 +1313,8 @@ struct MarkdownReaderView: View {
                 Divider().padding(.vertical, 1)
             } else {
                 HStack(spacing: 0) {
-                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                        Text(inlineMarkdown(cell))
+                    ForEach(cells.indices, id: \.self) { index in
+                        Text(inlineMarkdown(cells[index]))
                             .font(.system(.callout, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 4)

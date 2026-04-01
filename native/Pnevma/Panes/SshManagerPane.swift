@@ -141,7 +141,7 @@ struct AddSshProfileSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var host = ""
-    @State private var port = "22"
+    @State private var port = 22
     @State private var user = ""
 
     var body: some View {
@@ -152,7 +152,7 @@ struct AddSshProfileSheet: View {
             Form {
                 TextField("Name", text: $name)
                 TextField("Host", text: $host)
-                TextField("Port", text: $port)
+                TextField("Port", value: $port, format: .number)
                 TextField("User", text: $user)
             }
 
@@ -162,7 +162,7 @@ struct AddSshProfileSheet: View {
                 Button("Add") {
                     let profile = SshProfile(
                         id: UUID().uuidString, name: name, host: host,
-                        port: Int(port) ?? 22, user: user,
+                        port: port, user: user,
                         identityFile: nil, isConnected: false)
                     onAdd(profile)
                     dismiss()

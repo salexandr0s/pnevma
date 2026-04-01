@@ -944,8 +944,8 @@ struct AppKeybindingsSettingsTab: View {
                     ForEach(groupedBindings, id: \.0) { category, bindings in
                         SettingsGroupCard(title: category) {
                             VStack(spacing: 0) {
-                                ForEach(Array(bindings.enumerated()), id: \.element.id) { index, binding in
-                                    keybindingRow(binding)
+                                ForEach(bindings.indices, id: \.self) { index in
+                                    keybindingRow(bindings[index])
                                         .padding(.vertical, 10)
 
                                     if index < bindings.count - 1 {
@@ -1339,8 +1339,8 @@ private struct GhosttySettingsDetail: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(Array(items.enumerated()), id: \.element.id) { index, descriptor in
-                                GhosttyCompactFieldRow(viewModel: viewModel, descriptor: descriptor)
+                            ForEach(items.indices, id: \.self) { index in
+                                GhosttyCompactFieldRow(viewModel: viewModel, descriptor: items[index])
                                     .padding(.horizontal, DesignTokens.Spacing.md)
                                     .padding(.vertical, 10)
 
@@ -1544,12 +1544,12 @@ private struct GhosttyKeybindingsPanel: View {
                 )
             } else {
                 List {
-                    ForEach(Array(viewModel.keybinds.enumerated()), id: \.element.id) { index, keybind in
+                    ForEach(viewModel.keybinds.indices, id: \.self) { index in
                         GhosttyKeybindRow(
                             keybind: $viewModel.keybinds[index],
-                            actionDescriptor: viewModel.keybindActionDescriptor(for: keybind.action),
-                            onRemove: { viewModel.removeKeybind(keybind.id) },
-                            pnevmaConflict: pnevmaConflictForTrigger(keybind.trigger)
+                            actionDescriptor: viewModel.keybindActionDescriptor(for: viewModel.keybinds[index].action),
+                            onRemove: { viewModel.removeKeybind(viewModel.keybinds[index].id) },
+                            pnevmaConflict: pnevmaConflictForTrigger(viewModel.keybinds[index].trigger)
                         )
                     }
                 }
