@@ -173,7 +173,9 @@ jobs:
         run: |
           OUTPUT_DIR="$RUNNER_TEMP/release-signing" \
           ./scripts/release-prepare-signing-keychain.sh
-          cat "$RUNNER_TEMP/release-signing/signing-keychain.env" >> "$GITHUB_ENV"
+          source "$RUNNER_TEMP/release-signing/signing-keychain.env"
+          test -n "$SIGNING_KEYCHAIN_PATH"
+          echo "SIGNING_KEYCHAIN_PATH=$SIGNING_KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Produce signed candidate and evidence bundle
         env:
@@ -209,8 +211,10 @@ jobs:
       - name: Cleanup keychain and credentials
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/certificate.p12"
-          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          if [[ -n "${SIGNING_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          rm -rf "$RUNNER_TEMP/release-signing"
 
   publish:
     name: Attest and publish release
