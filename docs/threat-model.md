@@ -117,6 +117,6 @@ Release SBOMs are generated (CycloneDX JSON) and attested via GitHub Actions bui
 
 ## Residual risks to track
 
-- the checked-in hardened-runtime entitlement allowlist currently keeps only `com.apple.security.network.client`; `disable-library-validation` remains a signed-build Ghostty validation decision before public release
+- future Ghostty or runtime changes could force a renewed signed-build check on `com.apple.security.cs.disable-library-validation`, but the current checked-in allowlist still keeps only `com.apple.security.network.client`
 - project-level data retention can prune stale review packs, knowledge artifacts, feedback attachments, telemetry exports, and completed session scrollback when enabled in `pnevma.toml`
 - no supported native auto-updater exists yet, so release distribution remains manual

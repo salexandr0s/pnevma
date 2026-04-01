@@ -115,8 +115,9 @@ artifact is not notarized yet:
 spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" || true
 ```
 
-Probe the open `disable-library-validation` question on a signed build when you
-need a reproducible Ghostty entitlement answer:
+Re-run the `disable-library-validation` probe on a signed build when you need
+to verify the recorded Ghostty entitlement decision after a runtime or Ghostty
+change:
 
 ```bash
 APP_PATH="$APP_PATH" \
