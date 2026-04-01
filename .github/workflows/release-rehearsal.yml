@@ -197,8 +197,11 @@ jobs:
       - name: Produce signed candidate and evidence bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           SIGNING_KEYCHAIN_PATH: ${{ env.SIGNING_KEYCHAIN_PATH }}
         run: |
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$SIGNING_KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$SIGNING_KEYCHAIN_PATH"
           EVIDENCE_DIR="$GITHUB_WORKSPACE/release-evidence" \
           APP_PATH="$APP_PATH" \
           DMG_PATH="$DMG_PATH" \

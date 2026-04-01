@@ -27,6 +27,7 @@ Optional environment variables:
 Outputs:
   <output-dir>/signing.keychain-db
   <output-dir>/signing-keychain.env
+  <output-dir>/codesigning-identities.txt
   <output-dir>/README.txt
 
 Example (installed cert in System.keychain):
@@ -81,6 +82,7 @@ fi
 
 KEYCHAIN_PATH="${KEYCHAIN_PATH:-$OUTPUT_DIR/signing.keychain-db}"
 ENV_PATH="$OUTPUT_DIR/signing-keychain.env"
+IDENTITIES_PATH="$OUTPUT_DIR/codesigning-identities.txt"
 README_PATH="$OUTPUT_DIR/README.txt"
 KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-$(random_password)}"
 
@@ -147,8 +149,31 @@ fi
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-security import "$CERT_IMPORT_PATH" -P "$CERT_IMPORT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH" >/dev/null
-security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+security list-keychains -d user -s "$KEYCHAIN_PATH"
+security default-keychain -d user -s "$KEYCHAIN_PATH"
+security import \
+  "$CERT_IMPORT_PATH" \
+  -P "$CERT_IMPORT_PASSWORD" \
+  -A \
+  -T /usr/bin/codesign \
+  -T /usr/bin/security \
+  -t cert \
+  -f pkcs12 \
+  -k "$KEYCHAIN_PATH" >/dev/null
+security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+security find-identity -v -p codesigning "$KEYCHAIN_PATH" >"$IDENTITIES_PATH"
+
+if ! grep -q "valid identities found" "$IDENTITIES_PATH"; then
+  echo "No codesigning identities found in temporary keychain $KEYCHAIN_PATH" >&2
+  cat "$IDENTITIES_PATH" >&2
+  exit 1
+fi
+
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]] && ! grep -Fq "\"$APPLE_SIGNING_IDENTITY\"" "$IDENTITIES_PATH"; then
+  echo "Requested signing identity not found in temporary keychain: $APPLE_SIGNING_IDENTITY" >&2
+  cat "$IDENTITIES_PATH" >&2
+  exit 1
+fi
 
 cat >"$ENV_PATH" <<EOF
 export SIGNING_KEYCHAIN_PATH="$KEYCHAIN_PATH"
