@@ -52,6 +52,7 @@ let package = Package(
                 "Resources/AppIcon.icon",
             ],
             resources: [
+                .copy("Resources/Pnevma.sdef"),
                 .copy("Resources/readability.min.js"),
                 .copy("Resources/turndown.min.js"),
             ],

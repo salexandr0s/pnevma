@@ -18,6 +18,7 @@ This repository ships the following release helpers:
 - `scripts/release-preflight.sh`
 - `scripts/release-signed-candidate.sh`
 - `scripts/release-evidence.sh`
+- `scripts/release-ci-green-runs.sh`
 - `scripts/probe-disable-library-validation.sh`
 - `scripts/release-macos-sign.sh`
 - `scripts/release-macos-package-dmg.sh`
@@ -44,6 +45,8 @@ perform in-app self-update.
 - `DMG_PATH` (optional override for DMG output path)
 - `CHECKSUM_PATH` (optional override for checksum output path)
 - `EVIDENCE_DIR` (optional override for the structured release evidence bundle)
+- `REMOTE_VALIDATION_REQUIRED=1` (optional; make remote validation required in the evidence checklist)
+- `CI_STABILITY_REQUIRED=0` (optional; make CI streak evidence optional in the evidence checklist)
 - `APPLE_NOTARY_PROFILE`, `APPLE_NOTARY_KEYCHAIN`, and `ZIP_PATH` only if you are also attempting notarization
 
 ## Current `v0.2.0` Signed-Only Release Flow
@@ -231,6 +234,18 @@ This validation is required for remote-enabled release candidates, but it is
 currently an operator-run evidence step rather than a GitHub-hosted blocking
 workflow gate.
 
+Record the CI stability evidence alongside the candidate bundle when `main`
+approaches release-ready state:
+
+```bash
+./scripts/release-ci-green-runs.sh \
+  --markdown "$EVIDENCE_DIR/automated/ci-green-runs.md" \
+  --json "$EVIDENCE_DIR/automated/ci-green-runs.json"
+```
+
+Add `--require-signed-lane` when the signed DMG rehearsal job is expected to be
+present and must also satisfy the 10-run streak.
+
 ## Evidence bundle
 
 `scripts/release-signed-candidate.sh` creates a structured bundle at
@@ -246,9 +261,11 @@ Each release should preserve:
 
 - SBOM output
 - `codesign --verify` output
+- app `spctl --assess --type execute --verbose=4` output
 - effective entitlements plist
 - DMG checksum output
 - DMG mount or extraction smoke logs
+- CI green-run report showing the required consecutive `main` runs
 - clean-machine install notes showing the documented first-launch flow worked
 - any Gatekeeper screenshots captured during the clean-machine pass
 - remote helper smoke logs for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio, and the canonical upgrade scenarios
@@ -258,7 +275,7 @@ Each release should preserve:
 
 Optional when attempted:
 
-- `spctl --assess` output
+- DMG `spctl --assess` output
 - notarization logs
 - stapling logs
 
@@ -267,14 +284,17 @@ For `v0.2.0`, the expected evidence set is:
 - entitlement allowlist check output
 - effective entitlements plist from the signed app
 - `codesign --verify --deep --strict --verbose=2` output for the app
+- app `spctl --assess --type execute --verbose=4` output
 - `codesign --verify --verbose=2` output for the DMG
 - DMG checksum output
 - packaged launch smoke output from a DMG-extracted app
+- CI green-run report for the required `main` lanes
 - clean-machine notes confirming the documented Finder `Open` or `Open Anyway` flow
 - real-host remote helper smoke logs from the packaged app or DMG on Linux `x86_64`, Linux `aarch64`, and Apple Silicon Mac Studio (`aarch64-apple-darwin`)
 - canonical remote helper upgrade scenario logs from the Linux `x86_64` host and the Apple Silicon Mac Studio
 - packaged remote durable lifecycle logs for `disconnect_reconnect`, `detach_reattach`, and `quit_relaunch_reattach` on the Apple Silicon Mac Studio
 - clean-machine DMG remote lifecycle validation notes and any associated Console or crash evidence
+- completed `manual/release-signoff.md`
 
 ## Deferred Notarized Path
 

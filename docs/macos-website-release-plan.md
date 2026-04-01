@@ -273,6 +273,7 @@ Required quality gates:
 Stability target:
 
 - at least 10 consecutive green runs across native and release-rehearsal lanes on `main`.
+- preserve the run report in the release evidence bundle with `./scripts/release-ci-green-runs.sh`.
 
 Exit criteria:
 
