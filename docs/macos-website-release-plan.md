@@ -39,7 +39,7 @@ Pnevma already has significant release infrastructure in place:
 
 Current known gaps:
 
-- the `disable-library-validation` entitlement decision is still open; the checked-in allowlist keeps it removed until a signed Ghostty-backed candidate proves it is needed or proves it can stay out,
+- the checked-in allowlist still keeps `com.apple.security.cs.disable-library-validation` removed, and the April 1, 2026 local Developer ID-signed Ghostty-backed candidate proved it can stay out for the current release train,
 - release metadata alignment is now enforced in automation, but every candidate still needs the tag, DMG name, release notes, and website copy to match,
 - release workflows use DMG packaging; clean-machine website download flow validation is pending,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
@@ -194,14 +194,14 @@ Current checked-in entitlement allowlist:
   traffic, and other maintainer-triggered network paths. Removing it would
   knowingly break supported release behavior.
 
-Signed-build entitlement decision still pending:
+Signed-build entitlement decision recorded:
 
 - `com.apple.security.cs.disable-library-validation`
-  Do not treat this as approved by default. Validate it on a signed candidate
-  build: if GhosttyKit launches, renders, and accepts input under the hardened
-  runtime without it, keep it removed; if the signed candidate fails without
-  it, reintroduce it and record the exact failure evidence in the release
-  bundle.
+  A Developer ID-signed local candidate validated on April 1, 2026 launched,
+  rendered Ghostty, accepted input, and passed the packaged launch smoke
+  without this entitlement under the hardened runtime, so it stays removed.
+  Re-run `scripts/probe-disable-library-validation.sh` before changing the
+  shipping allowlist if Ghostty or the runtime stack changes.
 
 Exit criteria:
 
