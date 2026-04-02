@@ -107,12 +107,6 @@ private struct SessionBindingParams: Encodable {
     let sessionID: String
 }
 
-private struct SessionResizeParams: Encodable {
-    let sessionID: String
-    let cols: Int
-    let rows: Int
-}
-
 private struct SessionRecoveryParams: Encodable {
     let sessionID: String
     let action: String
@@ -148,7 +142,6 @@ protocol SessionBridging: Sendable {
     func binding(for sessionID: String) async throws -> SessionBindingDescriptor
     func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice
     func recover(sessionID: String, action: String) async throws -> SessionRecoveryResult
-    func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async
     func killSession(sessionID: String) async
 }
 
@@ -220,23 +213,6 @@ final class SessionBridge: SessionBridging {
         )
     }
 
-    func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async {
-        do {
-            let _: OkResponse = try await commandBus.call(
-                method: "session.resize",
-                params: SessionResizeParams(
-                    sessionID: sessionID,
-                    cols: Int(columns),
-                    rows: Int(rows)
-                )
-            )
-        } catch {
-            Log.workspace.debug(
-                "Ignoring terminal resize update for session \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-        }
-    }
-
     func killSession(sessionID: String) async {
         struct KillParams: Encodable { let sessionID: String }
         struct KillResult: Decodable { let outcome: String }
@@ -297,10 +273,6 @@ actor ActiveSessionBridge: SessionBridging {
             throw SessionBridgeError.missingProjectPath
         }
         return try await current.recover(sessionID: sessionID, action: action)
-    }
-
-    func sendResize(sessionID: String, columns: UInt16, rows: UInt16) async {
-        await current?.sendResize(sessionID: sessionID, columns: columns, rows: rows)
     }
 
     func killSession(sessionID: String) async {

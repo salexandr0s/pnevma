@@ -292,8 +292,6 @@ private actor RecordingSessionBridge: SessionBridging {
         SessionRecoveryResult(ok: true, action: "retry", newSessionID: nil)
     }
 
-    func sendResize(sessionID _: String, columns _: UInt16, rows _: UInt16) async {}
-
     func killSession(sessionID: String) async {
         killSessionIDs.append(sessionID)
     }

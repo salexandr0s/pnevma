@@ -1459,17 +1459,12 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
                 self?.handleLiveAttachSurfaceClose(sessionID: binding.sessionID)
             }
         }
-        let sessionBridge = PaneFactory.sessionBridge
-        let boundSessionID = binding.sessionID
-        hostView.onTerminalResize = { columns, rows in
-            Task {
-                await sessionBridge?.sendResize(
-                    sessionID: boundSessionID,
-                    columns: columns,
-                    rows: rows
-                )
-            }
-        }
+        // Resize propagation for live-attached terminals is owned by the attach
+        // transport, not by Swift chrome. Local sessions attach through
+        // `pnevma-session-proxy`, which sends the initial size and forwards
+        // SIGWINCH updates; remote attach relies on SSH/PTTY resize propagation.
+        // Sending a second native `session.resize` here causes duplicate shell
+        // redraws during chrome width changes such as right-inspector toggles.
         if isNewSession {
             hostView.onSurfaceReady = { [weak self] in
                 self?.installAgentLauncher()

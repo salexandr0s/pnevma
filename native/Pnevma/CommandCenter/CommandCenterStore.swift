@@ -37,7 +37,11 @@ final class CommandCenterStore {
         didSet { coerceSelection() }
     }
     var searchQuery = "" {
-        didSet { coerceSelection() }
+        didSet {
+            guard searchQuery != oldValue else { return }
+            coerceSelection()
+            onSearchQueryChanged?(searchQuery)
+        }
     }
     var selectedWorkspaceID: UUID? {
         didSet { coerceSelection() }
@@ -64,6 +68,13 @@ final class CommandCenterStore {
     private var isActive = false
     @ObservationIgnored
     var onPerformAction: ((CommandCenterAction, CommandCenterRunRecord) -> Void)?
+    @ObservationIgnored
+    var onSearchQueryChanged: ((String) -> Void)?
+
+    private struct SnapshotRefreshResult {
+        let snapshot: CommandCenterWorkspaceSnapshot
+        let errorMessage: String?
+    }
 
     init(
         workspaceManager: WorkspaceManager,
@@ -468,70 +479,25 @@ final class CommandCenterStore {
         isRefreshing = true
 
         let workspaces = eligibleWorkspaces()
-        var refreshed: [CommandCenterWorkspaceSnapshot] = []
-        var errors: [String] = []
-
-        for workspace in workspaces {
-            let displayPath = workspaceDisplayPath(for: workspace)
-            do {
-                let snapshot = try await workspaceManager.commandCenterSnapshot(for: workspace.id)
-                refreshed.append(
-                    CommandCenterWorkspaceSnapshot(
-                        id: workspace.id,
-                        workspaceName: workspace.name,
-                        workspacePath: displayPath,
-                        snapshot: snapshot,
-                        errorMessage: nil
-                    )
-                )
-            } catch let error as WorkspaceRuntimeReadinessError {
-                switch error {
-                case .timedOut:
-                    refreshed.append(
-                        CommandCenterWorkspaceSnapshot(
-                            id: workspace.id,
-                            workspaceName: workspace.name,
-                            workspacePath: displayPath,
-                            snapshot: nil,
-                            errorMessage: "Workspace runtime is still opening."
-                        )
-                    )
-                default:
-                    let message = error.localizedDescription
-                    refreshed.append(
-                        CommandCenterWorkspaceSnapshot(
-                            id: workspace.id,
-                            workspaceName: workspace.name,
-                            workspacePath: displayPath,
-                            snapshot: nil,
-                            errorMessage: message
-                        )
-                    )
-                    errors.append("\(workspace.name): \(message)")
+        let results = await withTaskGroup(of: SnapshotRefreshResult.self, returning: [SnapshotRefreshResult].self) { group in
+            for workspace in workspaces {
+                group.addTask {
+                    return await self.refreshResult(for: workspace)
                 }
-            } catch {
-                let message = error.localizedDescription
-                refreshed.append(
-                    CommandCenterWorkspaceSnapshot(
-                        id: workspace.id,
-                        workspaceName: workspace.name,
-                        workspacePath: displayPath,
-                        snapshot: nil,
-                        errorMessage: message
-                    )
-                )
-                errors.append("\(workspace.name): \(message)")
-                Log.workspace.error(
-                    "Command center refresh failed for \(workspace.name, privacy: .public): \(message, privacy: .public)"
-                )
             }
+
+            var collected: [SnapshotRefreshResult] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
         }
 
-        workspaceSnapshots = refreshed.sorted {
+        workspaceSnapshots = results.map(\.snapshot).sorted {
             $0.workspaceName.localizedCaseInsensitiveCompare($1.workspaceName) == .orderedAscending
         }
         lastRefreshAt = Date()
-        lastErrorMessage = errors.first
+        lastErrorMessage = results.compactMap(\.errorMessage).first
         coerceWorkspaceScope()
         coerceSelection()
         isRefreshing = false
@@ -593,7 +559,6 @@ final class CommandCenterStore {
     private func matchesSearch(_ run: CommandCenterFleetRun) -> Bool {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
-        let needle = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         let haystacks: [String] = [
             run.workspaceName,
             run.workspacePath,
@@ -614,8 +579,65 @@ final class CommandCenterStore {
             run.run.attentionReason,
         ].compactMap { $0 } + run.run.scopePaths
         return haystacks.contains {
-            $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                .contains(needle)
+            $0.localizedStandardContains(query)
+        }
+    }
+
+    private func refreshResult(for workspace: Workspace) async -> SnapshotRefreshResult {
+        let displayPath = workspaceDisplayPath(for: workspace)
+        do {
+            let snapshot = try await workspaceManager.commandCenterSnapshot(for: workspace.id)
+            return SnapshotRefreshResult(
+                snapshot: CommandCenterWorkspaceSnapshot(
+                    id: workspace.id,
+                    workspaceName: workspace.name,
+                    workspacePath: displayPath,
+                    snapshot: snapshot,
+                    errorMessage: nil
+                ),
+                errorMessage: nil
+            )
+        } catch let error as WorkspaceRuntimeReadinessError {
+            switch error {
+            case .timedOut:
+                return SnapshotRefreshResult(
+                    snapshot: CommandCenterWorkspaceSnapshot(
+                        id: workspace.id,
+                        workspaceName: workspace.name,
+                        workspacePath: displayPath,
+                        snapshot: nil,
+                        errorMessage: "Workspace runtime is still opening."
+                    ),
+                    errorMessage: nil
+                )
+            default:
+                let message = error.localizedDescription
+                return SnapshotRefreshResult(
+                    snapshot: CommandCenterWorkspaceSnapshot(
+                        id: workspace.id,
+                        workspaceName: workspace.name,
+                        workspacePath: displayPath,
+                        snapshot: nil,
+                        errorMessage: message
+                    ),
+                    errorMessage: "\(workspace.name): \(message)"
+                )
+            }
+        } catch {
+            let message = error.localizedDescription
+            Log.workspace.error(
+                "Command center refresh failed for \(workspace.name, privacy: .public): \(message, privacy: .public)"
+            )
+            return SnapshotRefreshResult(
+                snapshot: CommandCenterWorkspaceSnapshot(
+                    id: workspace.id,
+                    workspaceName: workspace.name,
+                    workspacePath: displayPath,
+                    snapshot: nil,
+                    errorMessage: message
+                ),
+                errorMessage: "\(workspace.name): \(message)"
+            )
         }
     }
 

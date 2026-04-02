@@ -41,9 +41,6 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
     /// Called once a real terminal surface is attached to the host view.
     var onSurfaceReady: (() -> Void)?
 
-    /// Called when the visible terminal grid size changes.
-    var onTerminalResize: ((UInt16, UInt16) -> Void)?
-
     /// Called when a desktop notification arrives for this surface.
     var onDesktopNotification: ((String, String) -> Void)?
 
@@ -171,7 +168,6 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
         guard terminalSurface != nil else { return }
         onTerminalClose = nil
         onSurfaceReady = nil
-        onTerminalResize = nil
         onDesktopNotification = nil
         onTitleChanged = nil
         onPwdChanged = nil
@@ -585,7 +581,6 @@ final class TerminalHostView: NSView, @preconcurrency NSTextInputClient {
            size.rows > 0,
            lastReportedGridSize.map({ $0.columns != size.columns || $0.rows != size.rows }) ?? true {
             lastReportedGridSize = size
-            onTerminalResize?(size.columns, size.rows)
         }
     }
 
