@@ -165,28 +165,26 @@ jobs:
           } >> "$GITHUB_ENV"
           mkdir -p release-evidence
 
-      - name: Import signing certificate
+      - name: Prepare signing keychain
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          CERT_PATH="$RUNNER_TEMP/certificate.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          OUTPUT_DIR="$RUNNER_TEMP/release-signing" \
+          ./scripts/release-prepare-signing-keychain.sh
+          source "$RUNNER_TEMP/release-signing/signing-keychain.env"
+          test -n "$SIGNING_KEYCHAIN_PATH"
+          echo "SIGNING_KEYCHAIN_PATH=$SIGNING_KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Produce signed candidate and evidence bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           SIGNING_KEYCHAIN_PATH: ${{ env.SIGNING_KEYCHAIN_PATH }}
         run: |
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$SIGNING_KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$SIGNING_KEYCHAIN_PATH"
           EVIDENCE_DIR="$GITHUB_WORKSPACE/release-evidence" \
           APP_PATH="$APP_PATH" \
           DMG_PATH="$DMG_PATH" \
@@ -216,8 +214,10 @@ jobs:
       - name: Cleanup keychain and credentials
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/certificate.p12"
-          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          if [[ -n "${SIGNING_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          rm -rf "$RUNNER_TEMP/release-signing"
 
   publish:
     name: Attest and publish release

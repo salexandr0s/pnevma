@@ -12,7 +12,7 @@ A release candidate is ready only when all of the following are true:
 4. Release package preflight is green on `main`.
 5. The signed app and signed DMG both pass `codesign` verification, and the packaged launch smoke is green on the actual candidate artifact.
 6. A clean-machine DMG install pass is recorded using the documented Finder `Open` or `Open Anyway` first-launch flow.
-7. `main` is stable across the native and release-rehearsal lanes, with recent consecutive green runs before cutting the candidate.
+7. `main` is stable across the native and release-rehearsal lanes, with recent consecutive green runs before cutting the candidate, and that streak is preserved in the release evidence bundle.
 8. Local agent-team validation evidence exists for the presentation mode being advertised in the candidate (`split_panes` always; `detached_windows` when enabled in release notes or product copy).
 9. For remote-enabled candidates, operator-run real-host remote helper smoke evidence exists for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio (`aarch64-apple-darwin`), the canonical upgrade scenarios on Linux `x86_64` and the Mac Studio, packaged remote durable lifecycle evidence exists for the Apple Silicon Mac Studio path, and a clean-machine DMG remote lifecycle pass is recorded.
 
@@ -26,6 +26,8 @@ For the first public `v0.2.0` DMG, notarization and stapling are explicitly defe
 - `Release Rehearsal / Sign and prove candidate DMG`
 
 The rehearsal lanes are expected to validate the public `v0.2.0` signed-only DMG release path, not a legacy `tar.gz` archive path. The notarized follow-up path remains useful later, but it is non-blocking for the first signed-only public DMG.
+
+Use `./scripts/release-ci-green-runs.sh` to archive the required consecutive-run report alongside the candidate evidence bundle.
 
 ## Smoke Commands
 

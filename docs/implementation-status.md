@@ -10,25 +10,34 @@ Current release target:
 
 - version: `v0.2.0`
 - artifact: Developer ID signed `arm64` macOS `.dmg` for the first public cut, with notarization deferred
-- evidence: SBOM, entitlement output, effective entitlements, `codesign` output, checksum, packaged launch smoke output, clean-machine install notes, and verified first-launch instructions
+- evidence: SBOM, entitlement output, effective entitlements, `codesign` output, app and DMG `spctl` output, checksum, packaged launch smoke output, CI green-run report, clean-machine install notes, remote validation evidence when remote ships, and verified first-launch instructions
 
 Primary remaining release work:
 
-- resolve `disable-library-validation` entitlement story (remove or retain with signed-build evidence)
 - keep native and release-rehearsal lanes green and stable
+- record the required consecutive green `main` runs and archive the CI report in the release evidence bundle
+- regenerate the canonical signed candidate and evidence bundle from the current release-train head before publish
 - validate and document the Finder `Open` / `Open Anyway` first-launch path on a clean machine
 - execute manual smoke and security tests against the candidate DMG artifact
+- execute remote helper, upgrade, and durable lifecycle validation for the release candidate
 - assemble final release evidence bundle and complete sign-off
 
-Most recent local verification on March 27, 2026:
+Most recent local verification:
 
-- `just check` green
-- `just xcode-test` green
-- `just ghostty-smoke` green
-- `just xcode-build-release` green
-- `APP_PATH="$PWD/native/build/Release/Pnevma.app" ./scripts/run-packaged-launch-smoke.sh` green
-- `./scripts/check-entitlements.sh` green for the checked-in source allowlist
-- effective entitlements on the app bundle remain a signed-build-only check because unsigned local release builds do not embed them
+- April 1, 2026: `just check` green
+- April 1, 2026: `just spm-test-clean` green
+- April 1, 2026: `just xcode-build-release` green
+- April 1, 2026: local Developer ID-signed candidate DMG + evidence bundle generated successfully
+- April 1, 2026: signed app launch smoke, Ghostty smoke, DMG packaging, and packaged launch smoke green on the signed candidate
+- April 1, 2026: `scripts/probe-disable-library-validation.sh` confirmed the signed candidate works without `com.apple.security.cs.disable-library-validation`, so the checked-in allowlist keeps it removed
+- April 1, 2026: effective entitlements on the signed app remained limited to `com.apple.security.network.client`
+- March 27, 2026: full release-local verification green:
+  - `just xcode-test` green
+  - `just ghostty-smoke` green
+  - `just xcode-build-release` green
+  - `APP_PATH="$PWD/native/build/Release/Pnevma.app" ./scripts/run-packaged-launch-smoke.sh` green
+  - `./scripts/check-entitlements.sh` green for the checked-in source allowlist
+  - effective entitlements on the app bundle remain a signed-build-only check because unsigned local release builds do not embed them
 
 ## Confirmed In-Tree Capabilities
 

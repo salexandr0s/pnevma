@@ -9,9 +9,10 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+const REMOTE_HELPER_REMOTE_DIR: &str = "$HOME/.local/share/pnevma/bin";
 const REMOTE_HELPER_REMOTE_PATH: &str = "$HOME/.local/share/pnevma/bin/pnevma-remote-helper";
-const REMOTE_INSTALL_COMMAND: &str = "umask 077; mkdir -p \"$HOME/.local/share/pnevma/bin\"; cat > \"$HOME/.local/share/pnevma/bin/pnevma-remote-helper\"; chmod 700 \"$HOME/.local/share/pnevma/bin/pnevma-remote-helper\"";
-const REMOTE_INSTALL_METADATA_COMMAND: &str = "umask 077; mkdir -p \"$HOME/.local/share/pnevma/bin\"; cat > \"$HOME/.local/share/pnevma/bin/pnevma-remote-helper.metadata\"; chmod 600 \"$HOME/.local/share/pnevma/bin/pnevma-remote-helper.metadata\"";
+const REMOTE_HELPER_METADATA_REMOTE_PATH: &str =
+    "$HOME/.local/share/pnevma/bin/pnevma-remote-helper.metadata";
 const REMOTE_HELPER_SCRIPT: &str = include_str!("remote_helper.sh");
 #[cfg(test)]
 const REMOTE_HELPER_BINARY_NAME: &str = "pnevma-remote-helper";
@@ -165,7 +166,10 @@ pub fn build_remote_attach_command(
     profile: &SshProfile,
     session_id: &str,
 ) -> Result<String, crate::SshError> {
-    let mut args = ssh_args_without_binary(profile, crate::SshKeepAliveMode::Interactive)?;
+    let mut args = strip_control_master_args(ssh_args_without_binary(
+        profile,
+        crate::SshKeepAliveMode::Interactive,
+    )?);
     args.insert(0, "-tt".to_string());
     args.insert(0, ssh_binary_path().to_string_lossy().to_string());
     args.push(remote_command_arg(&format!(
@@ -543,7 +547,12 @@ async fn install_remote_helper(
         RemoteHelperInstallPlan::Artifact(artifact) => {
             let bytes = fs::read(&artifact.path)?;
             validate_artifact_bytes(artifact, &bytes)?;
-            run_ssh(profile, REMOTE_INSTALL_COMMAND, Some(&bytes)).await?;
+            run_ssh(
+                profile,
+                &remote_install_command(REMOTE_HELPER_REMOTE_PATH, 0o700),
+                Some(&bytes),
+            )
+            .await?;
             install_remote_helper_metadata(
                 profile,
                 &RemoteHelperInstallMetadata {
@@ -558,7 +567,7 @@ async fn install_remote_helper(
         RemoteHelperInstallPlan::ShellCompat { target_triple } => {
             run_ssh(
                 profile,
-                REMOTE_INSTALL_COMMAND,
+                &remote_install_command(REMOTE_HELPER_REMOTE_PATH, 0o700),
                 Some(REMOTE_HELPER_SCRIPT.as_bytes()),
             )
             .await?;
@@ -586,11 +595,20 @@ async fn install_remote_helper_metadata(
     );
     let _ = run_ssh(
         profile,
-        REMOTE_INSTALL_METADATA_COMMAND,
+        &remote_install_command(REMOTE_HELPER_METADATA_REMOTE_PATH, 0o600),
         Some(body.as_bytes()),
     )
     .await?;
     Ok(())
+}
+
+fn remote_install_command(remote_path: &str, mode: u32) -> String {
+    format!(
+        "umask 077; mkdir -p \"{dir}\"; dest=\"{remote_path}\"; tmp=\"${{dest}}.tmp.$$\"; rm -f \"$tmp\"; cat > \"$tmp\"; chmod {mode:o} \"$tmp\"; mv -f \"$tmp\" \"$dest\"",
+        dir = REMOTE_HELPER_REMOTE_DIR,
+        remote_path = remote_path,
+        mode = mode,
+    )
 }
 
 fn resolve_remote_helper_install_plan(
@@ -1216,6 +1234,28 @@ fn ssh_args_without_binary(
     Ok(args)
 }
 
+fn strip_control_master_args(args: Vec<String>) -> Vec<String> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "-o"
+            && index + 1 < args.len()
+            && matches!(
+                args[index + 1].as_str(),
+                option if option.starts_with("ControlMaster=")
+                    || option.starts_with("ControlPath=")
+                    || option.starts_with("ControlPersist=")
+            )
+        {
+            index += 2;
+            continue;
+        }
+        filtered.push(args[index].clone());
+        index += 1;
+    }
+    filtered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1329,6 +1369,9 @@ mod tests {
         assert!(command.contains("pnevma-remote-helper session attach"));
         assert!(command.contains("session-1"));
         assert!(command.contains("-tt"));
+        assert!(!command.contains("ControlMaster="));
+        assert!(!command.contains("ControlPath="));
+        assert!(!command.contains("ControlPersist="));
     }
 
     #[test]
@@ -1367,6 +1410,54 @@ mod tests {
 
         let darwin = parse_remote_helper_platform("Darwin arm64\n").expect("darwin platform");
         assert_eq!(darwin.target_triple, "aarch64-apple-darwin");
+    }
+
+    #[test]
+    fn remote_install_command_uses_temp_file_and_atomic_move() {
+        let command = remote_install_command(REMOTE_HELPER_REMOTE_PATH, 0o700);
+        assert!(command.contains("tmp=\"${dest}.tmp.$$\""));
+        assert!(command.contains("cat > \"$tmp\""));
+        assert!(command.contains("chmod 700 \"$tmp\""));
+        assert!(command.contains("mv -f \"$tmp\" \"$dest\""));
+        assert!(!command.contains("cat > \"$HOME/.local/share/pnevma/bin/pnevma-remote-helper\""));
+    }
+
+    #[test]
+    fn remote_metadata_install_command_uses_temp_file_and_atomic_move() {
+        let command = remote_install_command(REMOTE_HELPER_METADATA_REMOTE_PATH, 0o600);
+        assert!(command.contains("tmp=\"${dest}.tmp.$$\""));
+        assert!(command.contains("cat > \"$tmp\""));
+        assert!(command.contains("chmod 600 \"$tmp\""));
+        assert!(command.contains("mv -f \"$tmp\" \"$dest\""));
+        assert!(!command
+            .contains("cat > \"$HOME/.local/share/pnevma/bin/pnevma-remote-helper.metadata\""));
+    }
+
+    #[test]
+    fn strip_control_master_args_removes_multiplexing_options_only() {
+        let args = vec![
+            "-o".to_string(),
+            "ServerAliveInterval=10".to_string(),
+            "-o".to_string(),
+            "ControlMaster=auto".to_string(),
+            "-o".to_string(),
+            "ControlPath=/tmp/pnevma-control".to_string(),
+            "-o".to_string(),
+            "ControlPersist=60".to_string(),
+            "-o".to_string(),
+            "ServerAliveCountMax=2".to_string(),
+            "user@example.com".to_string(),
+        ];
+        assert_eq!(
+            strip_control_master_args(args),
+            vec![
+                "-o".to_string(),
+                "ServerAliveInterval=10".to_string(),
+                "-o".to_string(),
+                "ServerAliveCountMax=2".to_string(),
+                "user@example.com".to_string(),
+            ]
+        );
     }
 
     #[test]
