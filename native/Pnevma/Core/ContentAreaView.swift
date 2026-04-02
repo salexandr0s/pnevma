@@ -1,5 +1,10 @@
 import Cocoa
 
+enum PaneRemovalDisposition {
+    case close
+    case transfer
+}
+
 private extension NSRect {
     func approximatelyEquals(_ other: NSRect, tolerance: CGFloat = 0.5) -> Bool {
         abs(origin.x - other.origin.x) < tolerance
@@ -358,7 +363,10 @@ final class ContentAreaView: NSView {
 
     // MARK: - Pane Management
 
-    private func registerPaneView(_ view: NSView & PaneContent) {
+    private func registerPaneView(
+        _ view: NSView & PaneContent,
+        transferred: Bool = false
+    ) {
         view.translatesAutoresizingMaskIntoConstraints = true
         view.autoresizingMask = []
         // Non-terminal panes need a themed background so they aren't transparent
@@ -379,6 +387,9 @@ final class ContentAreaView: NSView {
                 self?.layoutEngine.upsertPersistedPane(pane)
                 self?.onPanePersistenceChanged?()
             }
+        }
+        if transferred, let terminalPane = view as? any TerminalPaneControlling {
+            terminalPane.didMoveBetweenContainers()
         }
     }
 
@@ -427,6 +438,27 @@ final class ContentAreaView: NSView {
         return newID
     }
 
+    @discardableResult
+    func insertExistingPaneView(
+        _ paneID: PaneID,
+        direction: SplitDirection,
+        paneView: NSView & PaneContent
+    ) -> PaneID? {
+        let oldActiveID = layoutEngine.activePaneID
+        let newID = paneView.paneID
+        paneView.removeFromSuperview()
+        guard layoutEngine.splitPane(paneID, direction: direction, newPaneID: newID) != nil else {
+            return nil
+        }
+
+        registerPaneView(paneView, transferred: true)
+        if let oldActiveID { paneViews[oldActiveID]?.deactivate() }
+        paneView.activate()
+        onActivePaneChanged?(newID)
+        relayout()
+        return newID
+    }
+
     /// Replace the active pane's view without changing the tree structure.
     @discardableResult
     func replaceActivePane(with newPaneView: NSView & PaneContent) -> PaneID? {
@@ -455,6 +487,19 @@ final class ContentAreaView: NSView {
 
     /// Close the given pane.
     func closePane(_ paneID: PaneID) {
+        _ = removePane(paneID, disposition: .close)
+    }
+
+    @discardableResult
+    func extractPaneView(_ paneID: PaneID) -> (NSView & PaneContent)? {
+        removePane(paneID, disposition: .transfer)
+    }
+
+    @discardableResult
+    func removePane(
+        _ paneID: PaneID,
+        disposition: PaneRemovalDisposition
+    ) -> (NSView & PaneContent)? {
         // If the zoomed pane is being closed, unzoom first.
         if zoomedPaneID == paneID {
             zoomedPaneID = nil
@@ -462,12 +507,24 @@ final class ContentAreaView: NSView {
             dividerViews.forEach { $0.isHidden = false }
         }
 
-        guard layoutEngine.closePane(paneID) else { return }
+        guard layoutEngine.closePane(paneID) else { return nil }
 
         dismissNotificationRing(for: paneID)
 
-        if let view = paneViews.removeValue(forKey: paneID) {
-            view.dispose()
+        let removedView = paneViews.removeValue(forKey: paneID)
+        if let observablePane = removedView as? PanePersistenceObservable {
+            observablePane.onPersistedStateChange = nil
+        }
+        if let terminalPane = removedView as? any TerminalPaneControlling,
+           disposition == .transfer {
+            terminalPane.willMoveBetweenContainers()
+        }
+        if let view = removedView {
+            if disposition == .close {
+                view.dispose()
+            } else {
+                view.deactivate()
+            }
             view.removeFromSuperview()
         }
         layoutEngine.removePersistedPane(paneID)
@@ -480,6 +537,7 @@ final class ContentAreaView: NSView {
         }
 
         relayout()
+        return removedView
     }
 
     /// Close the currently active pane.
@@ -664,6 +722,10 @@ final class ContentAreaView: NSView {
     var activePaneView: (NSView & PaneContent)? {
         guard let id = layoutEngine.activePaneID else { return nil }
         return paneViews[id]
+    }
+
+    func paneView(for paneID: PaneID) -> (NSView & PaneContent)? {
+        paneViews[paneID]
     }
 
     /// Number of panes currently in the layout.

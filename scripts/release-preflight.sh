@@ -168,6 +168,7 @@ run_in_dir "$ROOT_DIR" "release metadata alignment" ./scripts/release-version.sh
 # ── Rust quality gates ───────────────────────────────────────────────────────
 
 run_in_dir "$ROOT_DIR" "just check" just check
+run_in_dir "$ROOT_DIR" "agent team rehydrate validation" cargo test -p pnevma-commands agent_teams::tests::collect_rehydrated_teams_preserves_remote_target_metadata -- --exact
 run_in_dir "$ROOT_DIR" "cargo deny check" cargo deny check
 run_in_dir "$ROOT_DIR" "just ghostty-build" just ghostty-build
 run_in_dir "$ROOT_DIR" "just spm-test-clean" just spm-test-clean

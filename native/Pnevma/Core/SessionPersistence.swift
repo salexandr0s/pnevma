@@ -12,6 +12,7 @@ final class SessionPersistence: @unchecked Sendable {
         let windowFrame: CodableRect?
         let commandCenterWindowFrame: CodableRect?
         let commandCenterVisible: Bool
+        let agentTeamWindows: [AgentTeamWindowState]
         let workspaces: [Workspace.Snapshot]
         let activeWorkspaceID: UUID?
         let sidebarVisible: Bool
@@ -22,6 +23,7 @@ final class SessionPersistence: @unchecked Sendable {
             windowFrame: CodableRect?,
             commandCenterWindowFrame: CodableRect? = nil,
             commandCenterVisible: Bool = false,
+            agentTeamWindows: [AgentTeamWindowState] = [],
             workspaces: [Workspace.Snapshot],
             activeWorkspaceID: UUID?,
             sidebarVisible: Bool,
@@ -31,6 +33,7 @@ final class SessionPersistence: @unchecked Sendable {
             self.windowFrame = windowFrame
             self.commandCenterWindowFrame = commandCenterWindowFrame
             self.commandCenterVisible = commandCenterVisible
+            self.agentTeamWindows = agentTeamWindows
             self.workspaces = workspaces
             self.activeWorkspaceID = activeWorkspaceID
             self.sidebarVisible = sidebarVisible
@@ -42,6 +45,7 @@ final class SessionPersistence: @unchecked Sendable {
             case windowFrame
             case commandCenterWindowFrame
             case commandCenterVisible
+            case agentTeamWindows
             case workspaces
             case activeWorkspaceID
             case sidebarVisible
@@ -54,6 +58,7 @@ final class SessionPersistence: @unchecked Sendable {
             windowFrame = try container.decodeIfPresent(CodableRect.self, forKey: .windowFrame)
             commandCenterWindowFrame = try container.decodeIfPresent(CodableRect.self, forKey: .commandCenterWindowFrame)
             commandCenterVisible = try container.decodeIfPresent(Bool.self, forKey: .commandCenterVisible) ?? false
+            agentTeamWindows = try container.decodeIfPresent([AgentTeamWindowState].self, forKey: .agentTeamWindows) ?? []
             workspaces = try container.decode([Workspace.Snapshot].self, forKey: .workspaces)
             activeWorkspaceID = try container.decodeIfPresent(UUID.self, forKey: .activeWorkspaceID)
             sidebarVisible = try container.decode(Bool.self, forKey: .sidebarVisible)
@@ -62,7 +67,7 @@ final class SessionPersistence: @unchecked Sendable {
         }
     }
 
-    struct CodableRect: Codable {
+    struct CodableRect: Codable, Equatable {
         let x: Double, y: Double, width: Double, height: Double
 
         init(_ rect: NSRect) {
@@ -74,6 +79,32 @@ final class SessionPersistence: @unchecked Sendable {
 
         var nsRect: NSRect {
             NSRect(x: x, y: y, width: width, height: height)
+        }
+    }
+
+    struct AgentTeamWindowState: Codable, Equatable {
+        let teamID: String
+        let projectID: String
+        let leaderSessionID: String
+        let leaderPaneID: String
+        let memberSessionID: String
+        let memberPaneID: String
+        let provider: String
+        let memberIndex: Int
+        let title: String
+        let frame: CodableRect?
+
+        private enum CodingKeys: String, CodingKey {
+            case teamID
+            case projectID
+            case leaderSessionID
+            case leaderPaneID
+            case memberSessionID
+            case memberPaneID
+            case provider
+            case memberIndex
+            case title
+            case frame
         }
     }
 

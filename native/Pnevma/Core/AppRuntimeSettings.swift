@@ -5,6 +5,24 @@ extension Notification.Name {
     static let appRuntimeSettingsDidChange = Notification.Name("appRuntimeSettingsDidChange")
 }
 
+enum AgentTeamPresentationMode: String, Codable, Equatable {
+    case splitPanes = "split_panes"
+    case detachedWindows = "detached_windows"
+
+    init(rawValueOrDefault value: String) {
+        self = Self(rawValue: value) ?? .splitPanes
+    }
+
+    var displayName: String {
+        switch self {
+        case .splitPanes:
+            return "Split panes"
+        case .detachedWindows:
+            return "Detached windows"
+        }
+    }
+}
+
 struct KeybindingEntry: Identifiable, Codable, Equatable {
     var id: String { action }
     let action: String
@@ -45,6 +63,7 @@ struct KeybindingEntry: Identifiable, Codable, Equatable {
 struct AppSettingsSnapshot: Equatable {
     let autoSaveWorkspaceOnQuit: Bool
     let restoreWindowsOnLaunch: Bool
+    let agentTeamPresentation: String
     let autoUpdate: Bool
     let defaultShell: String
     let terminalFont: String
@@ -63,6 +82,7 @@ struct AppSettingsSnapshot: Equatable {
     static let defaults = Self(
         autoSaveWorkspaceOnQuit: true,
         restoreWindowsOnLaunch: true,
+        agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
         autoUpdate: true,
         defaultShell: "",
         terminalFont: "SF Mono",
@@ -83,11 +103,15 @@ struct AppSettingsSnapshot: Equatable {
         let trimmed = defaultShell.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    var agentTeamPresentationMode: AgentTeamPresentationMode {
+        AgentTeamPresentationMode(rawValueOrDefault: agentTeamPresentation)
+    }
 }
 
 extension AppSettingsSnapshot: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case autoSaveWorkspaceOnQuit, restoreWindowsOnLaunch, autoUpdate, defaultShell
+        case autoSaveWorkspaceOnQuit, restoreWindowsOnLaunch, agentTeamPresentation, autoUpdate, defaultShell
         case terminalFont, terminalFontSize, scrollbackLines, sidebarBackgroundOffset
         case bottomToolBarAutoHide, focusBorderEnabled, focusBorderOpacity, focusBorderWidth
         case focusBorderColor, telemetryEnabled, crashReports, keybindings
@@ -97,6 +121,8 @@ extension AppSettingsSnapshot: Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         autoSaveWorkspaceOnQuit = try c.decode(Bool.self, forKey: .autoSaveWorkspaceOnQuit)
         restoreWindowsOnLaunch = try c.decode(Bool.self, forKey: .restoreWindowsOnLaunch)
+        agentTeamPresentation = try c.decodeIfPresent(String.self, forKey: .agentTeamPresentation)
+            ?? AgentTeamPresentationMode.splitPanes.rawValue
         autoUpdate = try c.decode(Bool.self, forKey: .autoUpdate)
         defaultShell = try c.decode(String.self, forKey: .defaultShell)
         terminalFont = try c.decode(String.self, forKey: .terminalFont)
@@ -122,6 +148,7 @@ struct KeybindingOverrideSave: Encodable, Equatable {
 struct AppSettingsSaveRequest: Encodable, Equatable {
     let autoSaveWorkspaceOnQuit: Bool
     let restoreWindowsOnLaunch: Bool
+    let agentTeamPresentation: String
     let autoUpdate: Bool
     let defaultShell: String
     let terminalFont: String
@@ -172,6 +199,10 @@ final class AppRuntimeSettings {
 
     var restoreWindowsOnLaunch: Bool {
         snapshot.restoreWindowsOnLaunch
+    }
+
+    var agentTeamPresentationMode: AgentTeamPresentationMode {
+        snapshot.agentTeamPresentationMode
     }
 
     var bottomToolBarAutoHide: Bool {

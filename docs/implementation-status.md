@@ -34,11 +34,23 @@ Most recent local verification on March 27, 2026:
 
 - native Swift/AppKit app linked to Rust through `pnevma-bridge`
 - Ghostty-backed terminal embedding and managed Ghostty settings workflow
+- local agent teams for Claude and Codex with leader-left/right-column pane routing, background tab updates, and relaunch restore
+- opt-in detached teammate windows for agent teams via app settings (`split_panes` vs `detached_windows`)
+- remote team backend plumbing for SSH-backed workspaces, including remote durable teammate spawn/close/rehydration support
 - remote HTTP/WebSocket server with request size limits, token auth, revocation, rate limiting, and Tailscale guard rails
 - CI security gates including `cargo audit`, `cargo deny`, secret scanning, and pinned GitHub Actions
 - release preflight, entitlement checks, signing/notarization scripts, and rehearsal workflows
 - documented `v0.2.0` release identity, DMG artifact target, and first-launch install guidance for the signed-only initial DMG
 - backend-backed global app settings in `~/.config/pnevma/config.toml`
+- normal app quit now terminates local managed sessions and cleans orphan-prone local durable state, while remote durable sessions still detach for later reattach
+
+## Current team-mode scope
+
+- stable-by-default release target: local agent teams in split panes
+- opt-in local presentation mode: detached teammate windows
+- remote SSH teammate sessions: backend-managed and restorable, but still experimental for release candidates until the remote/manual evidence matrix is complete
+- remote Claude/Codex leader-driven subagent UX is still narrower than the local path; release docs and evidence should describe remote team support explicitly before advertising it publicly
+- active projects now expose a manual `project.cleanup_orphaned_sessions` cleanup path, including a Command Palette action, to safely remove stale Pnevma-owned tmux/local durable leftovers
 
 ## Source of Truth
 

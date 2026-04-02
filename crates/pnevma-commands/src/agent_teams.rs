@@ -1,6 +1,7 @@
 use crate::commands::{
-    append_event, current_redaction_secrets, redact_text, session_row_from_meta,
-    session_row_to_event_payload,
+    append_event, create_remote_managed_session, current_redaction_secrets, redact_text,
+    session_row_from_meta, session_row_to_event_payload, ssh_profile_from_remote_target,
+    CreateRemoteManagedSessionInput, SessionRemoteTargetInput,
 };
 use crate::control::resolve_control_plane_settings;
 use crate::event_emitter::EventEmitter;
@@ -34,6 +35,8 @@ pub struct AgentTeamConfigInput {
     pub control_socket_path: String,
     #[serde(default)]
     pub base_env: Vec<(String, String)>,
+    #[serde(default)]
+    pub remote_target: Option<SessionRemoteTargetInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +59,8 @@ pub struct AgentTeamSnapshot {
     pub leader_pane_id: String,
     pub leader_pane_token: String,
     pub main_vertical: bool,
+    #[serde(default)]
+    pub remote_target: Option<SessionRemoteTargetInput>,
     pub members: Vec<AgentTeamMemberView>,
 }
 
@@ -92,6 +97,7 @@ struct AgentTeamState {
     working_dir: String,
     control_socket_path: String,
     base_env: Vec<(String, String)>,
+    remote_target: Option<SessionRemoteTargetInput>,
     main_vertical: bool,
     next_member_index: usize,
     members: Vec<AgentTeamMemberView>,
@@ -108,6 +114,8 @@ struct RehydratedAgentTeam {
 struct PersistedAgentTeamEnvelope {
     #[serde(default)]
     agent_team: Option<PersistedAgentTeamMetadata>,
+    #[serde(default)]
+    remote_target: Option<SessionRemoteTargetInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +126,16 @@ struct PersistedAgentTeamMetadata {
     role: String,
     #[serde(default)]
     member_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedAgentTeamMetadata {
+    team_id: String,
+    leader_session_id: String,
+    provider: String,
+    role: String,
+    member_index: usize,
+    remote_target: Option<SessionRemoteTargetInput>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -139,6 +157,7 @@ impl AgentTeamStore {
                 working_dir: input.working_dir.clone(),
                 control_socket_path: input.control_socket_path.clone(),
                 base_env: input.base_env.clone(),
+                remote_target: input.remote_target.clone(),
                 main_vertical: true,
                 next_member_index: 1,
                 members: Vec::new(),
@@ -149,6 +168,7 @@ impl AgentTeamStore {
         state.working_dir = input.working_dir;
         state.control_socket_path = input.control_socket_path;
         state.base_env = input.base_env;
+        state.remote_target = input.remote_target;
         snapshot_from_state(state)
     }
 
@@ -169,6 +189,7 @@ impl AgentTeamStore {
             working_dir: team.working_dir.clone(),
             control_socket_path: team.control_socket_path.clone(),
             base_env: team.base_env.clone(),
+            remote_target: team.remote_target.clone(),
         })
     }
 
@@ -260,6 +281,7 @@ impl AgentTeamStore {
             working_dir: input.working_dir,
             control_socket_path: input.control_socket_path,
             base_env: input.base_env,
+            remote_target: input.remote_target,
             main_vertical,
             next_member_index,
             members,
@@ -283,6 +305,7 @@ fn snapshot_from_state(state: &AgentTeamState) -> AgentTeamSnapshot {
         leader_pane_id: state.leader_pane_id.clone(),
         leader_pane_token: LEADER_PANE_TOKEN.to_string(),
         main_vertical: state.main_vertical,
+        remote_target: state.remote_target.clone(),
         members: state.members.clone(),
     }
 }
@@ -585,24 +608,39 @@ pub async fn spawn_member_with_runtime(
     let session_name = format!("{} teammate {}", team_config.provider, member_index);
     let base_env = with_tmux_pane_token(&team_config.base_env, &pane_token);
     let wrapped_command = wrap_command_with_env(&base_env, &input.command);
-
-    let meta = sessions
-        .spawn_shell(
+    let row = if let Some(remote_target) = team_config.remote_target.as_ref() {
+        let profile = ssh_profile_from_remote_target(remote_target)?;
+        create_remote_managed_session(CreateRemoteManagedSessionInput {
+            db,
             project_id,
-            session_name,
-            team_config.working_dir.clone(),
-            wrapped_command.clone(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    let row = session_row_from_meta(&meta);
-    db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+            name: session_name,
+            session_type: Some("terminal".to_string()),
+            profile: &profile,
+            connection_id: remote_target.ssh_profile_id.clone(),
+            cwd: team_config.working_dir.clone(),
+            command: Some(wrapped_command.clone()),
+        })
+        .await?
+    } else {
+        let meta = sessions
+            .spawn_shell(
+                project_id,
+                session_name,
+                team_config.working_dir.clone(),
+                wrapped_command.clone(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let row = session_row_from_meta(&meta);
+        db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+        row
+    };
 
     let pane_id = Uuid::new_v4().to_string();
     let pane = PaneRow {
         id: pane_id.clone(),
         project_id: project_id.to_string(),
-        session_id: Some(meta.id.to_string()),
+        session_id: Some(row.id.clone()),
         r#type: "terminal".to_string(),
         position: position_for_team_member(db, project_id, &team_config.leader_pane_id).await?,
         label: title.clone(),
@@ -611,6 +649,7 @@ pub async fn spawn_member_with_runtime(
             &team_config.leader_session_id,
             &team_config.provider,
             member_index,
+            team_config.remote_target.as_ref(),
         )?),
     };
     db.upsert_pane(&pane).await.map_err(|e| e.to_string())?;
@@ -620,7 +659,7 @@ pub async fn spawn_member_with_runtime(
         guard
             .register_member(
                 &input.team_id,
-                meta.id.to_string(),
+                row.id.clone(),
                 pane_id,
                 input.command.clone(),
                 title,
@@ -647,7 +686,7 @@ pub async fn spawn_member_with_runtime(
         db,
         project_id,
         None,
-        Some(meta.id),
+        Uuid::parse_str(&row.id).ok(),
         "agent_team",
         "AgentTeamMemberSpawned",
         json!({
@@ -671,8 +710,32 @@ pub async fn close_member_with_runtime(
     agent_teams: &Arc<RwLock<AgentTeamStore>>,
     emitter: &Arc<dyn EventEmitter>,
 ) -> Result<AgentTeamSpawnResult, String> {
-    let session_uuid = Uuid::parse_str(&input.session_id).map_err(|e| e.to_string())?;
-    let _ = sessions.kill_session_backend(session_uuid).await;
+    let session_row = db
+        .get_session(&project_id.to_string(), &input.session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let team_config = {
+        let guard = agent_teams.read().await;
+        guard
+            .config_for_team(&input.team_id)
+            .ok_or_else(|| format!("agent team not found: {}", input.team_id))?
+    };
+
+    if let Some(row) = session_row.as_ref() {
+        if row.backend.eq_ignore_ascii_case("remote_ssh_durable") {
+            if let Some(remote_target) = team_config.remote_target.as_ref() {
+                let profile = ssh_profile_from_remote_target(remote_target)?;
+                let remote_session_id = row.remote_session_id.as_deref().unwrap_or(row.id.as_str());
+                pnevma_ssh::terminate_remote_session(&profile, remote_session_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        } else if let Ok(session_uuid) = Uuid::parse_str(&input.session_id) {
+            let _ = sessions.kill_session_backend(session_uuid).await;
+        }
+    } else if let Ok(session_uuid) = Uuid::parse_str(&input.session_id) {
+        let _ = sessions.kill_session_backend(session_uuid).await;
+    }
 
     let result = {
         let mut guard = agent_teams.write().await;
@@ -688,6 +751,14 @@ pub async fn close_member_with_runtime(
     db.remove_pane(&result.member.pane_id)
         .await
         .map_err(|e| e.to_string())?;
+    if let Some(mut row) = session_row {
+        row.status = "complete".to_string();
+        row.lifecycle_state = "exited".to_string();
+        row.last_heartbeat = chrono::Utc::now();
+        row.last_error = None;
+        row.ended_at = Some(chrono::Utc::now().to_rfc3339());
+        db.upsert_session(&row).await.map_err(|e| e.to_string())?;
+    }
     emitter.emit(
         "agent_team_member_closed",
         json!({
@@ -704,7 +775,7 @@ pub async fn close_member_with_runtime(
         db,
         project_id,
         None,
-        Some(session_uuid),
+        Uuid::parse_str(&input.session_id).ok(),
         "agent_team",
         "AgentTeamMemberClosed",
         json!({
@@ -728,34 +799,55 @@ pub async fn collect_member_result_with_runtime(
     let provider = guard
         .provider_for_team(team_id)
         .ok_or_else(|| format!("agent team not found: {team_id}"))?;
+    let remote_target = guard
+        .config_for_team(team_id)
+        .and_then(|config| config.remote_target);
     drop(guard);
 
-    let session_uuid = Uuid::parse_str(session_id).map_err(|e| e.to_string())?;
-    let scrollback = match sessions
-        .read_scrollback_tail(session_uuid, SCROLLBACK_SUMMARY_BYTES)
-        .await
-    {
-        Ok(slice) => slice.data,
-        Err(_) => {
-            let path = project_path
-                .join(".pnevma/data/scrollback")
-                .join(format!("{session_id}.log"));
-            let contents = std::fs::read_to_string(&path).unwrap_or_default();
-            let secrets = current_redaction_secrets(redaction_secrets).await;
-            if secrets.is_empty() {
-                contents
-            } else {
-                redact_text(&contents, &secrets)
+    let scrollback = if let Some(remote_target) = remote_target.as_ref() {
+        let profile = ssh_profile_from_remote_target(remote_target)?;
+        let contents =
+            pnevma_ssh::read_remote_scrollback_tail(&profile, session_id, SCROLLBACK_SUMMARY_BYTES)
+                .await
+                .map_err(|e| e.to_string())?;
+        let secrets = current_redaction_secrets(redaction_secrets).await;
+        if secrets.is_empty() {
+            contents
+        } else {
+            redact_text(&contents, &secrets)
+        }
+    } else {
+        let session_uuid = Uuid::parse_str(session_id).map_err(|e| e.to_string())?;
+        match sessions
+            .read_scrollback_tail(session_uuid, SCROLLBACK_SUMMARY_BYTES)
+            .await
+        {
+            Ok(slice) => slice.data,
+            Err(_) => {
+                let path = project_path
+                    .join(".pnevma/data/scrollback")
+                    .join(format!("{session_id}.log"));
+                let contents = std::fs::read_to_string(&path).unwrap_or_default();
+                let secrets = current_redaction_secrets(redaction_secrets).await;
+                if secrets.is_empty() {
+                    contents
+                } else {
+                    redact_text(&contents, &secrets)
+                }
             }
         }
     };
+    let project_path_value = remote_target
+        .as_ref()
+        .map(|target| target.remote_path.clone())
+        .unwrap_or_else(|| project_path.display().to_string());
 
     Ok(json!({
         "success": true,
         "team_id": team_id,
         "session_id": session_id,
         "provider": provider,
-        "project_path": project_path,
+        "project_path": project_path_value,
         "transcript_tail": trim_for_json(&scrollback, SCROLLBACK_SUMMARY_BYTES),
     }))
 }
@@ -789,6 +881,7 @@ fn collect_rehydrated_teams(
         leader_session_id: String,
         leader_pane_id: String,
         working_dir: String,
+        remote_target: Option<SessionRemoteTargetInput>,
         members: Vec<AgentTeamMemberView>,
     }
 
@@ -812,6 +905,7 @@ fn collect_rehydrated_teams(
                         team.leader_session_id = session.id.clone();
                         team.leader_pane_id = pane.id.clone();
                         team.working_dir = session.cwd.clone();
+                        team.remote_target = metadata.remote_target.clone();
                     })
                     .or_insert_with(|| PartialTeam {
                         team_id: metadata.team_id.clone(),
@@ -819,6 +913,7 @@ fn collect_rehydrated_teams(
                         leader_session_id: session.id.clone(),
                         leader_pane_id: pane.id.clone(),
                         working_dir: session.cwd.clone(),
+                        remote_target: metadata.remote_target.clone(),
                         members: Vec::new(),
                     });
             }
@@ -842,6 +937,7 @@ fn collect_rehydrated_teams(
                         leader_session_id: metadata.leader_session_id.clone(),
                         leader_pane_id: String::new(),
                         working_dir: session.cwd.clone(),
+                        remote_target: metadata.remote_target.clone(),
                         members: vec![member],
                     });
             }
@@ -861,6 +957,7 @@ fn collect_rehydrated_teams(
                 &team.leader_pane_id,
                 &team.working_dir,
                 &control_socket_path,
+                team.remote_target.as_ref(),
             )?;
             Ok(RehydratedAgentTeam {
                 config,
@@ -884,6 +981,7 @@ fn build_rehydrated_team_config(
     leader_pane_id: &str,
     working_dir: &str,
     control_socket_path: &str,
+    remote_target: Option<&SessionRemoteTargetInput>,
 ) -> Result<AgentTeamConfigInput, String> {
     let seed = AdapterTeamConfig {
         team_id: team_id.to_string(),
@@ -907,13 +1005,22 @@ fn build_rehydrated_team_config(
         working_dir: working_dir.to_string(),
         control_socket_path: control_socket_path.to_string(),
         base_env,
+        remote_target: remote_target.cloned(),
     })
 }
 
-fn parse_agent_team_metadata(metadata_json: Option<&str>) -> Option<PersistedAgentTeamMetadata> {
+fn parse_agent_team_metadata(metadata_json: Option<&str>) -> Option<ParsedAgentTeamMetadata> {
     let json = metadata_json?;
     let decoded = serde_json::from_str::<PersistedAgentTeamEnvelope>(json).ok()?;
-    decoded.agent_team
+    let metadata = decoded.agent_team?;
+    Some(ParsedAgentTeamMetadata {
+        team_id: metadata.team_id,
+        leader_session_id: metadata.leader_session_id,
+        provider: metadata.provider,
+        role: metadata.role,
+        member_index: metadata.member_index,
+        remote_target: decoded.remote_target,
+    })
 }
 
 async fn position_for_team_member(
@@ -945,15 +1052,37 @@ fn team_pane_metadata_json(
     leader_session_id: &str,
     provider: &str,
     member_index: usize,
+    remote_target: Option<&SessionRemoteTargetInput>,
 ) -> Result<String, String> {
     serde_json::to_string(&json!({
         "read_only": true,
+        "remote_target": remote_target,
         "agent_team": {
             "team_id": team_id,
             "leader_session_id": leader_session_id,
             "provider": provider,
             "role": "member",
             "member_index": member_index,
+        }
+    }))
+    .map_err(|e| e.to_string())
+}
+
+pub fn leader_team_pane_metadata_json(
+    team_id: &str,
+    leader_session_id: &str,
+    provider: &str,
+    remote_target: Option<&SessionRemoteTargetInput>,
+) -> Result<String, String> {
+    serde_json::to_string(&json!({
+        "read_only": true,
+        "remote_target": remote_target,
+        "agent_team": {
+            "team_id": team_id,
+            "leader_session_id": leader_session_id,
+            "provider": provider,
+            "role": "leader",
+            "member_index": 0,
         }
     }))
     .map_err(|e| e.to_string())
@@ -1126,6 +1255,7 @@ mod tests {
                 working_dir: "/tmp/project".to_string(),
                 control_socket_path: "/tmp/control.sock".to_string(),
                 base_env: Vec::new(),
+                remote_target: None,
             },
             true,
             vec![
@@ -1164,5 +1294,44 @@ mod tests {
             .expect("register member");
         assert_eq!(spawned.member.member_index, 6);
         assert_eq!(spawned.member.pane_token, "%6");
+    }
+
+    #[test]
+    fn collect_rehydrated_teams_preserves_remote_target_metadata() {
+        let global_config = GlobalConfig::default();
+        let sessions = vec![SessionRow {
+            connection_id: Some("ssh-profile-1".to_string()),
+            backend: "remote_ssh_durable".to_string(),
+            ..session("leader-1", "running", "~/project", "claude-code")
+        }];
+        let panes = vec![pane(
+            "leader-pane",
+            "leader-1",
+            r#"{"remote_target":{"ssh_profile_id":"ssh-profile-1","ssh_profile_name":"Remote Host","host":"remote.example.com","port":22,"user":"pnevma","identity_file":"~/.ssh/id_ed25519","proxy_jump":"jump.example.com","remote_path":"~/project"},"agent_team":{"team_id":"team-remote","leader_session_id":"leader-1","provider":"claude-code","role":"leader","member_index":0}}"#,
+            "Leader",
+        )];
+
+        let teams = collect_rehydrated_teams(
+            sessions,
+            panes,
+            Path::new("/tmp/project"),
+            &project_config(),
+            &global_config,
+        )
+        .expect("rehydrated teams");
+
+        assert_eq!(teams.len(), 1);
+        let remote = teams[0]
+            .config
+            .remote_target
+            .as_ref()
+            .expect("remote target");
+        assert_eq!(remote.host, "remote.example.com");
+        assert_eq!(remote.remote_path, "~/project");
+        assert!(teams[0]
+            .config
+            .base_env
+            .iter()
+            .any(|(key, _)| key == "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"));
     }
 }

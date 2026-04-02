@@ -85,6 +85,7 @@ final class SettingsViewModelTests: XCTestCase {
         AppSettingsSnapshot(
             autoSaveWorkspaceOnQuit: true,
             restoreWindowsOnLaunch: true,
+            agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
             autoUpdate: true,
             defaultShell: defaultShell,
             terminalFont: "SF Mono",
@@ -188,6 +189,7 @@ final class SettingsViewModelTests: XCTestCase {
             with: AppSettingsSnapshot(
                 autoSaveWorkspaceOnQuit: true,
                 restoreWindowsOnLaunch: true,
+                agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
                 autoUpdate: true,
                 defaultShell: "",
                 terminalFont: "SF Mono",
@@ -207,6 +209,47 @@ final class SettingsViewModelTests: XCTestCase {
 
         try await waitUntil { AppRuntimeSettings.shared.bottomToolBarAutoHide }
         XCTAssertTrue(AppRuntimeSettings.shared.bottomToolBarAutoHide)
+    }
+
+    func testSavingDetachedAgentTeamPresentationUpdatesRuntimeSettings() async throws {
+        let bus = SettingsCommandBusStub(getResult: .success(makeSnapshot()))
+        let viewModel = SettingsViewModel(commandBus: bus)
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        viewModel.agentTeamPresentation = .detachedWindows
+        try await waitUntil { await bus.setRequestCount() == 1 }
+        let savedRequest = await bus.request(at: 0)
+        XCTAssertEqual(savedRequest.agentTeamPresentation, AgentTeamPresentationMode.detachedWindows.rawValue)
+
+        await bus.completeSet(
+            at: 0,
+            with: AppSettingsSnapshot(
+                autoSaveWorkspaceOnQuit: true,
+                restoreWindowsOnLaunch: true,
+                agentTeamPresentation: AgentTeamPresentationMode.detachedWindows.rawValue,
+                autoUpdate: true,
+                defaultShell: "",
+                terminalFont: "SF Mono",
+                terminalFontSize: 13,
+                scrollbackLines: 10_000,
+                sidebarBackgroundOffset: 0.05,
+                bottomToolBarAutoHide: false,
+                focusBorderEnabled: true,
+                focusBorderOpacity: 0.4,
+                focusBorderWidth: 2.0,
+                focusBorderColor: "accent",
+                telemetryEnabled: false,
+                crashReports: false,
+                keybindings: [KeybindingEntry(action: "New Tab", shortcut: "Cmd+T")]
+            )
+        )
+
+        try await waitUntil {
+            AppRuntimeSettings.shared.agentTeamPresentationMode == .detachedWindows
+        }
+        XCTAssertEqual(AppRuntimeSettings.shared.agentTeamPresentationMode, .detachedWindows)
     }
 
     func testSettingsNavigationFilterMatchesRelevantSections() {

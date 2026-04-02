@@ -105,6 +105,7 @@ Version: \`$VERSION\`
 
 - $(manual_mark "$MANUAL_DIR/clean-machine-install-notes.md") Clean-machine install notes
 - $(manual_mark "$MANUAL_DIR/manual-smoke-results.md") Manual smoke results
+- $(manual_mark "$MANUAL_DIR/agent-team-validation-results.md") Agent team validation results
 - $(manual_mark "$MANUAL_DIR/manual-security-results.md") Manual security results
 - $(manual_mark "$MANUAL_DIR/remote-validation-results.md") Remote validation results (only if remote ships)
 EOF

@@ -603,13 +603,21 @@ async fn finalize_session_exit(
 
 async fn kill_live_session(
     supervisor: &SessionSupervisor,
+    project_path: &Path,
     session_id: Uuid,
 ) -> commands::SessionKillResult {
-    if supervisor.get(session_id).await.is_none() {
+    let Some(meta) = supervisor.get(session_id).await else {
         return session_kill_result(session_id.to_string(), "not_found", None);
-    }
+    };
 
-    match supervisor.kill_session_backend(session_id).await {
+    match commands::kill_session_backend_for_row(
+        supervisor,
+        project_path,
+        session_id,
+        &meta.backend_kind,
+    )
+    .await
+    {
         Ok(SessionBackendKillResult::Killed) => {
             finalize_session_exit(supervisor, session_id, "killed", Some(-9)).await
         }
@@ -620,7 +628,10 @@ async fn kill_live_session(
     }
 }
 
-async fn kill_all_live_sessions(supervisor: &SessionSupervisor) -> commands::SessionKillAllResult {
+async fn kill_all_live_sessions(
+    supervisor: &SessionSupervisor,
+    project_path: &Path,
+) -> commands::SessionKillAllResult {
     let sessions = supervisor.list().await;
     let mut result = commands::SessionKillAllResult {
         requested: 0,
@@ -636,7 +647,7 @@ async fn kill_all_live_sessions(supervisor: &SessionSupervisor) -> commands::Ses
         }
 
         result.requested += 1;
-        let kill_result = kill_live_session(supervisor, session.id).await;
+        let kill_result = kill_live_session(supervisor, project_path, session.id).await;
         match kill_result.outcome.as_str() {
             "killed" => result.killed += 1,
             "already_gone" | "not_found" => result.already_gone += 1,
@@ -1175,6 +1186,15 @@ pub async fn route_method(
         .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
         "project.cleanup_data" => serde_json::to_value(
             commands::cleanup_project_data(
+                parse_optional_bool_param(params, "dry_run").unwrap_or(false),
+                state,
+            )
+            .await
+            .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "project.cleanup_orphaned_sessions" => serde_json::to_value(
+            commands::cleanup_orphaned_sessions(
                 parse_optional_bool_param(params, "dry_run").unwrap_or(false),
                 state,
             )
@@ -1800,27 +1820,25 @@ pub async fn route_method(
                     .map_err(|e| ("invalid_params".to_string(), e))?;
             let sid = Uuid::parse_str(&session_id)
                 .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
-            let supervisor = {
+            let (supervisor, project_path) = {
                 let current = state.current.lock().await;
-                current
+                let ctx = current
                     .as_ref()
-                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?
-                    .sessions
-                    .clone()
+                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?;
+                (ctx.sessions.clone(), ctx.project_path.clone())
             };
-            serde_json::to_value(kill_live_session(&supervisor, sid).await)
+            serde_json::to_value(kill_live_session(&supervisor, &project_path, sid).await)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "session.kill_all" => {
-            let supervisor = {
+            let (supervisor, project_path) = {
                 let current = state.current.lock().await;
-                current
+                let ctx = current
                     .as_ref()
-                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?
-                    .sessions
-                    .clone()
+                    .ok_or_else(|| ("no_project".to_string(), "no open project".to_string()))?;
+                (ctx.sessions.clone(), ctx.project_path.clone())
             };
-            serde_json::to_value(kill_all_live_sessions(&supervisor).await)
+            serde_json::to_value(kill_all_live_sessions(&supervisor, &project_path).await)
                 .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
         "session.binding" => {
@@ -1860,6 +1878,12 @@ pub async fn route_method(
                 .transpose()
                 .map_err(|e| ("invalid_params".to_string(), e.to_string()))?
                 .unwrap_or_default();
+            let remote_target = params
+                .get("remote_target")
+                .cloned()
+                .map(serde_json::from_value::<commands::SessionRemoteTargetInput>)
+                .transpose()
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
             serde_json::to_value(
                 crate::agent_teams::start_team(
                     crate::agent_teams::AgentTeamConfigInput {
@@ -1870,6 +1894,7 @@ pub async fn route_method(
                         working_dir,
                         control_socket_path,
                         base_env,
+                        remote_target,
                     },
                     &state.emitter,
                     state,
@@ -2098,17 +2123,14 @@ pub async fn route_method(
                         .map_err(|e| ("invalid_params".to_string(), e))?;
                     let sid = Uuid::parse_str(&session_id)
                         .map_err(|e| ("invalid_params".to_string(), e.to_string()))?;
-                    let supervisor = {
+                    let (supervisor, project_path) = {
                         let current = state.current.lock().await;
-                        current
-                            .as_ref()
-                            .ok_or_else(|| {
-                                ("no_project".to_string(), "no open project".to_string())
-                            })?
-                            .sessions
-                            .clone()
+                        let ctx = current.as_ref().ok_or_else(|| {
+                            ("no_project".to_string(), "no open project".to_string())
+                        })?;
+                        (ctx.sessions.clone(), ctx.project_path.clone())
                     };
-                    let result = kill_live_session(&supervisor, sid).await;
+                    let result = kill_live_session(&supervisor, &project_path, sid).await;
                     serde_json::to_value(commands::FleetActionResultView {
                         ok: matches!(result.outcome.as_str(), "killed" | "already_gone"),
                         action,

@@ -138,6 +138,8 @@ pub async fn handle_team_tool_call(
 
             match wait_for_member_exit(
                 sessions,
+                db,
+                project_id,
                 &spawned.member.session_id,
                 Duration::from_secs(timeout),
             )
@@ -157,6 +159,14 @@ pub async fn handle_team_tool_call(
                         Ok(result) => result,
                         Err(error) => json!({"success": false, "error": error}),
                     };
+                    agent_teams::handle_member_session_exit(
+                        &spawned.member.session_id,
+                        emitter,
+                        db,
+                        project_id,
+                        agent_teams,
+                    )
+                    .await;
                     json!({
                         "success": true,
                         "team_id": team_id,
@@ -238,6 +248,8 @@ fn build_member_command(
 
 async fn wait_for_member_exit(
     sessions: &SessionSupervisor,
+    db: &Db,
+    project_id: Uuid,
     session_id: &str,
     timeout: Duration,
 ) -> Result<Option<i32>, String> {
@@ -246,23 +258,40 @@ async fn wait_for_member_exit(
         if matches!(meta.status, SessionStatus::Complete | SessionStatus::Error) {
             return Ok(meta.exit_code);
         }
+        let mut rx = sessions.subscribe();
+
+        return tokio::time::timeout(timeout, async move {
+            loop {
+                match rx.recv().await {
+                    Ok(SessionEvent::Exited { session_id, code }) if session_id == target => {
+                        return Ok(code);
+                    }
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err(
+                            "session event stream closed while waiting for teammate".to_string()
+                        );
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| format!("timed out waiting for teammate session {session_id} to exit"))?;
     }
-    let mut rx = sessions.subscribe();
 
     tokio::time::timeout(timeout, async move {
         loop {
-            match rx.recv().await {
-                Ok(SessionEvent::Exited { session_id, code }) if session_id == target => {
-                    return Ok(code);
-                }
-                Ok(_) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err(
-                        "session event stream closed while waiting for teammate".to_string()
-                    );
+            if let Some(row) = db
+                .get_session(&project_id.to_string(), session_id)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                if matches!(row.status.as_str(), "complete" | "error") {
+                    return Ok(row.exit_code.map(|value| value as i32));
                 }
             }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     })
     .await

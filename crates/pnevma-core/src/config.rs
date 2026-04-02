@@ -323,6 +323,8 @@ pub struct GlobalConfig {
     pub auto_save_workspace_on_quit: bool,
     #[serde(default = "default_global_restore_windows_on_launch")]
     pub restore_windows_on_launch: bool,
+    #[serde(default = "default_global_agent_team_presentation")]
+    pub agent_team_presentation: String,
     #[serde(default = "default_global_auto_update")]
     pub auto_update: bool,
     #[serde(default)]
@@ -361,6 +363,7 @@ impl Default for GlobalConfig {
             keybindings: HashMap::new(),
             auto_save_workspace_on_quit: default_global_auto_save_workspace_on_quit(),
             restore_windows_on_launch: default_global_restore_windows_on_launch(),
+            agent_team_presentation: default_global_agent_team_presentation(),
             auto_update: default_global_auto_update(),
             default_shell: None,
             terminal_font: default_global_terminal_font(),
@@ -463,6 +466,10 @@ fn default_global_auto_save_workspace_on_quit() -> bool {
 
 fn default_global_restore_windows_on_launch() -> bool {
     true
+}
+
+fn default_global_agent_team_presentation() -> String {
+    "split_panes".to_string()
 }
 
 fn default_global_auto_update() -> bool {

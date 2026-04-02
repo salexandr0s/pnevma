@@ -65,17 +65,32 @@ protocol PanePersistenceObservable: AnyObject {
 @MainActor
 protocol TerminalPaneControlling: PaneContent {
     var canLoadExistingSessions: Bool { get }
+    var transferDescriptor: TerminalPaneTransferDescriptor? { get }
     func loadSession(sessionID: String, workingDirectory: String?)
     func launchAgent(_ agent: AgentKind)
     func requestCloseDecision(_ completion: @escaping (Bool) -> Void)
+    func prepareForTransfer()
+    func willMoveBetweenContainers()
+    func didMoveBetweenContainers()
 }
 
 extension TerminalPaneControlling {
     var canLoadExistingSessions: Bool { !hasActiveProcess }
+    var transferDescriptor: TerminalPaneTransferDescriptor? { nil }
 
     func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
         completion(hasActiveProcess)
     }
+
+    func prepareForTransfer() {}
+    func willMoveBetweenContainers() {}
+    func didMoveBetweenContainers() {}
+}
+
+struct TerminalPaneTransferDescriptor: Equatable {
+    let sessionID: String
+    let workingDirectory: String?
+    let launchMetadata: TerminalLaunchMetadata
 }
 
 /// Default implementations for PaneContent.
@@ -199,7 +214,8 @@ enum PaneFactory {
     static var sessionBridge: (any SessionBridging)?
     static var activeWorkspaceProvider: (() -> Workspace?)?
     static var browserSessionProvider: ((Workspace) -> BrowserWorkspaceSession)?
-    /// Set to true during app shutdown so dispose() skips killing durable sessions.
+    /// Set to true during app shutdown so dispose() avoids issuing duplicate
+    /// per-pane kill requests while project.close performs centralized cleanup.
     static var isAppShuttingDown = false
 
     private static func paneTuple(_ view: NSView & PaneContent) -> (PaneID, NSView & PaneContent) {
@@ -780,6 +796,7 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     private var awaitingProjectActivation = false
     private var projectNotReadyRetryCount = 0
     private var isPaneActive = false
+    private var shouldKillSessionOnDispose = true
     private let activationHub: ActiveWorkspaceActivationHub
     private(set) var currentStateSnapshot: TerminalStateSnapshot?
     private var liveAttachStartupState: LiveAttachStartupState?
@@ -930,9 +947,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             activationHub.removeObserver(activationObserverID)
         }
         hostView?.closeSurfaceSilently()
-        // Kill the backend session on explicit tab close so durable sessions don't pile up.
-        // During app quit, sessions are preserved for reattach on relaunch.
-        if !PaneFactory.isAppShuttingDown,
+        // Kill the backend session on explicit tab close so managed local
+        // sessions don't pile up. During app quit, centralized shutdown in Rust
+        // performs the same cleanup once for the whole project.
+        if shouldKillSessionOnDispose,
+           !PaneFactory.isAppShuttingDown,
            let sessionID = currentSessionID,
            let bridge = PaneFactory.sessionBridge
         {
@@ -945,6 +964,14 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
     var workingDirectory: String? { currentWorkingDirectory }
     var sessionID: String? { currentSessionID }
     var metadataJSON: String? { launchMetadata.encodedJSON() }
+    var transferDescriptor: TerminalPaneTransferDescriptor? {
+        guard let sessionID = currentSessionID else { return nil }
+        return TerminalPaneTransferDescriptor(
+            sessionID: sessionID,
+            workingDirectory: currentWorkingDirectory,
+            launchMetadata: launchMetadata
+        )
+    }
 
     var onTerminalClose: (() -> Void)? {
         get {
@@ -962,6 +989,25 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
 
     func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
         completion(hasActiveProcess)
+    }
+
+    func prepareForTransfer() {
+        shouldKillSessionOnDispose = false
+        loadTask?.cancel()
+        deactivate()
+        hostView?.closeSurfaceSilently()
+        removeAgentLauncher()
+    }
+
+    func willMoveBetweenContainers() {
+        if let hostView, window?.firstResponder === hostView {
+            window?.makeFirstResponder(nil)
+        }
+        hostView?.setPaneFocused(false)
+    }
+
+    func didMoveBetweenContainers() {
+        syncHostViewFocus()
     }
 
     private var initialStateTitle: String {

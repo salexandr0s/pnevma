@@ -46,6 +46,53 @@ private final class CloseDecisionTerminalPane: NSView, TerminalPaneControlling {
 }
 
 @MainActor
+private final class TransferTrackingTerminalPane: NSView, TerminalPaneControlling, PanePersistenceObservable {
+    let paneID = PaneID()
+    let paneType = "terminal"
+    let title = "Terminal"
+    let workingDirectory: String? = "/tmp/project"
+    let sessionID: String? = "session-transfer"
+    var metadataJSON: String? {
+        TerminalLaunchMetadata(
+            launchMode: .managedSession,
+            startBehavior: .deferUntilActivate,
+            remoteTarget: nil,
+            backendPaneID: "backend-\(paneID.uuidString)",
+            agentTeamID: "team-1",
+            agentTeamRole: "member",
+            agentTeamMemberIndex: 1
+        ).encodedJSON()
+    }
+    var onPersistedStateChange: ((PersistedPane) -> Void)?
+    var disposeCount = 0
+    var willMoveCount = 0
+    var didMoveCount = 0
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+    }
+
+    func loadSession(sessionID _: String, workingDirectory _: String?) {}
+    func launchAgent(_: AgentKind) {}
+
+    func dispose() {
+        disposeCount += 1
+    }
+
+    func willMoveBetweenContainers() {
+        willMoveCount += 1
+    }
+
+    func didMoveBetweenContainers() {
+        didMoveCount += 1
+    }
+}
+
+@MainActor
 final class ContentAreaViewTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -222,6 +269,63 @@ final class ContentAreaViewTests: XCTestCase {
         }
         XCTAssertEqual(rightDirection, .vertical)
         XCTAssertEqual(rightRatio, 0.5, accuracy: 0.001)
+    }
+
+    func testExtractPaneViewForTransferDoesNotDisposePane() throws {
+        let rootPane = CloseDecisionPane()
+        let memberPane = TransferTrackingTerminalPane(frame: .zero)
+        let contentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 480),
+            rootPaneView: rootPane
+        )
+
+        let memberPaneID = try XCTUnwrap(
+            contentArea.splitPane(rootPane.paneID, direction: .horizontal, newPaneView: memberPane)
+        )
+        XCTAssertNotNil(memberPane.onPersistedStateChange)
+
+        let extracted = try XCTUnwrap(contentArea.extractPaneView(memberPaneID))
+
+        XCTAssertTrue(extracted === memberPane)
+        XCTAssertEqual(memberPane.disposeCount, 0)
+        XCTAssertEqual(memberPane.willMoveCount, 1)
+        XCTAssertNil(memberPane.onPersistedStateChange)
+        XCTAssertEqual(contentArea.paneCount, 1)
+        XCTAssertNil(contentArea.layoutEngine.persistedPane(for: memberPaneID))
+    }
+
+    func testInsertExistingPaneViewRehomesTransferredPaneAndRebindsPersistence() throws {
+        let sourceRoot = CloseDecisionPane()
+        let movedPane = TransferTrackingTerminalPane(frame: .zero)
+        let sourceContentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 480),
+            rootPaneView: sourceRoot
+        )
+        let movedPaneID = try XCTUnwrap(
+            sourceContentArea.splitPane(sourceRoot.paneID, direction: .horizontal, newPaneView: movedPane)
+        )
+        let extracted = try XCTUnwrap(sourceContentArea.extractPaneView(movedPaneID))
+
+        let destinationRoot = CloseDecisionPane()
+        let destinationContentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 480),
+            rootPaneView: destinationRoot
+        )
+        let insertedID = try XCTUnwrap(
+            destinationContentArea.insertExistingPaneView(
+                destinationRoot.paneID,
+                direction: .horizontal,
+                paneView: extracted
+            )
+        )
+
+        XCTAssertEqual(insertedID, movedPaneID)
+        XCTAssertEqual(movedPane.disposeCount, 0)
+        XCTAssertEqual(movedPane.willMoveCount, 1)
+        XCTAssertEqual(movedPane.didMoveCount, 1)
+        XCTAssertNotNil(movedPane.onPersistedStateChange)
+        XCTAssertNil(sourceContentArea.layoutEngine.persistedPane(for: movedPaneID))
+        XCTAssertNotNil(destinationContentArea.layoutEngine.persistedPane(for: movedPaneID))
     }
 
     private func center(of view: NSView, ancestor: NSView) -> NSPoint {

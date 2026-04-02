@@ -666,6 +666,21 @@ struct GeneralSettingsTab: View {
                     Divider()
 
                     SettingsControlRow(
+                        title: "Agent teammate presentation",
+                        description: "Choose whether spawned teammate terminals stay in split panes or open in detached team windows."
+                    ) {
+                        Picker("", selection: $viewModel.agentTeamPresentation) {
+                            Text("Split panes").tag(AgentTeamPresentationMode.splitPanes)
+                            Text("Detached windows").tag(AgentTeamPresentationMode.detachedWindows)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 180)
+                    }
+
+                    Divider()
+
+                    SettingsControlRow(
                         title: "Check for updates automatically",
                         description: "Periodically look for newer Pnevma builds in the background."
                     ) {
@@ -1763,6 +1778,12 @@ final class SettingsViewModel {
             scheduleSave()
         }
     }
+    var agentTeamPresentation: AgentTeamPresentationMode = .splitPanes {
+        didSet {
+            guard !isRestoring else { return }
+            scheduleSave()
+        }
+    }
     var autoUpdate = true {
         didSet {
             guard !isRestoring else { return }
@@ -2025,6 +2046,7 @@ final class SettingsViewModel {
         let request = AppSettingsSaveRequest(
             autoSaveWorkspaceOnQuit: autoSave,
             restoreWindowsOnLaunch: restoreWindows,
+            agentTeamPresentation: agentTeamPresentation.rawValue,
             autoUpdate: autoUpdate,
             defaultShell: defaultShell,
             terminalFont: terminalFont,
@@ -2091,6 +2113,7 @@ final class SettingsViewModel {
 
         autoSave = snapshot.autoSaveWorkspaceOnQuit
         restoreWindows = snapshot.restoreWindowsOnLaunch
+        agentTeamPresentation = snapshot.agentTeamPresentationMode
         autoUpdate = snapshot.autoUpdate
         defaultShell = snapshot.defaultShell
         terminalFont = snapshot.terminalFont
@@ -2135,6 +2158,7 @@ final class SettingsViewModel {
         sidebarBackgroundOffset = SidebarPreferences.backgroundOffset
         toolDockBackgroundOffset = ToolDockPreferences.backgroundOffset
         rightInspectorBackgroundOffset = RightInspectorPreferences.backgroundOffset
+        agentTeamPresentation = .splitPanes
         bottomToolBarAutoHide = false
         focusBorderEnabled = FocusBorderPreferences.enabled
         focusBorderOpacity = FocusBorderPreferences.opacity

@@ -60,6 +60,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
         // Ensure auto_update is true
         AppRuntimeSettings.shared.apply(AppSettingsSnapshot(
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
+            agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
             autoUpdate: true, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
@@ -87,6 +88,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
     func testAutomaticCheckSkippedWhenAutoUpdateDisabled() async throws {
         AppRuntimeSettings.shared.apply(AppSettingsSnapshot(
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
+            agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
             autoUpdate: false, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
@@ -109,6 +111,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
     func testManualCheckRunsRegardlessOfAutoUpdate() async throws {
         AppRuntimeSettings.shared.apply(AppSettingsSnapshot(
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
+            agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
             autoUpdate: false, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,
@@ -183,6 +186,7 @@ final class AppUpdateCoordinatorTests: XCTestCase {
     func testAutomaticCheckRespectsInterval() async throws {
         AppRuntimeSettings.shared.apply(AppSettingsSnapshot(
             autoSaveWorkspaceOnQuit: true, restoreWindowsOnLaunch: true,
+            agentTeamPresentation: AgentTeamPresentationMode.splitPanes.rawValue,
             autoUpdate: true, defaultShell: "", terminalFont: "SF Mono",
             terminalFontSize: 13, scrollbackLines: 10000,
             sidebarBackgroundOffset: 0.05, bottomToolBarAutoHide: false, focusBorderEnabled: true,

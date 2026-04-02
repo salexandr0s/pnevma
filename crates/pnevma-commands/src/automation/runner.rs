@@ -899,16 +899,12 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         position: "after:pane-board".to_string(),
         label: format!("Agent {}", prepared.task.title),
         metadata_json: Some(
-            serde_json::to_string(&json!({
-                "read_only": true,
-                "agent_team": {
-                    "team_id": team_id.clone(),
-                    "leader_session_id": leader_session_id.clone(),
-                    "provider": prepared.provider.clone(),
-                    "role": "leader",
-                    "member_index": 0,
-                }
-            }))
+            crate::agent_teams::leader_team_pane_metadata_json(
+                &team_id,
+                &leader_session_id,
+                &prepared.provider,
+                None,
+            )
             .map_err(|e| RunnerError::Internal(e.to_string()))?,
         ),
     };
@@ -927,6 +923,7 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
             working_dir: prepared.working_dir.clone(),
             control_socket_path: control_socket_path.clone(),
             base_env: team_config.base_env.clone(),
+            remote_target: None,
         })
     };
     prepared.emitter.emit(

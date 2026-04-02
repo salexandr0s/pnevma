@@ -4,6 +4,7 @@ use super::*;
 fn app_settings_view_uses_defaults_for_empty_optional_fields() {
     let view = app_settings_view_from_config(&GlobalConfig::default());
     assert_eq!(view.default_shell, "");
+    assert_eq!(view.agent_team_presentation, "split_panes");
     assert!(!view.bottom_tool_bar_auto_hide);
     assert_eq!(view.focus_border_color, "accent");
     assert!(!view.keybindings.is_empty());
@@ -21,6 +22,7 @@ async fn get_app_settings_defaults_bottom_tool_bar_auto_hide_to_false() {
 
     let settings = get_app_settings(&state).await.expect("get app settings");
     assert!(!settings.bottom_tool_bar_auto_hide);
+    assert_eq!(settings.agent_team_presentation, "split_panes");
 }
 
 #[tokio::test]
@@ -45,6 +47,7 @@ async fn set_app_settings_round_trips_and_preserves_other_global_fields() {
         SetAppSettingsInput {
             auto_save_workspace_on_quit: false,
             restore_windows_on_launch: false,
+            agent_team_presentation: "detached_windows".to_string(),
             auto_update: false,
             default_shell: "/bin/bash".to_string(),
             terminal_font: "JetBrains Mono".to_string(),
@@ -66,6 +69,7 @@ async fn set_app_settings_round_trips_and_preserves_other_global_fields() {
     .expect("set app settings");
 
     assert_eq!(updated.default_shell, "/bin/bash");
+    assert_eq!(updated.agent_team_presentation, "detached_windows");
     assert_eq!(updated.terminal_font, "JetBrains Mono");
     assert!(updated.bottom_tool_bar_auto_hide);
     assert_eq!(updated.focus_border_color, "#336699");
@@ -84,6 +88,7 @@ async fn set_app_settings_round_trips_and_preserves_other_global_fields() {
         Some("Cmd+Shift+R")
     );
     assert_eq!(reloaded.default_shell.as_deref(), Some("/bin/bash"));
+    assert_eq!(reloaded.agent_team_presentation, "detached_windows");
     assert_eq!(reloaded.terminal_font, "JetBrains Mono");
     assert_eq!(reloaded.terminal_font_size, 14);
     assert_eq!(reloaded.scrollback_lines, 20_000);
@@ -112,6 +117,7 @@ async fn set_app_settings_persists_keybinding_overrides() {
         SetAppSettingsInput {
             auto_save_workspace_on_quit: true,
             restore_windows_on_launch: true,
+            agent_team_presentation: "split_panes".to_string(),
             auto_update: true,
             default_shell: "".to_string(),
             terminal_font: "SF Mono".to_string(),
@@ -159,6 +165,7 @@ async fn set_app_settings_persists_keybinding_overrides() {
         SetAppSettingsInput {
             auto_save_workspace_on_quit: true,
             restore_windows_on_launch: true,
+            agent_team_presentation: "split_panes".to_string(),
             auto_update: true,
             default_shell: "".to_string(),
             terminal_font: "SF Mono".to_string(),
@@ -206,6 +213,7 @@ async fn set_app_settings_persists_bottom_tool_bar_auto_hide() {
         SetAppSettingsInput {
             auto_save_workspace_on_quit: true,
             restore_windows_on_launch: true,
+            agent_team_presentation: "split_panes".to_string(),
             auto_update: true,
             default_shell: "".to_string(),
             terminal_font: "SF Mono".to_string(),
@@ -246,6 +254,7 @@ async fn set_app_settings_rejects_protected_keybinding_overrides() {
         SetAppSettingsInput {
             auto_save_workspace_on_quit: true,
             restore_windows_on_launch: true,
+            agent_team_presentation: "split_panes".to_string(),
             auto_update: true,
             default_shell: "".to_string(),
             terminal_font: "SF Mono".to_string(),

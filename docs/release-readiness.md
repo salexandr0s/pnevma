@@ -13,7 +13,8 @@ A release candidate is ready only when all of the following are true:
 5. The signed app and signed DMG both pass `codesign` verification, and the packaged launch smoke is green on the actual candidate artifact.
 6. A clean-machine DMG install pass is recorded using the documented Finder `Open` or `Open Anyway` first-launch flow.
 7. `main` is stable across the native and release-rehearsal lanes, with recent consecutive green runs before cutting the candidate.
-8. For remote-enabled candidates, operator-run real-host remote helper smoke evidence exists for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio (`aarch64-apple-darwin`), the canonical upgrade scenarios on Linux `x86_64` and the Mac Studio, packaged remote durable lifecycle evidence exists for the Apple Silicon Mac Studio path, and a clean-machine DMG remote lifecycle pass is recorded.
+8. Local agent-team validation evidence exists for the presentation mode being advertised in the candidate (`split_panes` always; `detached_windows` when enabled in release notes or product copy).
+9. For remote-enabled candidates, operator-run real-host remote helper smoke evidence exists for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio (`aarch64-apple-darwin`), the canonical upgrade scenarios on Linux `x86_64` and the Mac Studio, packaged remote durable lifecycle evidence exists for the Apple Silicon Mac Studio path, and a clean-machine DMG remote lifecycle pass is recorded.
 
 For the first public `v0.2.0` DMG, notarization and stapling are explicitly deferred and are not blocking gates for release. They remain the target follow-up path.
 
@@ -40,7 +41,7 @@ Keep these visible while normal product and maintainability work continues:
 1. terminal/runtime reliability polish
 2. session recovery polish
 3. command-center and review-surface usability
-4. release evidence capture, clean-machine validation, and accurate first-launch instructions
+4. release evidence capture, agent-team validation, clean-machine validation, and accurate first-launch instructions
 
 ## See also
 

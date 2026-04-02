@@ -41,10 +41,6 @@ impl ProjectCloseMode {
         }
     }
 
-    fn preserves_local_sessions(self) -> bool {
-        matches!(self, Self::AppShutdown)
-    }
-
     fn session_close_reason(self) -> &'static str {
         match self {
             Self::WorkspaceClose => "project_close",
@@ -128,32 +124,6 @@ async fn terminate_helper_pid(pid: i64) {
     }
 }
 
-/// Kill a session backend. Tries tmux first (legacy compat), silently
-/// succeeds if the session is already gone.
-async fn kill_tmux_session_for_row(project_path: &Path, session_id: &str) -> Result<(), String> {
-    let name = tmux_name_from_session_id(session_id);
-    let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
-    tokio::fs::create_dir_all(&tmux_tmpdir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let out = TokioCommand::new(pnevma_session::resolve_binary("tmux"))
-        .env("TMUX_TMPDIR", &tmux_tmpdir)
-        .args(["kill-session", "-t", &name])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains("can't find session") {
-        // Not a tmux session — local_pty sessions are handled via the
-        // supervisor's terminate() call at a higher level.
-        return Ok(());
-    }
-    Err(stderr.trim().to_string())
-}
-
 async fn terminate_project_owned_helpers(project_path: &Path) {
     let out = match TokioCommand::new("ps")
         .args(["axo", "pid=,command="])
@@ -190,12 +160,13 @@ async fn terminate_project_owned_helpers(project_path: &Path) {
     }
 }
 
-/// Kill tmux sessions left over from a prior app instance that are not tracked
-/// as reattachable in the current database.
-async fn kill_orphaned_tmux_sessions(project_path: &Path, tracked_waiting_ids: &HashSet<String>) {
+async fn list_orphaned_tmux_sessions(
+    project_path: &Path,
+    tracked_session_ids: &HashSet<String>,
+) -> Vec<String> {
     let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
     if tokio::fs::create_dir_all(&tmux_tmpdir).await.is_err() {
-        return;
+        return Vec::new();
     }
     let tmux_bin = pnevma_session::resolve_binary("tmux");
     let output = match TokioCommand::new(&tmux_bin)
@@ -205,25 +176,222 @@ async fn kill_orphaned_tmux_sessions(project_path: &Path, tracked_waiting_ids: &
         .await
     {
         Ok(o) if o.status.success() => o,
-        _ => return, // no tmux server or no sessions — nothing to clean
+        _ => return Vec::new(), // no tmux server or no sessions — nothing to clean
     };
+    let mut orphaned = Vec::new();
     let stdout = String::from_utf8_lossy(&output.stdout);
     for name in stdout.lines() {
         let Some(uuid_part) = name.strip_prefix("pnevma_") else {
             continue;
         };
-        if tracked_waiting_ids.contains(uuid_part) {
-            continue; // legitimately waiting for reattach
+        let normalized = Uuid::parse_str(uuid_part)
+            .map(|uuid| uuid.to_string())
+            .unwrap_or_else(|_| uuid_part.to_string());
+        if tracked_session_ids.contains(&normalized) || tracked_session_ids.contains(uuid_part) {
+            continue;
         }
-        let _ = TokioCommand::new(&tmux_bin)
-            .env("TMUX_TMPDIR", &tmux_tmpdir)
-            .args(["kill-session", "-t", name])
-            .output()
-            .await;
-        tracing::info!(
-            session = name,
-            "killed orphaned tmux session from prior run"
+        orphaned.push(normalized);
+    }
+    orphaned
+}
+
+async fn cleanup_orphaned_tmux_sessions(
+    project_path: &Path,
+    tracked_session_ids: &HashSet<String>,
+    dry_run: bool,
+) -> Vec<String> {
+    let orphaned = list_orphaned_tmux_sessions(project_path, tracked_session_ids).await;
+    if dry_run {
+        return orphaned;
+    }
+
+    let mut cleaned = Vec::new();
+    for session_id in orphaned {
+        match super::kill_tmux_session_for_project(project_path, &session_id).await {
+            Ok(_) => {
+                tracing::info!(%session_id, "killed orphaned tmux session from prior run");
+                cleaned.push(session_id);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %session_id,
+                    %error,
+                    "failed to kill orphaned tmux session from prior run"
+                );
+            }
+        }
+    }
+    cleaned
+}
+
+#[derive(Debug, Clone)]
+struct LocalDurableOrphanCandidate {
+    session_id: String,
+    session_dir: PathBuf,
+    runner_pid: Option<i64>,
+}
+
+async fn list_orphaned_local_durable_sessions(
+    project_path: &Path,
+    tracked_session_ids: &HashSet<String>,
+) -> Vec<LocalDurableOrphanCandidate> {
+    let sessions_root = project_path
+        .join(".pnevma")
+        .join("data")
+        .join("local-durable")
+        .join("sessions");
+    let mut orphaned = Vec::new();
+
+    if let Ok(mut entries) = tokio::fs::read_dir(&sessions_root).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let session_id = entry.file_name().to_string_lossy().to_string();
+            if tracked_session_ids.contains(&session_id) {
+                continue;
+            }
+
+            let runner_pid = tokio::fs::read_to_string(entry.path().join("runner.pid"))
+                .await
+                .ok()
+                .and_then(|contents| contents.trim().parse::<i64>().ok());
+            orphaned.push(LocalDurableOrphanCandidate {
+                session_id,
+                session_dir: entry.path(),
+                runner_pid,
+            });
+        }
+    }
+
+    orphaned
+}
+
+async fn cleanup_orphaned_local_durable_sessions(
+    project_path: &Path,
+    tracked_session_ids: &HashSet<String>,
+    dry_run: bool,
+) -> (Vec<String>, bool) {
+    let state_root = project_path
+        .join(".pnevma")
+        .join("data")
+        .join("local-durable");
+    let orphaned = list_orphaned_local_durable_sessions(project_path, tracked_session_ids).await;
+
+    if dry_run {
+        return (
+            orphaned
+                .into_iter()
+                .map(|candidate| candidate.session_id)
+                .collect(),
+            false,
         );
+    }
+
+    let mut cleaned = Vec::new();
+    for candidate in orphaned {
+        if let Some(pid) = candidate.runner_pid {
+            terminate_helper_pid(pid).await;
+        }
+        if let Err(error) = tokio::fs::remove_dir_all(&candidate.session_dir).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    session_id = %candidate.session_id,
+                    path = %candidate.session_dir.display(),
+                    %error,
+                    "failed to remove orphaned local durable state directory"
+                );
+                continue;
+            }
+        }
+        tracing::info!(
+            session_id = %candidate.session_id,
+            "cleaned orphaned local durable session state from prior run"
+        );
+        cleaned.push(candidate.session_id);
+    }
+
+    let helper_daemon_present = tokio::fs::metadata(state_root.join("daemon.pid"))
+        .await
+        .is_ok()
+        || tokio::fs::metadata(state_root.join("control.sock"))
+            .await
+            .is_ok();
+    let helper_daemon_stopped = helper_daemon_present && tracked_session_ids.is_empty();
+    if helper_daemon_stopped {
+        pnevma_session::backend::local_durable::stop_helper_daemon(&state_root).await;
+    }
+
+    (cleaned, helper_daemon_stopped)
+}
+
+async fn cleanup_project_orphaned_sessions_inner(
+    db: &Db,
+    project_id: Uuid,
+    project_path: &Path,
+    tracked_tmux_ids: &HashSet<String>,
+    tracked_local_durable_ids: &HashSet<String>,
+    dry_run: bool,
+    reason: &str,
+) -> OrphanedSessionCleanupResponse {
+    let tmux_session_ids =
+        cleanup_orphaned_tmux_sessions(project_path, tracked_tmux_ids, dry_run).await;
+    let (local_durable_session_ids, helper_daemon_stopped) =
+        cleanup_orphaned_local_durable_sessions(project_path, tracked_local_durable_ids, dry_run)
+            .await;
+
+    if !dry_run {
+        for session_id in &tmux_session_ids {
+            if let Ok(session_uuid) = Uuid::parse_str(session_id) {
+                append_event(
+                    db,
+                    project_id,
+                    None,
+                    Some(session_uuid),
+                    "session",
+                    "SessionOrphanCleanup",
+                    json!({"backend": SESSION_BACKEND_TMUX_COMPAT, "reason": reason}),
+                )
+                .await;
+            }
+        }
+        for session_id in &local_durable_session_ids {
+            if let Ok(session_uuid) = Uuid::parse_str(session_id) {
+                append_event(
+                    db,
+                    project_id,
+                    None,
+                    Some(session_uuid),
+                    "session",
+                    "SessionOrphanCleanup",
+                    json!({"backend": SESSION_BACKEND_LOCAL_DURABLE, "reason": reason}),
+                )
+                .await;
+            }
+        }
+        if helper_daemon_stopped {
+            append_event(
+                db,
+                project_id,
+                None,
+                None,
+                "session",
+                "SessionHelperDaemonStopped",
+                json!({"backend": SESSION_BACKEND_LOCAL_DURABLE, "reason": reason}),
+            )
+            .await;
+        }
+    }
+
+    OrphanedSessionCleanupResponse {
+        dry_run,
+        tmux_session_ids,
+        local_durable_session_ids,
+        helper_daemon_stopped,
     }
 }
 
@@ -234,22 +402,31 @@ async fn shutdown_project_sessions(
     project_path: &Path,
     close_mode: ProjectCloseMode,
 ) {
-    if !close_mode.preserves_local_sessions() {
-        for meta in sessions.list().await {
-            if !matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting) {
-                continue;
+    for meta in sessions.list().await {
+        if !matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting) {
+            continue;
+        }
+        if let Some(pid) = meta.pid {
+            terminate_helper_pid(i64::from(pid)).await;
+        }
+        match super::kill_session_backend_for_row(
+            sessions,
+            project_path,
+            meta.id,
+            &meta.backend_kind,
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = sessions.mark_exit(meta.id, None).await;
             }
-            if let Some(pid) = meta.pid {
-                terminate_helper_pid(i64::from(pid)).await;
-            }
-            match sessions.kill_session_backend(meta.id).await {
-                Ok(_) => {
-                    let _ = sessions.mark_exit(meta.id, None).await;
-                }
-                Err(error) => {
-                    tracing::debug!(session_id = %meta.id, %error, "live session shutdown fell back to direct tmux cleanup");
-                    let _ = kill_tmux_session_for_row(project_path, &meta.id.to_string()).await;
-                }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %meta.id,
+                    backend = %meta.backend_kind,
+                    %error,
+                    "failed to terminate live local session during shutdown"
+                );
             }
         }
     }
@@ -292,52 +469,31 @@ async fn shutdown_project_sessions(
             continue;
         }
 
-        if close_mode.preserves_local_sessions() {
-            if let Some(pid) = row.pid {
-                terminate_helper_pid(pid).await;
-            }
-            row.status = "waiting".to_string();
-            row.lifecycle_state = SESSION_LIFECYCLE_DETACHED.to_string();
-            row.pid = None;
-            row.last_heartbeat = Utc::now();
-            row.detached_at = Some(Utc::now());
-            row.ended_at = None;
-            row.exit_code = None;
-            row.last_error = None;
-            row.restore_status = Some(SESSION_LIFECYCLE_DETACHED.to_string());
-            if let Err(error) = db.upsert_session(&row).await {
-                tracing::warn!(session_id = %row.id, %error, "failed to persist detached local session row during app shutdown");
-            } else if let Ok(session_id) = Uuid::parse_str(&row.id) {
-                append_event(
-                    db,
-                    project_id,
-                    None,
-                    Some(session_id),
-                    "session",
-                    "SessionDetached",
-                    json!({"backend": row.backend, "reason": close_mode.session_close_reason()}),
-                )
-                .await;
-            }
-            continue;
-        }
-
         if let Some(pid) = row.pid {
             terminate_helper_pid(pid).await;
         }
 
         if let Ok(session_id) = Uuid::parse_str(&row.id) {
-            match sessions.kill_session_backend(session_id).await {
+            match super::kill_session_backend_for_row(
+                sessions,
+                project_path,
+                session_id,
+                &row.backend,
+            )
+            .await
+            {
                 Ok(_) => {
                     let _ = sessions.mark_exit(session_id, None).await;
                 }
                 Err(error) => {
-                    tracing::debug!(session_id = %row.id, %error, "session supervisor backend cleanup fell back to direct tmux cleanup");
-                    let _ = kill_tmux_session_for_row(project_path, &row.id).await;
+                    tracing::warn!(
+                        session_id = %row.id,
+                        backend = %row.backend,
+                        %error,
+                        "failed to terminate persisted local session during shutdown"
+                    );
                 }
             }
-        } else {
-            let _ = kill_tmux_session_for_row(project_path, &row.id).await;
         }
 
         row.status = "complete".to_string();
@@ -351,33 +507,30 @@ async fn shutdown_project_sessions(
         }
     }
 
-    if !close_mode.preserves_local_sessions() {
-        terminate_project_owned_helpers(project_path).await;
+    terminate_project_owned_helpers(project_path).await;
 
-        // Stop the local durable helper daemon on workspace close.
-        let local_durable_root = project_path
-            .join(".pnevma")
-            .join("data")
-            .join("local-durable");
-        pnevma_session::backend::local_durable::stop_helper_daemon(&local_durable_root).await;
+    let local_durable_root = project_path
+        .join(".pnevma")
+        .join("data")
+        .join("local-durable");
+    pnevma_session::backend::local_durable::stop_helper_daemon(&local_durable_root).await;
 
-        if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
-            for mut row in rows {
-                if !matches!(row.status.as_str(), "running" | "waiting") {
-                    continue;
-                }
-                if is_remote_ssh_durable_backend(&row.backend) {
-                    continue;
-                }
-                row.status = "complete".to_string();
-                row.lifecycle_state = "exited".to_string();
-                row.pid = None;
-                row.last_heartbeat = Utc::now();
-                row.ended_at = Some(Utc::now().to_rfc3339());
-                row.last_error = None;
-                if let Err(error) = db.upsert_session(&row).await {
-                    tracing::warn!(session_id = %row.id, %error, "failed to finalize lingering session row after helper sweep");
-                }
+    if let Ok(rows) = db.list_sessions(&project_id.to_string()).await {
+        for mut row in rows {
+            if !matches!(row.status.as_str(), "running" | "waiting") {
+                continue;
+            }
+            if is_remote_ssh_durable_backend(&row.backend) {
+                continue;
+            }
+            row.status = "complete".to_string();
+            row.lifecycle_state = "exited".to_string();
+            row.pid = None;
+            row.last_heartbeat = Utc::now();
+            row.ended_at = Some(Utc::now().to_rfc3339());
+            row.last_error = None;
+            if let Err(error) = db.upsert_session(&row).await {
+                tracing::warn!(session_id = %row.id, %error, "failed to finalize lingering session row after helper sweep");
             }
         }
     }
@@ -387,6 +540,7 @@ fn app_settings_view_from_config(config: &GlobalConfig) -> AppSettingsView {
     AppSettingsView {
         auto_save_workspace_on_quit: config.auto_save_workspace_on_quit,
         restore_windows_on_launch: config.restore_windows_on_launch,
+        agent_team_presentation: config.agent_team_presentation.clone(),
         auto_update: config.auto_update,
         default_shell: config.default_shell.clone().unwrap_or_default(),
         terminal_font: config.terminal_font.clone(),
@@ -544,13 +698,30 @@ pub async fn open_project(
     let session_rows =
         reconcile_persisted_sessions(&db, project_id, path_buf.as_path(), state).await?;
 
-    // Kill tmux sessions orphaned by prior crash or incomplete shutdown.
-    let tracked_waiting: HashSet<String> = session_rows
+    // Kill legacy tmux and local durable runners orphaned by a prior crash or
+    // incomplete shutdown before restore attempts re-register the surviving
+    // sessions.
+    let tracked_waiting_tmux: HashSet<String> = session_rows
         .iter()
-        .filter(|r| r.status == "waiting")
+        .filter(|r| r.status == "waiting" && r.backend == SESSION_BACKEND_TMUX_COMPAT)
         .map(|r| r.id.replace('-', ""))
         .collect();
-    kill_orphaned_tmux_sessions(path_buf.as_path(), &tracked_waiting).await;
+    let tracked_waiting_local_durable: HashSet<String> = session_rows
+        .iter()
+        .filter(|r| r.status == "waiting" && r.backend == SESSION_BACKEND_LOCAL_DURABLE)
+        .map(|r| r.id.clone())
+        .collect();
+
+    let _ = cleanup_project_orphaned_sessions_inner(
+        &db,
+        project_id,
+        path_buf.as_path(),
+        &tracked_waiting_tmux,
+        &tracked_waiting_local_durable,
+        false,
+        "project_open",
+    )
+    .await;
 
     let restore_root = path_buf.join(".pnevma/data");
     for row in session_rows {
@@ -872,6 +1043,62 @@ pub async fn close_project_with_mode(
     pnevma_redaction::reset_runtime_redaction_config();
     stop_control_plane(state).await;
     Ok(())
+}
+
+pub async fn cleanup_orphaned_sessions(
+    dry_run: bool,
+    state: &AppState,
+) -> Result<OrphanedSessionCleanupResponse, String> {
+    let (db, project_id, project_path, sessions) = state
+        .with_project("cleanup_orphaned_sessions", |ctx| {
+            (
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.project_path.clone(),
+                ctx.sessions.clone(),
+            )
+        })
+        .await?;
+
+    let mut tracked_tmux_ids = HashSet::new();
+    let mut tracked_local_durable_ids = HashSet::new();
+
+    for meta in sessions.list().await {
+        if !matches!(meta.status, SessionStatus::Running | SessionStatus::Waiting) {
+            continue;
+        }
+        if meta.backend_kind == SESSION_BACKEND_TMUX_COMPAT {
+            tracked_tmux_ids.insert(meta.id.to_string());
+        } else if meta.backend_kind == SESSION_BACKEND_LOCAL_DURABLE {
+            tracked_local_durable_ids.insert(meta.id.to_string());
+        }
+    }
+
+    for row in db
+        .list_sessions(&project_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if !matches!(row.status.as_str(), "running" | "waiting") {
+            continue;
+        }
+        if row.backend == SESSION_BACKEND_TMUX_COMPAT {
+            tracked_tmux_ids.insert(row.id);
+        } else if row.backend == SESSION_BACKEND_LOCAL_DURABLE {
+            tracked_local_durable_ids.insert(row.id);
+        }
+    }
+
+    Ok(cleanup_project_orphaned_sessions_inner(
+        &db,
+        project_id,
+        &project_path,
+        &tracked_tmux_ids,
+        &tracked_local_durable_ids,
+        dry_run,
+        "manual_cleanup",
+    )
+    .await)
 }
 
 fn resolve_retention_path(

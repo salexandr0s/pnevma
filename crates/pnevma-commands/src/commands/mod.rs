@@ -70,7 +70,8 @@ use pnevma_redaction::{
     redact_text as shared_redact_text, StreamRedactionBuffer,
 };
 use pnevma_session::{
-    ScrollbackSlice, SessionEvent, SessionHealth, SessionMetadata, SessionStatus, SessionSupervisor,
+    ScrollbackSlice, SessionBackendKillResult, SessionEvent, SessionHealth, SessionMetadata,
+    SessionStatus, SessionSupervisor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -699,6 +700,14 @@ pub struct DataRetentionCleanupResponse {
     pub files_deleted: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrphanedSessionCleanupResponse {
+    pub dry_run: bool,
+    pub tmux_session_ids: Vec<String>,
+    pub local_durable_session_ids: Vec<String>,
+    pub helper_daemon_stopped: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEventView {
     pub timestamp: DateTime<Utc>,
@@ -1085,6 +1094,7 @@ pub struct TelemetryStatusView {
 pub struct AppSettingsView {
     pub auto_save_workspace_on_quit: bool,
     pub restore_windows_on_launch: bool,
+    pub agent_team_presentation: String,
     pub auto_update: bool,
     pub default_shell: String,
     pub terminal_font: String,
@@ -1111,6 +1121,7 @@ pub struct KeybindingOverride {
 pub struct SetAppSettingsInput {
     pub auto_save_workspace_on_quit: bool,
     pub restore_windows_on_launch: bool,
+    pub agent_team_presentation: String,
     pub auto_update: bool,
     pub default_shell: String,
     pub terminal_font: String,
@@ -1921,7 +1932,7 @@ fn remote_session_state_mapping(state: &str) -> (String, String) {
     }
 }
 
-fn ssh_profile_from_remote_target(
+pub(crate) fn ssh_profile_from_remote_target(
     target: &SessionRemoteTargetInput,
 ) -> Result<pnevma_ssh::SshProfile, String> {
     pnevma_ssh::validate_profile_fields(
@@ -2213,6 +2224,47 @@ async fn resolve_ssh_profile_for_session_row(
 
 fn tmux_tmpdir_for_project(project_path: &Path) -> PathBuf {
     project_path.join(".pnevma").join("data").join("tmux")
+}
+
+pub(crate) async fn kill_tmux_session_for_project(
+    project_path: &Path,
+    session_id: &str,
+) -> Result<SessionBackendKillResult, String> {
+    let name = tmux_name_from_session_id(session_id);
+    let tmux_tmpdir = tmux_tmpdir_for_project(project_path);
+    tokio::fs::create_dir_all(&tmux_tmpdir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let out = TokioCommand::new(pnevma_session::resolve_binary("tmux"))
+        .env("TMUX_TMPDIR", &tmux_tmpdir)
+        .args(["kill-session", "-t", &name])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(SessionBackendKillResult::Killed);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("can't find session") {
+        return Ok(SessionBackendKillResult::AlreadyGone);
+    }
+    Err(stderr.trim().to_string())
+}
+
+pub(crate) async fn kill_session_backend_for_row(
+    supervisor: &SessionSupervisor,
+    project_path: &Path,
+    session_id: Uuid,
+    backend: &str,
+) -> Result<SessionBackendKillResult, String> {
+    if backend.eq_ignore_ascii_case(SESSION_BACKEND_TMUX_COMPAT) {
+        return kill_tmux_session_for_project(project_path, &session_id.to_string()).await;
+    }
+
+    supervisor
+        .kill_session_backend(session_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn session_backend_alive(project_path: &Path, session_id: &str) -> bool {

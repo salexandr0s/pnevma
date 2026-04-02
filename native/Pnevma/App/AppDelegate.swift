@@ -50,6 +50,17 @@ private struct ToolbarGitPushResult: Decodable, Sendable {
     let errorMessage: String?
 }
 
+private struct ProjectOrphanedSessionCleanupResult: Decodable, Sendable {
+    let dryRun: Bool
+    let tmuxSessionIds: [String]
+    let localDurableSessionIds: [String]
+    let helperDaemonStopped: Bool
+
+    var cleanedCount: Int {
+        tmuxSessionIds.count + localDurableSessionIds.count
+    }
+}
+
 private struct GitHubAuthBridgePayload: Decodable {
     let snapshot: GitHubAuthSnapshot
 }
@@ -112,6 +123,183 @@ private struct AgentTeamLocation {
     let workspaceID: UUID
     let tabID: UUID
     let leaderBackendPaneID: String
+}
+
+@MainActor
+private final class AgentTeamMemberWindowController: NSObject, NSWindowDelegate {
+    private weak var owner: AppDelegate?
+    private(set) var state: SessionPersistence.AgentTeamWindowState
+    fileprivate let paneView: NSView & PaneContent
+    let window: NSWindow
+
+    private var closeConfirmed = false
+    private var disposeOnClose = true
+    private var applyingProgrammaticFrame = false
+
+    init(
+        state: SessionPersistence.AgentTeamWindowState,
+        paneView: NSView & PaneContent,
+        owner: AppDelegate
+    ) {
+        self.state = state
+        self.paneView = paneView
+        self.owner = owner
+
+        let contentRect = state.frame?.nsRect ?? NSRect(x: 0, y: 0, width: 420, height: 300)
+        let window = NSWindow(
+            contentRect: contentRect,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        self.window = window
+
+        super.init()
+
+        if let observablePane = paneView as? PanePersistenceObservable {
+            observablePane.onPersistedStateChange = nil
+        }
+
+        let contentView = NSView(frame: contentRect)
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        paneView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(paneView)
+        NSLayoutConstraint.activate([
+            paneView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            paneView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            paneView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            paneView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+
+        window.contentView = contentView
+        window.title = state.title
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.minSize = NSSize(width: 320, height: 220)
+        window.delegate = self
+    }
+
+    func requestCloseDecision(_ completion: @escaping (Bool) -> Void) {
+        (paneView as? any TerminalPaneControlling)?
+            .requestCloseDecision(completion)
+            ?? completion(paneView.hasActiveProcess)
+    }
+
+    func present(preserveMainFocus: Bool) {
+        if preserveMainFocus {
+            paneView.deactivate()
+            window.orderFront(nil)
+            owner?.window?.makeKey()
+        } else {
+            paneView.activate()
+            window.makeKeyAndOrderFront(nil)
+        }
+        (paneView as? any TerminalPaneControlling)?.didMoveBetweenContainers()
+    }
+
+    func update(state: SessionPersistence.AgentTeamWindowState) {
+        self.state = state
+        window.title = state.title
+    }
+
+    func currentState() -> SessionPersistence.AgentTeamWindowState {
+        SessionPersistence.AgentTeamWindowState(
+            teamID: state.teamID,
+            projectID: state.projectID,
+            leaderSessionID: state.leaderSessionID,
+            leaderPaneID: state.leaderPaneID,
+            memberSessionID: state.memberSessionID,
+            memberPaneID: state.memberPaneID,
+            provider: state.provider,
+            memberIndex: state.memberIndex,
+            title: state.title,
+            frame: SessionPersistence.CodableRect(window.frame)
+        )
+    }
+
+    func applyFrame(_ frame: NSRect) {
+        applyingProgrammaticFrame = true
+        window.setFrame(frame, display: true)
+        applyingProgrammaticFrame = false
+    }
+
+    func closeFromBackend() {
+        disposeOnClose = false
+        closeConfirmed = true
+        window.close()
+    }
+
+    func closePreservingSession() {
+        disposeOnClose = true
+        closeConfirmed = true
+        window.close()
+    }
+
+    func closeForTransfer() {
+        disposeOnClose = false
+        closeConfirmed = true
+        window.close()
+    }
+
+    func preparePaneForTransfer() {
+        (paneView as? any TerminalPaneControlling)?.prepareForTransfer()
+    }
+
+    func takePaneViewForTransfer() -> (NSView & PaneContent) {
+        (paneView as? any TerminalPaneControlling)?.willMoveBetweenContainers()
+        if let observablePane = paneView as? PanePersistenceObservable {
+            observablePane.onPersistedStateChange = nil
+        }
+        paneView.removeFromSuperview()
+        let placeholderView = NSView(frame: window.contentView?.bounds ?? .zero)
+        placeholderView.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView = placeholderView
+        return paneView
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closeConfirmed {
+            return true
+        }
+        requestCloseDecision { [weak self] requiresConfirmation in
+            guard let self else { return }
+            if requiresConfirmation {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Close teammate window?"
+                alert.informativeText =
+                    "Closing this teammate window will terminate its terminal session."
+                alert.addButton(withTitle: "Close Window")
+                alert.addButton(withTitle: "Cancel")
+                alert.beginSheetModal(for: sender) { response in
+                    guard response == .alertFirstButtonReturn else { return }
+                    self.closeConfirmed = true
+                    sender.close()
+                }
+            } else {
+                self.closeConfirmed = true
+                sender.close()
+            }
+        }
+        return false
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if disposeOnClose {
+            paneView.dispose()
+        }
+        owner?.agentTeamWindowDidClose(memberPaneID: state.memberPaneID, teamID: state.teamID)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard !applyingProgrammaticFrame else { return }
+        owner?.agentTeamWindowDidMutate(teamID: state.teamID)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard !applyingProgrammaticFrame else { return }
+        owner?.agentTeamWindowDidMutate(teamID: state.teamID)
+    }
 }
 
 @MainActor
@@ -308,6 +496,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionStore: SessionStore?
     private var workspaceManager: WorkspaceManager?
     private var agentTeamLocations: [String: AgentTeamLocation] = [:]
+    private var agentTeamWindowControllers: [String: AgentTeamMemberWindowController] = [:]
+    private var pendingRestoredAgentTeamWindows: [SessionPersistence.AgentTeamWindowState] = []
+    private var agentTeamWindowAutoTileSuppressed: Set<String> = []
+    private var lastAppliedAgentTeamPresentationMode: AgentTeamPresentationMode?
 
     /// Read-only accessor for App Intents to query workspace state.
     var workspaceManagerForIntents: WorkspaceManager? { workspaceManager }
@@ -794,6 +986,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func shutdownRuntime() {
+        closeAllDetachedAgentTeamWindows()
         hideFocusModeEscapeHatch()
         smokeTimeoutWorkItem?.cancel()
         smokeTimeoutWorkItem = nil
@@ -961,6 +1154,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         smokeWindow = nil
         window = nil
         commandCenterWindowController = nil
+        agentTeamWindowControllers.removeAll()
+        pendingRestoredAgentTeamWindows.removeAll()
+        agentTeamWindowAutoTileSuppressed.removeAll()
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -1009,25 +1205,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
                 return
             }
-            if requiresConfirmation {
-                self.confirmClose(
-                    title: "Quit Pnevma?",
-                    message: "The terminal still has a running process. Managed sessions will try to reattach on next launch if their backends are still running; otherwise Pnevma will fall back to the archived transcript. Unmanaged shells will exit when the app quits.",
-                    onCancel: {
-                        sender.reply(toApplicationShouldTerminate: false)
+            self.anyDetachedAgentTeamWindowRequiresCloseConfirmation { detachedRequiresConfirmation in
+                if requiresConfirmation || detachedRequiresConfirmation {
+                    self.confirmClose(
+                        title: "Quit Pnevma?",
+                        message: "The terminal still has a running process. Quitting Pnevma will terminate local managed sessions and plain local shells. Remote durable sessions disconnect and can be reattached on next launch if their backends are still running.",
+                        onCancel: {
+                            sender.reply(toApplicationShouldTerminate: false)
+                        }
+                    ) {
+                        Task { @MainActor [weak self] in
+                            PaneFactory.isAppShuttingDown = true
+                            await self?.workspaceManager?.prepareForShutdown()
+                            sender.reply(toApplicationShouldTerminate: true)
+                        }
                     }
-                ) {
+                } else {
                     Task { @MainActor [weak self] in
                         PaneFactory.isAppShuttingDown = true
                         await self?.workspaceManager?.prepareForShutdown()
                         sender.reply(toApplicationShouldTerminate: true)
                     }
-                }
-            } else {
-                Task { @MainActor [weak self] in
-                    PaneFactory.isAppShuttingDown = true
-                    await self?.workspaceManager?.prepareForShutdown()
-                    sender.reply(toApplicationShouldTerminate: true)
                 }
             }
         }
@@ -1038,7 +1236,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         persistence?.isPersistenceEnabled =
             !AppLaunchContext.isTesting && AppRuntimeSettings.shared.autoSaveWorkspaceOnQuit
         sessionBridge?.defaultShell = AppRuntimeSettings.shared.normalizedDefaultShell
+        let presentationMode = AppRuntimeSettings.shared.agentTeamPresentationMode
+        if let lastAppliedAgentTeamPresentationMode,
+           lastAppliedAgentTeamPresentationMode != presentationMode {
+            migrateAgentTeamPresentationMode(to: presentationMode)
+        }
+        lastAppliedAgentTeamPresentationMode = presentationMode
         refreshToolDockAutoHide(animated: true)
+        restoreDetachedAgentTeamWindowsIfNeeded()
+        if prefersDetachedAgentTeamWindows {
+            retileDetachedAgentTeamWindows()
+        }
         if AppLaunchContext.shouldRunAutomaticUpdateChecks {
             updateCoordinator?.automaticCheck()
         }
@@ -3294,6 +3502,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandItem(id: "pane.equalize", title: "Equalize Splits", category: "pane", shortcut: "Ctrl+Cmd+=", description: "Reset all split ratios to equal") { [weak self] in
                 self?.equalizeSplitsAction()
             },
+            CommandItem(id: "team_windows.retile", title: "Retile Team Windows", category: "window", shortcut: nil, description: "Re-enable automatic tiling for detached teammate windows") { [weak self] in
+                self?.retileDetachedAgentTeamWindows()
+            },
             CommandItem(id: "pane.close", title: "Close Pane", category: "pane", shortcut: "Cmd+W", description: "Close the currently active pane") { [weak self] in
                 self?.closePaneAction()
             },
@@ -3398,6 +3609,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             description: "View and manage active terminal sessions"
         ) { [weak self] in
             self?.showSessionManager()
+        })
+
+        commands.append(CommandItem(
+            id: "project.cleanup_orphaned_sessions",
+            title: "Clean Orphaned Sessions",
+            category: "command",
+            shortcut: nil,
+            description: "Kill stale Pnevma tmux/local durable sessions for the active project"
+        ) { [weak self] in
+            self?.cleanupOrphanedSessions()
         })
 
         commandPalette?.registerCommands(commands)
@@ -3897,7 +4118,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makePersistenceToggle() -> NSSwitch {
         let toggle = NSSwitch(frame: .zero)
         toggle.state = .on
-        toggle.toolTip = "Persistent workspaces use tmux-backed managed sessions. Unchecked starts a plain shell."
+        toggle.toolTip = "Persistent workspaces use backend-managed local sessions. Turn it off to start a plain shell. Quitting Pnevma still ends local sessions."
         toggle.setAccessibilityLabel("Enable session persistence")
         toggle.setAccessibilityIdentifier("openWorkspace.persistenceToggle")
         return toggle
@@ -3905,7 +4126,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makePersistenceHelperLabel() -> NSTextField {
         let label = NSTextField(
-            wrappingLabelWithString: "Keeps the workspace running in a tmux-backed managed session so it can be reopened later. Turn it off to start a plain shell."
+            wrappingLabelWithString: "Keeps the workspace in a backend-managed local session so it can be restored while Pnevma stays open. Turn it off to start a plain shell. Quitting the app still ends local sessions."
         )
         label.textColor = .secondaryLabelColor
         return label
@@ -5254,6 +5475,696 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let isVisible: Bool
     }
 
+    private var prefersDetachedAgentTeamWindows: Bool {
+        AppRuntimeSettings.shared.agentTeamPresentationMode == .detachedWindows
+    }
+
+    private func prefersDetachedAgentTeamWindow(for memberPaneID: String) -> Bool {
+        prefersDetachedAgentTeamWindows || agentTeamWindowControllers[memberPaneID] != nil
+    }
+
+    fileprivate func agentTeamWindowDidClose(memberPaneID: String, teamID: String) {
+        agentTeamWindowControllers.removeValue(forKey: memberPaneID)
+        persistence?.markDirty()
+        if !agentTeamWindowControllers.values.contains(where: { $0.state.teamID == teamID }) {
+            agentTeamWindowAutoTileSuppressed.remove(teamID)
+        }
+    }
+
+    fileprivate func agentTeamWindowDidMutate(teamID: String) {
+        agentTeamWindowAutoTileSuppressed.insert(teamID)
+        persistence?.markDirty()
+    }
+
+    private func closeAllDetachedAgentTeamWindows() {
+        let controllers = Array(agentTeamWindowControllers.values)
+        agentTeamWindowControllers.removeAll()
+        for controller in controllers {
+            controller.window.delegate = nil
+            controller.closeFromBackend()
+        }
+    }
+
+    private func anyDetachedAgentTeamWindowRequiresCloseConfirmation(
+        _ completion: @escaping (Bool) -> Void
+    ) {
+        let controllers = Array(agentTeamWindowControllers.values)
+        guard !controllers.isEmpty else {
+            completion(false)
+            return
+        }
+
+        var requiresConfirmation = false
+        var remaining = controllers.count
+        for controller in controllers {
+            controller.requestCloseDecision { requiresClose in
+                requiresConfirmation = requiresConfirmation || requiresClose
+                remaining -= 1
+                if remaining == 0 {
+                    completion(requiresConfirmation)
+                }
+            }
+        }
+    }
+
+    private func closeDetachedAgentTeamWindow(memberPaneID: String, fromBackend: Bool) {
+        guard let controller = agentTeamWindowControllers[memberPaneID] else { return }
+        agentTeamWindowControllers.removeValue(forKey: memberPaneID)
+        if fromBackend {
+            controller.closeFromBackend()
+        } else {
+            controller.window.close()
+        }
+        persistence?.markDirty()
+    }
+
+    private func removeDetachedWindowMemberPaneIfPresent(
+        teamID: String,
+        memberPaneID: String,
+        route: ResolvedAgentTeamRoute
+    ) {
+        guard !route.isVisible else { return }
+        let tab = route.workspace.tabs[route.tabIndex]
+        if let paneID = paneID(in: tab.layoutEngine, backendPaneID: memberPaneID) {
+            _ = tab.layoutEngine.closePane(paneID)
+            tab.layoutEngine.removePersistedPane(paneID)
+        }
+        persistence?.markDirty()
+    }
+
+    private func agentTeamWindowState(
+        for payload: AgentTeamMemberBridgePayload,
+        route: ResolvedAgentTeamRoute
+    ) -> SessionPersistence.AgentTeamWindowState {
+        agentTeamWindowState(
+            teamID: payload.teamID,
+            projectID: payload.projectID,
+            leaderSessionID: payload.leaderSessionID,
+            leaderPaneID: payload.leaderPaneID,
+            memberSessionID: payload.member.sessionID,
+            memberPaneID: payload.member.paneID,
+            provider: payload.provider ?? "agent",
+            memberIndex: payload.member.memberIndex,
+            title: payload.member.title
+        )
+    }
+
+    private func agentTeamWindowState(
+        teamID: String,
+        projectID: String,
+        leaderSessionID: String,
+        leaderPaneID: String,
+        memberSessionID: String,
+        memberPaneID: String,
+        provider: String,
+        memberIndex: Int,
+        title: String
+    ) -> SessionPersistence.AgentTeamWindowState {
+        SessionPersistence.AgentTeamWindowState(
+            teamID: teamID,
+            projectID: projectID,
+            leaderSessionID: leaderSessionID,
+            leaderPaneID: leaderPaneID,
+            memberSessionID: memberSessionID,
+            memberPaneID: memberPaneID,
+            provider: provider,
+            memberIndex: memberIndex,
+            title: title,
+            frame: agentTeamWindowControllers[memberPaneID]?.currentState().frame
+        )
+    }
+
+    private func upsertDetachedAgentTeamWindow(
+        state: SessionPersistence.AgentTeamWindowState,
+        workingDirectory: String?,
+        launchMetadata: TerminalLaunchMetadata,
+        preserveFocus: Bool
+    ) {
+        if let controller = agentTeamWindowControllers[state.memberPaneID] {
+            controller.update(state: state)
+            controller.present(preserveMainFocus: preserveFocus)
+            if !agentTeamWindowAutoTileSuppressed.contains(state.teamID) {
+                tileDetachedAgentTeamWindows(teamID: state.teamID, force: true)
+            }
+            persistence?.markDirty()
+            return
+        }
+
+        let pane = PaneFactory.makeTerminal(
+            workingDirectory: workingDirectory,
+            sessionID: state.memberSessionID,
+            autoStartIfNeeded: false,
+            launchMetadata: launchMetadata
+        ).1
+        let controller = AgentTeamMemberWindowController(
+            state: state,
+            paneView: pane,
+            owner: self
+        )
+        agentTeamWindowControllers[state.memberPaneID] = controller
+        controller.present(preserveMainFocus: preserveFocus)
+        if let frame = state.frame?.nsRect {
+            controller.applyFrame(frame)
+        }
+        if !agentTeamWindowAutoTileSuppressed.contains(state.teamID) {
+            tileDetachedAgentTeamWindows(teamID: state.teamID, force: true)
+        }
+        persistence?.markDirty()
+    }
+
+    private func upsertDetachedAgentTeamWindow(
+        payload: AgentTeamMemberBridgePayload,
+        route: ResolvedAgentTeamRoute,
+        preserveFocus: Bool
+    ) {
+        removeDetachedWindowMemberPaneIfPresent(
+            teamID: payload.teamID,
+            memberPaneID: payload.member.paneID,
+            route: route
+        )
+
+        upsertDetachedAgentTeamWindow(
+            state: agentTeamWindowState(for: payload, route: route),
+            workingDirectory: payload.session?.cwd ?? route.workspace.defaultWorkingDirectory,
+            launchMetadata: agentTeamLaunchMetadata(
+                workspace: route.workspace,
+                backendPaneID: payload.member.paneID,
+                teamID: payload.teamID,
+                role: "member",
+                memberIndex: payload.member.memberIndex
+            ),
+            preserveFocus: preserveFocus
+        )
+    }
+
+    private func pruneDetachedAgentTeamWindows(
+        teamID: String,
+        validMemberPaneIDs: Set<String>
+    ) {
+        for controller in agentTeamWindowControllers.values
+            .filter({ $0.state.teamID == teamID && !validMemberPaneIDs.contains($0.state.memberPaneID) })
+        {
+            closeDetachedAgentTeamWindow(memberPaneID: controller.state.memberPaneID, fromBackend: true)
+        }
+    }
+
+    private func tileDetachedAgentTeamWindows(teamID: String, force: Bool = false) {
+        guard force || !agentTeamWindowAutoTileSuppressed.contains(teamID) else { return }
+        let controllers = agentTeamWindowControllers.values
+            .filter { $0.state.teamID == teamID }
+            .sorted { lhs, rhs in
+                if lhs.state.memberIndex == rhs.state.memberIndex {
+                    return lhs.state.memberPaneID < rhs.state.memberPaneID
+                }
+                return lhs.state.memberIndex < rhs.state.memberIndex
+            }
+        guard !controllers.isEmpty else { return }
+        guard let mainWindow = window,
+              let screen = mainWindow.screen ?? NSScreen.main else { return }
+
+        let visible = screen.visibleFrame.insetBy(dx: 12, dy: 12)
+        let leaderFrame = mainWindow.frame
+        let width = min(
+            max(leaderFrame.width * 0.32, 340),
+            min(visible.width * 0.38, 520)
+        )
+        let x = min(
+            max(leaderFrame.maxX + 12, visible.minX),
+            visible.maxX - width
+        )
+        let gap: CGFloat = 10
+        let usableHeight = min(leaderFrame.height, visible.height)
+        let totalGap = gap * CGFloat(max(controllers.count - 1, 0))
+        let height = max(220, (usableHeight - totalGap) / CGFloat(controllers.count))
+        let stackHeight = (height * CGFloat(controllers.count)) + totalGap
+        let startY = min(
+            max(leaderFrame.minY, visible.minY),
+            visible.maxY - stackHeight
+        )
+
+        for (index, controller) in controllers.enumerated() {
+            let originY = startY + (CGFloat(controllers.count - index - 1) * (height + gap))
+            controller.applyFrame(NSRect(x: x, y: originY, width: width, height: height))
+        }
+        persistence?.markDirty()
+    }
+
+    private func retileDetachedAgentTeamWindows() {
+        agentTeamWindowAutoTileSuppressed.removeAll()
+        let teamIDs = Set(agentTeamWindowControllers.values.map { $0.state.teamID })
+        for teamID in teamIDs {
+            tileDetachedAgentTeamWindows(teamID: teamID, force: true)
+        }
+    }
+
+    private func restoreDetachedAgentTeamWindowsIfNeeded() {
+        guard prefersDetachedAgentTeamWindows else {
+            pendingRestoredAgentTeamWindows.removeAll()
+            return
+        }
+        let pending = pendingRestoredAgentTeamWindows
+        pendingRestoredAgentTeamWindows.removeAll()
+        for state in pending {
+            guard let route = resolveAgentTeamRoute(
+                teamID: state.teamID,
+                projectID: state.projectID,
+                leaderBackendPaneID: state.leaderPaneID,
+                preferExistingTab: true
+            ) else {
+                continue
+            }
+            let payload = AgentTeamMemberBridgePayload(
+                projectID: state.projectID,
+                teamID: state.teamID,
+                provider: state.provider,
+                leaderSessionID: state.leaderSessionID,
+                leaderPaneID: state.leaderPaneID,
+                leaderPaneToken: nil,
+                member: AgentTeamMemberBridgeState(
+                    sessionID: state.memberSessionID,
+                    paneID: state.memberPaneID,
+                    paneToken: "%\(state.memberIndex)",
+                    memberIndex: state.memberIndex,
+                    title: state.title,
+                    command: ""
+                ),
+                session: nil,
+                equalizeOrientation: nil,
+                preserveFocus: true
+            )
+            upsertDetachedAgentTeamWindow(
+                payload: payload,
+                route: route,
+                preserveFocus: true
+            )
+            if let frame = state.frame?.nsRect {
+                agentTeamWindowControllers[state.memberPaneID]?.applyFrame(frame)
+            }
+        }
+    }
+
+    private struct KnownAgentTeamContext {
+        let teamID: String
+        let projectID: String
+        let leaderPaneID: String
+    }
+
+    private struct PersistedAgentTeamMember {
+        let paneID: PaneID
+        let persistedPane: PersistedPane
+        let metadata: TerminalLaunchMetadata
+
+        var memberIndex: Int { metadata.agentTeamMemberIndex ?? 0 }
+        var backendPaneID: String { metadata.backendPaneID ?? "" }
+        var sessionID: String { persistedPane.sessionID ?? "" }
+        var workingDirectory: String? { persistedPane.workingDirectory }
+    }
+
+    private func migrateAgentTeamPresentationMode(to presentationMode: AgentTeamPresentationMode) {
+        let contexts = knownAgentTeamContexts().values.sorted { $0.teamID < $1.teamID }
+        for context in contexts {
+            guard let route = resolveAgentTeamRoute(
+                teamID: context.teamID,
+                projectID: context.projectID,
+                leaderBackendPaneID: context.leaderPaneID,
+                preferExistingTab: true
+            ) else {
+                continue
+            }
+
+            switch presentationMode {
+            case .splitPanes:
+                migrateAgentTeamToSplitPanes(context: context, route: route)
+            case .detachedWindows:
+                migrateAgentTeamToDetachedWindows(context: context, route: route)
+            }
+        }
+        persistence?.markDirty()
+    }
+
+    private func knownAgentTeamContexts() -> [String: KnownAgentTeamContext] {
+        var contexts: [String: KnownAgentTeamContext] = [:]
+
+        for location in agentTeamLocations.values {
+            contexts[location.teamID] = KnownAgentTeamContext(
+                teamID: location.teamID,
+                projectID: location.projectID,
+                leaderPaneID: location.leaderBackendPaneID
+            )
+        }
+
+        for controller in agentTeamWindowControllers.values {
+            let state = controller.state
+            contexts[state.teamID] = KnownAgentTeamContext(
+                teamID: state.teamID,
+                projectID: state.projectID,
+                leaderPaneID: state.leaderPaneID
+            )
+        }
+
+        for restoredWindow in pendingRestoredAgentTeamWindows {
+            contexts[restoredWindow.teamID] = KnownAgentTeamContext(
+                teamID: restoredWindow.teamID,
+                projectID: restoredWindow.projectID,
+                leaderPaneID: restoredWindow.leaderPaneID
+            )
+        }
+
+        for workspace in workspaceManager?.workspaces ?? [] {
+            guard let projectID = runtimeProjectID(for: workspace) else { continue }
+            for tab in workspace.tabs {
+                for paneID in tab.layoutEngine.root?.allPaneIDs ?? [] {
+                    guard let persistedPane = tab.layoutEngine.persistedPane(for: paneID),
+                          let metadata = TerminalLaunchMetadata.from(json: persistedPane.metadataJSON),
+                          metadata.agentTeamRole == "leader",
+                          let teamID = metadata.agentTeamID,
+                          let leaderPaneID = metadata.backendPaneID else {
+                        continue
+                    }
+                    contexts[teamID] = KnownAgentTeamContext(
+                        teamID: teamID,
+                        projectID: projectID,
+                        leaderPaneID: leaderPaneID
+                    )
+                }
+            }
+        }
+
+        return contexts
+    }
+
+    private func persistedAgentTeamMembers(
+        in layoutEngine: PaneLayoutEngine,
+        teamID: String
+    ) -> [PersistedAgentTeamMember] {
+        (layoutEngine.root?.allPaneIDs ?? [])
+            .compactMap { paneID -> PersistedAgentTeamMember? in
+                guard let persistedPane = layoutEngine.persistedPane(for: paneID),
+                      let metadata = TerminalLaunchMetadata.from(json: persistedPane.metadataJSON),
+                      metadata.agentTeamID == teamID,
+                      metadata.agentTeamRole == "member",
+                      metadata.agentTeamMemberIndex != nil,
+                      persistedPane.sessionID != nil,
+                      metadata.backendPaneID != nil else {
+                    return nil
+                }
+                return PersistedAgentTeamMember(
+                    paneID: paneID,
+                    persistedPane: persistedPane,
+                    metadata: metadata
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.memberIndex == rhs.memberIndex {
+                    return lhs.backendPaneID < rhs.backendPaneID
+                }
+                return lhs.memberIndex < rhs.memberIndex
+            }
+    }
+
+    private func leaderSessionID(
+        for context: KnownAgentTeamContext,
+        route: ResolvedAgentTeamRoute
+    ) -> String? {
+        if let controller = agentTeamWindowControllers.values.first(where: { $0.state.teamID == context.teamID }) {
+            return controller.state.leaderSessionID
+        }
+        if let restoredWindow = pendingRestoredAgentTeamWindows.first(where: { $0.teamID == context.teamID }) {
+            return restoredWindow.leaderSessionID
+        }
+        let tab = route.workspace.tabs[route.tabIndex]
+        guard let paneID = paneID(in: tab.layoutEngine, backendPaneID: context.leaderPaneID) else {
+            return nil
+        }
+        return tab.layoutEngine.persistedPane(for: paneID)?.sessionID
+    }
+
+    private func agentTeamMemberProvider(
+        teamID: String,
+        memberPaneID: String
+    ) -> String {
+        if let controller = agentTeamWindowControllers[memberPaneID] {
+            return controller.state.provider
+        }
+        if let restoredWindow = pendingRestoredAgentTeamWindows.first(where: {
+            $0.teamID == teamID && $0.memberPaneID == memberPaneID
+        }) {
+            return restoredWindow.provider
+        }
+        return "agent"
+    }
+
+    private func agentTeamMemberTitle(
+        teamID: String,
+        memberPaneID: String,
+        memberIndex: Int
+    ) -> String {
+        if let controller = agentTeamWindowControllers[memberPaneID] {
+            return controller.state.title
+        }
+        if let restoredWindow = pendingRestoredAgentTeamWindows.first(where: {
+            $0.teamID == teamID && $0.memberPaneID == memberPaneID
+        }) {
+            return restoredWindow.title
+        }
+        return "Agent teammate \(memberIndex)"
+    }
+
+    private func agentTeamWindowState(
+        for member: PersistedAgentTeamMember,
+        context: KnownAgentTeamContext,
+        route: ResolvedAgentTeamRoute
+    ) -> SessionPersistence.AgentTeamWindowState? {
+        guard let leaderSessionID = leaderSessionID(for: context, route: route) else {
+            return nil
+        }
+        return agentTeamWindowState(
+            teamID: context.teamID,
+            projectID: context.projectID,
+            leaderSessionID: leaderSessionID,
+            leaderPaneID: context.leaderPaneID,
+            memberSessionID: member.sessionID,
+            memberPaneID: member.backendPaneID,
+            provider: agentTeamMemberProvider(teamID: context.teamID, memberPaneID: member.backendPaneID),
+            memberIndex: member.memberIndex,
+            title: agentTeamMemberTitle(
+                teamID: context.teamID,
+                memberPaneID: member.backendPaneID,
+                memberIndex: member.memberIndex
+            )
+        )
+    }
+
+    private func closeVisibleTeamMemberPanePreservingSession(
+        member: PersistedAgentTeamMember,
+        contentAreaView: ContentAreaView
+    ) {
+        guard let sourcePaneID = agentTeamPaneID(in: contentAreaView, backendPaneID: member.backendPaneID) else {
+            return
+        }
+        if let paneView = contentAreaView.paneView(for: sourcePaneID) as? any TerminalPaneControlling {
+            paneView.prepareForTransfer()
+        }
+        contentAreaView.closePane(sourcePaneID)
+    }
+
+    private func removeBackgroundTeamMemberPane(
+        member: PersistedAgentTeamMember,
+        route: ResolvedAgentTeamRoute
+    ) {
+        let tab = route.workspace.tabs[route.tabIndex]
+        guard let sourcePaneID = paneID(in: tab.layoutEngine, backendPaneID: member.backendPaneID) else {
+            return
+        }
+        _ = tab.layoutEngine.closePane(sourcePaneID)
+        tab.layoutEngine.removePersistedPane(sourcePaneID)
+    }
+
+    private func migrateAgentTeamToDetachedWindows(
+        context: KnownAgentTeamContext,
+        route: ResolvedAgentTeamRoute
+    ) {
+        let members = persistedAgentTeamMembers(
+            in: route.workspace.tabs[route.tabIndex].layoutEngine,
+            teamID: context.teamID
+        )
+        guard !members.isEmpty else { return }
+
+        if route.isVisible, let contentAreaView {
+            for member in members {
+                if agentTeamWindowControllers[member.backendPaneID] != nil {
+                    closeVisibleTeamMemberPanePreservingSession(
+                        member: member,
+                        contentAreaView: contentAreaView
+                    )
+                    continue
+                }
+
+                guard let windowState = agentTeamWindowState(
+                    for: member,
+                    context: context,
+                    route: route
+                ) else {
+                    continue
+                }
+
+                if let sourcePaneID = agentTeamPaneID(in: contentAreaView, backendPaneID: member.backendPaneID),
+                   let paneView = contentAreaView.extractPaneView(sourcePaneID) {
+                    let controller = AgentTeamMemberWindowController(
+                        state: windowState,
+                        paneView: paneView,
+                        owner: self
+                    )
+                    agentTeamWindowControllers[windowState.memberPaneID] = controller
+                    controller.present(preserveMainFocus: true)
+                    if let frame = windowState.frame?.nsRect {
+                        controller.applyFrame(frame)
+                    }
+                } else {
+                    closeVisibleTeamMemberPanePreservingSession(
+                        member: member,
+                        contentAreaView: contentAreaView
+                    )
+                    upsertDetachedAgentTeamWindow(
+                        state: windowState,
+                        workingDirectory: member.workingDirectory ?? route.workspace.defaultWorkingDirectory,
+                        launchMetadata: member.metadata,
+                        preserveFocus: true
+                    )
+                }
+            }
+
+            if let leaderPaneID = agentTeamPaneID(in: contentAreaView, backendPaneID: context.leaderPaneID) {
+                contentAreaView.focusPane(leaderPaneID)
+            }
+            tileDetachedAgentTeamWindows(teamID: context.teamID, force: true)
+            persistence?.markDirty()
+            return
+        }
+
+        for member in members {
+            if let windowState = agentTeamWindowState(
+                for: member,
+                context: context,
+                route: route
+            ) {
+                upsertDetachedAgentTeamWindow(
+                    state: windowState,
+                    workingDirectory: member.workingDirectory ?? route.workspace.defaultWorkingDirectory,
+                    launchMetadata: member.metadata,
+                    preserveFocus: true
+                )
+            }
+            removeBackgroundTeamMemberPane(member: member, route: route)
+        }
+        tileDetachedAgentTeamWindows(teamID: context.teamID, force: true)
+        persistence?.markDirty()
+    }
+
+    private func insertSplitPaneForTeamMember(
+        state: SessionPersistence.AgentTeamWindowState,
+        workingDirectory: String?,
+        launchMetadata: TerminalLaunchMetadata,
+        route: ResolvedAgentTeamRoute
+    ) {
+        let tab = route.workspace.tabs[route.tabIndex]
+        guard let leaderPaneID = paneID(in: tab.layoutEngine, backendPaneID: state.leaderPaneID) else {
+            return
+        }
+        if paneID(in: tab.layoutEngine, backendPaneID: state.memberPaneID) != nil {
+            return
+        }
+        let targetPaneID = highestAgentTeamMemberPaneID(
+            in: tab.layoutEngine,
+            teamID: state.teamID
+        ) ?? leaderPaneID
+        let direction: SplitDirection = targetPaneID == leaderPaneID ? .horizontal : .vertical
+        let newPaneID = PaneID()
+        _ = tab.layoutEngine.splitPane(targetPaneID, direction: direction, newPaneID: newPaneID)
+        tab.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: newPaneID,
+                type: "terminal",
+                workingDirectory: workingDirectory,
+                sessionID: state.memberSessionID,
+                taskID: nil,
+                metadataJSON: launchMetadata.encodedJSON()
+            )
+        )
+    }
+
+    private func migrateAgentTeamToSplitPanes(
+        context: KnownAgentTeamContext,
+        route: ResolvedAgentTeamRoute
+    ) {
+        let controllers = agentTeamWindowControllers.values
+            .filter { $0.state.teamID == context.teamID }
+            .sorted { lhs, rhs in
+                if lhs.state.memberIndex == rhs.state.memberIndex {
+                    return lhs.state.memberPaneID < rhs.state.memberPaneID
+                }
+                return lhs.state.memberIndex < rhs.state.memberIndex
+            }
+        guard !controllers.isEmpty else { return }
+
+        if route.isVisible, let contentAreaView,
+           let leaderPaneID = agentTeamPaneID(in: contentAreaView, backendPaneID: context.leaderPaneID) {
+            for controller in controllers {
+                let state = controller.state
+                if agentTeamPaneID(in: contentAreaView, backendPaneID: state.memberPaneID) != nil {
+                    controller.preparePaneForTransfer()
+                    controller.closePreservingSession()
+                    continue
+                }
+
+                let targetPaneID = highestAgentTeamMemberPaneID(
+                    in: contentAreaView,
+                    teamID: context.teamID
+                ) ?? leaderPaneID
+                let direction: SplitDirection = targetPaneID == leaderPaneID ? .horizontal : .vertical
+                let paneView = controller.takePaneViewForTransfer()
+                _ = contentAreaView.insertExistingPaneView(
+                    targetPaneID,
+                    direction: direction,
+                    paneView: paneView
+                )
+                controller.closeForTransfer()
+            }
+            contentAreaView.focusPane(leaderPaneID)
+            contentAreaView.equalizeSplits(orientation: .vertical)
+            persistence?.markDirty()
+            return
+        }
+
+        for controller in controllers {
+            let state = controller.state
+            if paneID(in: route.workspace.tabs[route.tabIndex].layoutEngine, backendPaneID: state.memberPaneID) != nil {
+                controller.preparePaneForTransfer()
+                controller.closePreservingSession()
+                continue
+            }
+
+            let transferDescriptor = (controller.paneView as? any TerminalPaneControlling)?
+                .transferDescriptor
+            insertSplitPaneForTeamMember(
+                state: state,
+                workingDirectory: transferDescriptor?.workingDirectory ?? route.workspace.defaultWorkingDirectory,
+                launchMetadata: transferDescriptor?.launchMetadata ?? agentTeamLaunchMetadata(
+                    workspace: route.workspace,
+                    backendPaneID: state.memberPaneID,
+                    teamID: state.teamID,
+                    role: "member",
+                    memberIndex: state.memberIndex
+                ),
+                route: route
+            )
+            controller.preparePaneForTransfer()
+            controller.closePreservingSession()
+        }
+        route.workspace.tabs[route.tabIndex].layoutEngine.equalizeSplits(orientation: .vertical)
+        persistence?.markDirty()
+    }
+
     private func handleAgentTeamStartedEvent(_ event: BridgeEvent) {
         guard let payload: AgentTeamSnapshotBridgePayload = decodeBridgePayload(event) else { return }
         synchronizeAgentTeamSnapshot(payload.team, projectID: payload.projectID)
@@ -5284,6 +6195,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             members: []
         )
         guard let leaderPaneID = ensureAgentTeamLeaderPane(for: syntheticTeam, route: route) else {
+            return
+        }
+
+        if prefersDetachedAgentTeamWindow(for: payload.member.paneID) {
+            upsertDetachedAgentTeamWindow(
+                payload: payload,
+                route: route,
+                preserveFocus: payload.preserveFocus ?? true
+            )
             return
         }
 
@@ -5386,12 +6306,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleAgentTeamMemberClosedEvent(_ event: BridgeEvent) {
         guard let payload: AgentTeamMemberClosedBridgePayload = decodeBridgePayload(event) else { return }
+        if agentTeamWindowControllers[payload.member.paneID] != nil {
+            closeDetachedAgentTeamWindow(memberPaneID: payload.member.paneID, fromBackend: true)
+        }
         guard let route = resolveAgentTeamRoute(
             teamID: payload.teamID,
             projectID: payload.projectID,
             leaderBackendPaneID: payload.leaderPaneID,
             preferExistingTab: true
         ) else {
+            return
+        }
+
+        if prefersDetachedAgentTeamWindow(for: payload.member.paneID) {
+            closeDetachedAgentTeamWindow(memberPaneID: payload.member.paneID, fromBackend: true)
+            removeDetachedWindowMemberPaneIfPresent(
+                teamID: payload.teamID,
+                memberPaneID: payload.member.paneID,
+                route: route
+            )
             return
         }
 
@@ -5435,6 +6368,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         ) else {
             return
         }
+        if prefersDetachedAgentTeamWindows
+            || agentTeamWindowControllers.values.contains(where: { $0.state.teamID == payload.team.teamID })
+        {
+            return
+        }
         guard payload.team.mainVertical else { return }
         if route.isVisible, let contentAreaView {
             contentAreaView.equalizeSplits(orientation: .vertical)
@@ -5459,6 +6397,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let leaderPaneID = ensureAgentTeamLeaderPane(for: team, route: route) else {
             return
         }
+        let detachedTeam = prefersDetachedAgentTeamWindows
+            || agentTeamWindowControllers.values.contains(where: { $0.state.teamID == team.teamID })
+        let validMemberPaneIDs = Set(team.members.map(\.paneID))
+        if detachedTeam {
+            pruneDetachedAgentTeamWindows(teamID: team.teamID, validMemberPaneIDs: validMemberPaneIDs)
+        }
         for member in team.members.sorted(by: { $0.memberIndex < $1.memberIndex }) {
             let payload = AgentTeamMemberBridgePayload(
                 projectID: projectID,
@@ -5472,6 +6416,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 equalizeOrientation: team.mainVertical ? "vertical" : nil,
                 preserveFocus: true
             )
+            if detachedTeam {
+                upsertDetachedAgentTeamWindow(
+                    payload: payload,
+                    route: route,
+                    preserveFocus: true
+                )
+                continue
+            }
             if route.isVisible,
                let contentAreaView,
                agentTeamPaneID(in: contentAreaView, backendPaneID: member.paneID) != nil {
@@ -5482,6 +6434,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             handleSyntheticAgentTeamMemberSpawn(payload, route: route, leaderPaneID: leaderPaneID)
+        }
+        guard !detachedTeam else {
+            persistence?.markDirty()
+            return
         }
         if team.mainVertical {
             if route.isVisible, let contentAreaView {
@@ -5498,6 +6454,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         route: ResolvedAgentTeamRoute,
         leaderPaneID: PaneID
     ) {
+        if prefersDetachedAgentTeamWindow(for: payload.member.paneID) {
+            upsertDetachedAgentTeamWindow(
+                payload: payload,
+                route: route,
+                preserveFocus: true
+            )
+            return
+        }
         if route.isVisible, let contentAreaView {
             let targetPaneID = highestAgentTeamMemberPaneID(
                 in: contentAreaView,
@@ -5880,6 +6844,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             commandCenterWindowFrame: commandCenterWindowController?.currentFrame().map(SessionPersistence.CodableRect.init)
                 ?? restoredCommandCenterWindowFrame.map(SessionPersistence.CodableRect.init),
             commandCenterVisible: commandCenterWindowController?.isWindowVisible ?? restoredCommandCenterVisible,
+            agentTeamWindows: agentTeamWindowControllers.values
+                .map { $0.currentState() }
+                .sorted { lhs, rhs in
+                    if lhs.teamID == rhs.teamID {
+                        return lhs.memberIndex < rhs.memberIndex
+                    }
+                    return lhs.teamID < rhs.teamID
+                },
             workspaces: workspaceManager?.workspaces.map { $0.snapshot() } ?? [],
             activeWorkspaceID: workspaceManager?.activeWorkspaceID,
             sidebarVisible: isSidebarVisible,
@@ -5911,6 +6883,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         rightInspectorFooterView?.isHidden = !isRightInspectorPresented
         rightInspectorResizerView?.isHidden = !isRightInspectorPresented
         updateWindowMinWidth()
+        pendingRestoredAgentTeamWindows = state.agentTeamWindows
 
         if let frame = state.windowFrame?.nsRect, let win = window {
             var restored = frame
@@ -5944,6 +6917,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         syncRightInspectorPresentation(animated: false)
         refreshBottomDrawerBrowserSession()
         updateTabBar()
+        restoreDetachedAgentTeamWindowsIfNeeded()
     }
 
     private func makeRootPaneForActiveWorkspace() -> (NSView & PaneContent) {
@@ -5965,6 +6939,61 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startSessionFromSessionManager() {
         sessionsPopover?.performClose(nil)
         newTerminal()
+    }
+
+    private func cleanupOrphanedSessions() {
+        guard let workspaceManager else {
+            ToastManager.shared.show(
+                "No active project is available for orphan cleanup.",
+                icon: "exclamationmark.triangle",
+                style: .error
+            )
+            return
+        }
+
+        Task { @MainActor in
+            do {
+                let bus = try await resolveTitlebarGitActionCommandBus(
+                    workspaceManager: workspaceManager
+                )
+                let result: ProjectOrphanedSessionCleanupResult = try await bus.call(
+                    method: "project.cleanup_orphaned_sessions",
+                    params: nil as String?
+                )
+                let cleanupCount = result.cleanedCount + (result.helperDaemonStopped ? 1 : 0)
+                if cleanupCount == 0 {
+                    ToastManager.shared.show(
+                        "No orphaned Pnevma sessions found for this project.",
+                        icon: "checkmark.circle",
+                        style: .success
+                    )
+                    return
+                }
+
+                var parts: [String] = []
+                if !result.tmuxSessionIds.isEmpty {
+                    parts.append("\(result.tmuxSessionIds.count) tmux")
+                }
+                if !result.localDurableSessionIds.isEmpty {
+                    parts.append("\(result.localDurableSessionIds.count) local durable")
+                }
+                if result.helperDaemonStopped {
+                    parts.append("helper daemon")
+                }
+                let suffix = parts.isEmpty ? "" : " (\(parts.joined(separator: ", ")))"
+                ToastManager.shared.show(
+                    "Cleaned \(cleanupCount) orphaned item\(cleanupCount == 1 ? "" : "s")\(suffix).",
+                    icon: "trash",
+                    style: .success
+                )
+            } catch {
+                ToastManager.shared.show(
+                    "Orphan cleanup failed: \(error.localizedDescription)",
+                    icon: "exclamationmark.triangle",
+                    style: .error
+                )
+            }
+        }
     }
 
     private func showSessionManager() {
@@ -6662,6 +7691,12 @@ extension AppDelegate {
 extension AppDelegate: NSWindowDelegate {
     public func windowDidResize(_ notification: Notification) {
         contentAreaView?.needsLayout = true
+        retileDetachedAgentTeamWindows()
+        syncToolDrawerPointerCapture()
+    }
+
+    public func windowDidMove(_ notification: Notification) {
+        retileDetachedAgentTeamWindows()
         syncToolDrawerPointerCapture()
     }
 

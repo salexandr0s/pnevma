@@ -423,11 +423,12 @@ pub async fn list_live_session_views(state: &AppState) -> Result<Vec<LiveSession
 
 pub async fn restart_session(session_id: String, state: &AppState) -> Result<String, String> {
     let started = Instant::now();
-    let (db, project_id, checkout_path, sessions) = state
+    let (db, project_id, project_path, checkout_path, sessions) = state
         .with_project("restart_session", |ctx| {
             (
                 ctx.db.clone(),
                 ctx.project_id,
+                ctx.project_path.clone(),
                 ctx.checkout_path.clone(),
                 ctx.sessions.clone(),
             )
@@ -540,7 +541,9 @@ pub async fn restart_session(session_id: String, state: &AppState) -> Result<Str
     prior.last_error = None;
     db.upsert_session(&prior).await.map_err(|e| e.to_string())?;
     if let Some(old_id) = prior_session_id {
-        match sessions.kill_session_backend(old_id).await {
+        match super::kill_session_backend_for_row(&sessions, &project_path, old_id, &prior.backend)
+            .await
+        {
             Ok(_) => {
                 let _ = sessions.mark_exit(old_id, None).await;
             }

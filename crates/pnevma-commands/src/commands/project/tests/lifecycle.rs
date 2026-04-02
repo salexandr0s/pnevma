@@ -376,7 +376,7 @@ async fn close_project_marks_live_session_rows_complete() {
 }
 
 #[tokio::test]
-async fn close_project_with_app_shutdown_detaches_local_session_rows() {
+async fn close_project_with_app_shutdown_completes_local_session_rows() {
     let project_root = tempdir().expect("temp project");
     let db = open_test_db().await;
     let project_id = Uuid::new_v4();
@@ -425,13 +425,10 @@ async fn close_project_with_app_shutdown_detaches_local_session_rows() {
         .into_iter()
         .find(|row| row.id == session_id.to_string())
         .expect("session row exists");
-    assert_eq!(row.status, "waiting");
-    assert_eq!(row.lifecycle_state, "detached");
+    assert_eq!(row.status, "complete");
+    assert_eq!(row.lifecycle_state, "exited");
     assert!(row.pid.is_none());
-    assert!(row.detached_at.is_some());
-    assert_eq!(row.ended_at, None);
-    assert_eq!(row.exit_code, None);
-    assert_eq!(row.restore_status.as_deref(), Some("detached"));
+    assert!(row.ended_at.is_some());
 }
 
 #[tokio::test]
@@ -501,9 +498,9 @@ async fn close_project_terminates_running_session_helpers_and_persists_complete_
 }
 
 #[tokio::test]
-async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdown() {
+async fn close_project_with_app_shutdown_kills_restored_local_tmux_sessions() {
     if !tmux_binary_is_available() {
-        eprintln!("skipping tmux restore test because tmux is unavailable");
+        eprintln!("skipping tmux shutdown test because tmux is unavailable");
         return;
     }
 
@@ -587,6 +584,66 @@ async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdow
     close_project_with_mode(ProjectCloseMode::AppShutdown, &state)
         .await
         .expect("close project for app shutdown");
+
+    let has_tmux_session = TokioCommand::new(pnevma_session::resolve_binary("tmux"))
+        .env("TMUX_TMPDIR", &tmux_tmpdir)
+        .args(["has-session", "-t", &tmux_name])
+        .status()
+        .await
+        .expect("probe tmux session")
+        .success();
+    assert!(
+        !has_tmux_session,
+        "app shutdown should terminate restored local tmux sessions"
+    );
+
+    let row = db
+        .get_session(&project_id.to_string(), &session_id.to_string())
+        .await
+        .expect("load session row")
+        .expect("session row exists");
+    assert_eq!(row.status, "complete");
+    assert_eq!(row.lifecycle_state, "exited");
+    assert!(row.ended_at.is_some());
+}
+
+#[tokio::test]
+async fn open_project_cleans_orphaned_local_durable_runner_without_live_session_row() {
+    let temp = tempfile::Builder::new()
+        .prefix("pnv")
+        .tempdir_in("/tmp")
+        .expect("temp root");
+    let home = tempfile::Builder::new()
+        .prefix("pnv-home")
+        .tempdir_in("/tmp")
+        .expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+    let project_root = temp.path().join("p");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/local-durable/sessions"))
+        .expect("create scaffold dirs");
+    write_test_project_config(&project_root, &[]);
+
+    let session_id = Uuid::new_v4();
+    let session_dir = project_root
+        .join(".pnevma/data/local-durable/sessions")
+        .join(session_id.to_string());
+    std::fs::create_dir_all(&session_dir).expect("create orphan session dir");
+
+    let mut child = TokioCommand::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn orphan runner");
+    let orphan_pid = child.id().expect("orphan runner pid");
+    std::fs::write(session_dir.join("runner.pid"), format!("{orphan_pid}\n"))
+        .expect("write runner pid");
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+
     open_project(
         project_root.to_string_lossy().to_string(),
         None,
@@ -595,16 +652,233 @@ async fn open_project_reattaches_preserved_local_tmux_sessions_after_app_shutdow
         &state,
     )
     .await
-    .expect("reopen project");
+    .expect("open project");
 
-    let binding = get_session_binding(session_id.to_string(), &state)
+    let waited = tokio::time::timeout(Duration::from_secs(2), child.wait())
         .await
-        .expect("local session binding");
-    assert_eq!(binding.mode, "live_attach");
-    assert_eq!(binding.lifecycle_state, "attached");
-    assert!(binding.launch_command.is_some());
+        .expect("orphan runner should exit promptly")
+        .expect("wait on orphan runner");
+    assert!(
+        !process_alive(orphan_pid as libc::pid_t),
+        "orphan local durable runner should not survive project open reconciliation: {orphan_pid}"
+    );
+    assert!(
+        !waited.success(),
+        "orphan runner should be terminated rather than exit cleanly"
+    );
 
-    close_project(&state).await.expect("final close project");
+    close_project(&state).await.expect("close project");
+}
+
+#[tokio::test]
+async fn cleanup_orphaned_sessions_reports_and_kills_manual_orphans() {
+    let temp = tempfile::Builder::new()
+        .prefix("pnv")
+        .tempdir_in("/tmp")
+        .expect("temp root");
+    let home = tempfile::Builder::new()
+        .prefix("pnv-home")
+        .tempdir_in("/tmp")
+        .expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+    let project_root = temp.path().join("p");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/local-durable/sessions"))
+        .expect("create scaffold dirs");
+    write_test_project_config(&project_root, &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+    let opened_project_id = open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("open project");
+
+    let session_id = Uuid::new_v4();
+    let session_dir = project_root
+        .join(".pnevma/data/local-durable/sessions")
+        .join(session_id.to_string());
+    std::fs::create_dir_all(&session_dir).expect("create orphan session dir");
+
+    let mut child = TokioCommand::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn orphan runner");
+    let orphan_pid = child.id().expect("orphan runner pid");
+    std::fs::write(session_dir.join("runner.pid"), format!("{orphan_pid}\n"))
+        .expect("write runner pid");
+
+    let dry_run = cleanup_orphaned_sessions(true, &state)
+        .await
+        .expect("dry run cleanup");
+    assert_eq!(dry_run.tmux_session_ids, Vec::<String>::new());
+    assert_eq!(
+        dry_run.local_durable_session_ids,
+        vec![session_id.to_string()]
+    );
+    assert!(!dry_run.helper_daemon_stopped);
+    assert!(
+        process_alive(orphan_pid as libc::pid_t),
+        "dry run must not kill orphan runner"
+    );
+
+    let cleanup = cleanup_orphaned_sessions(false, &state)
+        .await
+        .expect("run orphan cleanup");
+    assert_eq!(cleanup.tmux_session_ids, Vec::<String>::new());
+    assert_eq!(
+        cleanup.local_durable_session_ids,
+        vec![session_id.to_string()]
+    );
+    assert!(!cleanup.helper_daemon_stopped);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child.wait())
+        .await
+        .expect("orphan runner should exit promptly")
+        .expect("wait on orphan runner");
+    assert!(
+        !process_alive(orphan_pid as libc::pid_t),
+        "manual orphan cleanup should terminate orphan runner: {orphan_pid}"
+    );
+    assert!(
+        !waited.success(),
+        "orphan runner should be terminated rather than exit cleanly"
+    );
+    assert!(
+        !session_dir.exists(),
+        "manual orphan cleanup should remove stale local durable session state"
+    );
+
+    let db = state
+        .with_project("tests.cleanup_orphaned_sessions.db", |ctx| ctx.db.clone())
+        .await
+        .expect("project db");
+    let events = db
+        .query_events(pnevma_db::EventQueryFilter {
+            project_id: opened_project_id,
+            task_id: None,
+            session_id: Some(session_id.to_string()),
+            event_type: Some("SessionOrphanCleanup".to_string()),
+            from: None,
+            to: None,
+            limit: Some(20),
+        })
+        .await
+        .expect("query orphan cleanup events");
+    assert!(events.iter().any(|event| {
+        event.payload_json.contains("\"reason\":\"manual_cleanup\"")
+            || event
+                .payload_json
+                .contains("\"reason\": \"manual_cleanup\"")
+    }));
+
+    close_project(&state).await.expect("close project");
+}
+
+#[tokio::test]
+async fn cleanup_orphaned_sessions_preserves_tracked_live_local_durable_rows() {
+    let temp = tempfile::Builder::new()
+        .prefix("pnv")
+        .tempdir_in("/tmp")
+        .expect("temp root");
+    let home = tempfile::Builder::new()
+        .prefix("pnv-home")
+        .tempdir_in("/tmp")
+        .expect("temp home");
+    let _home = HomeOverride::new(home.path()).await;
+    let project_root = temp.path().join("p");
+    std::fs::create_dir_all(project_root.join(".pnevma/data/local-durable/sessions"))
+        .expect("create scaffold dirs");
+    write_test_project_config(&project_root, &[]);
+
+    let global_db = GlobalDb::open().await.expect("open global db");
+    let state = AppState::new_with_global_db(Arc::new(NullEmitter), global_db);
+    trust_workspace(project_root.to_string_lossy().to_string(), &state)
+        .await
+        .expect("trust workspace");
+    let emitter: Arc<dyn EventEmitter> = Arc::new(NullEmitter);
+    let opened_project_id = open_project(
+        project_root.to_string_lossy().to_string(),
+        None,
+        None,
+        &emitter,
+        &state,
+    )
+    .await
+    .expect("open project");
+    let project_id = Uuid::parse_str(&opened_project_id).expect("project id");
+
+    let session_id = Uuid::new_v4();
+    let session_dir = project_root
+        .join(".pnevma/data/local-durable/sessions")
+        .join(session_id.to_string());
+    std::fs::create_dir_all(&session_dir).expect("create tracked session dir");
+
+    let mut child = TokioCommand::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn tracked runner");
+    let runner_pid = child.id().expect("tracked runner pid");
+    std::fs::write(session_dir.join("runner.pid"), format!("{runner_pid}\n"))
+        .expect("write runner pid");
+
+    let db = state
+        .with_project("tests.cleanup_orphaned_sessions.tracked.db", |ctx| {
+            ctx.db.clone()
+        })
+        .await
+        .expect("project db");
+    let now = Utc::now();
+    db.upsert_session(&SessionRow {
+        id: session_id.to_string(),
+        project_id: project_id.to_string(),
+        name: "shell".to_string(),
+        r#type: Some("terminal".to_string()),
+        backend: "local_durable".to_string(),
+        durability: "durable".to_string(),
+        lifecycle_state: "attached".to_string(),
+        status: "running".to_string(),
+        pid: Some(i64::from(runner_pid)),
+        cwd: project_root.to_string_lossy().to_string(),
+        command: "/bin/sh".to_string(),
+        branch: None,
+        worktree_id: None,
+        connection_id: None,
+        remote_session_id: None,
+        controller_id: None,
+        started_at: now,
+        last_heartbeat: now,
+        last_output_at: Some(now),
+        detached_at: None,
+        last_error: None,
+        restore_status: Some("attached".to_string()),
+        exit_code: None,
+        ended_at: None,
+    })
+    .await
+    .expect("persist tracked local durable session");
+
+    let cleanup = cleanup_orphaned_sessions(false, &state)
+        .await
+        .expect("run orphan cleanup");
+    assert!(cleanup.tmux_session_ids.is_empty());
+    assert!(cleanup.local_durable_session_ids.is_empty());
+    assert!(
+        process_alive(runner_pid as libc::pid_t),
+        "tracked local durable runner should not be treated as orphaned"
+    );
+    assert!(session_dir.exists(), "tracked session dir should remain");
+
+    close_project(&state).await.expect("close project");
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
 #[tokio::test]

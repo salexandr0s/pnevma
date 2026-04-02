@@ -145,6 +145,7 @@ fn infer_access_level(id: &str) -> AccessLevel {
         "plan.delete",
         "project.trust",
         "project.cleanup_data",
+        "project.cleanup_orphaned_sessions",
         "project.secrets.upsert",
         "project.secrets.delete",
         "project.secrets.import_env",
@@ -281,6 +282,19 @@ fn register_project_commands(registry: CommandRegistry) -> CommandRegistry {
                     None,
                 ),
             ],
+        ))
+        .register(RegisteredCommand::new(
+            "project.cleanup_orphaned_sessions",
+            "Clean Orphaned Sessions",
+            "Find and optionally kill stale Pnevma-owned tmux/local durable sessions for the active project.",
+            vec![arg(
+                "dry_run",
+                "Dry Run",
+                false,
+                Some("false"),
+                None,
+                Some("When true, report orphaned sessions without killing them."),
+            )],
         ))
 }
 

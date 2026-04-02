@@ -44,6 +44,7 @@ Current known gaps:
 - release workflows use DMG packaging; clean-machine website download flow validation is pending,
 - the clean-machine website download flow has not yet been validated as a formal release gate,
 - rehearsal lanes must be green and stable on `main`.
+- agent-team release claims need matching manual evidence whenever detached windows or remote SSH teammate support are advertised.
 
 ## Release Principles
 

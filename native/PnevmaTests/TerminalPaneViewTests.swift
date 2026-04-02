@@ -240,6 +240,73 @@ private actor ArchivedSessionTerminalPaneCommandBus: CommandCalling {
     }
 }
 
+private actor RecordingSessionBridge: SessionBridging {
+    private var killSessionIDs: [String] = []
+
+    func createSession(
+        name _: String,
+        workingDirectory requestedWorkingDirectory: String?,
+        command _: String?,
+        remoteTarget _: WorkspaceRemoteTarget?
+    ) async throws -> SessionBindingDescriptor {
+        SessionBindingDescriptor(
+            sessionID: "session-created",
+            backend: nil,
+            durability: nil,
+            lifecycleState: nil,
+            mode: "live_attach",
+            cwd: requestedWorkingDirectory ?? "/tmp/project",
+            launchCommand: "/bin/zsh -i",
+            env: [],
+            waitAfterCommand: false,
+            recoveryOptions: []
+        )
+    }
+
+    func binding(for sessionID: String) async throws -> SessionBindingDescriptor {
+        SessionBindingDescriptor(
+            sessionID: sessionID,
+            backend: nil,
+            durability: nil,
+            lifecycleState: nil,
+            mode: "archived",
+            cwd: "/tmp/project",
+            launchCommand: nil,
+            env: [],
+            waitAfterCommand: false,
+            recoveryOptions: []
+        )
+    }
+
+    func scrollback(for sessionID: String, limit: Int) async throws -> SessionScrollbackSlice {
+        SessionScrollbackSlice(
+            sessionID: sessionID,
+            startOffset: 0,
+            endOffset: 0,
+            totalBytes: 0,
+            data: ""
+        )
+    }
+
+    func recover(sessionID _: String, action _: String) async throws -> SessionRecoveryResult {
+        SessionRecoveryResult(ok: true, action: "retry", newSessionID: nil)
+    }
+
+    func sendResize(sessionID _: String, columns _: UInt16, rows _: UInt16) async {}
+
+    func killSession(sessionID: String) async {
+        killSessionIDs.append(sessionID)
+    }
+
+    func killCount() -> Int {
+        killSessionIDs.count
+    }
+
+    func killedSessionIDs() -> [String] {
+        killSessionIDs
+    }
+}
+
 @MainActor
 final class TerminalPaneViewTests: XCTestCase {
     override func setUp() {
@@ -728,5 +795,66 @@ final class TerminalPaneViewTests: XCTestCase {
         let paneOutsidePoint = pane.convert(outsidePoint, from: overlayHost)
         XCTAssertEqual(pane.hitTest(paneInsidePoint), pane)
         XCTAssertNotEqual(pane.hitTest(paneOutsidePoint), pane)
+    }
+
+    func testDisposeKillsOwnedSessionWhenNotTransferred() async throws {
+        let bridge = RecordingSessionBridge()
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            sessionID: "session-transfer",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .managedSession,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: ActiveWorkspaceActivationHub()
+        )
+
+        try await waitUntil {
+            pane.sessionID == "session-transfer"
+        }
+
+        pane.dispose()
+
+        try await waitUntil {
+            await bridge.killCount() == 1
+        }
+        let killedSessionIDs = await bridge.killedSessionIDs()
+        XCTAssertEqual(killedSessionIDs, ["session-transfer"])
+    }
+
+    func testPrepareForTransferSuppressesSessionKillOnDispose() async throws {
+        let bridge = RecordingSessionBridge()
+        let priorBridge = PaneFactory.sessionBridge
+        PaneFactory.sessionBridge = bridge
+        defer { PaneFactory.sessionBridge = priorBridge }
+
+        let pane = TerminalPaneView(
+            workingDirectory: "/tmp/project",
+            sessionID: "session-transfer",
+            autoStartIfNeeded: false,
+            launchMetadata: TerminalLaunchMetadata(
+                launchMode: .managedSession,
+                startBehavior: .deferUntilActivate,
+                remoteTarget: nil
+            ),
+            activationHub: ActiveWorkspaceActivationHub()
+        )
+
+        try await waitUntil {
+            pane.sessionID == "session-transfer"
+        }
+
+        pane.prepareForTransfer()
+        pane.dispose()
+
+        try await Task.sleep(for: .milliseconds(100))
+        let killCount = await bridge.killCount()
+        XCTAssertEqual(killCount, 0)
     }
 }

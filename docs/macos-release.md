@@ -127,6 +127,21 @@ Record:
 The first public `v0.2.0` DMG is not done until those instructions are tested
 against the exact artifact being published.
 
+## Agent team validation
+
+For candidates that ship the new agent-team workflow, preserve a manual evidence
+note covering:
+
+- local Claude and Codex teammate spawn/close flow,
+- background workspace or tab routing,
+- relaunch restore,
+- detached teammate windows when that setting is enabled for the candidate,
+- remote SSH teammate validation only when the candidate advertises remote team support.
+
+Use the `agent-team-validation-results.md` template in the release evidence
+bundle so the shipped presentation mode and support claims match the manual
+evidence.
+
 ## Remote-Enabled Release Validation
 
 For remote-enabled candidates, also run the packaged helper and durable session
@@ -250,6 +265,7 @@ Each release should preserve:
 - DMG checksum output
 - DMG mount or extraction smoke logs
 - clean-machine install notes showing the documented first-launch flow worked
+- agent team validation notes for any advertised local or detached-window team flow
 - any Gatekeeper screenshots captured during the clean-machine pass
 - remote helper smoke logs for Linux `x86_64`, Linux `aarch64`, Apple Silicon Mac Studio, and the canonical upgrade scenarios
 - remote durable lifecycle logs for the Apple Silicon Mac Studio packaged-app or DMG path

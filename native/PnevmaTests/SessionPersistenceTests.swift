@@ -139,6 +139,40 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertFalse(decoded.commandCenterVisible)
         XCTAssertTrue(decoded.rightInspectorVisible)
         XCTAssertNil(decoded.rightInspectorWidth)
+        XCTAssertTrue(decoded.agentTeamWindows.isEmpty)
+    }
+
+    func testSaveAndRestorePreservesDetachedAgentTeamWindows() {
+        let state = SessionPersistence.SessionState(
+            windowFrame: nil,
+            agentTeamWindows: [
+                SessionPersistence.AgentTeamWindowState(
+                    teamID: "team-1",
+                    projectID: "project-1",
+                    leaderSessionID: "leader-1",
+                    leaderPaneID: "leader-pane",
+                    memberSessionID: "member-1",
+                    memberPaneID: "member-pane",
+                    provider: "claude-code",
+                    memberIndex: 1,
+                    title: "Claude teammate 1",
+                    frame: SessionPersistence.CodableRect(NSRect(x: 300, y: 120, width: 420, height: 260))
+                )
+            ],
+            workspaces: [],
+            activeWorkspaceID: nil,
+            sidebarVisible: true,
+            rightInspectorVisible: false,
+            rightInspectorWidth: 320
+        )
+
+        persistence.save(state: state)
+
+        let restored = persistence.restore()
+        XCTAssertEqual(restored?.agentTeamWindows.count, 1)
+        XCTAssertEqual(restored?.agentTeamWindows.first?.teamID, "team-1")
+        XCTAssertEqual(restored?.agentTeamWindows.first?.memberPaneID, "member-pane")
+        XCTAssertEqual(restored?.agentTeamWindows.first?.frame?.width, 420)
     }
 
     @MainActor

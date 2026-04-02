@@ -24,9 +24,18 @@ pub async fn set_app_settings(
         "" | "accent" => None,
         value => Some(value.to_string()),
     };
+    let agent_team_presentation = match input.agent_team_presentation.trim() {
+        "split_panes" | "detached_windows" => input.agent_team_presentation.trim().to_string(),
+        _ => {
+            return Err(
+                "agent_team_presentation must be one of: split_panes, detached_windows".to_string(),
+            )
+        }
+    };
 
     config.auto_save_workspace_on_quit = input.auto_save_workspace_on_quit;
     config.restore_windows_on_launch = input.restore_windows_on_launch;
+    config.agent_team_presentation = agent_team_presentation;
     config.auto_update = input.auto_update;
     config.default_shell = default_shell;
     config.terminal_font = terminal_font.to_string();
