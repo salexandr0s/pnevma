@@ -892,6 +892,7 @@ mod tests {
             remote_events,
             emitter: Arc::new(NullEmitter),
             github_auth: crate::github_auth::GitHubAuthRuntimeState::default(),
+            agent_teams: Arc::new(RwLock::new(crate::agent_teams::AgentTeamStore::default())),
             self_arc: std::sync::OnceLock::new(),
             browser_tool_pending: crate::commands::browser_tools::new_browser_tool_pending(),
         };

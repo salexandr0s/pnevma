@@ -210,6 +210,93 @@ final class WorkspaceRestoreTests: XCTestCase {
         )
     }
 
+    func testWorkspaceSnapshotRoundTripsAgentTeamTerminalMetadata() throws {
+        let workspace = Workspace(name: "Team Restore", projectPath: "/tmp/project")
+        let paneID = workspace.layoutEngine.root?.allPaneIDs.first ?? UUID()
+        workspace.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: paneID,
+                type: "terminal",
+                workingDirectory: "/tmp/project",
+                sessionID: "leader-session",
+                taskID: nil,
+                metadataJSON: TerminalLaunchMetadata(
+                    launchMode: .managedSession,
+                    startBehavior: .deferUntilActivate,
+                    remoteTarget: nil,
+                    backendPaneID: "leader-pane",
+                    agentTeamID: "team-1",
+                    agentTeamRole: "leader",
+                    agentTeamMemberIndex: 0
+                ).encodedJSON()
+            )
+        )
+
+        let restored = Workspace(snapshot: workspace.snapshot())
+        let restoredPaneID = try XCTUnwrap(restored.layoutEngine.root?.allPaneIDs.first)
+        let metadata = try XCTUnwrap(
+            TerminalLaunchMetadata.from(
+                json: restored.layoutEngine.persistedPane(for: restoredPaneID)?.metadataJSON
+            )
+        )
+        XCTAssertEqual(metadata.backendPaneID, "leader-pane")
+        XCTAssertEqual(metadata.agentTeamID, "team-1")
+        XCTAssertEqual(metadata.agentTeamRole, "leader")
+        XCTAssertEqual(metadata.agentTeamMemberIndex, 0)
+    }
+
+    func testWorkspaceAgentTeamPaneLocationFindsLeaderAcrossTabs() throws {
+        let workspace = Workspace(name: "Team Tabs", projectPath: "/tmp/project")
+        let leaderPaneID = workspace.layoutEngine.root?.allPaneIDs.first ?? UUID()
+        workspace.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: leaderPaneID,
+                type: "terminal",
+                workingDirectory: "/tmp/project",
+                sessionID: "leader-session",
+                taskID: nil,
+                metadataJSON: TerminalLaunchMetadata(
+                    launchMode: .managedSession,
+                    startBehavior: .deferUntilActivate,
+                    remoteTarget: nil,
+                    backendPaneID: "leader-pane",
+                    agentTeamID: "team-1",
+                    agentTeamRole: "leader",
+                    agentTeamMemberIndex: 0
+                ).encodedJSON()
+            )
+        )
+
+        _ = workspace.addTab(title: "Member")
+        let memberPaneID = workspace.layoutEngine.root?.allPaneIDs.first ?? UUID()
+        workspace.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: memberPaneID,
+                type: "terminal",
+                workingDirectory: "/tmp/project",
+                sessionID: "member-session",
+                taskID: nil,
+                metadataJSON: TerminalLaunchMetadata(
+                    launchMode: .managedSession,
+                    startBehavior: .deferUntilActivate,
+                    remoteTarget: nil,
+                    backendPaneID: "member-pane",
+                    agentTeamID: "team-1",
+                    agentTeamRole: "member",
+                    agentTeamMemberIndex: 1
+                ).encodedJSON()
+            )
+        )
+
+        let leaderLocation = try XCTUnwrap(workspace.agentTeamPaneLocation(teamID: "team-1", role: "leader"))
+        XCTAssertEqual(leaderLocation.tabIndex, 0)
+        XCTAssertEqual(leaderLocation.paneID, leaderPaneID)
+
+        let backendLocation = try XCTUnwrap(workspace.paneLocation(backendPaneID: "member-pane"))
+        XCTAssertEqual(backendLocation.tabIndex, 1)
+        XCTAssertEqual(backendLocation.paneID, memberPaneID)
+    }
+
     func testWorkspaceManagerRestorePreservesMultipleProjectWorkspaces() {
         let bridge = PnevmaBridge()
         let manager = WorkspaceManager(bridge: bridge, commandBus: CommandBus(bridge: bridge))

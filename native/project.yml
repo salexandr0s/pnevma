@@ -71,10 +71,12 @@ targets:
 
           if [[ "${CONFIGURATION}" == "Release" ]]; then
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin --release
+            ./scripts/with-rust-toolchain.sh cargo build -p pnevma-commands --bin pnevma-agent-team-helper --target aarch64-apple-darwin --release
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin --release
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-remote-helper --target aarch64-apple-darwin --release
           else
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-bridge --target aarch64-apple-darwin
+            ./scripts/with-rust-toolchain.sh cargo build -p pnevma-commands --bin pnevma-agent-team-helper --target aarch64-apple-darwin
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-session --bin pnevma-session-proxy --target aarch64-apple-darwin
             ./scripts/with-rust-toolchain.sh cargo build -p pnevma-remote-helper --target aarch64-apple-darwin
           fi
@@ -86,6 +88,7 @@ targets:
           HELPERS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
           mkdir -p "$HELPERS_DIR"
           CONF_DIR=$(echo "${CONFIGURATION}" | tr '[:upper:]' '[:lower:]')
+          cp "$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-agent-team-helper" "$HELPERS_DIR/"
           cp "$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-session-proxy" "$HELPERS_DIR/"
           cp "$SRCROOT/../target/aarch64-apple-darwin/${CONF_DIR}/pnevma-remote-helper" "$HELPERS_DIR/"
     sources:

@@ -1,3 +1,4 @@
+use crate::agent_teams::AgentTeamStore;
 use crate::automation::coordinator::AutomationCoordinator;
 use crate::automation::workflow_store::WorkflowStore;
 use crate::control::ControlServerHandle;
@@ -96,6 +97,7 @@ pub struct AppState {
     pub remote_events: tokio::sync::broadcast::Sender<pnevma_remote::RemoteEventEnvelope>,
     pub emitter: Arc<dyn EventEmitter>,
     pub github_auth: GitHubAuthRuntimeState,
+    pub agent_teams: Arc<RwLock<AgentTeamStore>>,
     /// Set immediately after Arc<AppState> is created so internal code can get a clone.
     pub self_arc: std::sync::OnceLock<Arc<AppState>>,
     /// Pending browser tool calls awaiting Swift-side completion.
@@ -118,6 +120,7 @@ impl Default for AppState {
             remote_events,
             emitter: Arc::new(NullEmitter),
             github_auth: GitHubAuthRuntimeState::default(),
+            agent_teams: Arc::new(RwLock::new(AgentTeamStore::default())),
             self_arc: std::sync::OnceLock::new(),
             browser_tool_pending: crate::commands::browser_tools::new_browser_tool_pending(),
         }

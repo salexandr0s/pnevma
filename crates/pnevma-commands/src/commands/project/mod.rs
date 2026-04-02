@@ -764,6 +764,8 @@ pub async fn open_project(
         workflow_store,
         shutdown_rx,
         path_buf.clone(),
+        cfg.clone(),
+        global_cfg.clone(),
         cfg.retention.clone(),
     )
     .await;

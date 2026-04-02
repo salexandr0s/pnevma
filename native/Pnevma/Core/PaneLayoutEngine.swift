@@ -479,18 +479,26 @@ class PaneLayoutEngine {
 
     // MARK: - Equalize
 
-    /// Reset all split ratios to 0.5 (equal space).
-    func equalizeSplits() {
+    /// Reset split ratios to 0.5 (equal space).
+    /// When `orientation` is nil, all splits are equalized.
+    /// When provided, only splits matching that orientation are reset.
+    func equalizeSplits(orientation: SplitDirection? = nil) {
         guard let root = root else { return }
-        self.root = equalize(root)
+        self.root = equalize(root, orientation: orientation)
     }
 
-    private func equalize(_ node: SplitNode) -> SplitNode {
+    private func equalize(_ node: SplitNode, orientation: SplitDirection?) -> SplitNode {
         switch node {
         case .leaf:
             return node
-        case .split(let dir, _, let first, let second):
-            return .split(direction: dir, ratio: 0.5, first: equalize(first), second: equalize(second))
+        case .split(let dir, let ratio, let first, let second):
+            let nextRatio = if orientation == nil || orientation == dir { 0.5 } else { ratio }
+            return .split(
+                direction: dir,
+                ratio: nextRatio,
+                first: equalize(first, orientation: orientation),
+                second: equalize(second, orientation: orientation)
+            )
         }
     }
 

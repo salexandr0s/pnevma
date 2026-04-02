@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+pub mod agent_teams;
 mod auth_secret;
 pub mod automation;
 pub mod ci_service;

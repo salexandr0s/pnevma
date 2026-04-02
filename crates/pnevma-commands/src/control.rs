@@ -1840,6 +1840,117 @@ pub async fn route_method(
             )
             .map_err(|e| ("internal_error".to_string(), e.to_string()))?
         }
+        "agent.team.start" => {
+            let team_id = parse_string_param(params, "team_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let provider = parse_string_param(params, "provider")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let leader_session_id = parse_string_param(params, "leader_session_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let leader_pane_id = parse_string_param(params, "leader_pane_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let working_dir = parse_string_param(params, "working_dir")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let control_socket_path = parse_string_param(params, "control_socket_path")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let base_env = params
+                .get("base_env")
+                .cloned()
+                .map(serde_json::from_value::<Vec<(String, String)>>)
+                .transpose()
+                .map_err(|e| ("invalid_params".to_string(), e.to_string()))?
+                .unwrap_or_default();
+            serde_json::to_value(
+                crate::agent_teams::start_team(
+                    crate::agent_teams::AgentTeamConfigInput {
+                        team_id,
+                        provider,
+                        leader_session_id,
+                        leader_pane_id,
+                        working_dir,
+                        control_socket_path,
+                        base_env,
+                    },
+                    &state.emitter,
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent.team.spawn_member" => {
+            let team_id = parse_string_param(params, "team_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let command = parse_string_param(params, "command")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let title = parse_optional_string_param(params, "title");
+            serde_json::to_value(
+                crate::agent_teams::spawn_member(
+                    crate::agent_teams::AgentTeamSpawnInput {
+                        team_id,
+                        command,
+                        title,
+                    },
+                    &state.emitter,
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent.team.close_member" => {
+            let team_id = parse_string_param(params, "team_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let session_id = parse_string_param(params, "session_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                crate::agent_teams::close_member(
+                    crate::agent_teams::AgentTeamCloseInput {
+                        team_id,
+                        session_id,
+                    },
+                    &state.emitter,
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent.team.snapshot" => {
+            let team_id = parse_string_param(params, "team_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            serde_json::to_value(
+                crate::agent_teams::snapshot_team(&team_id, state)
+                    .await
+                    .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
+        "agent.team.rehydrate_all" => serde_json::to_value(
+            crate::agent_teams::rehydrate_all_teams(state)
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+        )
+        .map_err(|e| ("internal_error".to_string(), e.to_string()))?,
+        "agent.team.set_main_vertical" => {
+            let team_id = parse_string_param(params, "team_id")
+                .map_err(|e| ("invalid_params".to_string(), e))?;
+            let enabled = parse_optional_bool_param(params, "enabled").unwrap_or(true);
+            serde_json::to_value(
+                crate::agent_teams::set_team_main_vertical(
+                    &team_id,
+                    enabled,
+                    &state.emitter,
+                    state,
+                )
+                .await
+                .map_err(|e| ("internal_error".to_string(), e))?,
+            )
+            .map_err(|e| ("internal_error".to_string(), e.to_string()))?
+        }
         "session.send_input" => {
             let session_id =
                 parse_string_param_aliases(params, &["session_id", "id"], "session_id")

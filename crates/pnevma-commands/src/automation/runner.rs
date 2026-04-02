@@ -1,4 +1,5 @@
 use crate::automation::DispatchOrigin;
+use crate::control::resolve_control_plane_settings;
 // Helpers defined in commands/mod.rs (pub(crate) — accessible via full path within the crate)
 use crate::commands::{
     append_event, append_telemetry_event, build_secrets_list, check_loop_trigger,
@@ -19,9 +20,9 @@ use crate::event_emitter::EventEmitter;
 use crate::state::AppState;
 use chrono::Utc;
 use pnevma_agents::{
-    classify_failure, compute_backoff, AgentAdapter, AgentConfig, AgentEvent, AgentHandle,
-    ContinuationState, DispatchPermit, FailureClass, QueuedDispatch, RetryContext, RetryPolicy,
-    StallDetector, StallDetectorConfig, TaskPayload,
+    classify_failure, compute_backoff, prepare_claude_team_environment, AgentAdapter, AgentConfig,
+    AgentEvent, AgentHandle, AgentTeamConfig, ContinuationState, DispatchPermit, FailureClass,
+    QueuedDispatch, RetryContext, RetryPolicy, StallDetector, StallDetectorConfig, TaskPayload,
 };
 use pnevma_context::{
     ContextCompileInput, ContextCompileMode, ContextCompiler, ContextCompilerConfig,
@@ -31,6 +32,7 @@ use pnevma_core::{ProjectConfig, TaskContract, TaskStatus};
 use pnevma_db::{
     AutomationRunRow, ContextRuleUsageRow, CostRow, Db, PaneRow, SessionRow, TaskRow, WorktreeRow,
 };
+use pnevma_session::SessionSupervisor;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -69,6 +71,7 @@ impl From<RunnerError> for String {
 pub struct PreparedRun {
     pub project_id: Uuid,
     pub db: Db,
+    pub sessions: SessionSupervisor,
     pub config: ProjectConfig,
     pub global_config: pnevma_core::GlobalConfig,
     pub provider: String,
@@ -106,6 +109,8 @@ pub struct PreparedRun {
     pub hooks: pnevma_core::WorkflowHooks,
     /// Shared pending browser tool calls (passed from AppState).
     pub browser_tool_pending: crate::commands::browser_tools::BrowserToolPending,
+    /// Shared Pnevma-native agent team store.
+    pub agent_teams: Arc<RwLock<crate::agent_teams::AgentTeamStore>>,
 }
 
 /// A running agent handle plus its background event-loop task.
@@ -308,6 +313,7 @@ pub async fn prepare(
     let (
         project_id,
         db,
+        sessions,
         project_path,
         config,
         global_config,
@@ -322,6 +328,7 @@ pub async fn prepare(
         (
             ctx.project_id,
             ctx.db.clone(),
+            ctx.sessions.clone(),
             ctx.project_path.clone(),
             ctx.config.clone(),
             ctx.global_config.clone(),
@@ -715,6 +722,7 @@ pub async fn prepare(
     Ok(PreparedRun {
         project_id,
         db,
+        sessions,
         config,
         global_config,
         provider,
@@ -745,6 +753,7 @@ pub async fn prepare(
         db_run_id_holder: Arc::new(std::sync::Mutex::new(None)),
         hooks: cached_hooks,
         browser_tool_pending: state.browser_tool_pending.clone(),
+        agent_teams: Arc::clone(&state.agent_teams),
     })
 }
 
@@ -785,6 +794,39 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         }
     }
 
+    let control_socket_path = resolve_control_plane_settings(
+        &prepared.project_path,
+        &prepared.config,
+        &prepared.global_config,
+    )
+    .map(|settings| settings.socket_path.to_string_lossy().to_string())
+    .unwrap_or_else(|_| {
+        prepared
+            .project_path
+            .join(&prepared.config.automation.socket_path)
+            .to_string_lossy()
+            .to_string()
+    });
+    let team_id = Uuid::new_v4().to_string();
+    let leader_pane_id = Uuid::new_v4().to_string();
+    let team_seed = AgentTeamConfig {
+        team_id: team_id.clone(),
+        provider: prepared.provider.clone(),
+        leader_session_id: Uuid::nil().to_string(),
+        leader_pane_id: leader_pane_id.clone(),
+        control_socket_path: control_socket_path.clone(),
+        working_dir: prepared.working_dir.clone(),
+        base_env: Vec::new(),
+    };
+    let team_base_env = if prepared.provider == "claude-code" {
+        prepare_claude_team_environment(&team_seed, "%0").map_err(RunnerError::Internal)?
+    } else {
+        Vec::new()
+    };
+    let team_config = AgentTeamConfig {
+        base_env: team_base_env,
+        ..team_seed
+    };
     let handle = prepared
         .adapter
         .spawn(AgentConfig {
@@ -807,12 +849,17 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
                 }
                 tools.extend(crate::commands::browser_tools::browser_tool_defs());
                 tools.extend(crate::commands::plan_tools::plan_tool_defs());
+                if prepared.provider.starts_with("codex") {
+                    tools.extend(crate::commands::team_tools::team_tool_defs());
+                }
                 tools
             },
+            team: Some(team_config.clone()),
         })
         .await
         .map_err(|e| RunnerError::Internal(e.to_string()))?;
 
+    let leader_session_id = handle.id.to_string();
     let agent_session_row = SessionRow {
         id: handle.id.to_string(),
         project_id: prepared.project_id.to_string(),
@@ -829,7 +876,7 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         worktree_id: prepared.task.worktree.clone(),
         connection_id: None,
         remote_session_id: None,
-        controller_id: None,
+        controller_id: Some(team_id.clone()),
         started_at: Utc::now(),
         last_heartbeat: Utc::now(),
         last_output_at: None,
@@ -845,19 +892,50 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         .await
         .map_err(|e| RunnerError::Internal(e.to_string()))?;
     let pane = PaneRow {
-        id: Uuid::new_v4().to_string(),
+        id: leader_pane_id.clone(),
         project_id: prepared.project_id.to_string(),
         session_id: Some(handle.id.to_string()),
         r#type: "terminal".to_string(),
         position: "after:pane-board".to_string(),
         label: format!("Agent {}", prepared.task.title),
-        metadata_json: Some("{\"read_only\":true}".to_string()),
+        metadata_json: Some(
+            serde_json::to_string(&json!({
+                "read_only": true,
+                "agent_team": {
+                    "team_id": team_id.clone(),
+                    "leader_session_id": leader_session_id.clone(),
+                    "provider": prepared.provider.clone(),
+                    "role": "leader",
+                    "member_index": 0,
+                }
+            }))
+            .map_err(|e| RunnerError::Internal(e.to_string()))?,
+        ),
     };
     prepared
         .db
         .upsert_pane(&pane)
         .await
         .map_err(|e| RunnerError::Internal(e.to_string()))?;
+    let team_snapshot = {
+        let mut guard = prepared.agent_teams.write().await;
+        guard.start(crate::agent_teams::AgentTeamConfigInput {
+            team_id: team_id.clone(),
+            provider: prepared.provider.clone(),
+            leader_session_id,
+            leader_pane_id: leader_pane_id.clone(),
+            working_dir: prepared.working_dir.clone(),
+            control_socket_path: control_socket_path.clone(),
+            base_env: team_config.base_env.clone(),
+        })
+    };
+    prepared.emitter.emit(
+        "agent_team_started",
+        json!({
+            "project_id": prepared.project_id,
+            "team": team_snapshot,
+        }),
+    );
     prepared.emitter.emit(
         "session_spawned",
         json!({
@@ -899,6 +977,7 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         project_id,
         task_id,
         session_id,
+        team_id: team_id.clone(),
         emitter: app_for_task,
         provider: provider_for_task,
         git: git_for_task,
@@ -909,6 +988,8 @@ pub async fn start(prepared: &PreparedRun) -> Result<RunningAgent, RunnerError> 
         target_branch: target_branch_for_task,
         redaction_secrets: redaction_secrets_for_task,
         permit_holder: permit_holder_for_task,
+        sessions: prepared.sessions.clone(),
+        agent_teams: Arc::clone(&prepared.agent_teams),
         adapter: adapter_for_task,
         handle: handle_for_task,
         tracker: tracker_for_task,
@@ -1142,6 +1223,7 @@ struct RunEventLoopContext {
     project_id: Uuid,
     task_id: Uuid,
     session_id: Uuid,
+    team_id: String,
     emitter: Arc<dyn EventEmitter>,
     provider: String,
     git: Arc<GitService>,
@@ -1152,6 +1234,8 @@ struct RunEventLoopContext {
     target_branch: String,
     redaction_secrets: Arc<RwLock<Vec<String>>>,
     permit_holder: Arc<std::sync::Mutex<Option<DispatchPermit>>>,
+    sessions: SessionSupervisor,
+    agent_teams: Arc<RwLock<crate::agent_teams::AgentTeamStore>>,
     adapter: Arc<dyn AgentAdapter>,
     handle: AgentHandle,
     tracker: Option<Arc<dyn pnevma_tracker::TrackerAdapter>>,
@@ -1167,6 +1251,7 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         project_id,
         task_id,
         session_id,
+        team_id,
         emitter,
         provider,
         git,
@@ -1177,6 +1262,8 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
         target_branch,
         redaction_secrets,
         permit_holder,
+        sessions,
+        agent_teams,
         adapter,
         handle,
         tracker,
@@ -1368,6 +1455,22 @@ async fn run_event_loop(ctx: RunEventLoopContext) {
                                 &tool_name,
                                 &params,
                                 &project_path,
+                            )
+                            .await
+                        } else if tool_name.starts_with("team.") {
+                            crate::commands::team_tools::handle_team_tool_call(
+                                &call_id,
+                                &tool_name,
+                                &params,
+                                &team_id,
+                                &provider,
+                                project_id,
+                                &project_path,
+                                &db,
+                                &sessions,
+                                &redaction_secrets,
+                                &agent_teams,
+                                &emitter,
                             )
                             .await
                         } else if let Some(ref tracker_adapter) = tracker {

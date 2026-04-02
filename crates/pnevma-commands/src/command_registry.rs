@@ -105,6 +105,10 @@ fn infer_access_level(id: &str) -> AccessLevel {
         "session.restart_active",
         "session.reattach_active",
         "fleet.action",
+        "agent.team.start",
+        "agent.team.spawn_member",
+        "agent.team.close_member",
+        "agent.team.set_main_vertical",
         // Agent execution triggers
         "task.dispatch",
         "task.dispatch_next_ready",
@@ -334,6 +338,73 @@ fn register_session_commands(registry: CommandRegistry) -> CommandRegistry {
                     Some("active_pane_id"),
                     None,
                 ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "agent.team.start",
+            "Start Agent Team",
+            "Register a leader agent session as a Pnevma-native agent team controller.",
+            vec![
+                arg("team_id", "Team ID", true, None, None, None),
+                arg("provider", "Provider", true, None, None, None),
+                arg(
+                    "leader_session_id",
+                    "Leader Session",
+                    true,
+                    None,
+                    None,
+                    None,
+                ),
+                arg("leader_pane_id", "Leader Pane", true, None, None, None),
+                arg("working_dir", "Working Directory", true, None, None, None),
+                arg(
+                    "control_socket_path",
+                    "Control Socket",
+                    true,
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "agent.team.spawn_member",
+            "Spawn Agent Team Member",
+            "Create a new teammate terminal session and pane for an existing agent team.",
+            vec![
+                arg("team_id", "Team ID", true, None, None, None),
+                arg("command", "Command", true, None, None, None),
+                arg("title", "Title", false, None, None, None),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "agent.team.close_member",
+            "Close Agent Team Member",
+            "Close a spawned teammate pane and its managed session.",
+            vec![
+                arg("team_id", "Team ID", true, None, None, None),
+                arg("session_id", "Session ID", true, None, None, None),
+            ],
+        ))
+        .register(RegisteredCommand::new(
+            "agent.team.snapshot",
+            "Snapshot Agent Team",
+            "Return the current member list and layout state for an agent team.",
+            vec![arg("team_id", "Team ID", true, None, None, None)],
+        ))
+        .register(RegisteredCommand::new(
+            "agent.team.rehydrate_all",
+            "Rehydrate Agent Teams",
+            "Rebuild agent team controller state from persisted sessions and pane metadata.",
+            vec![],
+        ))
+        .register(RegisteredCommand::new(
+            "agent.team.set_main_vertical",
+            "Set Agent Team Layout",
+            "Toggle main-vertical layout mode for an agent team.",
+            vec![
+                arg("team_id", "Team ID", true, None, None, None),
+                arg("enabled", "Enabled", false, Some("true"), None, None),
             ],
         ))
 }

@@ -406,6 +406,7 @@ mod tests {
             context_file: None,
             thread_id: None,
             dynamic_tools: vec![],
+            team: None,
         }
     }
 
@@ -496,6 +497,7 @@ mod tests {
             context_file: Some("/tmp/context.md".to_string()),
             thread_id: None,
             dynamic_tools: vec![],
+            team: None,
         };
 
         let json = serde_json::to_string(&config).expect("serialize");

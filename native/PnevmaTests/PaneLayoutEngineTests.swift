@@ -94,6 +94,29 @@ final class PaneLayoutEngineTests: XCTestCase {
         XCTAssertEqual(ratio, 0.6, accuracy: 0.001)
     }
 
+    func testEqualizeSplitsWithOrientationPreservesOtherRatios() {
+        let rootID = PaneID()
+        let engine = PaneLayoutEngine(rootPaneID: rootID)
+        let rightID = engine.splitPane(rootID, direction: .horizontal, ratio: 0.7)!
+        let _ = engine.splitPane(rightID, direction: .vertical, ratio: 0.2)
+
+        engine.equalizeSplits(orientation: .vertical)
+
+        guard case .split(let rootDirection, let rootRatio, _, let rightSubtree) = engine.root else {
+            XCTFail("expected horizontal root split")
+            return
+        }
+        XCTAssertEqual(rootDirection, .horizontal)
+        XCTAssertEqual(rootRatio, 0.7, accuracy: 0.001)
+
+        guard case .split(let nestedDirection, let nestedRatio, _, _) = rightSubtree else {
+            XCTFail("expected vertical nested split")
+            return
+        }
+        XCTAssertEqual(nestedDirection, .vertical)
+        XCTAssertEqual(nestedRatio, 0.5, accuracy: 0.001)
+    }
+
     func testSerializeDeserializeRoundTrip() {
         let rootID = PaneID()
         let engine = PaneLayoutEngine(rootPaneID: rootID)

@@ -402,14 +402,25 @@ final class ContentAreaView: NSView {
     @discardableResult
     func splitActivePane(direction: SplitDirection, newPaneView: NSView & PaneContent) -> PaneID? {
         guard let activeID = layoutEngine.activePaneID else { return nil }
+        return splitPane(activeID, direction: direction, newPaneView: newPaneView)
+    }
+
+    /// Split a specific pane. The new pane view is added to the layout.
+    @discardableResult
+    func splitPane(
+        _ paneID: PaneID,
+        direction: SplitDirection,
+        newPaneView: NSView & PaneContent
+    ) -> PaneID? {
+        let oldActiveID = layoutEngine.activePaneID
 
         let newID = newPaneView.paneID
-        guard layoutEngine.splitPane(activeID, direction: direction, newPaneID: newID) != nil else {
+        guard layoutEngine.splitPane(paneID, direction: direction, newPaneID: newID) != nil else {
             return nil
         }
 
         registerPaneView(newPaneView)
-        paneViews[activeID]?.deactivate()
+        if let oldActiveID { paneViews[oldActiveID]?.deactivate() }
         newPaneView.activate()
         onActivePaneChanged?(newID)
         relayout()
@@ -719,8 +730,8 @@ final class ContentAreaView: NSView {
     // MARK: - Equalize Splits
 
     /// Reset all split ratios to equal (50/50).
-    func equalizeSplits() {
-        layoutEngine.equalizeSplits()
+    func equalizeSplits(orientation: SplitDirection? = nil) {
+        layoutEngine.equalizeSplits(orientation: orientation)
         relayout()
     }
 

@@ -891,7 +891,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
             launchMetadata = TerminalLaunchMetadata(
                 launchMode: launchMetadata.launchMode,
                 startBehavior: .immediate,
-                remoteTarget: launchMetadata.remoteTarget
+                remoteTarget: launchMetadata.remoteTarget,
+                backendPaneID: launchMetadata.backendPaneID,
+                agentTeamID: launchMetadata.agentTeamID,
+                agentTeamRole: launchMetadata.agentTeamRole,
+                agentTeamMemberIndex: launchMetadata.agentTeamMemberIndex
             )
             notifyPersistedStateChanged()
             loadOrRestoreSession()
@@ -1033,7 +1037,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         return TerminalLaunchMetadata(
             launchMode: .managedSession,
             startBehavior: .immediate,
-            remoteTarget: launchMetadata.remoteTarget
+            remoteTarget: launchMetadata.remoteTarget,
+            backendPaneID: launchMetadata.backendPaneID,
+            agentTeamID: launchMetadata.agentTeamID,
+            agentTeamRole: launchMetadata.agentTeamRole,
+            agentTeamMemberIndex: launchMetadata.agentTeamMemberIndex
         )
     }
 
@@ -1310,7 +1318,11 @@ final class TerminalPaneView: NSView, PaneContent, PanePersistenceObservable, Te
         launchMetadata = TerminalLaunchMetadata(
             launchMode: launchMetadata.launchMode,
             startBehavior: .deferUntilActivate,
-            remoteTarget: launchMetadata.remoteTarget
+            remoteTarget: launchMetadata.remoteTarget,
+            backendPaneID: launchMetadata.backendPaneID,
+            agentTeamID: launchMetadata.agentTeamID,
+            agentTeamRole: launchMetadata.agentTeamRole,
+            agentTeamMemberIndex: launchMetadata.agentTeamMemberIndex
         )
         notifyPersistedStateChanged()
         showDeferredLaunchState()

@@ -38,6 +38,9 @@ pub struct AgentConfig {
     /// Dynamic tool definitions to register with the agent.
     #[serde(default)]
     pub dynamic_tools: Vec<DynamicToolDef>,
+    /// Optional Pnevma-native agent team configuration.
+    #[serde(default)]
+    pub team: Option<AgentTeamConfig>,
 }
 
 impl AgentConfig {
@@ -131,6 +134,18 @@ pub struct DynamicToolDef {
     pub name: String,
     pub description: String,
     pub parameters_schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamConfig {
+    pub team_id: String,
+    pub provider: String,
+    pub leader_session_id: String,
+    pub leader_pane_id: String,
+    pub control_socket_path: String,
+    pub working_dir: String,
+    #[serde(default)]
+    pub base_env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -16,6 +16,7 @@ pub mod secrets;
 pub mod ssh;
 pub mod system_resources;
 pub mod tasks;
+pub mod team_tools;
 pub mod telemetry;
 pub mod tracker;
 pub mod tracker_tools;
@@ -2649,7 +2650,7 @@ fn parse_session_health(status: &str) -> SessionHealth {
     }
 }
 
-fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
+pub(crate) fn session_row_from_meta(meta: &SessionMetadata) -> SessionRow {
     let status = session_status_to_string(&meta.status);
     SessionRow {
         id: meta.id.to_string(),
@@ -5707,6 +5708,7 @@ fn spawn_session_bridge(
     sessions: SessionSupervisor,
     project_id: Uuid,
     secrets: Arc<RwLock<Vec<String>>>,
+    agent_teams: Arc<RwLock<crate::agent_teams::AgentTeamStore>>,
 ) -> tokio::task::JoinHandle<()> {
     let mut rx = sessions.subscribe();
     tokio::spawn(async move {
@@ -5794,6 +5796,14 @@ fn spawn_session_bridge(
                     }
                     output_redactors.remove(&session_id);
                     emitter.emit("session_exited", payload);
+                    crate::agent_teams::handle_member_session_exit(
+                        &session_id.to_string(),
+                        &emitter,
+                        &db,
+                        project_id,
+                        &agent_teams,
+                    )
+                    .await;
                     append_event(
                         &db,
                         project_id,

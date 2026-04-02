@@ -161,6 +161,69 @@ final class ContentAreaViewTests: XCTestCase {
         XCTAssertGreaterThan(replacementRoot.frame.width, rebuiltInitialWidth + 16)
     }
 
+    func testSplitSpecificPaneCreatesVerticalColumnOnRight() throws {
+        let rootPane = CloseDecisionPane()
+        let contentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 480),
+            rootPaneView: rootPane
+        )
+        let firstMember = CloseDecisionPane()
+        let secondMember = CloseDecisionPane()
+
+        let firstMemberID = try XCTUnwrap(
+            contentArea.splitPane(rootPane.paneID, direction: .horizontal, newPaneView: firstMember)
+        )
+        let _ = contentArea.splitPane(firstMemberID, direction: .vertical, newPaneView: secondMember)
+
+        guard case .split(let rootDirection, _, let left, let right) = contentArea.layoutEngine.root else {
+            XCTFail("expected root split")
+            return
+        }
+        XCTAssertEqual(rootDirection, .horizontal)
+        XCTAssertEqual(left.allPaneIDs, [rootPane.paneID])
+
+        guard case .split(let rightDirection, _, let top, let bottom) = right else {
+            XCTFail("expected right column split")
+            return
+        }
+        XCTAssertEqual(rightDirection, .vertical)
+        XCTAssertEqual(top.allPaneIDs, [firstMember.paneID])
+        XCTAssertEqual(bottom.allPaneIDs, [secondMember.paneID])
+    }
+
+    func testEqualizeSplitsCanBeScopedToVerticalOrientation() throws {
+        let rootPane = CloseDecisionPane()
+        let contentArea = ContentAreaView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 480),
+            rootPaneView: rootPane
+        )
+        let firstMember = CloseDecisionPane()
+        let secondMember = CloseDecisionPane()
+
+        let firstMemberID = try XCTUnwrap(
+            contentArea.splitPane(rootPane.paneID, direction: .horizontal, newPaneView: firstMember)
+        )
+        let _ = contentArea.splitPane(firstMemberID, direction: .vertical, newPaneView: secondMember)
+        contentArea.layoutEngine.resizeSplit(containing: rootPane.paneID, delta: 0.2)
+        contentArea.layoutEngine.resizeSplit(containing: firstMemberID, delta: 0.2)
+
+        contentArea.equalizeSplits(orientation: .vertical)
+
+        guard case .split(let rootDirection, let rootRatio, _, let right) = contentArea.layoutEngine.root else {
+            XCTFail("expected root split")
+            return
+        }
+        XCTAssertEqual(rootDirection, .horizontal)
+        XCTAssertEqual(rootRatio, 0.7, accuracy: 0.001)
+
+        guard case .split(let rightDirection, let rightRatio, _, _) = right else {
+            XCTFail("expected right column split")
+            return
+        }
+        XCTAssertEqual(rightDirection, .vertical)
+        XCTAssertEqual(rightRatio, 0.5, accuracy: 0.001)
+    }
+
     private func center(of view: NSView, ancestor: NSView) -> NSPoint {
         ancestor.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), from: view)
     }

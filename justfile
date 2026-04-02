@@ -56,6 +56,8 @@ rust-check:
 rust-build:
     @echo "Building Rust staticlib..."
     {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}}
+    @echo "Building agent team helper..."
+    {{rust_tool}} cargo build -p pnevma-commands --bin pnevma-agent-team-helper --target {{rust_target}}
     @echo "Building session proxy..."
     {{rust_tool}} cargo build -p pnevma-session --bin pnevma-session-proxy --target {{rust_target}}
     @echo "Building remote helper..."
@@ -65,6 +67,8 @@ rust-build:
 rust-build-release:
     @echo "Building Rust staticlib (release)..."
     {{rust_tool}} cargo build -p pnevma-bridge --target {{rust_target}} --release
+    @echo "Building agent team helper (release)..."
+    {{rust_tool}} cargo build -p pnevma-commands --bin pnevma-agent-team-helper --target {{rust_target}} --release
     @echo "Building session proxy (release)..."
     {{rust_tool}} cargo build -p pnevma-session --bin pnevma-session-proxy --target {{rust_target}} --release
     @echo "Building remote helper (release)..."

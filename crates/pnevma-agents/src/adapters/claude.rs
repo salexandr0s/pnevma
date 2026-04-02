@@ -131,6 +131,10 @@ impl AgentAdapter for ClaudeCodeAdapter {
         }
 
         let args = build_cli_args(&cfg, prompt);
+        let mut env = crate::env::build_agent_environment(&cfg.env);
+        if let Some(team) = cfg.team.as_ref() {
+            env.extend(team.base_env.clone());
+        }
 
         debug!(
             handle = %handle.id,
@@ -144,7 +148,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             Command::new("claude")
                 .current_dir(&cfg.working_dir)
                 .env_clear()
-                .envs(crate::env::build_agent_environment(&cfg.env))
+                .envs(env)
                 .args(&args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -810,6 +814,7 @@ mod tests {
             context_file: None,
             thread_id: None,
             dynamic_tools: vec![],
+            team: None,
         }
     }
 

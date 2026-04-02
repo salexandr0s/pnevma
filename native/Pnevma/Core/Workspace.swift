@@ -31,6 +31,17 @@ struct WorkspaceRemoteTarget: Codable, Equatable {
     let proxyJump: String?
     let remotePath: String
 
+    private enum CodingKeys: String, CodingKey {
+        case sshProfileID = "ssh_profile_id"
+        case sshProfileName = "ssh_profile_name"
+        case host
+        case port
+        case user
+        case identityFile = "identity_file"
+        case proxyJump = "proxy_jump"
+        case remotePath = "remote_path"
+    }
+
     /// Whether the remote path contains only safe printable characters (no control chars).
     var isRemotePathSafe: Bool {
         !remotePath.isEmpty && remotePath.unicodeScalars.allSatisfy {
@@ -93,6 +104,38 @@ struct TerminalLaunchMetadata: Codable, Equatable {
     let launchMode: TerminalLaunchMode
     let startBehavior: TerminalStartBehavior
     let remoteTarget: WorkspaceRemoteTarget?
+    let backendPaneID: String?
+    let agentTeamID: String?
+    let agentTeamRole: String?
+    let agentTeamMemberIndex: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case launchMode = "launch_mode"
+        case startBehavior = "start_behavior"
+        case remoteTarget = "remote_target"
+        case backendPaneID = "backend_pane_id"
+        case agentTeamID = "agent_team_id"
+        case agentTeamRole = "agent_team_role"
+        case agentTeamMemberIndex = "agent_team_member_index"
+    }
+
+    init(
+        launchMode: TerminalLaunchMode,
+        startBehavior: TerminalStartBehavior,
+        remoteTarget: WorkspaceRemoteTarget?,
+        backendPaneID: String? = nil,
+        agentTeamID: String? = nil,
+        agentTeamRole: String? = nil,
+        agentTeamMemberIndex: Int? = nil
+    ) {
+        self.launchMode = launchMode
+        self.startBehavior = startBehavior
+        self.remoteTarget = remoteTarget
+        self.backendPaneID = backendPaneID
+        self.agentTeamID = agentTeamID
+        self.agentTeamRole = agentTeamRole
+        self.agentTeamMemberIndex = agentTeamMemberIndex
+    }
 
     var shouldAutoStart: Bool {
         startBehavior == .immediate
@@ -100,7 +143,6 @@ struct TerminalLaunchMetadata: Codable, Equatable {
 
     func encodedJSON() -> String? {
         let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
         guard let data = try? encoder.encode(self) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -108,7 +150,6 @@ struct TerminalLaunchMetadata: Codable, Equatable {
     static func from(json: String?) -> TerminalLaunchMetadata? {
         guard let json, let data = json.data(using: .utf8) else { return nil }
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try? decoder.decode(Self.self, from: data)
     }
 }
@@ -228,6 +269,19 @@ extension WorkspaceTab {
     func firstPaneID(ofType paneType: String) -> PaneID? {
         layoutEngine.root?.allPaneIDs.first { paneID in
             layoutEngine.persistedPane(for: paneID)?.type == paneType
+        }
+    }
+
+    func paneID(
+        matching match: (TerminalLaunchMetadata) -> Bool
+    ) -> PaneID? {
+        layoutEngine.root?.allPaneIDs.first { paneID in
+            guard let metadata = TerminalLaunchMetadata.from(
+                json: layoutEngine.persistedPane(for: paneID)?.metadataJSON
+            ) else {
+                return false
+            }
+            return match(metadata)
         }
     }
 }
@@ -572,6 +626,36 @@ final class Workspace: Identifiable {
     func firstPaneLocation(ofType paneType: String) -> WorkspacePaneLocation? {
         for (tabIndex, tab) in tabs.enumerated() {
             if let paneID = tab.firstPaneID(ofType: paneType) {
+                return WorkspacePaneLocation(tabIndex: tabIndex, paneID: paneID)
+            }
+        }
+        return nil
+    }
+
+    func tabIndex(for tabID: UUID) -> Int? {
+        tabs.firstIndex { $0.id == tabID }
+    }
+
+    func paneLocation(
+        backendPaneID: String
+    ) -> WorkspacePaneLocation? {
+        for (tabIndex, tab) in tabs.enumerated() {
+            if let paneID = tab.paneID(matching: { $0.backendPaneID == backendPaneID }) {
+                return WorkspacePaneLocation(tabIndex: tabIndex, paneID: paneID)
+            }
+        }
+        return nil
+    }
+
+    func agentTeamPaneLocation(
+        teamID: String,
+        role: String? = nil
+    ) -> WorkspacePaneLocation? {
+        for (tabIndex, tab) in tabs.enumerated() {
+            if let paneID = tab.paneID(matching: { metadata in
+                guard metadata.agentTeamID == teamID else { return false }
+                return role == nil || metadata.agentTeamRole == role
+            }) {
                 return WorkspacePaneLocation(tabIndex: tabIndex, paneID: paneID)
             }
         }

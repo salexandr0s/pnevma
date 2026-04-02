@@ -63,6 +63,13 @@ fn build_thread_start_params(config: &AgentConfig) -> serde_json::Value {
         "sandbox": sandbox,
         "experimentalRawEvents": false,
         "persistExtendedHistory": false,
+        "dynamicTools": config.dynamic_tools.iter().map(|tool| {
+            serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": tool.parameters_schema,
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -808,6 +815,7 @@ mod tests {
             context_file: None,
             thread_id: None,
             dynamic_tools: vec![],
+            team: None,
         }
     }
 

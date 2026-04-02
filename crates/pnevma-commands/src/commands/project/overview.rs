@@ -2409,6 +2409,7 @@ pub(crate) async fn try_provider_task_draft(
             context_file: None,
             thread_id: None,
             dynamic_tools: vec![],
+            team: None,
         })
         .await
         .map_err(|e| e.to_string())?;

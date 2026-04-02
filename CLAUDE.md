@@ -6,12 +6,21 @@ See the global workspace conventions at `~/GitHub/CLAUDE.md`. Project rules here
 
 ---
 
+## Current Product State
+
+- Pnevma is in the native macOS release phase.
+- The current public release target is `v0.2.0`.
+- The first public artifact target is a Developer ID-signed `arm64` macOS `.dmg`; notarization is deferred for that first cut.
+- Release quality matters, but it is not a standing repo-wide feature freeze.
+
+---
+
 ## Stack
 
 | Layer        | Technology                                                       |
 | ------------ | ---------------------------------------------------------------- |
-| Backend      | Rust 2021 edition, Tokio async, 10-crate workspace               |
-| Native app   | Swift 6.1 + AppKit, XcodeGen (`native/project.yml`)                |
+| Backend      | Rust 2021 edition, Tokio async, 14-crate workspace               |
+| Native app   | Swift 6.1 + AppKit/SwiftUI, XcodeGen (`native/project.yml`)      |
 | Terminal     | Ghostty (libghostty), compiled with Zig, embedded as xcframework |
 | FFI bridge   | `pnevma-bridge` → `libpnevma_bridge.a` (C ABI, linked by Swift)  |
 | Database     | SQLite via sqlx (compile-time checked queries)                   |
@@ -19,16 +28,27 @@ See the global workspace conventions at `~/GitHub/CLAUDE.md`. Project rules here
 
 ---
 
+## Required Reading
+
+- `docs/implementation-status.md`
+- `docs/macos-website-release-plan.md`
+- `docs/release-readiness.md`
+- `docs/design/remediation-master-plan.md`
+
+Use those documents as the source of truth for release-affecting work.
+
+---
+
 ## Verification Commands
 
 ```bash
-just check          # cargo fmt --check + clippy -D warnings + cargo test --workspace + cargo audit
-just test           # cargo test --workspace + xcodebuild test
-just xcode-build    # build native app (depends on rust-build)
-cargo audit         # vulnerability scan (see .cargo/audit.toml for accepted risks)
+just check          # rust-check + rust-test + rust-audit + migration-checksums
+just test           # rust-test + xcode-test
+just xcode-build    # debug native build (depends on rust-build)
+just xcodegen-check # regenerate project and verify it is committed
 ```
 
-Run `just check` before every commit. Run `just xcode-build` after any FFI changes.
+Run `just check` before every commit-worthy handoff. Run `just xcode-build` after FFI changes. Run `just xcodegen-check` after editing `native/project.yml`.
 
 ---
 
@@ -37,14 +57,17 @@ Run `just check` before every commit. Run `just xcode-build` after any FFI chang
 | Crate             | Purpose                                                                    |
 | ----------------- | -------------------------------------------------------------------------- |
 | `pnevma-core`     | Task engine, event store, dispatch orchestrator, workflow state machines   |
-| `pnevma-session`  | tmux-backed PTY supervisor, scrollback persistence, health tracking        |
+| `pnevma-redaction` | Secret redaction and output sanitization                                  |
+| `pnevma-session-protocol` | Shared session backend/protocol types                              |
+| `pnevma-session`  | Session supervision, PTY backends, scrollback persistence, restore, health |
 | `pnevma-agents`   | Provider-neutral agent adapters (Claude Code, Codex), dispatch pool        |
 | `pnevma-git`      | Worktree lifecycle, branch leases, merge queue                             |
 | `pnevma-context`  | Context pack compiler — scope/claude_md/git_diff/grep discovery strategies |
-| `pnevma-db`       | SQLite schema, migrations, typed query layer (18 row types)                |
+| `pnevma-db`       | SQLite schema, migrations, typed query layer                               |
 | `pnevma-ssh`      | SSH key management, profile builder, Tailscale discovery                   |
-| `pnevma-commands` | RPC command router (14 submodules: agents, analytics, browser_tools, global_agents, global_workflow, harness_config, plan_tools, project, ssh, tasks, tracker, tracker_tools, usage_local, workflow) (macOS-only) |
+| `pnevma-remote-helper` | Remote helper binaries and packaging support                           |
 | `pnevma-remote`   | HTTP/WS remote access server (TLS, auth, rate limiting, CORS)              |
+| `pnevma-commands` | Backend command router and command handlers                                |
 | `pnevma-bridge`   | C FFI entry point — compiles to `libpnevma_bridge.a` linked by Swift app   |
 | `pnevma-tracker`  | Issue tracker integration (Linear adapter, state sync, transitions)        |
 
@@ -52,11 +75,12 @@ Run `just check` before every commit. Run `just xcode-build` after any FFI chang
 
 ## Key Conventions
 
-- All workflow logic lives in Rust. The Swift app is a thin view layer.
-- Error handling: `thiserror` in library crates, `anyhow` in `pnevma-bridge`.
-- Logging: `tracing` throughout; structured JSON to local log files.
-- Secrets never appear in logs, scrollback, or context packs — redaction middleware covers all output paths.
-- One task = one branch = one worktree. Always.
+- All workflow logic MUST live in Rust. The Swift app MUST remain a thin view layer.
+- One task MUST map to one branch and one worktree.
+- Significant actions MUST emit structured events to the append-only log.
+- Secrets MUST NOT appear in logs, scrollback, review artifacts, or context packs.
+- Error handling SHOULD use `thiserror` in library crates; `pnevma-bridge` MAY use `anyhow`.
+- Logging MUST use `tracing`.
 
 ---
 

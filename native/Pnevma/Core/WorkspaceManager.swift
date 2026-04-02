@@ -1089,6 +1089,14 @@ final class WorkspaceManager {
         guard let id else { return nil }
         return workspaces.first { $0.id == id }
     }
+
+    func workspaceAndRuntime(forProjectID projectID: String) -> (workspace: Workspace, runtime: WorkspaceRuntime?)? {
+        guard let workspaceID = workspaceProjectIDs.first(where: { $0.value == projectID })?.key,
+              let workspace = workspace(withID: workspaceID) else {
+            return nil
+        }
+        return (workspace, workspaceRuntimes[workspaceID])
+    }
 }
 
 enum WorkspaceRuntimeReadinessError: LocalizedError {

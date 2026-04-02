@@ -43,6 +43,9 @@ const BLOCKED_EXACT_NAMES: &[&str] = &[
 const ALLOWED_EXTRA_ENV_NAMES: &[&str] = &[
     "PNEVMA_LOG_LEVEL",
     "PNEVMA_DEBUG",
+    "PNEVMA_AGENT_TEAM_ID",
+    "PNEVMA_AGENT_TEAM_CONTROL_SOCKET",
+    "PNEVMA_AGENT_TEAM_PROVIDER",
     "NODE_ENV",
     "RUST_LOG",
     "RUST_BACKTRACE",
@@ -55,6 +58,9 @@ const ALLOWED_EXTRA_ENV_NAMES: &[&str] = &[
     "API_BASE_URL",
     "SUPABASE_URL",
     "NEXT_PUBLIC_SUPABASE_URL",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    "TMUX",
+    "TMUX_PANE",
 ];
 
 /// Prefixes that are allowed in addition to the exact names above.

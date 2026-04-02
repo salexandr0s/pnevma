@@ -84,10 +84,26 @@ pub(super) async fn install_project_runtime(
     workflow_store: Arc<crate::automation::workflow_store::WorkflowStore>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     project_path: std::path::PathBuf,
+    project_config: pnevma_core::ProjectConfig,
+    global_config: pnevma_core::GlobalConfig,
     retention_config: pnevma_core::RetentionSection,
 ) {
     let retention_shutdown_rx = shutdown_rx.clone();
     let retention_db = db.clone();
+    state.agent_teams.write().await.clear();
+    if let Err(error) = crate::agent_teams::rehydrate_all_teams_with_runtime(
+        &db,
+        project_id,
+        &project_path,
+        &project_config,
+        &global_config,
+        &state.agent_teams,
+        &state.emitter,
+    )
+    .await
+    {
+        tracing::warn!(error = %error, "failed to rehydrate agent teams");
+    }
 
     let session_bridge = spawn_session_bridge(
         Arc::clone(&state.emitter),
@@ -95,6 +111,7 @@ pub(super) async fn install_project_runtime(
         sessions.clone(),
         project_id,
         redaction_secrets,
+        Arc::clone(&state.agent_teams),
     );
     let health_refresh = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));

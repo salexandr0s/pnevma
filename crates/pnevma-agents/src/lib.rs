@@ -8,6 +8,7 @@ pub mod profiles;
 pub mod reconciler;
 pub mod registry;
 pub mod resilience;
+pub mod team_support;
 
 pub use env::{
     build_agent_environment, is_blocked_agent_env_name, is_reserved_agent_env_name,
@@ -16,8 +17,8 @@ pub use env::{
 };
 pub use error::AgentError;
 pub use model::{
-    AgentAdapter, AgentConfig, AgentEvent, AgentHandle, AgentStatus, CostRecord, DynamicToolDef,
-    TaskPayload,
+    AgentAdapter, AgentConfig, AgentEvent, AgentHandle, AgentStatus, AgentTeamConfig, CostRecord,
+    DynamicToolDef, TaskPayload,
 };
 pub use pool::{DispatchPermit, DispatchPool, QueuedDispatch, TryAcquireResult};
 pub use profiles::{AgentProfile, DispatchRecommendation};
@@ -27,3 +28,4 @@ pub use resilience::{
     classify_failure, compute_backoff, ContinuationState, FailureClass, RetryContext, RetryPolicy,
     StallDetector, StallDetectorConfig,
 };
+pub use team_support::{prepare_claude_team_environment, with_tmux_pane_token};

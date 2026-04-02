@@ -54,6 +54,66 @@ private struct GitHubAuthBridgePayload: Decodable {
     let snapshot: GitHubAuthSnapshot
 }
 
+private struct AgentTeamSnapshotBridgePayload: Decodable {
+    let projectID: String
+    let team: AgentTeamSnapshotBridgeState
+}
+
+private struct AgentTeamLayoutChangedBridgePayload: Decodable {
+    let projectID: String
+    let team: AgentTeamSnapshotBridgeState
+}
+
+private struct AgentTeamMemberBridgePayload: Decodable {
+    let projectID: String
+    let teamID: String
+    let provider: String?
+    let leaderSessionID: String
+    let leaderPaneID: String
+    let leaderPaneToken: String?
+    let member: AgentTeamMemberBridgeState
+    let session: LiveSession?
+    let equalizeOrientation: String?
+    let preserveFocus: Bool?
+}
+
+private struct AgentTeamMemberClosedBridgePayload: Decodable {
+    let projectID: String
+    let teamID: String
+    let leaderSessionID: String
+    let leaderPaneID: String
+    let member: AgentTeamMemberBridgeState
+    let equalizeOrientation: String?
+    let preserveFocus: Bool?
+}
+
+private struct AgentTeamSnapshotBridgeState: Decodable {
+    let teamID: String
+    let provider: String
+    let leaderSessionID: String
+    let leaderPaneID: String
+    let leaderPaneToken: String
+    let mainVertical: Bool
+    let members: [AgentTeamMemberBridgeState]
+}
+
+private struct AgentTeamMemberBridgeState: Decodable {
+    let sessionID: String
+    let paneID: String
+    let paneToken: String
+    let memberIndex: Int
+    let title: String
+    let command: String
+}
+
+private struct AgentTeamLocation {
+    let teamID: String
+    let projectID: String
+    let workspaceID: UUID
+    let tabID: UUID
+    let leaderBackendPaneID: String
+}
+
 @MainActor
 protocol TitlebarGitActionWorkspaceManaging: AnyObject {
     var activeWorkspaceID: UUID? { get }
@@ -247,6 +307,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionBridge: SessionBridge?
     private var sessionStore: SessionStore?
     private var workspaceManager: WorkspaceManager?
+    private var agentTeamLocations: [String: AgentTeamLocation] = [:]
 
     /// Read-only accessor for App Intents to query workspace state.
     var workspaceManagerForIntents: WorkspaceManager? { workspaceManager }
@@ -683,6 +744,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             case "github_auth_changed":
                 Task { @MainActor [weak self] in
                     await self?.titlebarGitHubController.handleBridgePayload(event.payloadJSON)
+                }
+            case "agent_team_started":
+                Task { @MainActor [weak self] in
+                    self?.handleAgentTeamStartedEvent(event)
+                }
+            case "agent_team_rehydrated":
+                Task { @MainActor [weak self] in
+                    self?.handleAgentTeamRehydratedEvent(event)
+                }
+            case "agent_team_member_spawned":
+                Task { @MainActor [weak self] in
+                    self?.handleAgentTeamMemberSpawnedEvent(event)
+                }
+            case "agent_team_member_closed":
+                Task { @MainActor [weak self] in
+                    self?.handleAgentTeamMemberClosedEvent(event)
+                }
+            case "agent_team_layout_changed":
+                Task { @MainActor [weak self] in
+                    self?.handleAgentTeamLayoutChangedEvent(event)
                 }
             default:
                 break
@@ -5166,6 +5247,627 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         persistence?.markDirty()
     }
 
+    private struct ResolvedAgentTeamRoute {
+        let location: AgentTeamLocation
+        let workspace: Workspace
+        let tabIndex: Int
+        let isVisible: Bool
+    }
+
+    private func handleAgentTeamStartedEvent(_ event: BridgeEvent) {
+        guard let payload: AgentTeamSnapshotBridgePayload = decodeBridgePayload(event) else { return }
+        synchronizeAgentTeamSnapshot(payload.team, projectID: payload.projectID)
+    }
+
+    private func handleAgentTeamRehydratedEvent(_ event: BridgeEvent) {
+        guard let payload: AgentTeamSnapshotBridgePayload = decodeBridgePayload(event) else { return }
+        synchronizeAgentTeamSnapshot(payload.team, projectID: payload.projectID)
+    }
+
+    private func handleAgentTeamMemberSpawnedEvent(_ event: BridgeEvent) {
+        guard let payload: AgentTeamMemberBridgePayload = decodeBridgePayload(event) else { return }
+        guard let route = resolveAgentTeamRoute(
+            teamID: payload.teamID,
+            projectID: payload.projectID,
+            leaderBackendPaneID: payload.leaderPaneID,
+            preferExistingTab: true
+        ) else {
+            return
+        }
+        let syntheticTeam = AgentTeamSnapshotBridgeState(
+            teamID: payload.teamID,
+            provider: payload.provider ?? "agent",
+            leaderSessionID: payload.leaderSessionID,
+            leaderPaneID: payload.leaderPaneID,
+            leaderPaneToken: payload.leaderPaneToken ?? "%0",
+            mainVertical: true,
+            members: []
+        )
+        guard let leaderPaneID = ensureAgentTeamLeaderPane(for: syntheticTeam, route: route) else {
+            return
+        }
+
+        if route.isVisible, let contentAreaView {
+            if agentTeamPaneID(in: contentAreaView, backendPaneID: payload.member.paneID) != nil {
+                if payload.preserveFocus ?? true {
+                    contentAreaView.focusPane(leaderPaneID)
+                }
+                if let orientation = agentTeamEqualizeOrientation(payload.equalizeOrientation) {
+                    contentAreaView.equalizeSplits(orientation: orientation)
+                }
+                persistence?.markDirty()
+                return
+            }
+
+            let targetPaneID = highestAgentTeamMemberPaneID(
+                in: contentAreaView,
+                teamID: payload.teamID
+            ) ?? leaderPaneID
+            let direction: SplitDirection = targetPaneID == leaderPaneID ? .horizontal : .vertical
+            let workingDirectory = payload.session?.cwd ?? route.workspace.defaultWorkingDirectory
+            let pane = PaneFactory.makeTerminal(
+                workingDirectory: workingDirectory,
+                sessionID: payload.member.sessionID,
+                autoStartIfNeeded: false,
+                launchMetadata: agentTeamLaunchMetadata(
+                    workspace: route.workspace,
+                    backendPaneID: payload.member.paneID,
+                    teamID: payload.teamID,
+                    role: "member",
+                    memberIndex: payload.member.memberIndex
+                )
+            ).1
+            if contentAreaView.splitPane(targetPaneID, direction: direction, newPaneView: pane) == nil,
+               contentAreaView.activePaneView == nil {
+                contentAreaView.setRootPane(pane)
+            }
+            if payload.preserveFocus ?? true {
+                contentAreaView.focusPane(leaderPaneID)
+            }
+            if let orientation = agentTeamEqualizeOrientation(payload.equalizeOrientation) {
+                contentAreaView.equalizeSplits(orientation: orientation)
+            }
+            persistence?.markDirty()
+            return
+        }
+
+        let tab = route.workspace.tabs[route.tabIndex]
+        if let existing = paneID(
+            in: tab.layoutEngine,
+            backendPaneID: payload.member.paneID
+        ) {
+            if payload.preserveFocus ?? true {
+                tab.layoutEngine.setActivePane(leaderPaneID)
+            } else {
+                tab.layoutEngine.setActivePane(existing)
+            }
+            if let orientation = agentTeamEqualizeOrientation(payload.equalizeOrientation) {
+                tab.layoutEngine.equalizeSplits(orientation: orientation)
+            }
+            persistence?.markDirty()
+            return
+        }
+
+        let targetPaneID = highestAgentTeamMemberPaneID(
+            in: tab.layoutEngine,
+            teamID: payload.teamID
+        ) ?? leaderPaneID
+        let direction: SplitDirection = targetPaneID == leaderPaneID ? .horizontal : .vertical
+        let newPaneID = PaneID()
+        _ = tab.layoutEngine.splitPane(
+            targetPaneID,
+            direction: direction,
+            newPaneID: newPaneID
+        )
+        tab.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: newPaneID,
+                type: "terminal",
+                workingDirectory: payload.session?.cwd ?? route.workspace.defaultWorkingDirectory,
+                sessionID: payload.member.sessionID,
+                taskID: nil,
+                metadataJSON: agentTeamLaunchMetadata(
+                    workspace: route.workspace,
+                    backendPaneID: payload.member.paneID,
+                    teamID: payload.teamID,
+                    role: "member",
+                    memberIndex: payload.member.memberIndex
+                ).encodedJSON()
+            )
+        )
+        if payload.preserveFocus ?? true {
+            tab.layoutEngine.setActivePane(leaderPaneID)
+        }
+        if let orientation = agentTeamEqualizeOrientation(payload.equalizeOrientation) {
+            tab.layoutEngine.equalizeSplits(orientation: orientation)
+        }
+        persistence?.markDirty()
+    }
+
+    private func handleAgentTeamMemberClosedEvent(_ event: BridgeEvent) {
+        guard let payload: AgentTeamMemberClosedBridgePayload = decodeBridgePayload(event) else { return }
+        guard let route = resolveAgentTeamRoute(
+            teamID: payload.teamID,
+            projectID: payload.projectID,
+            leaderBackendPaneID: payload.leaderPaneID,
+            preferExistingTab: true
+        ) else {
+            return
+        }
+
+        if route.isVisible, let contentAreaView {
+            let leaderPaneID = agentTeamPaneID(in: contentAreaView, backendPaneID: payload.leaderPaneID)
+            if let paneID = agentTeamPaneID(in: contentAreaView, backendPaneID: payload.member.paneID) {
+                contentAreaView.closePane(paneID)
+            }
+            if let leaderPaneID, payload.preserveFocus ?? true {
+                contentAreaView.focusPane(leaderPaneID)
+            }
+            if let orientation = agentTeamEqualizeOrientation(payload.equalizeOrientation) {
+                contentAreaView.equalizeSplits(orientation: orientation)
+            }
+            persistence?.markDirty()
+            return
+        }
+
+        let tab = route.workspace.tabs[route.tabIndex]
+        let leaderPaneID = paneID(in: tab.layoutEngine, backendPaneID: payload.leaderPaneID)
+        if let paneID = paneID(in: tab.layoutEngine, backendPaneID: payload.member.paneID) {
+            _ = tab.layoutEngine.closePane(paneID)
+            tab.layoutEngine.removePersistedPane(paneID)
+        }
+        if let leaderPaneID, payload.preserveFocus ?? true {
+            tab.layoutEngine.setActivePane(leaderPaneID)
+        }
+        if let orientation = agentTeamEqualizeOrientation(payload.equalizeOrientation) {
+            tab.layoutEngine.equalizeSplits(orientation: orientation)
+        }
+        persistence?.markDirty()
+    }
+
+    private func handleAgentTeamLayoutChangedEvent(_ event: BridgeEvent) {
+        guard let payload: AgentTeamLayoutChangedBridgePayload = decodeBridgePayload(event) else { return }
+        guard let route = resolveAgentTeamRoute(
+            teamID: payload.team.teamID,
+            projectID: payload.projectID,
+            leaderBackendPaneID: payload.team.leaderPaneID,
+            preferExistingTab: true
+        ) else {
+            return
+        }
+        guard payload.team.mainVertical else { return }
+        if route.isVisible, let contentAreaView {
+            contentAreaView.equalizeSplits(orientation: .vertical)
+        } else {
+            route.workspace.tabs[route.tabIndex].layoutEngine.equalizeSplits(orientation: .vertical)
+        }
+        persistence?.markDirty()
+    }
+
+    private func synchronizeAgentTeamSnapshot(
+        _ team: AgentTeamSnapshotBridgeState,
+        projectID: String
+    ) {
+        guard let route = resolveAgentTeamRoute(
+            teamID: team.teamID,
+            projectID: projectID,
+            leaderBackendPaneID: team.leaderPaneID,
+            preferExistingTab: true
+        ) else {
+            return
+        }
+        guard let leaderPaneID = ensureAgentTeamLeaderPane(for: team, route: route) else {
+            return
+        }
+        for member in team.members.sorted(by: { $0.memberIndex < $1.memberIndex }) {
+            let payload = AgentTeamMemberBridgePayload(
+                projectID: projectID,
+                teamID: team.teamID,
+                provider: team.provider,
+                leaderSessionID: team.leaderSessionID,
+                leaderPaneID: team.leaderPaneID,
+                leaderPaneToken: team.leaderPaneToken,
+                member: member,
+                session: nil,
+                equalizeOrientation: team.mainVertical ? "vertical" : nil,
+                preserveFocus: true
+            )
+            if route.isVisible,
+               let contentAreaView,
+               agentTeamPaneID(in: contentAreaView, backendPaneID: member.paneID) != nil {
+                continue
+            }
+            if !route.isVisible,
+               paneID(in: route.workspace.tabs[route.tabIndex].layoutEngine, backendPaneID: member.paneID) != nil {
+                continue
+            }
+            handleSyntheticAgentTeamMemberSpawn(payload, route: route, leaderPaneID: leaderPaneID)
+        }
+        if team.mainVertical {
+            if route.isVisible, let contentAreaView {
+                contentAreaView.equalizeSplits(orientation: .vertical)
+            } else {
+                route.workspace.tabs[route.tabIndex].layoutEngine.equalizeSplits(orientation: .vertical)
+            }
+        }
+        persistence?.markDirty()
+    }
+
+    private func handleSyntheticAgentTeamMemberSpawn(
+        _ payload: AgentTeamMemberBridgePayload,
+        route: ResolvedAgentTeamRoute,
+        leaderPaneID: PaneID
+    ) {
+        if route.isVisible, let contentAreaView {
+            let targetPaneID = highestAgentTeamMemberPaneID(
+                in: contentAreaView,
+                teamID: payload.teamID
+            ) ?? leaderPaneID
+            let direction: SplitDirection = targetPaneID == leaderPaneID ? .horizontal : .vertical
+            let pane = PaneFactory.makeTerminal(
+                workingDirectory: route.workspace.defaultWorkingDirectory,
+                sessionID: payload.member.sessionID,
+                autoStartIfNeeded: false,
+                launchMetadata: agentTeamLaunchMetadata(
+                    workspace: route.workspace,
+                    backendPaneID: payload.member.paneID,
+                    teamID: payload.teamID,
+                    role: "member",
+                    memberIndex: payload.member.memberIndex
+                )
+            ).1
+            _ = contentAreaView.splitPane(targetPaneID, direction: direction, newPaneView: pane)
+            contentAreaView.focusPane(leaderPaneID)
+            return
+        }
+
+        let tab = route.workspace.tabs[route.tabIndex]
+        let targetPaneID = highestAgentTeamMemberPaneID(
+            in: tab.layoutEngine,
+            teamID: payload.teamID
+        ) ?? leaderPaneID
+        let direction: SplitDirection = targetPaneID == leaderPaneID ? .horizontal : .vertical
+        let newPaneID = PaneID()
+        _ = tab.layoutEngine.splitPane(targetPaneID, direction: direction, newPaneID: newPaneID)
+        tab.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: newPaneID,
+                type: "terminal",
+                workingDirectory: route.workspace.defaultWorkingDirectory,
+                sessionID: payload.member.sessionID,
+                taskID: nil,
+                metadataJSON: agentTeamLaunchMetadata(
+                    workspace: route.workspace,
+                    backendPaneID: payload.member.paneID,
+                    teamID: payload.teamID,
+                    role: "member",
+                    memberIndex: payload.member.memberIndex
+                ).encodedJSON()
+            )
+        )
+        tab.layoutEngine.setActivePane(leaderPaneID)
+    }
+
+    private func resolveAgentTeamRoute(
+        teamID: String,
+        projectID: String,
+        leaderBackendPaneID: String,
+        preferExistingTab: Bool
+    ) -> ResolvedAgentTeamRoute? {
+        if let cached = agentTeamLocations[teamID],
+           let route = validatedRoute(for: cached, leaderBackendPaneID: leaderBackendPaneID) {
+            return route
+        }
+
+        for workspace in workspaceManager?.workspaces ?? [] {
+            guard runtimeProjectID(for: workspace) == projectID else { continue }
+            if let location = locationForLeaderPane(
+                teamID: teamID,
+                projectID: projectID,
+                workspace: workspace,
+                leaderBackendPaneID: leaderBackendPaneID
+            ) {
+                agentTeamLocations[teamID] = location
+                return validatedRoute(for: location, leaderBackendPaneID: leaderBackendPaneID)
+            }
+        }
+
+        if preferExistingTab,
+           let activeWorkspace = workspaceManager?.activeWorkspace,
+           runtimeProjectID(for: activeWorkspace) == projectID {
+            let location = AgentTeamLocation(
+                teamID: teamID,
+                projectID: projectID,
+                workspaceID: activeWorkspace.id,
+                tabID: activeWorkspace.tabs[activeWorkspace.activeTabIndex].id,
+                leaderBackendPaneID: leaderBackendPaneID
+            )
+            agentTeamLocations[teamID] = location
+            return ResolvedAgentTeamRoute(
+                location: location,
+                workspace: activeWorkspace,
+                tabIndex: activeWorkspace.activeTabIndex,
+                isVisible: isVisibleAgentTeamRoute(
+                    workspaceID: activeWorkspace.id,
+                    tabIndex: activeWorkspace.activeTabIndex
+                )
+            )
+        }
+
+        guard let workspace = (workspaceManager?.workspaces ?? []).first(where: {
+            runtimeProjectID(for: $0) == projectID
+        }) else {
+            return nil
+        }
+        let location = AgentTeamLocation(
+            teamID: teamID,
+            projectID: projectID,
+            workspaceID: workspace.id,
+            tabID: workspace.tabs[workspace.activeTabIndex].id,
+            leaderBackendPaneID: leaderBackendPaneID
+        )
+        agentTeamLocations[teamID] = location
+        return ResolvedAgentTeamRoute(
+            location: location,
+            workspace: workspace,
+            tabIndex: workspace.activeTabIndex,
+            isVisible: isVisibleAgentTeamRoute(
+                workspaceID: workspace.id,
+                tabIndex: workspace.activeTabIndex
+            )
+        )
+    }
+
+    private func validatedRoute(
+        for location: AgentTeamLocation,
+        leaderBackendPaneID: String
+    ) -> ResolvedAgentTeamRoute? {
+        guard let workspace = workspaceManager?.workspaces.first(where: { $0.id == location.workspaceID }),
+              let tabIndex = workspace.tabIndex(for: location.tabID) else {
+            agentTeamLocations.removeValue(forKey: location.teamID)
+            return nil
+        }
+        let tab = workspace.tabs[tabIndex]
+        let hasLeader = tab.paneID(matching: {
+            $0.backendPaneID == leaderBackendPaneID
+                || ($0.agentTeamID == location.teamID && $0.agentTeamRole == "leader")
+        }) != nil
+        let hasTeam = tab.paneID(matching: { $0.agentTeamID == location.teamID }) != nil
+        guard hasLeader || hasTeam else {
+            agentTeamLocations.removeValue(forKey: location.teamID)
+            return nil
+        }
+        return ResolvedAgentTeamRoute(
+            location: location,
+            workspace: workspace,
+            tabIndex: tabIndex,
+            isVisible: isVisibleAgentTeamRoute(workspaceID: workspace.id, tabIndex: tabIndex)
+        )
+    }
+
+    private func rebuildAgentTeamLocations() {
+        agentTeamLocations.removeAll()
+        for workspace in workspaceManager?.workspaces ?? [] {
+            let projectID = runtimeProjectID(for: workspace)
+            for tab in workspace.tabs {
+                for paneID in tab.layoutEngine.root?.allPaneIDs ?? [] {
+                    guard let metadata = TerminalLaunchMetadata.from(
+                        json: tab.layoutEngine.persistedPane(for: paneID)?.metadataJSON
+                    ),
+                    let teamID = metadata.agentTeamID,
+                    metadata.agentTeamRole == "leader",
+                    let backendPaneID = metadata.backendPaneID,
+                    let projectID else {
+                        continue
+                    }
+                    agentTeamLocations[teamID] = AgentTeamLocation(
+                        teamID: teamID,
+                        projectID: projectID,
+                        workspaceID: workspace.id,
+                        tabID: tab.id,
+                        leaderBackendPaneID: backendPaneID
+                    )
+                }
+            }
+        }
+    }
+
+    private func locationForLeaderPane(
+        teamID: String,
+        projectID: String,
+        workspace: Workspace,
+        leaderBackendPaneID: String
+    ) -> AgentTeamLocation? {
+        if let paneLocation = workspace.paneLocation(backendPaneID: leaderBackendPaneID) {
+            return AgentTeamLocation(
+                teamID: teamID,
+                projectID: projectID,
+                workspaceID: workspace.id,
+                tabID: workspace.tabs[paneLocation.tabIndex].id,
+                leaderBackendPaneID: leaderBackendPaneID
+            )
+        }
+        if let paneLocation = workspace.agentTeamPaneLocation(teamID: teamID, role: "leader")
+            ?? workspace.agentTeamPaneLocation(teamID: teamID) {
+            return AgentTeamLocation(
+                teamID: teamID,
+                projectID: projectID,
+                workspaceID: workspace.id,
+                tabID: workspace.tabs[paneLocation.tabIndex].id,
+                leaderBackendPaneID: leaderBackendPaneID
+            )
+        }
+        return nil
+    }
+
+    private func runtimeProjectID(for workspace: Workspace) -> String? {
+        workspaceManager?.runtime(for: workspace.id)?.projectID
+    }
+
+    private func isVisibleAgentTeamRoute(workspaceID: UUID, tabIndex: Int) -> Bool {
+        guard workspaceManager?.activeWorkspaceID == workspaceID,
+              workspaceManager?.activeWorkspace?.activeTabIndex == tabIndex else {
+            return false
+        }
+        return contentAreaView != nil
+    }
+
+    private func ensureAgentTeamLeaderPane(
+        for team: AgentTeamSnapshotBridgeState,
+        route: ResolvedAgentTeamRoute
+    ) -> PaneID? {
+        agentTeamLocations[team.teamID] = route.location
+        if route.isVisible, let contentAreaView {
+            if let existingPaneID = agentTeamPaneID(in: contentAreaView, backendPaneID: team.leaderPaneID) {
+                return existingPaneID
+            }
+
+            let pane = PaneFactory.makeTerminal(
+                workingDirectory: route.workspace.defaultWorkingDirectory,
+                sessionID: team.leaderSessionID,
+                autoStartIfNeeded: false,
+                launchMetadata: agentTeamLaunchMetadata(
+                    workspace: route.workspace,
+                    backendPaneID: team.leaderPaneID,
+                    teamID: team.teamID,
+                    role: "leader",
+                    memberIndex: 0
+                )
+            ).1
+
+            if contentAreaView.activePaneView == nil {
+                contentAreaView.setRootPane(pane)
+            } else if contentAreaView.replaceActivePane(with: pane) == nil {
+                contentAreaView.setRootPane(pane)
+            }
+            contentAreaView.focusPane(pane.paneID)
+            return pane.paneID
+        }
+
+        let tab = route.workspace.tabs[route.tabIndex]
+        if let existingPaneID = paneID(in: tab.layoutEngine, backendPaneID: team.leaderPaneID) {
+            return existingPaneID
+        }
+        let newPaneID = PaneID()
+        let metadataJSON = agentTeamLaunchMetadata(
+            workspace: route.workspace,
+            backendPaneID: team.leaderPaneID,
+            teamID: team.teamID,
+            role: "leader",
+            memberIndex: 0
+        ).encodedJSON()
+        if let activePaneID = tab.layoutEngine.activePaneID,
+           tab.layoutEngine.replacePane(activePaneID, with: newPaneID) {
+            tab.layoutEngine.removePersistedPane(activePaneID)
+            tab.layoutEngine.upsertPersistedPane(
+                PersistedPane(
+                    paneID: newPaneID,
+                    type: "terminal",
+                    workingDirectory: route.workspace.defaultWorkingDirectory,
+                    sessionID: team.leaderSessionID,
+                    taskID: nil,
+                    metadataJSON: metadataJSON
+                )
+            )
+            tab.layoutEngine.setActivePane(newPaneID)
+            return newPaneID
+        }
+
+        tab.layoutEngine.reset(rootPaneID: newPaneID)
+        tab.layoutEngine.upsertPersistedPane(
+            PersistedPane(
+                paneID: newPaneID,
+                type: "terminal",
+                workingDirectory: route.workspace.defaultWorkingDirectory,
+                sessionID: team.leaderSessionID,
+                taskID: nil,
+                metadataJSON: metadataJSON
+            )
+        )
+        return newPaneID
+    }
+
+    private func agentTeamLaunchMetadata(
+        workspace: Workspace,
+        backendPaneID: String,
+        teamID: String,
+        role: String,
+        memberIndex: Int
+    ) -> TerminalLaunchMetadata {
+        let base = workspace.defaultTerminalMetadata(startBehavior: .deferUntilActivate)
+        return TerminalLaunchMetadata(
+            launchMode: base.launchMode,
+            startBehavior: base.startBehavior,
+            remoteTarget: base.remoteTarget,
+            backendPaneID: backendPaneID,
+            agentTeamID: teamID,
+            agentTeamRole: role,
+            agentTeamMemberIndex: memberIndex
+        )
+    }
+
+    private func agentTeamPaneID(
+        in contentAreaView: ContentAreaView,
+        backendPaneID: String
+    ) -> PaneID? {
+        paneID(in: contentAreaView.layoutEngine, backendPaneID: backendPaneID)
+    }
+
+    private func paneID(
+        in layoutEngine: PaneLayoutEngine,
+        backendPaneID: String
+    ) -> PaneID? {
+        layoutEngine.root?.allPaneIDs.first { paneID in
+            guard let persistedPane = layoutEngine.persistedPane(for: paneID) else {
+                return false
+            }
+            return TerminalLaunchMetadata.from(json: persistedPane.metadataJSON)?.backendPaneID == backendPaneID
+        }
+    }
+
+    private func highestAgentTeamMemberPaneID(
+        in contentAreaView: ContentAreaView,
+        teamID: String
+    ) -> PaneID? {
+        highestAgentTeamMemberPaneID(in: contentAreaView.layoutEngine, teamID: teamID)
+    }
+
+    private func highestAgentTeamMemberPaneID(
+        in layoutEngine: PaneLayoutEngine,
+        teamID: String
+    ) -> PaneID? {
+        var best: (paneID: PaneID, memberIndex: Int)?
+        for paneID in layoutEngine.root?.allPaneIDs ?? [] {
+            guard let persistedPane = layoutEngine.persistedPane(for: paneID),
+                  let metadata = TerminalLaunchMetadata.from(json: persistedPane.metadataJSON),
+                  metadata.agentTeamID == teamID,
+                  metadata.agentTeamRole == "member",
+                  let memberIndex = metadata.agentTeamMemberIndex else {
+                continue
+            }
+            if best == nil || memberIndex > (best?.memberIndex ?? Int.min) {
+                best = (paneID, memberIndex)
+            }
+        }
+        return best?.paneID
+    }
+
+    private func agentTeamEqualizeOrientation(_ value: String?) -> SplitDirection? {
+        switch value {
+        case "horizontal":
+            return .horizontal
+        case "vertical":
+            return .vertical
+        default:
+            return nil
+        }
+    }
+
+    private func decodeBridgePayload<T: Decodable>(_ event: BridgeEvent) -> T? {
+        guard let data = event.payloadJSON.data(using: .utf8) else { return nil }
+        return try? PnevmaJSON.decoder().decode(T.self, from: data)
+    }
+
     private func buildSessionState() -> SessionPersistence.SessionState {
         contentAreaView?.syncPersistedPanes()
         let frame: SessionPersistence.CodableRect? = window.flatMap { win in
@@ -5230,6 +5932,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             snapshots: state.workspaces,
             activeWorkspaceID: state.activeWorkspaceID
         )
+        rebuildAgentTeamLocations()
 
         if let activeWorkspace = workspaceManager?.activeWorkspace {
             contentAreaView?.syncPersistedPanes()
